@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "SceTypes.hpp"
-#include "prx/libc/include/General.hpp"
 #include "SceUltTypes.hpp"
 
 extern "C" int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg, const char* name);
@@ -246,7 +245,7 @@ int APS5_VABI sceUltQueueDataResourcePoolCreate(void* pool, const char* name, st
     if ((reinterpret_cast<std::uintptr_t>(pool) & 7u) != 0) return ULT_ERROR_ALIGNMENT;
     if (numData == 0 || numQueueObject == 0 || dataSize == 0 ||
         dataSize > std::numeric_limits<std::size_t>::max() / numData) return ULT_ERROR_RANGE;
-    if (optParam != nullptr) NotImplemented_nid_no_patch("sceUltQueueDataResourcePoolCreate: optParam");
+    if (optParam != nullptr) throw std::runtime_error("sceUltQueueDataResourcePoolCreate: option parameters are not implemented");
     std::lock_guard<std::mutex> lock(gMutex);
     if (waitingQueueResourcePool != nullptr && gResourcePools.find(waitingQueueResourcePool) == gResourcePools.end()) {
         return ULT_ERROR_INVALID;
@@ -289,7 +288,7 @@ int APS5_VABI sceUltQueueCreate(void* queue, const char* name, std::uint64_t dat
     }
     if ((reinterpret_cast<std::uintptr_t>(queue) & 7u) != 0) return ULT_ERROR_ALIGNMENT;
     if (dataSize == 0) return ULT_ERROR_RANGE;
-    if (optParam != nullptr) NotImplemented_nid_no_patch("sceUltQueueCreate: optParam");
+    if (optParam != nullptr) throw std::runtime_error("sceUltQueueCreate: option parameters are not implemented");
     auto state = std::make_shared<UltQueueState>();
     state->_dataSize = dataSize;
     std::lock_guard<std::mutex> lock(gMutex);
@@ -582,6 +581,14 @@ int APS5_VABI _sceUltUlthreadRuntimeCreate(void* runtime, const char* name, std:
 
 int APS5_VABI _sceUltUlthreadCreate(void* ulthread, const char* name, UltUlthreadEntry entry, std::uint64_t arg, void* context, std::uint64_t sizeContext, void* runtime, const void* optParam, std::uint32_t buildVersion) {
     return sceUltUlthreadCreate(ulthread, name, entry, arg, context, sizeContext, runtime, optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltQueueDataResourcePoolCreate(void* pool, const char* name, std::uint32_t numData, std::uint64_t dataSize, std::uint32_t numQueueObject, void* waitingQueueResourcePool, void* workArea, const void* optParam, std::uint32_t buildVersion) {
+    return sceUltQueueDataResourcePoolCreate(pool, name, numData, dataSize, numQueueObject, waitingQueueResourcePool, workArea, optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltQueueCreate(void* queue, const char* name, std::uint64_t dataSize, void* waitingQueueResourcePool, void* queueDataResourcePool, const void* optParam, std::uint32_t buildVersion) {
+    return sceUltQueueCreate(queue, name, dataSize, waitingQueueResourcePool, queueDataResourcePool, optParam, buildVersion);
 }
 
 }
