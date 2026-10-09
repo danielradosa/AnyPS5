@@ -30,6 +30,16 @@ extern "C" int APS5_VABI sceContentExportFromFileWithThumbnail(int exportId, con
 #include <sys/wait.h>
 #endif
 
+#include <iostream>
+#include <stdexcept>
+#include <thread>
+#include <vector>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <sys/wait.h>
+#endif
+
 extern "C" {
 int APS5_VABI sceContentExportInit2(const ContentExportInitParam2*);
 int APS5_VABI sceContentExportTerm();
@@ -59,6 +69,11 @@ constexpr std::array<std::uint8_t, 70> Png{
     0x16,0x00,0x03,0x0C,0x01,0xBF,0x6E,0xB9,0xC6,0x5D,0x00,0x00,0x00,0x00,0x49,0x45,
     0x4E,0x44,0xAE,0x42,0x60,0x82
 };
+
+void Require(bool value, const char* message) {
+    if (!value) { std::cerr << message << '\n'; std::abort(); }
+}
+
 
 void Require(bool value, const char* message) {
     if (!value) { std::cerr << message << '\n'; std::abort(); }
@@ -173,6 +188,123 @@ int main() {
     std::filesystem::remove(source, error);
     std::filesystem::remove(thumbnail, error);
     std::filesystem::remove(textThumbnail, error);
+struct Allocator {
+    std::atomic<int> allocations{0};
+    std::atomic<int> releases{0};
+    std::atomic<bool> fail{false};
+};
+
+void* APS5_VABI Allocate(std::size_t size, void* userData) {
+    auto& allocator = *static_cast<Allocator*>(userData);
+    if (allocator.fail) return nullptr;
+    ++allocator.allocations;
+    return std::malloc(size);
+}
+
+void APS5_VABI Release(void* pointer, void* userData) {
+    ++static_cast<Allocator*>(userData)->releases;
+    std::free(pointer);
+}
+
+void Write(const std::filesystem::path& path, const void* data, std::size_t size) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+    stream.close();
+    Require(static_cast<bool>(stream), "fixture write failed");
+}
+
+std::vector<std::uint8_t> Read(const char* guest) {
+    std::ifstream stream(ResolvePath_nid_no_patch(guest), std::ios::binary);
+    Require(static_cast<bool>(stream), "exported path cannot be read");
+    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+}
+
+ContentExportParam MakeParam(const char* title = "export title", const char* mime = "image/png") {
+    ContentExportParam param{};
+    std::strcpy(param.title, title);
+    std::strcpy(param.content_type, mime);
+    return param;
+}
+
+struct Chunks {
+    std::size_t position = 0;
+    int failure = 0;
+    bool reenter = false;
+    int session = 0;
+    bool separateDone = false;
+};
+
+int APS5_VABI Provide(void** data, std::size_t* size, void* userData) {
+    auto& chunks = *static_cast<Chunks*>(userData);
+    if (chunks.reenter) {
+        chunks.reenter = false;
+        Require(sceContentExportFinish(chunks.session) == Busy, "finish must refuse active callback");
+        const auto param = MakeParam();
+        std::array<char, 1025> path{};
+        Require(sceContentExportFromFile(chunks.session, &param, "/source.png", path.data(), path.size()) == Busy,
+            "same session must refuse reentrant export");
+        Require(sceContentExportTerm() == Busy, "term must refuse open sessions");
+    }
+    if (chunks.failure == 1) return -1;
+    if (chunks.failure == 2) { *size = Png.size() + 1; *data = const_cast<std::uint8_t*>(Png.data()); return 1; }
+    if (chunks.failure == 3) return 0;
+    if (chunks.failure == 4) { *size = 1; return 1; }
+    if (chunks.failure == 5) { *data = const_cast<std::uint8_t*>(Png.data()); *size = 1; return 1; }
+    *size = std::min<std::size_t>(13, Png.size() - chunks.position);
+    *data = *size ? const_cast<std::uint8_t*>(Png.data()) + chunks.position : nullptr;
+    chunks.position += *size;
+    return chunks.position == Png.size() && (!chunks.separateDone || *size == 0) ? 1 : 0;
+}
+
+void CheckCatalogTransactions() {
+    namespace Catalog = ContentCatalog_nid_no_patch;
+    const auto before = Catalog::Read_nid_no_patch();
+    Catalog::Transaction_nid_no_patch first;
+    Catalog::Transaction_nid_no_patch second;
+    const auto entry = [](const auto& transaction) {
+        Catalog::Entry item;
+        item.id = transaction.Id_nid_no_patch();
+        item.title = "transaction";
+        item.mimeType = "image/png";
+        item.path = transaction.GuestPath_nid_no_patch("content.png");
+        item.size = Png.size();
+        item.contentType = 1;
+        Write(transaction.Directory_nid_no_patch() / "content.png", Png.data(), Png.size());
+        return item;
+    };
+    second.Commit_nid_no_patch(entry(second));
+    const auto middle = Catalog::Read_nid_no_patch();
+    Require(middle.entries.size() == before.entries.size() + 1, "pending export became visible");
+    first.Commit_nid_no_patch(entry(first));
+    const auto after = Catalog::Read_nid_no_patch();
+    Require(after.entries.size() == before.entries.size() + 2, "transaction publication lost entry");
+    Require(after.updateId > middle.updateId, "out of order publication did not advance update id");
+    for (const auto& directory : std::filesystem::directory_iterator(Catalog::Root_nid_no_patch()))
+        Require(directory.path().filename().string().find(".pending-") != 0, "failed export left pending files");
+}
+
+void CheckCatalogChild() {
+    namespace Catalog = ContentCatalog_nid_no_patch;
+    const auto before = Catalog::Read_nid_no_patch();
+    Require(!before.entries.empty(), "child process cannot read persistent catalog");
+    const auto& first = before.entries.front();
+    Require(Read(first.path.c_str()) == std::vector<std::uint8_t>(Png.begin(), Png.end()),
+        "child process read different content bytes");
+    Catalog::Transaction_nid_no_patch transaction;
+    Catalog::Entry item;
+    item.id = transaction.Id_nid_no_patch();
+    item.title = "separate process";
+    item.mimeType = "image/png";
+    item.path = transaction.GuestPath_nid_no_patch("content.png");
+    item.size = Png.size();
+    item.contentType = 1;
+    Write(transaction.Directory_nid_no_patch() / "content.png", Png.data(), Png.size());
+    transaction.Commit_nid_no_patch(item);
+    const auto after = Catalog::Read_nid_no_patch();
+    Require(after.updateId > before.updateId && after.entries.size() == before.entries.size() + 1,
+        "child process publication lost generation");
+}
+
 struct Allocator {
     std::atomic<int> allocations{0};
     std::atomic<int> releases{0};
