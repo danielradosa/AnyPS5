@@ -130,6 +130,8 @@ int APS5_VABI munlock_nid_postfix(const void* address, std::size_t length) {
     if (result == 0) return 0;
     SetError(result & 0xffff);
     return -1;
+}
+
 int APS5_VABI msync_nid_postfix(void* address, std::size_t length, int flags) {
     const auto failed = [](int error) {
         SetError(error);

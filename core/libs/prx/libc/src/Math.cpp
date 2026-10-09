@@ -120,7 +120,6 @@ float APS5_VABI remainderf_nid_postfix(float x, float y) { return std::remainder
 double APS5_VABI floor_nid_postfix(double x) { return std::floor(x); }
 double APS5_VABI ceil_nid_postfix(double x) { return std::ceil(x); }
 float APS5_VABI floorf_nid_postfix(float x) { return std::floor(x); }
-float APS5_VABI ceilf_nid_postfix(float x) { return std::ceil(x); }
 float APS5_VABI nextafterf_nid_postfix(float x, float y) { return std::nextafter(x, y); }
 int APS5_VABI __isfinite_nid_postfix(double x) { return std::isfinite(x) ? 1 : 0; }
 int APS5_VABI __isnan_nid_postfix(double x) { return std::isnan(x) ? 1 : 0; }
@@ -220,6 +219,8 @@ std::int64_t APS5_VABI lrand48_nid_postfix() {
 void APS5_VABI srand48_nid_postfix(std::int64_t seed) {
     std::lock_guard lock(g_randLock);
     g_rand48State = ((static_cast<std::uint64_t>(seed) << 16) | 0x330E) & Rand48Mask;
+}
+
 int APS5_VABI __fpclassifyd_nid_postfix(double value) {
     return SonyFpclassifyd(value);
 }

@@ -244,6 +244,8 @@ std::size_t ApplicationHeapUsableSize_nid_no_patch(void* pointer) {
     const auto usableSize = callback<UsableSize>(9);
     CallbackScope scope;
     return usableSize(pointer);
+}
+
 int ApplicationHeapStatsFast_nid_no_patch(void* stats) {
     Stats statsFast;
     {

@@ -27,7 +27,7 @@ if(BUILD_TESTING)
 
     add_test_executable(guest_font_set_script_language_tests ${LIBS_INCLUDE_DIR}/tests/GuestFontSetScriptLanguage.cpp)
     target_include_directories(guest_font_set_script_language_tests PRIVATE ${LIBS_INCLUDE_DIR})
-    target_link_libraries(guest_font_set_script_language_tests PRIVATE libSceFont libSceFontFt libc)
+    target_link_libraries(guest_font_set_script_language_tests PRIVATE libSceFont libSceFontFt freetype libc)
     configure_windows_unwind(guest_font_set_script_language_tests)
     add_test(NAME guest_font_set_script_language COMMAND guest_font_set_script_language_tests)
     if(WIN32)
