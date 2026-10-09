@@ -2,6 +2,7 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -9,7 +10,10 @@
 #include <cstring>
 #include <fstream>
 #include <future>
+#include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 extern "C" {
@@ -123,6 +127,24 @@ int APS5_VABI sceKernelGetEventFilter(const KernelEvent*);
 std::uintptr_t APS5_VABI sceKernelGetEventId(const KernelEvent*);
 std::intptr_t APS5_VABI sceKernelGetEventData(const KernelEvent*);
 void* APS5_VABI sceKernelGetEventUserData(const KernelEvent*);
+int APS5_VABI _Thrd_join_nid_postfix(Pthread, int*);
+Pthread APS5_VABI _Thrd_id_nid_postfix();
+void APS5_VABI _Thrd_sleep_nid_postfix(const KernelTimespec*);
+int APS5_VABI _Cnd_init_with_name_nid_postfix(PthreadCond*, const char*);
+int APS5_VABI _Cnd_signal_nid_postfix(PthreadCond*);
+void APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix();
+void APS5_VABI _Unlock_shared_ptr_spin_lock_nid_postfix();
+[[noreturn]] void APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(int);
+int APS5_VABI scePthreadCreate(Pthread*, const PthreadAttr*, PthreadEntry, void*, const char*);
+int APS5_VABI scePthreadDetach(Pthread);
+Pthread APS5_VABI scePthreadSelf();
+int APS5_VABI scePthreadMutexInit(PthreadMutex*, const PthreadMutexattr*, const char*);
+int APS5_VABI scePthreadMutexDestroy(PthreadMutex*);
+int APS5_VABI scePthreadMutexLock(PthreadMutex*);
+int APS5_VABI scePthreadMutexUnlock(PthreadMutex*);
+int APS5_VABI scePthreadCondDestroy(PthreadCond*);
+int APS5_VABI scePthreadCondWait(PthreadCond*, PthreadMutex*);
+int APS5_VABI clock_gettime_nid_postfix(int, KernelTimespec*);
 }
 
 static void RequireAt(bool value, int line) {
@@ -929,6 +951,187 @@ void TestAmmPrt() {
     Require(sceAmprAmmMeasureAmmCommandSizeAllocatePaForPrt(prt + 8, page, 0, cpuReadWrite) == ammRejected);
 }
 
+constexpr int thrdSuccess = 0;
+constexpr int thrdError = 4;
+constexpr std::int64_t nanosecondsPerSecond = 1000000000;
+
+void* APS5_VABI ReturnOwnId(void* arg) {
+    *static_cast<Pthread*>(arg) = _Thrd_id_nid_postfix();
+    return reinterpret_cast<void*>(std::intptr_t{0x100000007});
+}
+
+struct BlockedThread {
+    std::atomic<bool> started{false};
+    std::atomic<bool> released{false};
+};
+
+void* APS5_VABI WaitForRelease(void* arg) {
+    auto& blocked = *static_cast<BlockedThread*>(arg);
+    blocked.started = true;
+    while (!blocked.released) std::this_thread::yield();
+    return nullptr;
+}
+
+void TestThreadJoinAndId() {
+    const Pthread self = scePthreadSelf();
+    Require(_Thrd_id_nid_postfix() == self);
+
+    Pthread seen = nullptr;
+    Pthread thread = nullptr;
+    Require(scePthreadCreate(&thread, nullptr, ReturnOwnId, &seen, "AmprThrdJoin") == 0);
+    int code = -1;
+    Require(_Thrd_join_nid_postfix(thread, &code) == thrdSuccess);
+    Require(code == 7);
+    Require(seen == thread && seen != self);
+
+    Require(scePthreadCreate(&thread, nullptr, ReturnOwnId, &seen, "AmprThrdJoinNoCode") == 0);
+    Require(_Thrd_join_nid_postfix(thread, nullptr) == thrdSuccess);
+    Require(seen == thread);
+
+    static BlockedThread blocked;
+    Require(scePthreadCreate(&thread, nullptr, WaitForRelease, &blocked, "AmprThrdDetached") == 0);
+    while (!blocked.started) std::this_thread::yield();
+    Require(scePthreadDetach(thread) == 0);
+    code = -1;
+    Require(_Thrd_join_nid_postfix(thread, &code) == thrdError);
+    Require(code == -1);
+    blocked.released = true;
+}
+
+KernelTimespec RealtimeNow() {
+    KernelTimespec now{};
+    Require(clock_gettime_nid_postfix(0, &now) == 0);
+    return now;
+}
+
+std::int64_t TotalNanoseconds(const KernelTimespec& time) {
+    return time.tv_sec * nanosecondsPerSecond + time.tv_nsec;
+}
+
+void TestThreadSleep() {
+    const KernelTimespec start = RealtimeNow();
+    const KernelTimespec unnormalized{start.tv_sec - 1, start.tv_nsec + nanosecondsPerSecond + 50000000};
+    _Thrd_sleep_nid_postfix(&unnormalized);
+    Require(TotalNanoseconds(RealtimeNow()) >= TotalNanoseconds(start) + 50000000);
+
+    const KernelTimespec soon = RealtimeNow();
+    const KernelTimespec deadline{soon.tv_sec + (soon.tv_nsec + 30000000) / nanosecondsPerSecond, (soon.tv_nsec + 30000000) % nanosecondsPerSecond};
+    _Thrd_sleep_nid_postfix(&deadline);
+    Require(TotalNanoseconds(RealtimeNow()) >= TotalNanoseconds(deadline));
+
+    const auto before = std::chrono::steady_clock::now();
+    const KernelTimespec past{start.tv_sec - 10, 0};
+    _Thrd_sleep_nid_postfix(&past);
+    Require(std::chrono::steady_clock::now() - before < std::chrono::seconds(1));
+
+    bool threw = false;
+    try {
+        _Thrd_sleep_nid_postfix(nullptr);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    Require(threw);
+}
+
+struct SignalTarget {
+    PthreadCond cond = nullptr;
+    PthreadMutex mutex = nullptr;
+    std::atomic<bool> waiting{false};
+    bool signaled = false;
+};
+
+void* APS5_VABI WaitForSignal(void* arg) {
+    auto& target = *static_cast<SignalTarget*>(arg);
+    Require(scePthreadMutexLock(&target.mutex) == 0);
+    target.waiting = true;
+    while (!target.signaled) Require(scePthreadCondWait(&target.cond, &target.mutex) == 0);
+    Require(scePthreadMutexUnlock(&target.mutex) == 0);
+    return nullptr;
+}
+
+void TestConditionVariable() {
+    SignalTarget target;
+    Require(_Cnd_init_with_name_nid_postfix(&target.cond, "AmprCnd") == thrdSuccess);
+    Require(target.cond != nullptr);
+    Require(_Cnd_signal_nid_postfix(&target.cond) == thrdSuccess);
+    Require(scePthreadMutexInit(&target.mutex, nullptr, nullptr) == 0);
+
+    Pthread thread = nullptr;
+    Require(scePthreadCreate(&thread, nullptr, WaitForSignal, &target, "AmprCndWaiter") == 0);
+    while (!target.waiting) std::this_thread::yield();
+    Require(scePthreadMutexLock(&target.mutex) == 0);
+    target.signaled = true;
+    Require(_Cnd_signal_nid_postfix(&target.cond) == thrdSuccess);
+    Require(scePthreadMutexUnlock(&target.mutex) == 0);
+    auto joined = std::async(std::launch::async, [&]() { return _Thrd_join_nid_postfix(thread, nullptr); });
+    Require(joined.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    Require(joined.get() == thrdSuccess);
+    Require(scePthreadCondDestroy(&target.cond) == 0);
+    Require(scePthreadMutexDestroy(&target.mutex) == 0);
+
+    PthreadCond unnamed = nullptr;
+    Require(_Cnd_init_with_name_nid_postfix(&unnamed, nullptr) == thrdSuccess);
+    Require(unnamed != nullptr);
+    Require(scePthreadCondDestroy(&unnamed) == 0);
+}
+
+void TestSharedPtrSpinLock() {
+    _Lock_shared_ptr_spin_lock_nid_postfix();
+    std::atomic<bool> entered{false};
+    auto contender = std::async(std::launch::async, [&]() {
+        _Lock_shared_ptr_spin_lock_nid_postfix();
+        entered = true;
+        _Unlock_shared_ptr_spin_lock_nid_postfix();
+    });
+    Require(contender.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout);
+    Require(!entered);
+    _Unlock_shared_ptr_spin_lock_nid_postfix();
+    Require(contender.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    contender.get();
+    Require(entered);
+
+    bool threw = false;
+    try {
+        _Unlock_shared_ptr_spin_lock_nid_postfix();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw);
+    _Lock_shared_ptr_spin_lock_nid_postfix();
+    _Unlock_shared_ptr_spin_lock_nid_postfix();
+}
+
+void TestThrowCppError() {
+    const std::errc expected[] = {
+        std::errc::device_or_resource_busy,
+        std::errc::invalid_argument,
+        std::errc::no_such_process,
+        std::errc::not_enough_memory,
+        std::errc::operation_not_permitted,
+        std::errc::resource_deadlock_would_occur,
+        std::errc::resource_unavailable_try_again,
+    };
+    for (int code = 0; code < 7; ++code) {
+        bool matched = false;
+        try {
+            _ZSt16_Throw_Cpp_errori_nid_postfix(code);
+        } catch (const std::system_error& error) {
+            matched = error.code().value() == static_cast<int>(expected[code]) && std::strcmp(error.code().category().name(), "generic") == 0;
+        }
+        Require(matched);
+    }
+    for (const int code : {-1, 7}) {
+        bool rejected = false;
+        try {
+            _ZSt16_Throw_Cpp_errori_nid_postfix(code);
+        } catch (const std::system_error&) {
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        Require(rejected);
+    }
+}
+
 }
 
 int main() {
@@ -953,5 +1156,10 @@ int main() {
     TestAmm();
     TestAmmRemapAndProtect();
     TestAmmPrt();
+    TestThreadJoinAndId();
+    TestThreadSleep();
+    TestConditionVariable();
+    TestSharedPtrSpinLock();
+    TestThrowCppError();
     return 0;
 }

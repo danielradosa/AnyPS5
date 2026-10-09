@@ -5,14 +5,22 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/SonyCrt.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
+#include "prx/libkernel/Pthread/include/Cond.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
+#include <atomic>
 #include <cstring>
+#include <iterator>
 #include <stdexcept>
+#include <string>
+#include <system_error>
+#include <thread>
 
 static constexpr int SCE_AMPR_ERROR_BUFFER_FULL = 0x8002001C;
 static constexpr int SCE_KERNEL_ERROR_EINVAL = 0x80020016;
 static constexpr int SCE_KERNEL_ERROR_EPERM = 0x80020001;
 static constexpr int SCE_KERNEL_ERROR_ESRCH = 0x80020003;
 static constexpr int SCE_KERNEL_ERROR_EBUSY = 0x80020010;
+static constexpr int SCE_KERNEL_ERROR_ENOMEM = 0x8002000C;
 
 static int Append(Apr::CommandBufferObject* buffer, const void* command, uint32_t bytes) {
     if (!buffer->base || bytes > buffer->size - buffer->offset) return SCE_AMPR_ERROR_BUFFER_FULL;
@@ -210,6 +218,38 @@ static int RecordWriteAddressFromCounterPair(Apr::CommandBufferObject* buffer, v
     if (!ValidWriteAddress(address) || (counter & 0x81u) != 0u) return SCE_KERNEL_ERROR_EINVAL;
     if (completion && InMap(buffer)) return SCE_KERNEL_ERROR_EPERM;
     return AppendCommand(buffer, Apr::Opcode::WriteAddressFromCounterPair, Apr::WriteAddressFromCounterCommand{{}, reinterpret_cast<std::uint64_t>(address), counter, counter + 1u});
+}
+
+extern "C" {
+int APS5_VABI scePthreadJoin(Pthread thread, void** retval);
+Pthread APS5_VABI scePthreadSelf();
+}
+
+static constexpr int ThrdSuccess = 0;
+static constexpr int ThrdNomem = 1;
+static constexpr int ThrdError = 4;
+static constexpr int GuestRealtimeClock = 0;
+static constexpr std::int64_t NanosecondsPerSecond = 1000000000;
+static constexpr std::int64_t MaxSleepSeconds = std::int64_t{1} << 32;
+
+static constexpr std::errc CppErrors[] = {
+    std::errc::device_or_resource_busy,
+    std::errc::invalid_argument,
+    std::errc::no_such_process,
+    std::errc::not_enough_memory,
+    std::errc::operation_not_permitted,
+    std::errc::resource_deadlock_would_occur,
+    std::errc::resource_unavailable_try_again,
+};
+
+static std::atomic<bool> sharedPtrLocked{false};
+
+static __int128 TimespecNanoseconds(const KernelTimespec& time) {
+    return static_cast<__int128>(time.tv_sec) * NanosecondsPerSecond + time.tv_nsec;
+}
+
+static int ThrdInitResult(int result) {
+    return result == 0 ? ThrdSuccess : result == SCE_KERNEL_ERROR_ENOMEM ? ThrdNomem : ThrdError;
 }
 
 extern "C" {
@@ -809,14 +849,16 @@ int APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+[[noreturn]] void APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(int code) {
+    if (code < 0 || code >= static_cast<int>(std::size(CppErrors))) throw std::runtime_error("_Throw_Cpp_error: unknown error code " + std::to_string(code));
+    throw std::system_error(std::make_error_code(CppErrors[code]));
 }
 
-int APS5_VABI _Thrd_join_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI _Thrd_join_nid_postfix(Pthread thread, int* code) {
+    void* result = nullptr;
+    if (scePthreadJoin(thread, &result) != 0) return ThrdError;
+    if (code) *code = static_cast<int>(reinterpret_cast<std::intptr_t>(result));
+    return ThrdSuccess;
 }
 
 int APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(void) {
@@ -834,9 +876,8 @@ int APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI _Thrd_id_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+Pthread APS5_VABI _Thrd_id_nid_postfix(void) {
+    return scePthreadSelf();
 }
 
 int APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(void) {
@@ -849,19 +890,18 @@ int APS5_VABI _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_n
     return 0;
 }
 
-int APS5_VABI _Cnd_signal_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI _Cnd_signal_nid_postfix(PthreadCond* cond) {
+    return scePthreadCondSignal(cond) == 0 ? ThrdSuccess : ThrdError;
 }
 
-int APS5_VABI _Unlock_shared_ptr_spin_lock_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI _Unlock_shared_ptr_spin_lock_nid_postfix(void) {
+    if (!sharedPtrLocked.exchange(false, std::memory_order_release)) throw std::runtime_error("_Unlock_shared_ptr_spin_lock: lock is not held");
 }
 
-int APS5_VABI _Cnd_init_with_name_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI _Cnd_init_with_name_nid_postfix(PthreadCond* cond, const char* name) {
+    if (!cond) throw std::invalid_argument("_Cnd_init_with_name: null condition variable");
+    *cond = nullptr;
+    return ThrdInitResult(scePthreadCondInit(cond, nullptr, name));
 }
 
 int APS5_VABI _ZTVN10__cxxabiv120__function_type_infoE_nid_postfix(void) {
@@ -894,14 +934,24 @@ int APS5_VABI _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE7_Get
     return 0;
 }
 
-int APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix(void) {
+    while (sharedPtrLocked.exchange(true, std::memory_order_acquire)) std::this_thread::yield();
 }
 
-int APS5_VABI _Thrd_sleep_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI _Thrd_sleep_nid_postfix(const KernelTimespec* deadline) {
+    if (!deadline) throw std::invalid_argument("_Thrd_sleep: null time");
+    const __int128 target = TimespecNanoseconds(*deadline);
+    for (;;) {
+        KernelTimespec now{};
+        if (clock_gettime_nid_postfix(GuestRealtimeClock, &now) != 0) throw std::runtime_error("_Thrd_sleep: realtime clock failed");
+        const __int128 remaining = target - TimespecNanoseconds(now);
+        if (remaining <= 0) return;
+        const __int128 seconds = remaining / NanosecondsPerSecond;
+        const KernelTimespec request = seconds >= MaxSleepSeconds
+            ? KernelTimespec{MaxSleepSeconds, 0}
+            : KernelTimespec{static_cast<std::int64_t>(seconds), static_cast<std::int64_t>(remaining % NanosecondsPerSecond)};
+        if (nanosleep_nid_postfix(&request, nullptr) != 0) throw std::runtime_error("_Thrd_sleep: nanosleep failed");
+    }
 }
 
 int APS5_VABI wcstombs_s_nid_postfix(void) {
