@@ -22,6 +22,7 @@ struct LibcFloatConstant { std::uint32_t bits[4]; };
 extern LibcFloatConstant _FInf_nid_postfix;
 extern LibcFloatConstant _FNan_nid_postfix;
 short APS5_VABI _FDtest_nid_postfix(const float*);
+int APS5_VABI __fpclassifyf_nid_postfix(float);
 float APS5_VABI fmodf_nid_postfix(float, float);
 float APS5_VABI asinf_nid_postfix(float);
 float APS5_VABI acosf_nid_postfix(float);
@@ -206,6 +207,11 @@ static void CheckFloatClassification() {
         std::memcpy(&value, &test.bits, sizeof(value));
         if (_FDtest_nid_postfix(&value) != test.code) {
             std::fprintf(stderr, "Guest _FDtest failed for %08x\n", test.bits);
+            std::abort();
+        }
+        const int fpclass = test.code == 0 ? 0x10 : test.code == -2 ? 0x08 : test.code == -1 ? 0x04 : test.code == 1 ? 0x01 : 0x02;
+        if (__fpclassifyf_nid_postfix(value) != fpclass) {
+            std::fprintf(stderr, "Guest __fpclassifyf failed for %08x\n", test.bits);
             std::abort();
         }
     }
