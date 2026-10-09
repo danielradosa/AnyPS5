@@ -1,4 +1,6 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include <array>
+#include <cstdint>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -7,6 +9,7 @@
 extern "C" {
 void* APS5_VABI memccpy_nid_postfix(void*, const void*, int, std::size_t);
 char* APS5_VABI basename_nid_postfix(const char*);
+char* APS5_VABI __inet_ntoa_nid_postfix(unsigned int);
 int* APS5_VABI __error_nid_postfix();
 std::size_t APS5_VABI strnlen_nid_postfix(const char*, std::size_t);
 std::size_t APS5_VABI strnlen_s_nid_postfix(const char*, std::size_t);
@@ -28,6 +31,8 @@ int APS5_VABI memset_s_nid_postfix(void*, std::size_t, int, std::size_t);
 char* APS5_VABI strnstr_nid_postfix(const char*, const char*, std::size_t);
 int APS5_VABI snprintf_s_nid_postfix(char*, std::size_t, const char*, ...);
 int APS5_VABI sscanf_s_nid_postfix(const char*, const char*, ...);
+int APS5_VABI __inet_aton_nid_postfix(const char*, void*);
+std::uint32_t APS5_VABI __inet_addr_nid_postfix(const char*);
 }
 
 static void Require(bool condition) {
@@ -154,6 +159,21 @@ int main() {
     Require(std::strcmp(basename_nid_postfix("one\\two"), "one\\two") == 0);
     const std::string longName(1024, 'x');
     Require(basename_nid_postfix(longName.c_str()) == nullptr && *__error_nid_postfix() == 63);
+    const unsigned char loopbackBytes[4] = {127, 0, 0, 1};
+    unsigned int loopback;
+    std::memcpy(&loopback, loopbackBytes, sizeof(loopback));
+    char* const dotted = __inet_ntoa_nid_postfix(loopback);
+    Require(std::strcmp(dotted, "127.0.0.1") == 0);
+    Require(__inet_ntoa_nid_postfix(0xffffffffu) == dotted && std::strcmp(dotted, "255.255.255.255") == 0);
+    Require(std::strcmp(__inet_ntoa_nid_postfix(0), "0.0.0.0") == 0);
+    const unsigned char mixedBytes[4] = {10, 200, 3, 45};
+    unsigned int mixed;
+    std::memcpy(&mixed, mixedBytes, sizeof(mixed));
+    Require(std::strcmp(__inet_ntoa_nid_postfix(mixed), "10.200.3.45") == 0);
+    const unsigned char paddingBytes[4] = {100, 9, 99, 0};
+    unsigned int padding;
+    std::memcpy(&padding, paddingBytes, sizeof(padding));
+    Require(std::strcmp(__inet_ntoa_nid_postfix(padding), "100.9.99.0") == 0);
     const char bounded[] = {'a', 'b', 'c'};
     Require(strnlen_nid_postfix(bounded, 0) == 0);
     Require(strnlen_nid_postfix(bounded, sizeof(bounded)) == 3);
@@ -180,6 +200,45 @@ int main() {
     Require(strpbrk_nid_postfix(buffer, "ay") == buffer + 1);
     Require(strpbrk_nid_postfix(buffer, "") == nullptr);
     Require(strcspn_nid_postfix(buffer, "y") == 1);
+    const auto inetAton = [](const char* text, const char* expected) {
+        unsigned char address[4] = {0xA5, 0xA5, 0xA5, 0xA5};
+        if (__inet_aton_nid_postfix(text, address) != 1) return false;
+        char formatted[16];
+        std::snprintf(formatted, sizeof(formatted), "%u.%u.%u.%u", address[0], address[1], address[2], address[3]);
+        return std::strcmp(formatted, expected) == 0;
+    };
+    Require(inetAton("192.0.2.42", "192.0.2.42"));
+    Require(inetAton("10.1.2", "10.1.0.2"));
+    Require(inetAton("127.1", "127.0.0.1"));
+    Require(inetAton("3232235777", "192.168.1.1"));
+    Require(inetAton("0x7f.0.0.0x1", "127.0.0.1"));
+    Require(inetAton("0377.0.0.010", "255.0.0.8"));
+    Require(inetAton("1.2.3.4 trailing", "1.2.3.4"));
+    Require(inetAton("1.2.3.4\n", "1.2.3.4"));
+    Require(__inet_aton_nid_postfix("1.2.3.4", nullptr) == 1);
+    for (const char* invalid : {"", " 1.2.3.4", "1.2.3.4.5", "256.1.1.1", "1.2.3.256", "1.2.65536", "08", "1..2", "a.b.c.d",
+             "1.2.3.4x", "0x", "1.2.3.", "-1"}) {
+        unsigned char address[4] = {0xA5, 0xA5, 0xA5, 0xA5};
+        Require(__inet_aton_nid_postfix(invalid, address) == 0);
+        Require(address[0] == 0xA5 && address[3] == 0xA5);
+        Require(__inet_addr_nid_postfix(invalid) == 0xffffffff);
+    }
+    const auto inetAddr = [](const char* text, std::array<unsigned char, 4> expected) {
+        const std::uint32_t value = __inet_addr_nid_postfix(text);
+        std::array<unsigned char, 4> bytes{};
+        std::memcpy(bytes.data(), &value, sizeof(value));
+        return bytes == expected;
+    };
+    Require(inetAddr("192.0.2.42", {192, 0, 2, 42}));
+    Require(inetAddr("127.1", {127, 0, 0, 1}));
+    Require(inetAddr("0x7f.0.0.0x1", {127, 0, 0, 1}));
+    Require(inetAddr("0.0.0.0", {0, 0, 0, 0}));
+    Require(inetAddr("255.255.255.255", {255, 255, 255, 255}));
+    Require(inetAddr("4294967296", {0, 0, 0, 0}));
+    Require(inetAddr("18446744073709551617", {0, 0, 0, 1}));
+    for (const char* address : {"0.0.0.0", "127.0.0.1", "192.0.2.42", "255.255.255.255"}) {
+        Require(std::strcmp(__inet_ntoa_nid_postfix(__inet_addr_nid_postfix(address)), address) == 0);
+    }
     char first[] = ",a,,b,";
     char second[] = "x:y";
     char* firstState = nullptr;
