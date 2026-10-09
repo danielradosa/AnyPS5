@@ -577,6 +577,13 @@ struct Audio3dOpenParameters {
     std::uint32_t num_beds;
 };
 
+struct Audio3dAttribute {
+    std::uint32_t attribute_id;
+    std::uint32_t pad;
+    const void* value;
+    std::uint64_t value_size;
+};
+
 using AudioPropagationHandle = std::uint64_t;
 
 struct AudioPropagationStructDescriptor {
