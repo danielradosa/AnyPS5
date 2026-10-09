@@ -86,6 +86,7 @@ void APS5_VABI _ZN3sce4Json14InitParameter2C1Ev(void*);
 void APS5_VABI _ZN3sce4Json14InitParameter212setAllocatorEPNS0_12MemAllocatorEPv(void*, void*, void*);
 void APS5_VABI _ZN3sce4Json14InitParameter217setFileBufferSizeEm(void*, std::size_t);
 int APS5_VABI _ZN3sce4Json11Initializer10initializeEPKNS0_14InitParameter2E(void*, const void*);
+void APS5_VABI _ZN3sce4Json17InitParameterRttiC1EPNS0_14AllocParamRttiEPvm(void*, void*, void*, std::size_t);
 }
 
 static void Check(bool value, int line) {
@@ -359,6 +360,22 @@ static void ValueAccess() {
     Require(_ZN3sce4Json11Initializer10initializeEPKNS0_14InitParameter2E(initializer, parameter) == 0);
     Require(_ZN3sce4Json11Initializer9terminateEv(initializer) == 0);
     Require(_ZN3sce4Json11InitializerD1Ev(initializer) == 0);
+
+    alignas(16) std::uint8_t rttiParameter[40];
+    std::memset(rttiParameter, 0xff, sizeof(rttiParameter));
+    int allocParam = 0;
+    int rttiUserData = 0;
+    _ZN3sce4Json17InitParameterRttiC1EPNS0_14AllocParamRttiEPvm(rttiParameter, &allocParam, &rttiUserData, 8192);
+    void* rttiStored[3]{};
+    std::memcpy(rttiStored, rttiParameter, sizeof(rttiStored));
+    Require(rttiStored[0] == &allocParam && rttiStored[1] == &rttiUserData && reinterpret_cast<std::uintptr_t>(rttiStored[2]) == 8192);
+    bool threwOnNullRtti = false;
+    try {
+        _ZN3sce4Json17InitParameterRttiC1EPNS0_14AllocParamRttiEPvm(nullptr, &allocParam, &rttiUserData, 8192);
+    } catch (const std::invalid_argument&) {
+        threwOnNullRtti = true;
+    }
+    Require(threwOnNullRtti);
 }
 
 static void ValueClear() {
