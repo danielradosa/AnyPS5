@@ -119,24 +119,6 @@ int ExportFile(const char* funcName, std::int32_t exportId, const ContentExportP
 #include "stb_image.h"
 
 namespace {
-#include <array>
-#include <cstring>
-#include <fstream>
-#include <limits>
-#include <memory>
-#include <mutex>
-#include <stdexcept>
-#include <string>
-#include <string_view>
-#include <unordered_map>
-
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_GIF
-#define STBI_NO_STDIO
-#include "stb_image.h"
-
-namespace {
 
 constexpr int Busy = static_cast<int>(0x809D3003);
 constexpr int NoInit = static_cast<int>(0x809D3004);
@@ -435,65 +417,6 @@ int APS5_VABI sceContentExportTerm(void) {
     bool expected = true;
     if (!g_initialized.compare_exchange_strong(expected, false)) throw std::logic_error(std::string(__func__) + ": not initialized");
     g_sessions.clear();
-int APS5_VABI sceContentExportStart() {
-    auto& state = State_nid_no_patch();
-    std::lock_guard lock(state.mutex);
-    if (!state.initialized) return NoInit;
-    if (state.sessions.size() >= 10) return ExecutionMax;
-    if (state.nextId == std::numeric_limits<int>::max()) throw std::overflow_error("content export: session ids exhausted");
-    const int id = state.nextId++;
-    state.sessions.emplace(id, std::make_shared<Session>());
-    return id;
-}
-
-int APS5_VABI sceContentExportFinish(int expId) {
-    auto& state = State_nid_no_patch();
-    std::lock_guard lock(state.mutex);
-    if (!state.initialized) return NoInit;
-    const auto found = state.sessions.find(expId);
-    if (found == state.sessions.end()) throw std::invalid_argument(std::string(__func__) + ": invalid session");
-    if (found->second->busy) return Busy;
-    state.sessions.erase(found);
-    return 0;
-}
-
-int APS5_VABI sceContentExportFromData(int expId, const ContentExportParam* param,
-    std::size_t contentLength, ContentExportDataProvideFunction func, void* userData, char* path, std::size_t pathBufferLength) {
-    Operation_nid_no_patch operation(expId);
-    if (operation.Result_nid_no_patch()) return operation.Result_nid_no_patch();
-    if (!Parameters_nid_no_patch(param, path, pathBufferLength) || !func
-        || contentLength > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) return InvalidParam;
-    const auto* format = Format_nid_no_patch(*param);
-    if (!format) return UnsupportedFormat;
-    return Export_nid_no_patch(operation, *param, *format, path, pathBufferLength, nullptr,
-        [&](const auto& native) {
-            return CopyData_nid_no_patch(native, contentLength, func, userData, operation.Allocator_nid_no_patch());
-        });
-}
-
-int APS5_VABI sceContentExportFromFile(int expId, const ContentExportParam* param,
-    const char* srcPath, char* path, std::size_t pathBufferLength) {
-    Operation_nid_no_patch operation(expId);
-    if (operation.Result_nid_no_patch()) return operation.Result_nid_no_patch();
-    if (!Parameters_nid_no_patch(param, path, pathBufferLength) || !srcPath || !*srcPath) return InvalidParam;
-    const auto* format = Format_nid_no_patch(*param);
-    if (!format) return UnsupportedFormat;
-    return Export_nid_no_patch(operation, *param, *format, path, pathBufferLength, nullptr,
-        [&](const auto& native) { return CopyFile_nid_no_patch(srcPath, native, operation.Allocator_nid_no_patch()); });
-}
-
-int APS5_VABI sceContentExportFromFileWithThumbnail(int expId, const ContentExportParam* param,
-    const char* srcPath, const char* thumbnailPath, char* path, std::size_t pathBufferLength) {
-    Operation_nid_no_patch operation(expId);
-    if (operation.Result_nid_no_patch()) return operation.Result_nid_no_patch();
-    if (!Parameters_nid_no_patch(param, path, pathBufferLength) || !srcPath || !*srcPath
-        || !thumbnailPath || !*thumbnailPath) return InvalidParam;
-    const auto* format = Format_nid_no_patch(*param);
-    if (!format) return UnsupportedFormat;
-    return Export_nid_no_patch(operation, *param, *format, path, pathBufferLength, thumbnailPath,
-        [&](const auto& native) { return CopyFile_nid_no_patch(srcPath, native, operation.Allocator_nid_no_patch()); });
-}
-
 int APS5_VABI sceContentExportStart() {
     auto& state = State_nid_no_patch();
     std::lock_guard lock(state.mutex);
