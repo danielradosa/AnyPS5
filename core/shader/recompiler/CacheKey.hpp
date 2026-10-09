@@ -46,7 +46,6 @@ public:
         append(key, RuntimeAbi::Version);
         append(key, request.shader.stage);
         append(key, request.context.waveSize);
-        appendCalls(key, request);
         append(key, request.context.userDataBaseRegister);
         append(key, request.context.userData.size());
         append(key, request.context.compute);
@@ -77,19 +76,7 @@ public:
     }
 
 private:
-    static void appendCalls(std::vector<std::uint64_t>& key, const RecompileRequest& request) {
-        append(key, request.shader.capturedCalls.size());
-        for (const auto& call : request.shader.capturedCalls) {
-            append(key, call.callProgramCounter);
-            append(key, call.targetProgramCounter);
-            append(key, call.returnProgramCounter);
-            append(key, call.targetAddress);
-            append(key, call.userDataIndex);
-        }
-    }
-
     static void appendInterface(std::vector<std::uint64_t>& key, const RecompileRequest& request) {
-        appendCalls(key, request);
         append(key, request.context.waveSize);
         append(key, request.context.userDataBaseRegister);
         append(key, request.context.userData.size());

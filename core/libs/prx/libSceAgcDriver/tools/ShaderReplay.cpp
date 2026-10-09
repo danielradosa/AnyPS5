@@ -3,7 +3,6 @@
 #include "ControlFlow/GraphBuilder.hpp"
 #include "ControlFlow/RequestSerializer.hpp"
 #include "ControlFlow/Structurizer.hpp"
-#include "ControlFlow/UserDataCalls.hpp"
 #include "Optimization/ResourceMaterializer.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include "Recompiler.hpp"
@@ -90,15 +89,13 @@ bool Replay(const char* path) {
         std::printf("  code -> %s\n", name.c_str());
     }
     if (g_assembly) {
-        const auto program = ShaderRecompiler::DecodeShaderProgram(request.request.shader);
+        const auto program = ShaderRecompiler::RdnaInstructionDecoder{}.Decode(request.request.shader.code);
         // Raw first words carry what the text omits (branch offsets, waitcnt fields).
         for (const auto& instruction : program.instructions) std::printf("raw=%08x %s\n", instruction.rawWords[0], ShaderRecompiler::RdnaInstructionToString(instruction).c_str());
     }
     if (g_graph) {
-        const auto program = ShaderRecompiler::DecodeShaderProgram(request.request.shader);
-        const auto& context = request.request.context;
-        const ShaderRecompiler::SwappcInfo swappc{context.vertex.has_value(), context.userDataBaseRegister, static_cast<std::uint32_t>(context.userData.size()), request.request.shader.capturedCalls};
-        auto graph = ShaderRecompiler::GraphBuilder{}.Build(program, &swappc);
+        const auto program = ShaderRecompiler::RdnaInstructionDecoder{}.Decode(request.request.shader.code);
+        auto graph = ShaderRecompiler::GraphBuilder{}.Build(program);
         std::printf("control flow graph:\n%s", ShaderRecompiler::GraphToString(graph).c_str());
         try {
             ShaderRecompiler::Structurizer{}.Structurize(graph);
