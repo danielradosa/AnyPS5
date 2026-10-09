@@ -1844,6 +1844,31 @@ void verifyVertexBarrier() {
     }
 }
 
+void verifyVertexGroupInfo() {
+    using namespace ShaderRecompiler;
+    const std::array<std::uint32_t, 9> code{0x7e0002f2u, 0x9381ff02u, 0x0009000cu, 0x7e020280u, 0x7da80201u, 0xf80008cfu, 0u, 0xbf810000u, 0u};
+    RecompileRequest request{};
+    request.shader = {ShaderStage::Vertex, 0x10000u, code, 0, {}};
+    request.target = BufferTarget();
+    request.context.waveSize = 32;
+    request.context.userDataBaseRegister = 8;
+    request.context.vertex = ShaderVertexStageInfo{};
+    request.target.vulkanVersion = 0x00401000u;
+    request.target.spirvVersion = 0x00010300u;
+    request.target.subgroupSize = 32;
+    request.target.fragmentShaderBarycentricEnabled = false;
+    request.layout.pushConstantSizeBytes = 128;
+    const auto words = Recompile(request).spirv;
+    std::size_t stores = 0;
+    for (std::size_t cursor = 5; cursor < words.size();) {
+        const auto count = words[cursor] >> 16u;
+        require(count != 0 && count <= words.size() - cursor, "vertex group info: truncated SPIR-V instruction");
+        if ((words[cursor] & 0xffffu) == spv::OpStore) ++stores;
+        cursor += count;
+    }
+    require(stores != 0, "vertex group info: lanes below GS_TG_INFO's vertex count skipped the position export");
+}
+
 int main(int argc, char** argv) {
     try {
         using namespace ShaderRecompiler;
@@ -1878,6 +1903,7 @@ int main(int argc, char** argv) {
         verifyBdaReadFallbackFunctions();
         verifyFunctionLdsBound();
         verifyVertexBarrier();
+        verifyVertexGroupInfo();
 #if ANYPS5_ENABLE_SPIRV_TOOLS
         const std::vector<std::uint32_t> minimalSpirv{
             0x07230203u, 0x00010000u, 0u, 5u, 0u,
