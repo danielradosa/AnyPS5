@@ -754,4 +754,14 @@ int APS5_VABI fsync_nid_postfix(int fd) {
     return 0;
 }
 
+int APS5_VABI fdatasync_nid_postfix(int fd) {
+    if (fd >= GuestSockets::FirstDescriptor) return PosixFailure(GuestSockets::IsOpen(fd) ? GUEST_EINVAL : GUEST_EBADF);
+#ifdef _WIN32
+    if (::_commit(fd) != 0) return PosixResult(SceErrorFromErrno(errno));
+#else
+    if (::fdatasync(fd) != 0) return PosixResult(SceErrorFromErrno(errno));
+#endif
+    return 0;
+}
+
 }
