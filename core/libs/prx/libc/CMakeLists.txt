@@ -15,6 +15,7 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ExtendedMath.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/NumericHelpers.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Rounding.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Backtrace.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Time.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FileAndHeap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/StdioExtras.cpp
@@ -430,6 +431,11 @@ if(BUILD_TESTING)
         add_test_executable(cpu_topology_tests ${LIBS_INCLUDE_DIR}/tests/CpuTopology.cpp)
         target_include_directories(cpu_topology_tests PRIVATE ${LIBS_INCLUDE_DIR})
         add_test(NAME cpu_topology COMMAND cpu_topology_tests)
+        add_test_executable(guest_backtrace_tests ${LIBS_INCLUDE_DIR}/tests/GuestBacktrace.cpp)
+        target_include_directories(guest_backtrace_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_backtrace_tests PRIVATE libc)
+        set_target_properties(guest_backtrace_tests PROPERTIES ENABLE_EXPORTS ON)
+        add_test(NAME guest_backtrace COMMAND guest_backtrace_tests)
     endif()
 endif()
 
