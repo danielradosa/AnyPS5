@@ -118,6 +118,7 @@ double APS5_VABI floor_nid_postfix(double x) { return std::floor(x); }
 double APS5_VABI ceil_nid_postfix(double x) { return std::ceil(x); }
 float APS5_VABI floorf_nid_postfix(float x) { return std::floor(x); }
 float APS5_VABI ceilf_nid_postfix(float x) { return std::ceil(x); }
+float APS5_VABI nextafterf_nid_postfix(float x, float y) { return std::nextafter(x, y); }
 int APS5_VABI __isfinite_nid_postfix(double x) { return std::isfinite(x) ? 1 : 0; }
 int APS5_VABI __isnan_nid_postfix(double x) { return std::isnan(x) ? 1 : 0; }
 int APS5_VABI __isinf_nid_postfix(double x) { return std::isinf(x) ? 1 : 0; }
