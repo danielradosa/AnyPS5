@@ -35,6 +35,7 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Directory.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Filesystem.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Errors.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Syslog.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CxxAbiSupport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/exception/Exports.cpp
 )
@@ -257,6 +258,15 @@ if(BUILD_TESTING)
     add_test(NAME guest_errors COMMAND guest_error_tests)
     if(WIN32)
         set_tests_properties(guest_errors PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+    add_test_executable(guest_syslog_tests ${LIBS_INCLUDE_DIR}/tests/GuestSyslog.cpp)
+    target_include_directories(guest_syslog_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_syslog_tests PRIVATE libc)
+    configure_windows_unwind(guest_syslog_tests)
+    add_test(NAME guest_syslog COMMAND guest_syslog_tests)
+    if(WIN32)
+        set_tests_properties(guest_syslog PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test_executable(mspace_tests ${LIBS_INCLUDE_DIR}/tests/Mspace.cpp)
