@@ -659,6 +659,26 @@ int APS5_VABI rmdir_nid_postfix(const char* path) {
     return PosixResult(sceKernelRmdir(path));
 }
 
+static std::int64_t PosixTransferResult(std::int64_t result) {
+    return result < 0 ? PosixFailure(static_cast<int>(result & 0xffff)) : result;
+}
+
+std::int64_t APS5_VABI readv_nid_postfix(int d, const KernelIovec* iov, int iovcnt) {
+    return PosixTransferResult(sceKernelReadv(d, iov, iovcnt));
+}
+
+std::int64_t APS5_VABI writev_nid_postfix(int d, const KernelIovec* iov, int iovcnt) {
+    return PosixTransferResult(sceKernelWritev(d, iov, iovcnt));
+}
+
+std::int64_t APS5_VABI preadv_nid_postfix(int d, const KernelIovec* iov, int iovcnt, std::int64_t offset) {
+    return PosixTransferResult(sceKernelPreadv(d, iov, iovcnt, offset));
+}
+
+std::int64_t APS5_VABI pwritev_nid_postfix(int d, const KernelIovec* iov, int iovcnt, std::int64_t offset) {
+    return PosixTransferResult(sceKernelPwritev(d, iov, iovcnt, offset));
+}
+
 }
 
 extern "C" {
