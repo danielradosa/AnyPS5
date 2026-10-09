@@ -4,6 +4,7 @@ function(add_sce_ngs2_library target)
             ${ngs2Dir}/src/Atrac9.cpp
             ${ngs2Dir}/src/Custom.cpp
             ${ngs2Dir}/src/Geom.cpp
+            ${ngs2Dir}/src/Pan.cpp
             ${ngs2Dir}/src/Rack.cpp
             ${ngs2Dir}/src/Render.cpp
             ${ngs2Dir}/src/System.cpp
