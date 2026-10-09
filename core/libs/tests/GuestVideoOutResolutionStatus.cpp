@@ -1,7 +1,9 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/Shutdown.hpp"
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <stdexcept>
 
 extern "C" {
@@ -9,6 +11,8 @@ int APS5_VABI sceVideoOutOpen(int userId, int busType, int index, const void* pa
 int APS5_VABI sceVideoOutClose(int handle);
 int APS5_VABI sceVideoOutGetOutputStatus(int handle, VideoOutOutputStatus* status);
 int APS5_VABI sceVideoOutGetResolutionStatus(int handle, VideoOutResolutionStatus* status);
+int APS5_VABI sceVideoOutVrrPegToFixedRate(int handle, std::uint64_t arg1, std::uint64_t arg2);
+int APS5_VABI sceVideoOutVrrUnpegFromFixedRate(int handle);
 }
 
 static constexpr int SYSTEM_USER = 255;
@@ -24,6 +28,30 @@ static bool Rejects(int handle, VideoOutResolutionStatus* status) {
         return true;
     }
     return false;
+}
+
+static bool PegRejects(int handle) {
+    try {
+        sceVideoOutVrrPegToFixedRate(handle, 0, 0);
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+static bool UnpegRejects(int handle) {
+    try {
+        sceVideoOutVrrUnpegFromFixedRate(handle);
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+static void RequireOutputUnchanged(int handle, const VideoOutOutputStatus& before) {
+    VideoOutOutputStatus after{};
+    Require(sceVideoOutGetOutputStatus(handle, &after) == 0);
+    Require(after.flags == 0 && after.refreshRate == before.refreshRate && after.resolution == before.resolution);
 }
 
 int main() {
@@ -42,6 +70,18 @@ int main() {
     Require(sceVideoOutGetOutputStatus(handle, &output) == 0);
     Require(status.refreshRate == output.refreshRate);
 
+    Require(sceVideoOutVrrPegToFixedRate(handle, 0, 0) == 0);
+    RequireOutputUnchanged(handle, output);
+    Require(sceVideoOutVrrPegToFixedRate(handle, 1, 0xffffffffffffffffull) == 0);
+    RequireOutputUnchanged(handle, output);
+    Require(sceVideoOutVrrUnpegFromFixedRate(handle) == 0);
+    RequireOutputUnchanged(handle, output);
+    Require(sceVideoOutVrrUnpegFromFixedRate(handle) == 0);
+    for (int invalid : {0, -1, NEVER_OPENED_HANDLE}) {
+        Require(PegRejects(invalid));
+        Require(UnpegRejects(invalid));
+    }
+
     Require(Rejects(handle, nullptr));
     Require(Rejects(0, &status));
     Require(Rejects(-1, &status));
@@ -49,5 +89,7 @@ int main() {
 
     Require(sceVideoOutClose(handle) == 0);
     Require(Rejects(handle, &status));
+    Require(PegRejects(handle));
+    Require(UnpegRejects(handle));
     LibcRunShutdown_nid_postfix();
 }

@@ -34,6 +34,7 @@ int APS5_VABI sceAjmBatchJobClearContext(AjmBatchInfo*, std::uint32_t, void*);
 int APS5_VABI sceAjmBatchJobSetResampleParameters(AjmBatchInfo*, std::uint32_t, float, std::uint32_t, void*);
 int APS5_VABI sceAjmBatchJobSetResampleParametersEx(AjmBatchInfo*, std::uint32_t, float, float, std::uint32_t, void*);
 int APS5_VABI sceAjmBatchJobGetResampleInfo(AjmBatchInfo*, std::uint32_t, void*);
+const char* APS5_VABI sceAjmStrError(int);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -1099,8 +1100,25 @@ static void TestSplitValidation() {
     Require(std::all_of(storage.begin() + info.offset, storage.end(), [](auto byte) { return byte == 0xa5; }));
 }
 
+static bool StrErrorThrows(int error) {
+    try { static_cast<void>(sceAjmStrError(error)); }
+    catch (const std::runtime_error&) { return true; }
+    return false;
+}
+
+static void TestStrError() {
+    const char* invalidContext = sceAjmStrError(static_cast<int>(0x80930002));
+    Require(invalidContext != nullptr && std::strcmp(invalidContext, "SCE_AJM_ERROR_INVALID_CONTEXT") == 0);
+    Require(sceAjmStrError(static_cast<int>(0x80930002)) == invalidContext);
+    Require(std::strcmp(sceAjmStrError(static_cast<int>(0x80930001)), "SCE_AJM_ERROR_UNKNOWN") == 0);
+    Require(std::strcmp(sceAjmStrError(static_cast<int>(0x80930005)), "SCE_AJM_ERROR_INVALID_PARAMETER") == 0);
+    Require(std::strcmp(sceAjmStrError(static_cast<int>(0x80930017)), "SCE_AJM_ERROR_CANCELLED") == 0);
+    for (const auto error : {0x80930000u, 0x80930018u, 0x80920001u, 0u, 1u, 0xFFFFFFFFu}) Require(StrErrorThrows(static_cast<int>(error)));
+}
+
 int main() {
     TestSplitValidation();
+    TestStrError();
     constexpr int invalidParameter = static_cast<int>(0x80930005);
     std::uint32_t context = 0;
     Require(sceAjmInitialize(0, nullptr) == invalidParameter);

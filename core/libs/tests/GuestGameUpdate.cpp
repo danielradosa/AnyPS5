@@ -24,13 +24,18 @@ int main() {
     info.size = sizeof(info);
 
     Require(sceGameUpdateGetAddcontLatestVersion(0, label, &info) == notInitialized);
+    Require(sceGameUpdateGetAddcontLatestVersion(0, nullptr, &info) == invalidArgument);
+    Require(sceGameUpdateGetAddcontLatestVersion(0, label, nullptr) == invalidArgument);
     Require(sceGameUpdateInitialize() == 0);
     Require(sceGameUpdateGetAddcontLatestVersion(0, label, nullptr) == invalidArgument);
+    Require(sceGameUpdateGetAddcontLatestVersion(0, nullptr, nullptr) == invalidArgument);
 
-    bool threw = false;
-    try { sceGameUpdateGetAddcontLatestVersion(0, nullptr, &info); }
-    catch (const std::runtime_error&) { threw = true; }
-    Require(threw);
+    std::memset(&info, 0xCD, sizeof(info));
+    info.size = sizeof(info);
+    Require(sceGameUpdateGetAddcontLatestVersion(0, nullptr, &info) == invalidArgument);
+    Require(info.size == sizeof(info));
+    const auto* untouched = reinterpret_cast<const std::uint8_t*>(&info);
+    for (std::size_t i = sizeof(info.size); i < sizeof(info); ++i) Require(untouched[i] == 0xCD);
 
     info.size = sizeof(info) - 1;
     Require(sceGameUpdateGetAddcontLatestVersion(0, label, &info) == invalidSize);

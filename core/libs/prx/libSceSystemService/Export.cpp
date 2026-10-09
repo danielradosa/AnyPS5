@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <stdexcept>
+#include <string>
 #include "prx/libc/include/Shutdown.hpp"
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
@@ -86,12 +88,12 @@ int APS5_VABI sceSystemServiceParamGetString(int paramId, char* buf, size_t bufS
   return SYSTEM_SERVICE_ERROR_PARAMETER;
  }
  if (paramId != SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME) {
-  NotImplemented_nid_no_patch("sceSystemServiceParamGetString: parameter other than the system name");
- }
- if (bufSize < SYSTEM_SERVICE_MAX_SYSTEM_NAME_LENGTH) {
-  NotImplemented_nid_no_patch("sceSystemServiceParamGetString: buffer shorter than 65 bytes");
+  throw std::runtime_error("sceSystemServiceParamGetString: parameter " + std::to_string(paramId) + " is not a string parameter");
  }
  constexpr char SystemName[] = "PS5";
+ if (bufSize < sizeof(SystemName)) {
+  return SYSTEM_SERVICE_ERROR_PARAMETER;
+ }
  std::memcpy(buf, SystemName, sizeof(SystemName));
  return SYSTEM_SERVICE_OK;
 }
