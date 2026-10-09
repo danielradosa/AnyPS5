@@ -5,6 +5,7 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/src/EventAccessors.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/DirectoryDescriptor.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/NativeStat.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/File/src/Terminal.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/Open.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/Stdio.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Semaphore/src/Semaphore.cpp
@@ -131,6 +132,16 @@ if(BUILD_TESTING)
     add_test(NAME guest_filesystem COMMAND guest_filesystem_tests)
     if(WIN32)
         set_tests_properties(guest_filesystem PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
+    add_test_executable(guest_terminal_tests ${LIBS_INCLUDE_DIR}/tests/GuestTerminal.cpp)
+    target_include_directories(guest_terminal_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_terminal_tests PRIVATE libkernel libc)
+    configure_windows_unwind(guest_terminal_tests)
+    add_test(NAME guest_terminal COMMAND guest_terminal_tests)
+    set_tests_properties(guest_terminal PROPERTIES TIMEOUT 20)
+    if(WIN32)
+        set_tests_properties(guest_terminal PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
     add_test_executable(guest_kernel_sync_tests ${LIBS_INCLUDE_DIR}/tests/GuestKernelSync.cpp)
