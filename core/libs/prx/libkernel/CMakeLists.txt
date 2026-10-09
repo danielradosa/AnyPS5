@@ -47,6 +47,7 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Process.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/SystemConfiguration.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Signals.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/System/src/SignalSets.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Notification.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Time/Time.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Time/TimedWait.cpp
@@ -296,6 +297,16 @@ if(BUILD_TESTING)
     add_test(NAME guest_signals COMMAND guest_signal_tests)
     if(WIN32)
         set_tests_properties(guest_signals PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
+    add_test_executable(guest_signal_set_tests ${LIBS_INCLUDE_DIR}/tests/GuestSignalSets.cpp)
+    target_include_directories(guest_signal_set_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_signal_set_tests PRIVATE libkernel libc)
+    configure_windows_unwind(guest_signal_set_tests)
+    add_test(NAME guest_signal_sets COMMAND guest_signal_set_tests)
+    set_tests_properties(guest_signal_sets PROPERTIES TIMEOUT 20)
+    if(WIN32)
+        set_tests_properties(guest_signal_sets PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
     add_test_executable(guest_exception_handler_tests ${LIBS_INCLUDE_DIR}/tests/GuestExceptionHandler.cpp)
