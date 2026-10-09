@@ -186,6 +186,10 @@ int GuestSockets::Family(int descriptor) {
     return found == sockets.end() ? -1 : found->second->family;
 }
 
+extern "C" bool GuestSocketIsOpen_nid_no_patch(int descriptor) {
+    return GuestSockets::IsOpen(descriptor);
+}
+
 namespace {
 #ifdef _WIN32
 using NativePollDescriptor = WSAPOLLFD;
