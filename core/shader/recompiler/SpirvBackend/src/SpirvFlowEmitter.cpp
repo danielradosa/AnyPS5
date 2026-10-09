@@ -830,7 +830,9 @@ void EmitVoid(SpirvValueEmitContext&) {
 }
 
 void EmitBarrier(SpirvEmitterState& state) {
-    const bool tessellation = state.program.Resources().stage == IrShaderStage::TessellationControl;
+    const auto stage = state.program.Resources().stage;
+    if (stage != IrShaderStage::Compute && stage != IrShaderStage::Mesh && stage != IrShaderStage::TessellationControl) return;
+    const bool tessellation = stage == IrShaderStage::TessellationControl;
     const auto memoryScope = tessellation ? spv::ScopeInvocation : spv::ScopeWorkgroup;
     const auto semantics = tessellation ? spv::MemorySemanticsMaskNone : spv::MemorySemanticsAcquireReleaseMask | spv::MemorySemanticsWorkgroupMemoryMask;
     state.module.AddFunction(spv::OpControlBarrier, ConstantU32(state, spv::ScopeWorkgroup), ConstantU32(state, memoryScope), ConstantU32(state, semantics));

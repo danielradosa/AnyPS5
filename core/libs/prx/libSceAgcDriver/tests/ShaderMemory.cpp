@@ -1821,6 +1821,29 @@ void verifyFunctionLdsBound() {
     require(unsized == FunctionLdsDwordLimit, "function LDS: an access without a known width must keep the full array");
 }
 
+void verifyVertexBarrier() {
+    using namespace ShaderRecompiler;
+    const std::array<std::uint32_t, 5> code{0xbf8a0000u, 0x7e000280u, 0xf80008cfu, 0u, 0xbf810000u};
+    RecompileRequest request{};
+    request.shader = {ShaderStage::Vertex, 0x10000u, code, 0, {}};
+    request.target = BufferTarget();
+    request.context.waveSize = 32;
+    request.context.vertex = ShaderVertexStageInfo{};
+    request.target.vulkanVersion = 0x00401000u;
+    request.target.spirvVersion = 0x00010300u;
+    request.target.subgroupSize = 32;
+    request.target.fragmentShaderBarycentricEnabled = false;
+    request.layout.pushConstantSizeBytes = 128;
+    const auto words = Recompile(request).spirv;
+    require(!words.empty(), "vertex barrier: empty compiled shader");
+    for (std::size_t cursor = 5; cursor < words.size();) {
+        const auto count = words[cursor] >> 16u;
+        require(count != 0 && count <= words.size() - cursor, "vertex barrier: truncated SPIR-V instruction");
+        require((words[cursor] & 0xffffu) != spv::OpControlBarrier, "vertex barrier: s_barrier emitted a control barrier outside a workgroup stage");
+        cursor += count;
+    }
+}
+
 int main(int argc, char** argv) {
     try {
         using namespace ShaderRecompiler;
@@ -1854,6 +1877,7 @@ int main(int argc, char** argv) {
         verifyTwoLaneUniformValues();
         verifyBdaReadFallbackFunctions();
         verifyFunctionLdsBound();
+        verifyVertexBarrier();
 #if ANYPS5_ENABLE_SPIRV_TOOLS
         const std::vector<std::uint32_t> minimalSpirv{
             0x07230203u, 0x00010000u, 0u, 5u, 0u,
