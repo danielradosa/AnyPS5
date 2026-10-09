@@ -89,7 +89,42 @@ void validateSchedulingPolicy(int policy) {
         throw std::invalid_argument("Unsupported guest scheduling policy");
 }
 
+constexpr int guestFault = 14;
+constexpr int guestInvalid = 22;
+constexpr int guestRlimitData = 2;
+constexpr int guestRlimitCount = 15;
+constexpr std::int64_t guestRlimitInfinity = std::numeric_limits<std::int64_t>::max();
+
+#ifdef _WIN32
+std::int64_t hostMemoryLimit() {
+    BOOL inJob = FALSE;
+    if (!IsProcessInJob(GetCurrentProcess(), nullptr, &inJob))
+        throw std::system_error(GetLastError(), std::system_category(), "getrlimit: IsProcessInJob failed");
+    if (!inJob)
+        return guestRlimitInfinity;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    if (!QueryInformationJobObject(nullptr, JobObjectExtendedLimitInformation, &limits, sizeof(limits), nullptr))
+        throw std::system_error(GetLastError(), std::system_category(), "getrlimit: QueryInformationJobObject failed");
+    if ((limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_PROCESS_MEMORY) == 0 || limits.ProcessMemoryLimit > static_cast<SIZE_T>(guestRlimitInfinity))
+        return guestRlimitInfinity;
+    return static_cast<std::int64_t>(limits.ProcessMemoryLimit);
 }
+#else
+std::int64_t toGuestLimit(rlim_t value) {
+    if (value == RLIM_INFINITY || value > static_cast<rlim_t>(guestRlimitInfinity))
+        return guestRlimitInfinity;
+    return static_cast<std::int64_t>(value);
+}
+#endif
+
+}
+
+extern "C" int* APS5_VABI __error_nid_postfix();
+
+struct GuestResourceLimit {
+    std::int64_t rlim_cur;
+    std::int64_t rlim_max;
+};
 
 struct GuestResourceUsage {
     KernelTimeval ru_utime;
@@ -278,6 +313,31 @@ int APS5_VABI getrusage_nid_postfix(int who, GuestResourceUsage* usage) {
     usage->ru_nsignals = static_cast<std::int64_t>(native.ru_nsignals);
     usage->ru_nvcsw = static_cast<std::int64_t>(native.ru_nvcsw);
     usage->ru_nivcsw = static_cast<std::int64_t>(native.ru_nivcsw);
+#endif
+    return 0;
+}
+
+int APS5_VABI getrlimit_nid_postfix(int resource, GuestResourceLimit* limit) {
+    if (resource < 0 || resource >= guestRlimitCount) {
+        *__error_nid_postfix() = guestInvalid;
+        return -1;
+    }
+    if (limit == nullptr) {
+        *__error_nid_postfix() = guestFault;
+        return -1;
+    }
+    if (resource != guestRlimitData)
+        throw std::runtime_error("getrlimit: unsupported resource " + std::to_string(resource));
+#ifdef _WIN32
+    const std::int64_t memory = hostMemoryLimit();
+    limit->rlim_cur = memory;
+    limit->rlim_max = memory;
+#else
+    rlimit native{};
+    if (::getrlimit(RLIMIT_DATA, &native) != 0)
+        throw std::system_error(errno, std::generic_category(), "getrlimit: getrlimit failed");
+    limit->rlim_cur = toGuestLimit(native.rlim_cur);
+    limit->rlim_max = toGuestLimit(native.rlim_max);
 #endif
     return 0;
 }
