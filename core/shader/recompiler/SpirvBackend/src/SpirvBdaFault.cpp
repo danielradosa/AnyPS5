@@ -1,4 +1,5 @@
 #include "SpirvBackend/SpirvBda.hpp"
+#include "SpirvBackend/SpirvFlowEmitter.hpp"
 #include "SpirvBackend/SpirvMemory/SpirvTypes.hpp"
 #include "SpirvBackend/SpirvMemory/SpirvConstants.hpp"
 #include <stdexcept>
@@ -91,6 +92,11 @@ void StopBdaInvocationIf(SpirvEmitterState& state, std::uint32_t condition) {
     EmitLabel(state, failed);
     if (state.bdaStopValue != 0) {
         state.module.AddFunction(spv::OpReturnValue, state.bdaStopValue);
+    } else if (OrderedPixelShader(state) && state.pixelValidMaskVariable != 0) {
+        state.module.AddFunction(spv::OpStore, state.pixelValidMaskVariable, ConstantU32(state, 0u));
+        state.module.AddFunction(spv::OpEndInvocationInterlockEXT);
+        EmitKillIfPixelValidMaskInactive(state);
+        state.module.AddFunction(spv::OpReturn);
     } else {
         if (OrderedPixelShader(state)) {
             state.module.AddFunction(spv::OpEndInvocationInterlockEXT);

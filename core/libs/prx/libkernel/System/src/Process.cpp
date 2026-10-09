@@ -202,6 +202,10 @@ void APS5_VABI sceKernelSync(void) {
     SyncWrittenPaths_nid_no_patch();
 }
 
+void APS5_VABI sync_nid_postfix(void) {
+    sceKernelSync();
+}
+
 int APS5_VABI sched_get_priority_max_nid_postfix(int policy) {
     validateSchedulingPolicy(policy);
     return 256;
@@ -287,6 +291,18 @@ int APS5_VABI sceKernelGetOperationMode(int* mode, int* submode) {
         throw std::invalid_argument("sceKernelGetOperationMode: null output");
     *mode = 0;
     *submode = 0;
+    return 0;
+}
+
+int APS5_VABI seteuid_nid_postfix(std::uint32_t euid) {
+    if (euid != 0)
+        throw std::runtime_error("seteuid: unsupported user id " + std::to_string(euid));
+    return 0;
+}
+
+int APS5_VABI setegid_nid_postfix(std::uint32_t egid) {
+    if (egid != 0)
+        throw std::runtime_error("setegid: unsupported group id " + std::to_string(egid));
     return 0;
 }
 

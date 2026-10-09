@@ -1,13 +1,24 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cstdint>
 #include <cstdlib>
+#include <stdexcept>
 #include <vector>
 
 extern "C" {
 int APS5_VABI sceVoiceQoSInit(void*, std::uint32_t, std::int32_t);
+int APS5_VABI sceVoiceQoSEnd(void);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
+
+static bool EndThrows() {
+    try {
+        sceVoiceQoSEnd();
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
 
 int main(int argc, char** argv) {
     Require(argc == 2);
@@ -15,6 +26,7 @@ int main(int argc, char** argv) {
     constexpr int initialized = static_cast<int>(0x804E0905);
     const auto appType = static_cast<std::int32_t>(std::strtoul(argv[1], nullptr, 16));
     std::vector<std::uint8_t> memory(0x40000, 0xAA);
+    Require(EndThrows());
     Require(sceVoiceQoSInit(nullptr, 0x40000, appType) == argumentInvalid);
     Require(sceVoiceQoSInit(nullptr, 0, appType) == argumentInvalid);
     for (std::uint32_t size : {0u, 1u, 0x100u, 0x3FFFFu, 0x40001u, 0x80000u, 0xFFFFFFFFu}) Require(sceVoiceQoSInit(memory.data(), size, appType) == argumentInvalid);
@@ -25,4 +37,8 @@ int main(int argc, char** argv) {
     Require(sceVoiceQoSInit(memory.data(), 0x40000, appType) == 0);
     Require(sceVoiceQoSInit(memory.data(), 0x40000, appType) == initialized);
     Require(sceVoiceQoSInit(nullptr, 0, 0) == initialized);
+    Require(sceVoiceQoSEnd() == 0);
+    Require(EndThrows());
+    Require(sceVoiceQoSInit(memory.data(), 0x40000, appType) == 0);
+    Require(sceVoiceQoSEnd() == 0);
 }

@@ -2,6 +2,9 @@
 #define CORE_LIBS_PRX_LIBKERNEL_PTHREAD_PTHREAD_HPP
 
 #include <sched.h>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 #include "SceTypes.hpp"
 #include "prx/libkernel/Time/include/TimedWait.hpp"
 #include <atomic>
@@ -80,6 +83,7 @@ struct PthreadPrivate {
     void* nativeHandle = nullptr;
 #else
     std::thread _thr;
+    pthread_t nativeThread{};
 #endif
     std::thread::id threadId;
     std::atomic<unsigned> references{2};

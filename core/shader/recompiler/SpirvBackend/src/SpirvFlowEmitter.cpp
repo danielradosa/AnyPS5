@@ -26,6 +26,8 @@ void EmitKillIfBoolFalse(SpirvEmitterState& state, std::uint32_t active) {
     EmitLabel(state, mergeLabel);
 }
 
+}
+
 void EmitKillIfPixelValidMaskInactive(SpirvEmitterState& state) {
     if (state.pixelValidMaskVariable == 0) {
         return;
@@ -42,6 +44,8 @@ void EmitKillIfPixelValidMaskInactive(SpirvEmitterState& state) {
     }
     EmitKillIfBoolFalse(state, keep);
 }
+
+namespace {
 
 // Block metadata is paired with BlockOrder by position (as IrProgram validation does); terminator
 // targets name control-flow ids, which are not IR block ids.

@@ -254,6 +254,22 @@ int fail(int err) {
     return NET_ERROR_BASE | err;
 }
 
+std::map<int, int> g_running_lookups;
+
+struct RunningLookup {
+    int rid;
+    explicit RunningLookup(int id) : rid(id) {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        ++g_running_lookups[rid];
+    }
+    ~RunningLookup() {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        if (--g_running_lookups[rid] == 0) g_running_lookups.erase(rid);
+    }
+    RunningLookup(const RunningLookup&) = delete;
+    RunningLookup& operator=(const RunningLookup&) = delete;
+};
+
 void set_resolver_error(int rid, int error) {
     std::lock_guard<std::mutex> lk(g_mutex);
     const auto resolver = g_resolvers.find(rid);
@@ -1097,7 +1113,10 @@ int lookup_ipv4(int rid, const char* hostname, const char* func, std::vector<std
     addrinfo hints{};
     hints.ai_family = AF_INET;
     addrinfo* results = nullptr;
-    const int result = ::getaddrinfo(hostname, nullptr, &hints, &results);
+    const int result = [&] {
+        const RunningLookup running(rid);
+        return ::getaddrinfo(hostname, nullptr, &hints, &results);
+    }();
     if (result != 0) {
         *errno_slot() = result == EAI_AGAIN ? NET_ETIMEDOUT : NET_ENOENT;
         log_soft(func, "host DNS lookup failed");
@@ -1140,14 +1159,11 @@ struct NetResolverInfo {
 static_assert(sizeof(NetResolverRecord) == 32 && offsetof(NetResolverRecord, family) == 16);
 static_assert(sizeof(NetResolverInfo) == 384 && offsetof(NetResolverInfo, count) == 320 && offsetof(NetResolverInfo, count4) == 324);
 
-int APS5_VABI sceNetResolverStartNtoaMultipleRecordsEx(int rid, const char* hostname, NetResolverInfo* info, int timeout,
-    int retry, int flags) {
-    (void)timeout;
-    (void)retry;
-    if (flags != 0) throw std::runtime_error("sceNetResolverStartNtoaMultipleRecordsEx: flags " + std::to_string(flags) + " are not supported");
+static int start_ntoa_multiple_records(const char* func, int rid, const char* hostname, NetResolverInfo* info, int flags) {
+    if (flags != 0) throw std::runtime_error(std::string(func) + ": flags " + std::to_string(flags) + " are not supported");
     if (!hostname || !info) return fail(NET_EINVAL);
     std::vector<std::uint32_t> addresses;
-    if (const int error = lookup_ipv4(rid, hostname, __func__, addresses)) return error;
+    if (const int error = lookup_ipv4(rid, hostname, func, addresses)) return error;
     *info = {};
     info->count = static_cast<std::int32_t>(std::min<std::size_t>(addresses.size(), std::size(info->records)));
     info->count4 = info->count;
@@ -1156,6 +1172,20 @@ int APS5_VABI sceNetResolverStartNtoaMultipleRecordsEx(int rid, const char* host
         info->records[index].family = NET_AF_INET;
     }
     return 0;
+}
+
+int APS5_VABI sceNetResolverStartNtoaMultipleRecordsEx(int rid, const char* hostname, NetResolverInfo* info, int timeout,
+    int retry, int flags) {
+    (void)timeout;
+    (void)retry;
+    return start_ntoa_multiple_records(__func__, rid, hostname, info, flags);
+}
+
+int APS5_VABI sceNetResolverStartNtoaMultipleRecords(int rid, const char* hostname, NetResolverInfo* info, int timeout,
+    int retry, int flags) {
+    (void)timeout;
+    (void)retry;
+    return start_ntoa_multiple_records(__func__, rid, hostname, info, flags);
 }
 
 int APS5_VABI sceNetResolverStartAton(int rid, const void* addr, char* hostname, int len, int timeout, int retry, int flags) {
@@ -1171,8 +1201,11 @@ int APS5_VABI sceNetResolverStartAton(int rid, const void* addr, char* hostname,
     sockaddr_in address{};
     address.sin_family = AF_INET;
     std::memcpy(&address.sin_addr, addr, sizeof(address.sin_addr));
-    const int result = ::getnameinfo(reinterpret_cast<const sockaddr*>(&address), sizeof(address), hostname,
-        static_cast<NativeLength>(len), nullptr, 0, NI_NAMEREQD);
+    const int result = [&] {
+        const RunningLookup running(rid);
+        return ::getnameinfo(reinterpret_cast<const sockaddr*>(&address), sizeof(address), hostname,
+            static_cast<NativeLength>(len), nullptr, 0, NI_NAMEREQD);
+    }();
     if (result != 0) {
         *errno_slot() = result == EAI_AGAIN ? NET_ETIMEDOUT : NET_ENOENT;
         log_soft(__func__, "host reverse DNS lookup failed");
@@ -1192,13 +1225,11 @@ int APS5_VABI sceNetResolverGetError(int rid, int* status) {
     return 0;
 }
 
-int APS5_VABI sceNetResolverAbort(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNetResolverStartNtoaMultipleRecords() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceNetResolverAbort(int rid, int flags) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (g_resolvers.count(rid) == 0) return fail(NET_EBADF);
+    if (flags != 0) throw std::runtime_error("sceNetResolverAbort: flags " + std::to_string(flags) + " are not supported");
+    if (g_running_lookups.count(rid) != 0) throw std::runtime_error("sceNetResolverAbort: a running host lookup cannot be interrupted");
     return 0;
 }
 

@@ -4,6 +4,7 @@
 #include <string>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libkernel/KernelErrors.hpp"
 
 static const KernelEvent& requireEvent(const KernelEvent* ev, const char* caller) {
     if (ev == nullptr) {
@@ -19,9 +20,8 @@ intptr_t APS5_VABI sceKernelGetEventData(const KernelEvent* ev) {
 }
 
 int APS5_VABI sceKernelGetEventError(const KernelEvent* ev) {
- (void)ev;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    const std::uint32_t error = requireEvent(ev, __func__).fflags;
+    return error == 0 ? 0 : SceKernelError(static_cast<int>(error));
 }
 
 intptr_t APS5_VABI sceKernelGetEventFflags(const KernelEvent* ev) {

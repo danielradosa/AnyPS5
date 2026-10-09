@@ -2,18 +2,26 @@
 #include <cstddef>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libkernel/File/include/NativeStat.hpp"
 #include "prx/libkernel/Socket/include/SocketPoll.hpp"
+#include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
 namespace {
 
+constexpr int GuestEbadf = 9;
 constexpr int GuestEinval = 22;
 constexpr int SelectDescriptorLimit = 1024;
+constexpr std::uint16_t FileTypeMask = 0170000;
+constexpr std::uint16_t FileTypeRegular = 0100000;
 
 struct GuestTimeval {
     std::int64_t seconds;
@@ -65,6 +73,35 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
         if (DescriptorSet(exceptfds, descriptor)) events |= KernelSocketPoll::Urgent;
         if (events != 0) entries.push_back({descriptor, events, 0});
     }
+    const auto classifier = g_socketPoller.load();
+    if (classifier != nullptr && !entries.empty()) {
+        for (auto& entry : entries) entry.revents = 0;
+        const int result = classifier(entries.data(), static_cast<int>(entries.size()), 0);
+        if (result < 0) {
+            *__error_nid_postfix() = -result;
+            return -1;
+        }
+    }
+    int filesReady = 0;
+    std::vector<KernelSocketPoll::Entry> sockets;
+    for (const auto& entry : entries) {
+        if (classifier != nullptr && (entry.revents & KernelSocketPoll::Unknown) == 0) {
+            sockets.push_back(entry);
+            continue;
+        }
+        if (entry.descriptor >= GuestSockets::FirstDescriptor) NotImplemented_nid_no_patch("select on libkernel sockets");
+        FileStat stat{};
+        if (!File::FillFileStatFromDescriptor(entry.descriptor, &stat)) {
+            if (errno != EBADF) throw std::runtime_error("select: fstat of descriptor " + std::to_string(entry.descriptor) + " failed");
+            *__error_nid_postfix() = GuestEbadf;
+            return -1;
+        }
+        if ((stat.st_mode & FileTypeMask) != FileTypeRegular)
+            NotImplemented_nid_no_patch("select on descriptors that are neither regular files nor libSceNet sockets");
+        filesReady += static_cast<int>((entry.events & KernelSocketPoll::Readable) != 0) + static_cast<int>((entry.events & KernelSocketPoll::Writable) != 0);
+        ClearDescriptor(exceptfds, entry.descriptor);
+    }
+    entries = std::move(sockets);
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = limit == nullptr ? std::chrono::steady_clock::time_point::max()
         : start + std::chrono::seconds(limit->seconds) + std::chrono::microseconds(limit->microseconds);
@@ -74,6 +111,7 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
             const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - std::chrono::steady_clock::now()).count();
             waitMilliseconds = static_cast<int>(std::clamp<std::int64_t>((remaining + 999) / 1000, 0, 100));
         }
+        if (filesReady > 0) waitMilliseconds = 0;
         if (!entries.empty()) {
             const auto poller = g_socketPoller.load();
             if (poller == nullptr) NotImplemented_nid_no_patch("select on descriptors that are not libSceNet sockets");
@@ -91,14 +129,16 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
                 const bool urgent = (entry.events & KernelSocketPoll::Urgent) != 0 && (entry.revents & KernelSocketPoll::Urgent) != 0;
                 ready += static_cast<int>(readable) + static_cast<int>(writable) + static_cast<int>(urgent);
             }
-            if (ready > 0) {
+            if (ready > 0 || filesReady > 0) {
                 for (const auto& entry : entries) {
                     if ((entry.revents & (KernelSocketPoll::Readable | KernelSocketPoll::HangUp | KernelSocketPoll::Error)) == 0) ClearDescriptor(readfds, entry.descriptor);
                     if ((entry.revents & (KernelSocketPoll::Writable | KernelSocketPoll::Error)) == 0) ClearDescriptor(writefds, entry.descriptor);
                     if ((entry.revents & KernelSocketPoll::Urgent) == 0) ClearDescriptor(exceptfds, entry.descriptor);
                 }
-                return ready;
+                return ready + filesReady;
             }
+        } else if (filesReady > 0) {
+            return filesReady;
         } else if (waitMilliseconds > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(waitMilliseconds));
         }

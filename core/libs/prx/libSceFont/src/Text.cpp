@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstring>
 #include <new>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "prx/libSceFont/include/FontInternal.hpp"
@@ -27,6 +29,12 @@ constexpr std::size_t MAX_PARSED_CHARACTERS = 4096;
 constexpr std::int32_t WRITING_MASK_NONE = 0;
 constexpr std::int32_t WRITING_MASK_FORMAT_CHARACTERS = 1;
 constexpr std::uint64_t CHARACTER_FLAG_FORMAT = 1ull << 42;
+constexpr int SYLLABLE_STRING_NON_DETECTION = 0;
+
+bool InSyllableScript(std::uint32_t code) {
+    return (code >= 0x0900 && code <= 0x0FFF) || (code >= 0x1000 && code <= 0x109F) || (code >= 0x1100 && code <= 0x11FF) ||
+        (code >= 0x1780 && code <= 0x17FF) || (code >= 0xA960 && code <= 0xA97F) || (code >= 0xD7B0 && code <= 0xD7FF);
+}
 
 struct CharacterStorage {
     std::atomic<std::uint32_t> refCount{1};
@@ -488,6 +496,15 @@ const FontTextCharacter* APS5_VABI sceFontStringRefersRenderCharacters(FontStrin
 int APS5_VABI sceFontCharacterGetBidiLevel(const FontTextCharacter* textCharacter, int* bidiLevel) {
     if (!textCharacter || !bidiLevel) return SCE_FONT_ERROR_INVALID_PARAMETER;
     *bidiLevel = static_cast<int>(LevelOf(textCharacter));
+    return SCE_FONT_OK;
+}
+
+int APS5_VABI sceFontCharacterGetSyllableStringState(const FontTextCharacter* textCharacter, int* syllableStringState) {
+    if (!textCharacter || !syllableStringState) return SCE_FONT_ERROR_INVALID_PARAMETER;
+    if (InSyllableScript(textCharacter->characterCode))
+        throw std::runtime_error("sceFontCharacterGetSyllableStringState: syllable clusters of character code " +
+            std::to_string(textCharacter->characterCode) + " are not segmented");
+    *syllableStringState = SYLLABLE_STRING_NON_DETECTION;
     return SCE_FONT_OK;
 }
 

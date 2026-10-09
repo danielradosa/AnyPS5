@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -34,6 +35,8 @@ extern const std::uint32_t sce_net_in6addr_any[4];
 int APS5_VABI sceNetResolverCreate(const char*, int, int);
 int APS5_VABI sceNetResolverStartNtoa(int, const char*, void*, int, int, int);
 int APS5_VABI sceNetResolverStartNtoaMultipleRecordsEx(int, const char*, void*, int, int, int);
+int APS5_VABI sceNetResolverStartNtoaMultipleRecords(int, const char*, void*, int, int, int);
+int APS5_VABI sceNetResolverAbort(int, int);
 int APS5_VABI sceNetResolverDestroy(int);
 int APS5_VABI sceNetResolverGetError(int, int*);
 int APS5_VABI sceNetCtlGetState(int*);
@@ -310,6 +313,22 @@ int main() {
     const std::int64_t bad_timeout[2]{0, 1000000};
     Require(select_nid_postfix(udp_receiver + 1, readable, nullptr, nullptr, bad_timeout) == -1 && *__error_nid_postfix() == 22);
     Require(select_nid_postfix(1025, nullptr, nullptr, nullptr, poll_now) == -1 && *__error_nid_postfix() == 22);
+    std::FILE* regular = std::tmpfile();
+    Require(regular != nullptr);
+    const int file = fileno(regular);
+    Require(file >= 0 && file < 1024);
+    std::uint64_t file_read[16]{};
+    std::uint64_t file_write[16]{};
+    std::uint64_t file_except[16]{};
+    file_read[file / 64] |= std::uint64_t{1} << (file % 64);
+    file_write[file / 64] |= std::uint64_t{1} << (file % 64);
+    file_except[file / 64] |= std::uint64_t{1} << (file % 64);
+    Require(select_nid_postfix(file + 1, file_read, file_write, file_except, nullptr) == 2);
+    Require(((file_read[file / 64] >> (file % 64)) & 1u) != 0 && ((file_write[file / 64] >> (file % 64)) & 1u) != 0);
+    Require(file_except[file / 64] == 0);
+    std::fclose(regular);
+    file_read[file / 64] |= std::uint64_t{1} << (file % 64);
+    Require(select_nid_postfix(file + 1, file_read, nullptr, nullptr, poll_now) == -1 && *__error_nid_postfix() == 9);
     CheckMessages(udp_receiver, udp_sender, address);
     Require(sceNetSocketClose(udp_sender) == 0);
     Require(sceNetSocketClose(udp_receiver) == 0);
@@ -354,8 +373,14 @@ int main() {
         static_cast<int>(0x80410116) && *sceNetErrnoLoc() == 22);
     Require(sceNetResolverStartNtoaMultipleRecordsEx(resolver, "guest-sce-net.invalid", records.data(), 5000000, 1, 0) ==
         static_cast<int>(0x804101E1) && records == resolved);
+    std::array<std::uint8_t, 512> plain_records{};
+    plain_records.fill(0xA5);
+    Require(sceNetResolverStartNtoaMultipleRecords(resolver, "localhost", plain_records.data(), 5000000, 1, 0) == 0);
+    Require(plain_records == resolved);
     Require(sceNetResolverGetError(resolver, nullptr) == static_cast<int>(0x80410116) && *sceNetErrnoLoc() == 22);
+    Require(sceNetResolverAbort(resolver, 0) == 0);
     Require(sceNetResolverDestroy(resolver) == 0);
+    Require(sceNetResolverAbort(resolver, 0) == static_cast<int>(0x80410109) && *sceNetErrnoLoc() == 9);
     resolver_error = -1;
     Require(sceNetResolverGetError(resolver, &resolver_error) == static_cast<int>(0x80410109) &&
         *sceNetErrnoLoc() == 9 && resolver_error == -1);

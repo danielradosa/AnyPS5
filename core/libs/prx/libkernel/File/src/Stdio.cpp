@@ -256,6 +256,7 @@ int APS5_VABI chmod_nid_postfix(const char* path, int mode) {
 
 int APS5_VABI close_nid_postfix(int d) {
     if (d >= GuestSockets::FirstDescriptor) return GuestSockets::Close(d);
+    File::ForgetDescriptorFlags(d);
 #ifdef _WIN32
     File::ForgetDirectoryDescriptor(d);
     return _close(d);
@@ -657,6 +658,26 @@ int APS5_VABI sceKernelRmdir(const char* path) {
 int APS5_VABI rmdir_nid_postfix(const char* path) {
     if (const int error = PathError(path)) return PosixFailure(error);
     return PosixResult(sceKernelRmdir(path));
+}
+
+static std::int64_t PosixTransferResult(std::int64_t result) {
+    return result < 0 ? PosixFailure(static_cast<int>(result & 0xffff)) : result;
+}
+
+std::int64_t APS5_VABI readv_nid_postfix(int d, const KernelIovec* iov, int iovcnt) {
+    return PosixTransferResult(sceKernelReadv(d, iov, iovcnt));
+}
+
+std::int64_t APS5_VABI writev_nid_postfix(int d, const KernelIovec* iov, int iovcnt) {
+    return PosixTransferResult(sceKernelWritev(d, iov, iovcnt));
+}
+
+std::int64_t APS5_VABI preadv_nid_postfix(int d, const KernelIovec* iov, int iovcnt, std::int64_t offset) {
+    return PosixTransferResult(sceKernelPreadv(d, iov, iovcnt, offset));
+}
+
+std::int64_t APS5_VABI pwritev_nid_postfix(int d, const KernelIovec* iov, int iovcnt, std::int64_t offset) {
+    return PosixTransferResult(sceKernelPwritev(d, iov, iovcnt, offset));
 }
 
 }

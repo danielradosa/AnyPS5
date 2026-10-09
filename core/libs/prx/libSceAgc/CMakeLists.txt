@@ -33,6 +33,8 @@ add_library(libSceAgc SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/Platform.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/RegisterDefaults.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/ShaderFusion.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/ShaderInstrumentation.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/Semaphore.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/Suspend.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Patch/src/CondExec.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Patch/src/Dma.cpp
@@ -80,6 +82,18 @@ if(BUILD_TESTING)
 endif()
 configure_windows_unwind(libSceAgc)
 
+if(BUILD_TESTING)
+    add_test_executable(agc_marker_span_tests tests/MarkerSpan.cpp)
+    target_include_directories(agc_marker_span_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(agc_marker_span_tests PRIVATE libSceAgc libSceAgcDriver libc)
+    configure_windows_unwind(agc_marker_span_tests)
+    add_test(NAME agc_marker_span COMMAND agc_marker_span_tests)
+    if(WIN32)
+        set_tests_properties(agc_marker_span PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
 add_test_executable(agc_platform_tests EXCLUDE_FROM_ALL tests/Platform.cpp)
 target_include_directories(agc_platform_tests PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(agc_platform_tests PRIVATE libSceAgc libc)
@@ -102,6 +116,19 @@ if(BUILD_TESTING)
     add_test(NAME agc_packet_info_tests COMMAND agc_packet_info_tests)
     if(WIN32)
         set_tests_properties(agc_packet_info_tests PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
+add_test_executable(agc_shader_instrumentation_tests EXCLUDE_FROM_ALL tests/ShaderInstrumentation.cpp)
+target_include_directories(agc_shader_instrumentation_tests PRIVATE ${LIBS_INCLUDE_DIR})
+target_link_libraries(agc_shader_instrumentation_tests PRIVATE libSceAgc libc)
+configure_windows_unwind(agc_shader_instrumentation_tests)
+if(BUILD_TESTING)
+    set_target_properties(agc_shader_instrumentation_tests PROPERTIES EXCLUDE_FROM_ALL FALSE)
+    add_test(NAME agc_shader_instrumentation_tests COMMAND agc_shader_instrumentation_tests)
+    if(WIN32)
+        set_tests_properties(agc_shader_instrumentation_tests PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 endif()
@@ -166,6 +193,19 @@ if(BUILD_TESTING)
     add_test(NAME agc_end_of_shader_action_size_tests COMMAND agc_end_of_shader_action_size_tests)
     if(WIN32)
         set_tests_properties(agc_end_of_shader_action_size_tests PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
+add_test_executable(agc_draw_packet_size_tests EXCLUDE_FROM_ALL tests/DrawPacketSizes.cpp)
+target_include_directories(agc_draw_packet_size_tests PRIVATE ${LIBS_INCLUDE_DIR})
+target_link_libraries(agc_draw_packet_size_tests PRIVATE libSceAgc libc)
+configure_windows_unwind(agc_draw_packet_size_tests)
+if(BUILD_TESTING)
+    set_target_properties(agc_draw_packet_size_tests PROPERTIES EXCLUDE_FROM_ALL FALSE)
+    add_test(NAME agc_draw_packet_size_tests COMMAND agc_draw_packet_size_tests)
+    if(WIN32)
+        set_tests_properties(agc_draw_packet_size_tests PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 endif()
@@ -386,5 +426,17 @@ if(BUILD_TESTING)
     if(WIN32)
         set_tests_properties(agc_shader_helpers PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
+if(BUILD_TESTING)
+    add_test_executable(agc_semaphore_tests tests/Semaphore.cpp)
+    target_include_directories(agc_semaphore_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(agc_semaphore_tests PRIVATE libSceAgc libc)
+    configure_windows_unwind(agc_semaphore_tests)
+    add_test(NAME agc_semaphore COMMAND agc_semaphore_tests)
+    if(WIN32)
+        set_tests_properties(agc_semaphore PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAgc>")
     endif()
 endif()

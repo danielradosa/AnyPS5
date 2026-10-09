@@ -11,6 +11,7 @@
 
 extern "C" {
 int APS5_VABI sceAudioInOpen(int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
+int APS5_VABI sceAudioInHqOpen(int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
 int APS5_VABI sceAudioInInput(int, void*);
 int APS5_VABI sceAudioInGetSilentState(int);
 int APS5_VABI sceAudioInClose(int);
@@ -92,6 +93,11 @@ void TestNoDevice() {
     Require(sceAudioInClose(handle) == invalidHandle);
     Require(sceAudioInInput(handle, buffer.data()) == invalidHandle);
     Require(sceAudioInOpen(user, 1, 0, 128, 48000, 0x11) == handle);
+    Require(sceAudioInClose(handle) == 0);
+    Require(sceAudioInHqOpen(user, 0, 0, 512, 48000, 2) == static_cast<int>(0x80260102));
+    Require(sceAudioInHqOpen(user, 0, 0, 256, 48000, 2) == handle);
+    Require(sceAudioInGetSilentState(handle) == 1);
+    Require(sceAudioInClose(handle) == 0);
 }
 
 }

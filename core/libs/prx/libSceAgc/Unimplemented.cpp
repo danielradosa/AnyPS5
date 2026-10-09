@@ -5,16 +5,6 @@
 
 extern "C" {
 
-int APS5_VABI sceAgcAcbPushMarkerSpan() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceAgcAcbSetMarkerSpan() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
 int APS5_VABI sceAgcAcbSetWorkloadComplete() {
  NotImplemented_nid_no_patch(__func__);
  return 0;
@@ -30,21 +20,6 @@ int APS5_VABI sceAgcAcbSetWorkloadsActive() {
  return 0;
 }
 
-int APS5_VABI sceAgcAcquireMemSetEngine() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceAgcDcbPushMarkerSpan() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceAgcDcbSetMarkerSpan() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
 int APS5_VABI sceAgcDcbSetWorkloadStreamInactive() {
  NotImplemented_nid_no_patch(__func__);
  return 0;
@@ -56,16 +31,6 @@ int APS5_VABI sceAgcDebugRaiseException() {
 }
 
 int APS5_VABI sceAgcGetDefaultCxStateFlat() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceAgcGetSemaphoreLabel() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceAgcSetAmmSemaphoreMemory() {
  NotImplemented_nid_no_patch(__func__);
  return 0;
 }
@@ -86,16 +51,6 @@ int APS5_VABI sceAgcBranchPatchSetThenTarget_0300() {
 }
 
 int APS5_VABI sceAgcGetGsPrimPayload() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceAgcSetShaderInstrumentation() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI sceAgcGetShaderInstrumentation() {
  NotImplemented_nid_no_patch(__func__);
  return 0;
 }

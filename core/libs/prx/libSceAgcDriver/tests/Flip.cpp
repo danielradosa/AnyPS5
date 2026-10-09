@@ -38,6 +38,7 @@ struct State {
     std::atomic<int> alive = 0;
     std::atomic<int> ready = 0;
     std::atomic<int> failed = 0;
+    std::atomic<std::uint32_t> waited = ~0u;
     AgcDriver::FlipInfo last{};
 };
 
@@ -80,8 +81,17 @@ private:
     std::shared_ptr<State> state;
 };
 
+class ImmediateWait final : public AgcDriver::IRenderingWait {
+public:
+    void Wait() override {}
+};
+
 class Output final : public AgcDriver::IVideoOutput {
 public:
+    std::shared_ptr<AgcDriver::IRenderingWait> CaptureRenderingWait(std::uint32_t index) override {
+        state->waited = index;
+        return std::make_shared<ImmediateWait>();
+    }
     void Fail(std::exception_ptr error) noexcept override { if (!error) std::terminate(); }
     std::shared_ptr<State> state = std::make_shared<State>();
     std::shared_ptr<AgcDriver::IFlipRequest> Reserve(const AgcDriver::FlipInfo& info) override {
@@ -103,7 +113,6 @@ void testFlipAndBoundary() {
     expectFailure([&] { AgcDriverRegisterVideoOutput_nid_postfix(7, output); });
     std::array<std::uint32_t, 6> words{0xc004105c, 7, 0xfffffffeu, 1, 0, 0};
     Packet packet{words.data(), 6, 0, {}};
-    expectFailure([&] { sceAgcDriverSubmitAcb(0x20, &packet); });
     words[0] = 0xc004105d;
     expectFailure([&] { sceAgcDriverSubmitDcb(&packet); });
     words[0] = 0xc004105c;
@@ -162,6 +171,11 @@ void testFlipAndBoundary() {
     AgcDriverSuspendPoint_nid_postfix();
     AgcDriverWaitIdle_nid_postfix();
     check(replacement->state->ready == 201, "concurrent submissions were lost");
+    std::array<std::uint32_t, 10> computeFlip{0xc0021018u, 7, 3, 0, 0xc004105cu, 7, 3, 1, 0, 0};
+    Packet computePacket{computeFlip.data(), static_cast<std::uint32_t>(computeFlip.size()), 0, {}};
+    check(sceAgcDriverSubmitAcb(0x20, &computePacket) == 0, "compute queue flip submission failed");
+    AgcDriverWaitIdle_nid_postfix();
+    check(replacement->state->ready == 202 && replacement->state->last.index == 3 && replacement->state->waited == 3, "compute queue rendering wait and flip were not executed");
     AgcDriverUnregisterVideoOutput_nid_postfix(7, replacement);
 }
 
