@@ -19,6 +19,10 @@ constexpr std::int32_t PortOutVoice = 4;
 constexpr std::int32_t PortOutDevice = 5;
 constexpr std::int32_t PortStateReady = 1;
 constexpr std::uint32_t VoiceFrameMs = 20;
+constexpr std::uint16_t MaxInVoicePorts = 7;
+constexpr std::uint16_t MaxOutVoicePorts = 7;
+constexpr std::uint16_t MaxInDevicePorts = 1;
+constexpr std::uint16_t MaxOutDevicePorts = 1;
 
 struct Port {
     std::int32_t type;
@@ -214,8 +218,12 @@ int APS5_VABI sceVoiceSetMuteFlag(uint32_t port_id, bool muted) {
     return 0;
 }
 
-int APS5_VABI sceVoiceGetResourceInfo(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceVoiceGetResourceInfo(VoiceResourceInfo* info) {
+    if (info == nullptr) APS5_INVALID_ARG_EX;
+    auto& voice = State();
+    std::lock_guard lock(voice.mutex);
+    if (!voice.initialized) Fail(__func__, "library not initialized");
+    *info = VoiceResourceInfo{MaxInVoicePorts, MaxOutVoicePorts, MaxInDevicePorts, MaxOutDevicePorts};
     return 0;
 }
 

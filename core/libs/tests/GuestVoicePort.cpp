@@ -12,6 +12,7 @@ int APS5_VABI sceVoiceCreatePort(std::uint32_t*, const VoicePortParam*);
 int APS5_VABI sceVoiceDeletePort(std::uint32_t);
 int APS5_VABI sceVoiceSetMuteFlag(std::uint32_t, std::uint32_t);
 int APS5_VABI sceVoiceResetPort(std::uint32_t);
+int APS5_VABI sceVoiceGetResourceInfo(VoiceResourceInfo*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -35,11 +36,32 @@ static VoicePortParam PcmInput(std::uint16_t mute) {
     return param;
 }
 
+struct ResourceProbe {
+    VoiceResourceInfo info;
+    std::uint16_t after;
+};
+
+static void RequireResourceInfo() {
+    ResourceProbe probe{{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF}, 0xA5A5};
+    Require(sceVoiceGetResourceInfo(&probe.info) == 0);
+    Require(probe.info.max_in_voice_port == 7);
+    Require(probe.info.max_out_voice_port == 7);
+    Require(probe.info.max_in_device_port == 1);
+    Require(probe.info.max_out_device_port == 1);
+    Require(probe.after == 0xA5A5);
+}
+
 int main() {
     RequireThrows([] { sceVoiceSetMuteFlag(0, 1); });
     RequireThrows([] { sceVoiceResetPort(0); });
+    RequireThrows([] {
+        VoiceResourceInfo info{};
+        sceVoiceGetResourceInfo(&info);
+    });
     VoiceInitParam init{};
     Require(sceVoiceInit(&init, 0) == 0);
+    RequireThrows([] { sceVoiceGetResourceInfo(nullptr); });
+    RequireResourceInfo();
 
     std::uint32_t first = 0;
     const auto unmutedParam = PcmInput(0);
@@ -62,7 +84,13 @@ int main() {
     RequireThrows([&] { sceVoiceSetMuteFlag(second, 1); });
     RequireThrows([&] { sceVoiceResetPort(second); });
 
+    RequireResourceInfo();
+
     Require(sceVoiceEnd_nid_postfix() == 0);
     RequireThrows([&] { sceVoiceSetMuteFlag(first, 0); });
     RequireThrows([&] { sceVoiceResetPort(first); });
+    RequireThrows([] {
+        VoiceResourceInfo info{};
+        sceVoiceGetResourceInfo(&info);
+    });
 }

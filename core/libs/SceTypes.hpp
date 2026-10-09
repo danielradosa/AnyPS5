@@ -918,6 +918,13 @@ struct VoiceStartParam {
     std::uint8_t reserved[32 - sizeof(void*) - sizeof(std::uint32_t)];
 };
 
+struct VoiceResourceInfo {
+    std::uint16_t max_in_voice_port;
+    std::uint16_t max_out_voice_port;
+    std::uint16_t max_in_device_port;
+    std::uint16_t max_out_device_port;
+};
+
 struct PadTouchPadInformation {
  float pixelDensity;
  struct { std::uint16_t x; std::uint16_t y; } resolution;
