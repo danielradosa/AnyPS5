@@ -730,6 +730,7 @@ if(BUILD_TESTING)
     set_tests_properties(agc_driver_prepared_shaders
         agc_driver_prepared_shaders_indirect agc_driver_prepared_shaders_uncached
         agc_driver_prepared_shaders_debug agc_driver_prepared_shaders_debug_failure
+        agc_driver_prepared_shaders_deferred agc_driver_prepared_shaders_deferred_undecodable
         PROPERTIES RESOURCE_LOCK shader_failure_capture)
 endif()
 
