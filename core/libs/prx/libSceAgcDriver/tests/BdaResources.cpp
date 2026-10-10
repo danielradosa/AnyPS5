@@ -147,6 +147,67 @@ void importedHeapMirrorTests(const Context& context, const BdaTestAccess& access
     GuestArena::GuestArenaRelease_nid_postfix(block, bytes);
 }
 
+void setSkipMib(const char* value) {
+#ifdef _WIN32
+    Require(_putenv_s("APS5_ADDRESS_SKIP_MIB", value) == 0, "cannot set APS5_ADDRESS_SKIP_MIB");
+#else
+    Require((*value != '\0' ? setenv("APS5_ADDRESS_SKIP_MIB", value, 1) : unsetenv("APS5_ADDRESS_SKIP_MIB")) == 0, "cannot set APS5_ADDRESS_SKIP_MIB");
+#endif
+}
+
+void addressSkipTests(const Context& context) {
+    if (!GuestArena::GuestArenaAvailable_nid_postfix() || !GuestArena::GuestArenaWriteWatched_nid_postfix()) {
+        std::cout << "guest arena unavailable or not write-watched: APS5_ADDRESS_SKIP_MIB not tested\n";
+        return;
+    }
+    constexpr std::size_t bytes = 1u << 20u;
+    void* block = GuestArena::GuestArenaAllocate_nid_postfix(bytes, bytes);
+#ifdef _WIN32
+    GuestArena::GuestArenaCommit_nid_postfix(block, bytes, PAGE_READWRITE, bytes);
+#endif
+    std::memset(block, 0x11, bytes);
+    const auto address = reinterpret_cast<std::uintptr_t>(block);
+    auto importing = context;
+    importing.hostImportAlignment = bytes;
+    const auto registry = [&](bool add) {
+        auto* mutation = GuestAllocations::GuestAllocationsBegin_nid_postfix();
+        if (add) GuestAllocations::GuestAllocationsAdd_nid_postfix(mutation, block, bytes, true, false, true);
+        else GuestAllocations::GuestAllocationsRemove_nid_postfix(mutation, block);
+        GuestAllocations::GuestAllocationsEnd_nid_postfix(mutation);
+    };
+    const auto inTable = [&](const Context& with) {
+        GuestAllocations::GuestAllocationsEnd_nid_postfix(GuestAllocations::GuestAllocationsBegin_nid_postfix());
+        GuestBufferMemory leased(with);
+        leased.AcquireRegistered();
+        leased.Upload(true);
+        const auto ranges = leased.AddressRanges();
+        const bool found = std::any_of(ranges.begin(), ranges.end(), [&](const auto& range) { return range.begin < address + bytes && range.end > address; });
+        leased.WriteBack();
+        return found;
+    };
+    const auto before = MirrorCounters();
+    registry(true);
+    setSkipMib("1");
+    Require(AddressSkipEnabled(), "APS5_ADDRESS_SKIP_MIB=1 did not enable skipping");
+    Require(!inTable(context), "a range at the skip size without a host import is still in the BDA table");
+    Require(MirrorCounters().heapMirrors == before.heapMirrors && MirrorCounters().heapBytes == before.heapBytes, "a skipped range was heap mirrored");
+    Require(!AddressSkippedRange(address + 65536, 4).empty() && !AddressSkippedRange(address + bytes - 1, 1).empty(), "an access inside the skipped range is not attributed to it");
+    Require(AddressSkippedRange(address - 4096, 4).empty() && AddressSkippedRange(address + bytes, 4).empty(), "an access outside the skipped range is attributed to it");
+    Require(inTable(importing) && HostImportCovers(importing, address, bytes), "a skipped-size range a host import serves is missing from the BDA table");
+    setSkipMib("2");
+    registry(false);
+    registry(true);
+    Require(inTable(context), "a range below the skip size is missing from the BDA table");
+    setSkipMib("");
+    Require(!AddressSkipEnabled(), "clearing APS5_ADDRESS_SKIP_MIB did not disable skipping");
+    registry(false);
+    Require(!inTable(context) && MirrorCounters().heapMirrors == before.heapMirrors, "the range or its mirror outlived its registration");
+#ifdef _WIN32
+    GuestArena::GuestArenaReset_nid_postfix(block, bytes);
+#endif
+    GuestArena::GuestArenaRelease_nid_postfix(block, bytes);
+}
+
 void importedFreshTests(const Context& context) {
 #ifndef _WIN32
     if (!GuestWriteWatch::GuestWriteWatchAvailable_nid_postfix()) {
@@ -720,6 +781,7 @@ void RunBdaResourceTests(const Context& context, const BdaTestAccess& access) {
     importCrossingTests(context, access);
     heapMirrorTests(context, access);
     importedHeapMirrorTests(context, access);
+    addressSkipTests(context);
     importWatchTests();
     importedFreshTests(context);
     gpuMappingTests(context);

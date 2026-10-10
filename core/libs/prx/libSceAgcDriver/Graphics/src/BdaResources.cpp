@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Graphics/include/BdaResources.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include <algorithm>
 #include <atomic>
@@ -265,6 +266,16 @@ void BdaResources::CheckFault() const {
             message << std::hex << "; the store hit 0x" << range.begin << "+0x" << range.end - range.begin << ", read-only in the BDA table: stores through GPU-selected descriptors and FLAT/GLOBAL addresses reach only writable ranges imported in place, not ones served by a mirror or a copy (past APS5_HOST_IMPORT_MIB, or refused by the driver)";
             break;
         }
+    }
+    // Recorded completions only log a thrown fault, and the dispatch's write-back is lost with it;
+    // with ranges left out of the table a fault must stop the title instead.
+    if (AddressSkipEnabled()) {
+        const auto skipped = AddressSkippedRange(report.address, report.bytes);
+        if (skipped.empty()) message << " (APS5_ADDRESS_SKIP_MIB makes BDA faults fatal)";
+        else message << "; the access is in " << skipped << ", left out of the BDA table by APS5_ADDRESS_SKIP_MIB";
+        std::fprintf(stderr, "FATAL: %s\n", message.str().c_str());
+        std::fflush(stderr);
+        std::abort();
     }
     throw std::runtime_error(message.str());
 }

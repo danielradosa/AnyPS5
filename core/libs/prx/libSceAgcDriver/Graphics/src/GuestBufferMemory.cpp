@@ -792,6 +792,33 @@ std::uint64_t heapMirrorBudget() {
     return bytes;
 }
 
+// APS5_ADDRESS_SKIP_MIB: address-based builds leave out registered ranges of at least this size that
+// no host import serves (read per build so tests can change it). A shader access there faults, and
+// with the knob set every BDA fault aborts (see BdaResources::CheckFault).
+std::uint64_t addressSkipBytes() {
+    const char* value = std::getenv("APS5_ADDRESS_SKIP_MIB");
+    return value != nullptr && *value != '\0' ? std::strtoull(value, nullptr, 10) << 20u : 0;
+}
+
+struct SkippedRanges {
+    std::mutex mutex;
+    std::map<std::uint64_t, std::uint64_t> ranges;
+};
+
+SkippedRanges& Skipped() {
+    static SkippedRanges skipped;
+    return skipped;
+}
+
+void noteSkipped(const GuestAllocations::Range& range) {
+    auto& skipped = Skipped();
+    std::lock_guard lock(skipped.mutex);
+    const auto [entry, added] = skipped.ranges.try_emplace(range.address, range.bytes);
+    if (!added && entry->second == range.bytes) return;
+    entry->second = range.bytes;
+    std::fprintf(stderr, "[gpu] address-based builds leave out 0x%llx+0x%llx (%.1f MiB, no host import; APS5_ADDRESS_SKIP_MIB): a shader access there aborts with its address\n", static_cast<unsigned long long>(range.address), static_cast<unsigned long long>(range.bytes), range.bytes / 1048576.0);
+}
+
 std::string heapMirrorError(const GuestAllocations::Range& range, std::uint64_t held, std::string_view reason) {
     constexpr std::string_view prefix = "AGC graphics: ";
     if (reason.starts_with(prefix)) reason.remove_prefix(prefix.size());
@@ -1468,6 +1495,22 @@ std::string AddressCopyOverflow(std::vector<AddressCopy> copies, std::uint64_t l
     return message;
 }
 
+bool AddressSkipEnabled() {
+    return addressSkipBytes() != 0;
+}
+
+std::string AddressSkippedRange(std::uint64_t address, std::uint64_t bytes) {
+    auto& skipped = Skipped();
+    std::lock_guard lock(skipped.mutex);
+    auto found = skipped.ranges.upper_bound(address + std::max<std::uint64_t>(bytes, 1) - 1);
+    if (found == skipped.ranges.begin()) return {};
+    --found;
+    if (found->first + found->second <= address) return {};
+    char text[64];
+    std::snprintf(text, sizeof(text), "0x%llx+0x%llx", static_cast<unsigned long long>(found->first), static_cast<unsigned long long>(found->second));
+    return text;
+}
+
 MirrorStats MirrorCounters() {
     auto& state = Mirrors();
     std::lock_guard lock(state.mutex);
@@ -1819,6 +1862,7 @@ void GuestBufferMemory::AcquireRegistered() {
         regions.reserve(lease.size());
         std::vector<AddressCopy> copies;
         std::vector<std::uint64_t> imported;
+        const auto skipBytes = addressSkipBytes();
         for (const auto& range : lease) {
             if (!range->readable || !range->gpu) continue;
             validate(range->address, range->bytes);
@@ -1836,6 +1880,10 @@ void GuestBufferMemory::AcquireRegistered() {
                 region.direct = entry;
                 regions.push_back(std::move(region));
                 imported.push_back(range->address);
+                continue;
+            }
+            if (skipBytes != 0 && range->bytes >= skipBytes) {
+                noteSkipped(*range);
                 continue;
             }
             if (mirrorsEnabled()) {

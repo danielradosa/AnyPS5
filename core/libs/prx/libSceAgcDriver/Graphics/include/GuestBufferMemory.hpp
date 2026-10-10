@@ -165,6 +165,8 @@ struct AddressCopy {
     const char* reason;
 };
 std::string AddressCopyOverflow(std::vector<AddressCopy> copies, std::uint64_t limit);
+bool AddressSkipEnabled();
+std::string AddressSkippedRange(std::uint64_t address, std::uint64_t bytes);
 
 class GuestBufferMemory {
 public:
