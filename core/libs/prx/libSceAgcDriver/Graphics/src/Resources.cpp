@@ -19,7 +19,7 @@ namespace AgcDriver::Graphics {
 namespace {
 
 // APS5_PROFILE_DRAW: live host-memory Buffers (taken and not yet released, pooled or not) by
-// usage flags and power-of-two size class; every 10 s the [hostbuffers] line lists the classes
+// usage flags and power-of-two size class; every second the [hostbuffers] line lists the classes
 // holding the most bytes, so a full host heap names the kind of buffer that fills it.
 bool hostTracked(VkMemoryPropertyFlags properties) {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
@@ -36,7 +36,7 @@ void noteHostBuffer(const Context& context, VkBufferUsageFlags usage, std::size_
     entry.count = taken ? entry.count + 1 : entry.count - 1;
     entry.bytes = taken ? entry.bytes + bytes : entry.bytes - bytes;
     const auto now = std::chrono::steady_clock::now();
-    if (now - reported < std::chrono::seconds(10)) return;
+    if (now - reported < std::chrono::seconds(1)) return;
     reported = now;
     std::vector<std::pair<std::pair<VkBufferUsageFlags, int>, Live>> sorted(live.begin(), live.end());
     std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second.bytes > b.second.bytes; });
