@@ -12,6 +12,9 @@
 #include <cstdlib>
 #include <limits>
 #include <sstream>
+#include <string>
+#include <set>
+#include <mutex>
 
 namespace AgcDriver::Graphics {
 namespace {
@@ -712,6 +715,18 @@ State DecodeState(const QueueState& queue) {
     intersect(result.scissor, cx, 0x90, false);
     if ((read(cx, 0x292) & 2u) != 0) intersect(result.scissor, cx, 0x94, false);
     if (collapsed) result.scissor.extent = {0, 0};
+    // APS5_TRACE_VIEWPORTS: the viewport state of draws into targets at least 3840 wide, once per
+    // distinct state (Astro Bot's final pass sometimes fills only the top-left quarter of its 4K target).
+    static const bool traceViewports = std::getenv("APS5_TRACE_VIEWPORTS") != nullptr;
+    if (traceViewports && result.renderExtent.width >= 3840) {
+        const auto shaderWord = [&](std::uint32_t offset) { return read(queue.shader, offset, RegisterBank::Shader); };
+        char text[768];
+        std::snprintf(text, sizeof(text), "[viewports] target 0x%llx %ux%u ps 0x%x/0x%x gs 0x%x/0x%x vs 0x%x/0x%x: viewport %.1f,%.1f %.1fx%.1f scissor %d,%d %ux%u; vport0 %g %g %g %g vport1 %g %g %g %g; VS_OUT 0x%x VTE 0x%x screen 0x%x 0x%x window 0x%x 0x%x generic 0x%x 0x%x vpscissor0 0x%x 0x%x mode 0x%x", static_cast<unsigned long long>(result.hasColorTarget ? result.color.address : 0), result.renderExtent.width, result.renderExtent.height, shaderWord(0x8), shaderWord(0x9), shaderWord(0x88), shaderWord(0x89), shaderWord(0x48), shaderWord(0x49), result.viewport.x, result.viewport.y, result.viewport.width, result.viewport.height, result.scissor.offset.x, result.scissor.offset.y, result.scissor.extent.width, result.scissor.extent.height, readFloat(cx, 0x10f), readFloat(cx, 0x110), readFloat(cx, 0x111), readFloat(cx, 0x112), readFloat(cx, 0x115), readFloat(cx, 0x116), readFloat(cx, 0x117), readFloat(cx, 0x118), read(cx, 0x207), read(cx, 0x206), read(cx, 0xc), read(cx, 0xd), read(cx, 0x81), read(cx, 0x82), read(cx, 0x90), read(cx, 0x91), read(cx, 0x94), read(cx, 0x95), read(cx, 0x292));
+        static std::mutex mutex;
+        static std::set<std::string> seen;
+        std::lock_guard lock(mutex);
+        if (seen.insert(text).second) std::fprintf(stderr, "%s\n", text);
+    }
     APS5_LOG_OUT_DEBUG("Scissor offset=(%d,%d) extent=%ux%u", result.scissor.offset.x, result.scissor.offset.y, result.scissor.extent.width, result.scissor.extent.height);
     result.blends.assign(exportCount, VkPipelineColorBlendAttachmentState{});
     for (const auto& color : result.colors) {
