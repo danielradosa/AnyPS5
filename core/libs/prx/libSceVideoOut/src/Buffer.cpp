@@ -93,6 +93,7 @@ int APS5_VABI sceVideoOutRegisterBuffers2(int handle, int setIndex, int bufferIn
         AgcDriverCheckGuestMemory_nid_postfix(buffers[i].data, AgcDriverDisplayBufferSize_nid_postfix(display), 65536);
     }
     cfg->groups[setIndex] = group;
+    std::fprintf(stderr, "[videoout] %d display buffers registered at %ux%u (set %d)\n", bufferNum, attribute->width, attribute->height, setIndex);
     cfg->width = attribute->width;
     cfg->height = attribute->height;
     for (int i = 0; i < bufferNum; i++) {
