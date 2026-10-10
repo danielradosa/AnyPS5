@@ -9,6 +9,7 @@ extern "C" {
 int APS5_VABI sceHttpUriParse(SceHttpUriElement*, const char*, void*, std::size_t*, std::size_t);
 int APS5_VABI sceHttpUriMerge(char*, const char*, const char*, std::size_t*, std::size_t, std::uint32_t);
 int APS5_VABI sceHttpSetInflateGZIPEnabled(int, int);
+int APS5_VABI sceHttpSetCookieEnabled(int, int);
 int APS5_VABI sceHttpSetRequestStatusCallback(int, void (APS5_VABI *)(int, int, void*), void*);
 int APS5_VABI sceHttpSendRequest(int, const void*, std::size_t);
 int APS5_VABI sceHttpUriBuild(char*, std::size_t*, std::size_t, const SceHttpUriElement*, std::uint32_t);
@@ -218,6 +219,11 @@ int main() {
     Require(sceHttpSetInflateGZIPEnabled(1, 1) == 0);
     Require(sceHttpSetInflateGZIPEnabled(1, 2) == invalidValue);
     Require(sceHttpSetInflateGZIPEnabled(1, -1) == invalidValue);
+    Require(sceHttpSetCookieEnabled(1, 0) == 0);
+    Require(sceHttpSetCookieEnabled(1, 1) == 0);
+    Require(sceHttpSetCookieEnabled(1, 2) == invalidValue);
+    Require(sceHttpSetCookieEnabled(1, -1) == invalidValue);
+    Require(sceHttpReadData(1, data, sizeof(data)) == network);
     Require(sceHttpsEnableOption(1, 0) == 0);
     Require(sceHttpsLoadCert(1, 0, nullptr, nullptr, nullptr) == 0);
     Require(sceHttpsUnloadCert(1) == 0);
