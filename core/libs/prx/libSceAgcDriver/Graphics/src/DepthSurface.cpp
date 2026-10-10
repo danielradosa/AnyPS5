@@ -212,6 +212,11 @@ private:
     }
 };
 
+std::atomic<std::uint64_t>& depthPlaneUploads() {
+    static std::atomic<std::uint64_t> uploads{0};
+    return uploads;
+}
+
 class DepthPlaneCopy {
 public:
     DepthPlaneCopy(const Context& context, VkExtent2D extent, VkFormat format, std::uint32_t layers) : context(context), extent(extent), format(format), layers(layers) {
@@ -252,11 +257,27 @@ public:
         const auto geometry = DescribeSurface(resource);
         Require(geometry.layers == layers && geometry.sliceLinearBytes == sliceBytes() && !geometry.mips.empty(), "depth plane copy geometry does not match its layers");
         std::vector<std::shared_ptr<Buffer>> uploads;
+        std::vector<std::uint32_t> uploadLayers;
         for (std::uint32_t layer = 0; layer < layers; ++layer) {
-            if (slices[layer] != VK_NULL_HANDLE) continue;
-            auto upload = std::make_shared<Buffer>(context, static_cast<std::size_t>(geometry.layerBytes), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-            GuestMemory::ReadCommitted(resource.baseAddress + geometry.GuestLayerOffset(layer), upload->Bytes().first(static_cast<std::size_t>(geometry.layerBytes)));
+            if (slices[layer] != VK_NULL_HANDLE) {
+                guestLayers[layer] = {};
+                continue;
+            }
+            // A layer the staging already holds from guest memory is uploaded again only when the
+            // range changed since: every sample of a shadow array otherwise read each layer into a
+            // new host buffer kept until its batch finished (Astro Bot: 16 samples of a 16-layer
+            // 1536x1536 D32 array in one batch took 2.3 GB of the host heap).
+            const auto address = resource.baseAddress + geometry.GuestLayerOffset(layer);
+            const auto bytes = static_cast<std::size_t>(geometry.layerBytes);
+            GuestMemory::FlushGpuWrites(address, bytes);
+            const auto generation = GuestMemory::CollectWrites(address, bytes);
+            if (guestLayers[layer].address == address && guestLayers[layer].generation != 0 && GuestMemory::UnchangedSince(address, bytes, guestLayers[layer].generation)) continue;
+            auto upload = std::make_shared<Buffer>(context, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            GuestMemory::ReadCommitted(address, upload->Bytes().first(bytes));
             uploads.push_back(std::move(upload));
+            uploadLayers.push_back(layer);
+            guestLayers[layer] = {address, generation};
+            depthPlaneUploads().fetch_add(1, std::memory_order_relaxed);
         }
         if (!uploads.empty()) {
             Require(context.detiler != nullptr, "depth plane copy requires a texture detiler");
@@ -279,10 +300,9 @@ public:
         }
         if (!uploads.empty()) {
             RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-            std::size_t next = 0;
-            for (std::uint32_t layer = 0; layer < layers; ++layer) {
-                if (slices[layer] != VK_NULL_HANDLE) continue;
-                context.detiler->Dispatch(commands, resource.tileMode, format == VK_FORMAT_D32_SFLOAT ? 4u : 2u, uploads[next++]->Handle(), 0, staging->Handle(), geometry.LinearLayerOffset(layer), geometry.mips.front(), false, layer, geometry.thick);
+            for (std::size_t next = 0; next < uploads.size(); ++next) {
+                const auto layer = uploadLayers[next];
+                context.detiler->Dispatch(commands, resource.tileMode, format == VK_FORMAT_D32_SFLOAT ? 4u : 2u, uploads[next]->Handle(), 0, staging->Handle(), geometry.LinearLayerOffset(layer), geometry.mips.front(), false, layer, geometry.thick);
             }
             if (recorder != nullptr) {
                 for (auto& upload : uploads) recorder->Keep(upload);
@@ -324,9 +344,17 @@ public:
     const std::uint32_t layers;
 
 private:
+    // What the staging holds for a layer without a host slice: the guest range it was read from
+    // and the tracker generation collected before the read (none after a slice's copy).
+    struct GuestLayer {
+        std::uint64_t address = 0;
+        std::uint64_t generation = 0;
+    };
+
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     std::unique_ptr<DeviceBuffer> staging;
+    std::vector<GuestLayer> guestLayers = std::vector<GuestLayer>(layers);
     std::map<std::array<std::uint32_t, 5>, std::shared_ptr<Texture>> textures;
 
     VkDeviceSize sliceBytes() const {
@@ -390,6 +418,10 @@ DepthSurface* planeSurface(const Context& context, std::span<const std::uint32_t
     return found->get();
 }
 
+}
+
+std::uint64_t DepthPlaneUploads() {
+    return depthPlaneUploads().load(std::memory_order_relaxed);
 }
 
 std::uint64_t DepthSliceBytes(VkExtent2D extent, std::uint32_t bytesPerTexel) {

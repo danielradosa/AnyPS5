@@ -1206,6 +1206,67 @@ void depthMemoryStorageTests(const Device& device, Recorder& recorder) {
     recorder.Sync();
 }
 
+void depthPlaneUploadTests(const Device& device, Recorder& recorder) {
+    constexpr std::uint32_t width = 256;
+    constexpr std::uint32_t height = 128;
+    const auto slice = DepthSliceBytes({width, height}, 4);
+    const auto bytes = static_cast<std::size_t>(slice * 2);
+    void* block = AllocateWatched(bytes, 65536);
+    if (block == nullptr) {
+        std::cout << "write watching unavailable: depth plane uploads not tested\n";
+        return;
+    }
+    const auto address = reinterpret_cast<std::uint64_t>(block);
+    std::memset(block, 0, bytes);
+    {
+        GuestAllocations::Mutation mutation;
+        mutation.Add(block, bytes, true, true, true);
+    }
+    const auto& base = device.GetContext();
+    struct Release {
+        const Context& context;
+        void* block;
+        std::size_t bytes;
+        ~Release() {
+            ClearCachedTextures(context.device);
+            ClearDepthSurfaces(context.device);
+            {
+                GuestAllocations::Mutation mutation;
+                mutation.Remove(block);
+            }
+            ReleaseWatched(block, bytes);
+        }
+    } release{base, block, bytes};
+    TextureDetiler detiler(base);
+    auto context = base;
+    context.detiler = &detiler;
+    const std::array<std::uint32_t, 8> words{
+        static_cast<std::uint32_t>(address >> 8u),
+        static_cast<std::uint32_t>((address >> 40u) & 0xffu) | (22u << 20u) | (((width - 1u) & 3u) << 30u),
+        ((width - 1u) >> 2u) | ((height - 1u) << 14u),
+        0xfacu | (0x18u << 20u) | (13u << 28u),
+        1u,
+        0u,
+        0u,
+        0u,
+    };
+    DepthSurfaceView(context, {address, 0, {width, height}, VK_FORMAT_D32_SFLOAT, 1.0f, 0});
+    const auto sample = [&] {
+        Require(DepthSurfaceTexture(context, words, DecodeTextureResource(words), VkComponentMapping{}) != nullptr, "a 2-layer depth array over a depth surface was not sampled through its plane copy");
+        recorder.Submit();
+        device.WaitQueue();
+        recorder.Sync();
+    };
+    const auto before = DepthPlaneUploads();
+    sample();
+    Require(DepthPlaneUploads() == before + 1, "the layer without a host depth surface was not read from guest memory");
+    sample();
+    Require(DepthPlaneUploads() == before + 1, "an unchanged layer without a host depth surface was read again");
+    static_cast<volatile std::uint8_t*>(block)[slice + 64] = 0x3f;
+    sample();
+    Require(DepthPlaneUploads() == before + 2, "a layer the CPU wrote was not read again");
+}
+
 void resourceReadTests(const Device& device, Recorder& recorder) {
     const auto& context = device.GetContext();
     if (context.hostImportAlignment == 0) {
@@ -4722,6 +4783,7 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string_view(argv[1]) == "--depth-memory-only") {
             depthMemoryStorageTests(device, recorder);
+            depthPlaneUploadTests(device, recorder);
             std::cout << "Storage images over depth memory tests passed\n";
             return 0;
         }
@@ -4777,6 +4839,7 @@ int main(int argc, char** argv) {
         movedMetadataTests(device, recorder);
         viewPastLastMipTests(device, recorder);
         depthMemoryStorageTests(device, recorder);
+        depthPlaneUploadTests(device, recorder);
         keysFillTests(device, recorder);
         denormalClearTests(device, recorder);
         unitShadowTests(device, recorder);
