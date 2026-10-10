@@ -58,6 +58,7 @@ constexpr std::uint64_t RUN_GET_CODEC_INFO = 1ull << 11;
 constexpr std::uint64_t RUN_MULTIPLE_FRAMES = 1ull << 12;
 constexpr std::uint64_t CONTROL_RESET = 1ull << 13;
 constexpr std::uint64_t CONTROL_INITIALIZE = 1ull << 14;
+constexpr std::uint64_t CONTROL_RESAMPLE = 1ull << 15;
 constexpr std::uint64_t SIDEBAND_GAPLESS_DECODE = 1ull << 45;
 constexpr std::uint64_t SIDEBAND_FORMAT = 1ull << 46;
 constexpr std::uint64_t SIDEBAND_STREAM = 1ull << 47;
@@ -104,6 +105,11 @@ struct SidebandResampleInfo {
     float ratio;
     std::int32_t samples;
     std::uint32_t reserved[8];
+};
+
+struct SidebandResampleParameters {
+    float ratio;
+    std::uint32_t flags;
 };
 
 struct Resampler {
@@ -1091,11 +1097,21 @@ void Control(Instance& instance, const JobHeader& job, const AjmBuffer* inputs) 
     const auto* input = job.inputCount ? static_cast<const std::uint8_t*>(inputs[0].ptr) : nullptr;
     const std::size_t inputSize = job.inputCount ? inputs[0].size : 0;
     const std::size_t gaplessSize = (job.flags & SIDEBAND_GAPLESS_DECODE) ? sizeof(SidebandGaplessDecode) : 0;
+    const std::size_t resampleSize = (job.flags & CONTROL_RESAMPLE) ? sizeof(SidebandResampleParameters) : 0;
     const std::size_t initializeSize = (job.flags & CONTROL_INITIALIZE) ? ControlInitializeSize(instance.codec) : 0;
-    if (inputSize != gaplessSize + initializeSize) NotImplemented_nid_no_patch("sceAjmBatchJobControl (sideband input size other than the gapless decode and the codec's initialize parameters)");
+    if (inputSize != gaplessSize + resampleSize + initializeSize) NotImplemented_nid_no_patch("sceAjmBatchJobControl (sideband input size other than the gapless decode, the resample parameters and the codec's initialize parameters)");
+    SidebandResampleParameters resample{};
+    if (resampleSize) {
+        std::memcpy(&resample, input + gaplessSize, sizeof(resample));
+        if (!std::isfinite(resample.ratio) || resample.ratio <= 0.0f) throw std::runtime_error("AJM: control job resample ratio " + std::to_string(resample.ratio) + " is not a positive finite number");
+    }
     std::int32_t result = 0;
     if (job.flags & CONTROL_RESET) ClearContext(instance);
-    if (job.flags & CONTROL_INITIALIZE) result = InitializeInstance(instance, input + gaplessSize, initializeSize);
+    if (job.flags & CONTROL_INITIALIZE) result = InitializeInstance(instance, input + gaplessSize + resampleSize, initializeSize);
+    if (resampleSize) {
+        instance.resampler.ratio = resample.ratio;
+        instance.resampler.ratioChange = 0.0;
+    }
     if (gaplessSize) {
         SidebandGaplessDecode gapless{};
         std::memcpy(&gapless, input, sizeof(gapless));
@@ -1104,6 +1120,7 @@ void Control(Instance& instance, const JobHeader& job, const AjmBuffer* inputs) 
     }
     AJM_TRACE("[ajm] instance %u control flags 0x%llx: %zu sideband input bytes -> result 0x%x, gapless total %u skip %u skipped %u\n", job.instance, static_cast<unsigned long long>(job.flags), inputSize, static_cast<unsigned>(result), instance.gapless.totalSamples, instance.gapless.skipSamples, instance.gapless.skippedSamples);
     WriteResult(job.sideband, job.sidebandSize, result);
+    if (gaplessSize && job.sideband && job.sidebandSize >= sizeof(SidebandResult) + sizeof(SidebandGaplessDecode)) std::memcpy(static_cast<std::uint8_t*>(job.sideband) + sizeof(SidebandResult), &instance.gapless, sizeof(instance.gapless));
 }
 
 std::size_t HeldSamples(const Instance& instance) {
@@ -1312,11 +1329,11 @@ int APS5_VABI sceAjmBatchJobSetGaplessDecode(AjmBatchInfo* info, uint32_t instan
 }
 
 int APS5_VABI sceAjmBatchJobControl(AjmBatchInfo* info, uint32_t instance, uint64_t flags, const void* sideband_input, size_t sideband_input_size, void* sideband_output, size_t sideband_output_size) {
-    constexpr std::uint64_t supported = CONTROL_RESET | CONTROL_INITIALIZE | SIDEBAND_GAPLESS_DECODE;
-    if (flags == 0 || (flags & ~supported) != 0) NotImplemented_nid_no_patch("sceAjmBatchJobControl (flags other than a combination of RESET, INITIALIZE and SIDEBAND_GAPLESS_DECODE)");
-    if ((flags & SIDEBAND_GAPLESS_DECODE) != 0 && (flags & CONTROL_RESET) == 0) NotImplemented_nid_no_patch("sceAjmBatchJobControl (SIDEBAND_GAPLESS_DECODE without RESET)");
-    if (sideband_output_size != sizeof(SidebandResult)) NotImplemented_nid_no_patch("sceAjmBatchJobControl (sideband output other than the 8-byte result)");
-    if (sideband_input_size != 0 && !sideband_input) NotImplemented_nid_no_patch("sceAjmBatchJobControl (null sideband input)");
+    constexpr std::uint64_t supported = CONTROL_RESET | CONTROL_INITIALIZE | CONTROL_RESAMPLE | SIDEBAND_GAPLESS_DECODE;
+    if ((flags & ~supported) != 0) throw std::runtime_error(std::string(__func__) + ": flags other than a combination of RESET, INITIALIZE, RESAMPLE and SIDEBAND_GAPLESS_DECODE");
+    if ((flags & SIDEBAND_GAPLESS_DECODE) != 0 && (flags & CONTROL_RESET) == 0) throw std::runtime_error(std::string(__func__) + ": SIDEBAND_GAPLESS_DECODE without RESET");
+    if (sideband_output_size < sizeof(SidebandResult)) throw std::runtime_error(std::string(__func__) + ": a sideband output smaller than the 8-byte result");
+    if (sideband_input_size != 0 && !sideband_input) throw std::runtime_error(std::string(__func__) + ": null sideband input");
     auto header = MakeHeader(JobKind::Control, instance, sideband_output, sideband_output_size);
     header.flags = flags;
     header.inputCount = sideband_input_size != 0 ? 1 : 0;

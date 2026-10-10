@@ -710,13 +710,23 @@ void TestControlAt9(std::uint32_t context) {
 
     Require(ControlRefused(context, instance, CONTROL_INITIALIZE, &start, sizeof(start)));
     Require(ControlRefused(context, instance, CONTROL_RESET | SIDEBAND_GAPLESS_DECODE, &start, sizeof(start)));
+    Require(ControlRefused(context, instance, CONTROL_START | (1ull << 15), &start, sizeof(start)));
     Require(ControlThrows(instance, CONTROL_INITIALIZE | SIDEBAND_GAPLESS_DECODE, &start, sizeof(start), 8));
-    Require(ControlThrows(instance, CONTROL_START | (1ull << 15), &start, sizeof(start), 8));
     Require(ControlThrows(instance, CONTROL_START | (1ull << 46), &start, sizeof(start), 8));
     Require(ControlThrows(instance, CONTROL_START | (1ull << 12), &start, sizeof(start), 8));
-    Require(ControlThrows(instance, 0, nullptr, 0, 8));
-    Require(ControlThrows(instance, CONTROL_START, &start, sizeof(start), 16));
+    Require(ControlThrows(instance, CONTROL_START | 1ull, &start, sizeof(start), 8));
+    Require(ControlThrows(instance, CONTROL_START, &start, sizeof(start), 4));
     Require(ControlThrows(instance, CONTROL_START, nullptr, sizeof(start), 8));
+
+    struct {
+        GaplessSideband gapless;
+        std::uint32_t guard[2];
+    } extended{{-1, -1, 0, 0, 0xffff}, {0xA5A5A5A5u, 0xA5A5A5A5u}};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobControl(&info, instance, CONTROL_START, &start, sizeof(start), &extended, sizeof(extended)) == 0);
+    Submit(context, info);
+    Require(extended.gapless.result == 0 && extended.gapless.internalResult == 0 && extended.gapless.totalSamples == 2000 && extended.gapless.skipSamples == 100 && extended.gapless.skippedSamples == 0);
+    Require(extended.guard[0] == 0xA5A5A5A5u && extended.guard[1] == 0xA5A5A5A5u);
     Require(sceAjmInstanceDestroy(context, instance) == 0);
 
     result[0] = -1;
@@ -990,6 +1000,60 @@ void TestResampleAt9(std::uint32_t context) {
     for (const std::uint32_t instance : {plain, faster, slower}) Require(sceAjmInstanceDestroy(context, instance) == 0);
 }
 
+struct ResampleControl {
+    float ratio;
+    std::uint32_t flags;
+};
+
+void TestControlResample(std::uint32_t context) {
+    constexpr std::uint64_t controlResample = 1ull << 15;
+    const std::uint32_t instance = CreateOpus(context);
+    std::int32_t result[2] = {-1, -1};
+    RunControl(context, instance, 0, nullptr, 0, result);
+    Require(result[0] == 0 && result[1] == 0 && GetResampleInfo(context, instance).ratio == 1.0f);
+
+    const ResampleControl faster{2.0f, 1};
+    result[0] = -1;
+    RunControl(context, instance, controlResample, &faster, sizeof(faster), result);
+    Require(result[0] == 0 && GetResampleInfo(context, instance).ratio == 2.0f);
+    for (const float bad : {0.0f, -1.0f, std::nanf(""), INFINITY}) {
+        const ResampleControl invalid{bad, 0};
+        Require(ControlRefused(context, instance, controlResample, &invalid, sizeof(invalid)));
+    }
+    Require(GetResampleInfo(context, instance).ratio == 2.0f);
+    const float rampedLayout[3] = {0.5f, 0.0f, 0.0f};
+    Require(ControlRefused(context, instance, controlResample, rampedLayout, sizeof(rampedLayout)));
+    Require(GetResampleInfo(context, instance).ratio == 2.0f);
+
+    struct {
+        GaplessDecode gapless;
+        ResampleControl resample;
+        std::uint32_t channels;
+        std::uint32_t sampleRate;
+        std::uint32_t third;
+    } start{{0, 0, 0}, {0.5f, 1}, 2, 48000, 0};
+    result[0] = -1;
+    RunControl(context, instance, CONTROL_START | controlResample, &start, sizeof(start), result);
+    Require(result[0] == 0 && GetResampleInfo(context, instance).ratio == 0.5f);
+    const auto controlled = Stream(context, instance, OPUS_STEREO, sizeof(OPUS_STEREO), 2, 512, 0);
+    const std::uint32_t reference = CreateOpus(context);
+    const auto parameterized = Stream(context, reference, OPUS_STEREO, sizeof(OPUS_STEREO), 2, 512, 0.5f);
+    Require(!controlled.pcm.empty() && controlled.pcm == parameterized.pcm);
+    Require(ControlRefused(context, instance, CONTROL_START | controlResample, &start, sizeof(start) - sizeof(start.third)));
+
+    struct {
+        std::int32_t result[2];
+        std::uint32_t guard[2];
+    } wide{{-1, -1}, {0xA5A5A5A5u, 0xA5A5A5A5u}};
+    std::vector<std::uint8_t> batch(4096);
+    AjmBatchInfo info{};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobControl(&info, instance, CONTROL_RESET, nullptr, 0, &wide, sizeof(wide)) == 0);
+    Submit(context, info);
+    Require(wide.result[0] == 0 && wide.result[1] == 0 && wide.guard[0] == 0xA5A5A5A5u && wide.guard[1] == 0xA5A5A5A5u);
+    for (const std::uint32_t created : {instance, reference}) Require(sceAjmInstanceDestroy(context, created) == 0);
+}
+
 ResampledStream RampMp3(std::uint32_t context, std::uint32_t instance, std::size_t frames, float start, float change) {
     ResampledStream out;
     std::vector<std::int16_t> pcm(frames);
@@ -1221,6 +1285,7 @@ int main() {
     TestResampleOpus(context);
     TestResampleMp3(context);
     TestResampleAt9(context);
+    TestControlResample(context);
     TestResampleRamp(context);
     TestAt9GaplessSegments(context);
     TestAt9RunDecodesWholeInput(context);
