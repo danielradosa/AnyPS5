@@ -2354,8 +2354,18 @@ bool GuestBufferMemory::bindableInPlace(std::uint64_t offset, bool addressable) 
 }
 
 bool GuestBufferMemory::stagingEligible(const Region& region, bool addressable) const {
-    if (!stagingAllowed || addressable || region.unstaged || !gpuCopiesEnabled() || region.sparse || region.mirror != nullptr) return false;
+    // APS5_TRACE_STAGING: why a region of 1 MiB or more is not staged in device memory, once per
+    // region start and reason.
+    static const bool trace = std::getenv("APS5_TRACE_STAGING") != nullptr;
     const auto bytes = region.end - region.begin;
+    if (trace && bytes >= (1u << 20u)) {
+        const char* reason = !stagingAllowed ? "staging not allowed" : addressable ? "address-based build" : region.unstaged ? "unstaged (device refused before)" : !gpuCopiesEnabled() ? "GPU copies disabled" : region.sparse ? "sparse" : region.mirror != nullptr ? "mirror" : !WritesOverlap(region.begin, static_cast<std::size_t>(bytes)) ? "not written" : (region.atomic && atomicStagingEnabled() && bytes <= atomicStageMax()) ? "staged (atomic)" : !writtenShadowEnabled() ? "written shadow disabled" : bytes < writtenShadowMin() ? "below the shadow minimum" : bytes > (region.swept ? std::max(writtenShadowMax(), SweptShadowMax) : writtenShadowMax()) ? (region.swept ? "above the swept maximum" : "above the shadow maximum (not swept)") : "staged";
+        static std::mutex mutex;
+        static std::set<std::pair<std::uint64_t, std::string>> seen;
+        std::lock_guard lock(mutex);
+        if (seen.insert({region.begin, reason}).second) std::fprintf(stderr, "[staging] region 0x%llx+0x%llx (swept %d atomic %d hostBacked %d writable %d): %s\n", static_cast<unsigned long long>(region.begin), static_cast<unsigned long long>(bytes), region.swept ? 1 : 0, region.atomic ? 1 : 0, region.hostBacked ? 1 : 0, region.writable ? 1 : 0, reason);
+    }
+    if (!stagingAllowed || addressable || region.unstaged || !gpuCopiesEnabled() || region.sparse || region.mirror != nullptr) return false;
     if (!WritesOverlap(region.begin, static_cast<std::size_t>(bytes))) return false;
     if (region.atomic && atomicStagingEnabled() && bytes <= atomicStageMax()) return true;
     return writtenShadowEnabled() && bytes >= writtenShadowMin() && bytes <= (region.swept ? std::max(writtenShadowMax(), SweptShadowMax) : writtenShadowMax());
