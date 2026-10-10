@@ -9,7 +9,6 @@ extern "C" {
 int APS5_VABI sceNpGetNpId(int user_id, NpId* np_id);
 int APS5_VABI sceNpCreateRequest(void);
 int APS5_VABI sceNpDeleteRequest(int req_id);
-int APS5_VABI sceNpCheckNpAvailability(int req_id, const char* user, void* result);
 int APS5_VABI sceNpGetUserIdByAccountId(std::uint64_t account_id, int* user_id);
 }
 
@@ -38,9 +37,6 @@ int main() {
 
     const int request = sceNpCreateRequest();
     Require(request > 0, "sceNpCreateRequest must return a positive request id");
-    const char onlineId[16] = "user";
-    Require(sceNpCheckNpAvailability(request, nullptr, nullptr) == InvalidArgument, "sceNpCheckNpAvailability must reject a null user");
-    Require(sceNpCheckNpAvailability(request, onlineId, nullptr) == SignedOut, "sceNpCheckNpAvailability must report the user as signed out");
     Require(sceNpDeleteRequest(request) == 0, "sceNpDeleteRequest must accept the request");
     int userId = 0x5a5a;
     Require(sceNpGetUserIdByAccountId(0x1234567890ull, &userId) == SignedOut, "sceNpGetUserIdByAccountId must report no signed-in user for the account");

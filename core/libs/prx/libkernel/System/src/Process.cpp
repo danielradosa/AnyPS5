@@ -3,6 +3,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #else
 #include <sched.h>
 #include <unistd.h>
@@ -13,6 +14,7 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/Shutdown.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
+#include "prx/libkernel/Pthread/include/Pthread.hpp"
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -45,17 +47,30 @@ constexpr unsigned freebsdWaitOptions = 0x8000003Fu;
 std::atomic<std::uint32_t> gpoBits{0};
 constexpr std::array<std::uint8_t, 16> openPsId{'A', 'n', 'y', 'P', 'S', '5', 'O', 'p', 'e', 'n', 'P', 's', 'I', 'd', 0, 1};
 
+#ifdef _WIN32
+std::string toUtf8(const wchar_t* value) {
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 0)
+        throw std::system_error(GetLastError(), std::system_category(), "Converting a process argument to UTF-8");
+    std::string text(static_cast<std::size_t>(size), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1, text.data(), size, nullptr, nullptr) != size)
+        throw std::system_error(GetLastError(), std::system_category(), "Converting a process argument to UTF-8");
+    text.pop_back();
+    return text;
+}
+#endif
+
 class ProcessArguments {
 public:
     ProcessArguments() {
 #ifdef _WIN32
-        std::array<char, 32768> path{};
-        const auto size = GetModuleFileNameA(nullptr, path.data(), static_cast<DWORD>(path.size()));
-        if (size == 0)
-            throw std::system_error(GetLastError(), std::system_category(), "Reading executable path");
-        if (size >= path.size())
-            throw std::runtime_error("Executable path exceeds the guest argument buffer");
-        arguments.emplace_back(path.data(), size);
+        int count = 0;
+        const std::unique_ptr<LPWSTR, void (*)(LPWSTR*)> values(CommandLineToArgvW(GetCommandLineW(), &count),
+            [](LPWSTR* parsed) { LocalFree(parsed); });
+        if (!values)
+            throw std::system_error(GetLastError(), std::system_category(), "Reading process arguments");
+        for (int index = 0; index < count; ++index)
+            arguments.push_back(toUtf8(values.get()[index]));
 #else
         std::ifstream stream("/proc/self/cmdline", std::ios::binary);
         if (!stream)
@@ -90,7 +105,7 @@ ProcessArguments& getProcessArguments() {
 }
 
 void validateSchedulingPolicy(int policy) {
-    if (policy != 1 && policy != 3)
+    if (policy < 1 || policy > 3)
         throw std::invalid_argument("Unsupported guest scheduling policy");
 }
 
@@ -150,10 +165,14 @@ struct GuestResourceUsage {
     std::int64_t ru_nivcsw;
 };
 
+extern "C" Pthread APS5_VABI scePthreadSelf();
+
 extern "C" {
 
 // unknown data
 const char* __progname_nid_postfix = "eboot.bin";
+static char* emptyEnvironment[1];
+char** environ_nid_postfix = emptyEnvironment;
 
 int APS5_VABI getargc_nid_postfix(void) {
     return getProcessArguments().GetCount();
@@ -202,15 +221,20 @@ void APS5_VABI exit_nid_postfix(int code) {
     LibcExit_nid_no_patch(code);
 }
 
+[[noreturn]] void APS5_VABI _exit_nid_postfix(int status) {
+    LibcTerminate_nid_no_patch(status);
+}
+
+int APS5_VABI system_nid_postfix(const char* command) {
+    constexpr int shellNotExecuted = 127 << 8;
+    return command == nullptr ? 1 : shellNotExecuted;
+}
+
 int APS5_VABI waitpid_nid_postfix(int pid, int* status, int options) {
     (void)pid;
     (void)status;
     *__error_nid_postfix() = (static_cast<unsigned>(options) & ~freebsdWaitOptions) != 0 ? errnoInvalidArgument : errnoNoChild;
     return -1;
-}
-
-[[noreturn]] void APS5_VABI _exit_nid_postfix(int status) {
-    std::_Exit(status);
 }
 
 int APS5_VABI sceKernelGetCurrentCpu(void) {
@@ -224,13 +248,13 @@ int APS5_VABI sceKernelGetCurrentCpu(void) {
             throw std::system_error(GetLastError(), std::system_category(), "Reading processor group size");
         index += count;
     }
-    return static_cast<int>(index);
 #else
     const int cpu = ::sched_getcpu();
     if (cpu < 0)
         throw std::system_error(errno, std::generic_category(), "Reading current processor");
-    return cpu;
+    const auto index = static_cast<unsigned>(cpu);
 #endif
+    return GuestCpuFromHost(index, scePthreadSelf()->affinity.load(std::memory_order_relaxed));
 }
 
 std::uint64_t APS5_VABI sceKernelGetGPI(void) {

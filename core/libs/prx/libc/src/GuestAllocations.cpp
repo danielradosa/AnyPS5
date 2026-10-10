@@ -34,6 +34,7 @@ struct Registry {
     std::mutex mutex;
     std::map<std::uint64_t, std::shared_ptr<const Range>> ranges;
     bool mainImageRegistered = false;
+    std::map<std::uintptr_t, std::uintptr_t> registeredImages;
 };
 
 Registry& registry() {
@@ -43,7 +44,7 @@ Registry& registry() {
 
 std::atomic<std::uint64_t> generation{1};
 std::atomic<void (*)(std::uintptr_t, std::size_t)> invalidator{nullptr};
-std::atomic<bool (*)()> pinWaiter{nullptr};
+std::atomic<bool (*)(std::uintptr_t, std::size_t)> pinWaiter{nullptr};
 
 std::chrono::milliseconds pinWait() {
     static const std::chrono::milliseconds value{[] {
@@ -129,22 +130,21 @@ void GuestAllocationsInvalidate_nid_postfix(std::uintptr_t address, std::size_t 
     if (const auto callback = invalidator.load(std::memory_order_acquire)) callback(address, bytes);
 }
 
-void GuestAllocationsSetPinWaiter_nid_postfix(bool (*callback)()) {
+void GuestAllocationsSetPinWaiter_nid_postfix(bool (*callback)(std::uintptr_t, std::size_t)) {
     pinWaiter.store(callback, std::memory_order_release);
 }
 
 #ifdef _WIN32
-void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
+namespace {
+void registerImage(const void* image) {
     auto& state = registry();
-    if (state.mainImageRegistered) return;
-    const auto image = GetModuleHandleW(nullptr);
-    require(image != nullptr, "cannot locate the main guest image");
+    if (state.registeredImages.contains(reinterpret_cast<std::uintptr_t>(image))) return;
     auto replacement = state.ranges;
     auto cursor = reinterpret_cast<std::uintptr_t>(image);
     bool registered = false;
     for (;;) {
         MEMORY_BASIC_INFORMATION memory{};
-        require(VirtualQuery(reinterpret_cast<const void*>(cursor), &memory, sizeof(memory)) == sizeof(memory), "cannot query the main guest image");
+        require(VirtualQuery(reinterpret_cast<const void*>(cursor), &memory, sizeof(memory)) == sizeof(memory), "cannot query a guest image");
         if (memory.AllocationBase != image) break;
         require(memory.Type == MEM_IMAGE && (memory.State == MEM_COMMIT || memory.State == MEM_RESERVE), "unsupported guest image mapping");
         require(reinterpret_cast<std::uintptr_t>(memory.BaseAddress) == cursor && memory.RegionSize != 0 && memory.RegionSize <= std::numeric_limits<std::uintptr_t>::max() - cursor, "invalid guest image range");
@@ -165,9 +165,35 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
         }
         cursor += memory.RegionSize;
     }
-    require(registered, "main guest image has no committed pages");
+    require(registered, "guest image has no committed pages");
     state.ranges.swap(replacement);
+    state.registeredImages.emplace(reinterpret_cast<std::uintptr_t>(image), cursor);
+}
+}
+
+void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
+    auto& state = registry();
+    if (state.mainImageRegistered) return;
+    const auto image = GetModuleHandleW(nullptr);
+    require(image != nullptr, "cannot locate the main guest image");
+    registerImage(image);
     state.mainImageRegistered = true;
+}
+
+void GuestAllocationsRegisterImage_nid_postfix(void*, const void* image) {
+    require(image != nullptr, "cannot register a guest image without a base");
+    registerImage(image);
+}
+
+void GuestAllocationsUnregisterImage_nid_postfix(void* mutation, const void* image) {
+    auto& state = registry();
+    const auto found = state.registeredImages.find(reinterpret_cast<std::uintptr_t>(image));
+    if (found == state.registeredImages.end()) return;
+    const auto [begin, end] = *found;
+    GuestAllocationsRequireUnpinned_nid_postfix(mutation, image, end - begin);
+    recordChange(mutation, image, end - begin);
+    std::erase_if(state.ranges, [&](const auto& entry) { return !entry.second->releasable && entry.second->allocationAddress >= begin && entry.second->allocationAddress < end; });
+    state.registeredImages.erase(found);
 }
 #else
 void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
@@ -233,7 +259,7 @@ void GuestAllocationsAdd_nid_postfix(void* mutation, void* pointer, std::size_t 
 
 [[noreturn]] void PinnedFailure(std::uintptr_t address, std::size_t bytes, const char* why) {
     char message[160];
-    std::snprintf(message, sizeof(message), "guest allocation 0x%llx+0x%llx is owned by an active GPU command (%s)", static_cast<unsigned long long>(address), static_cast<unsigned long long>(bytes), why);
+    std::snprintf(message, sizeof(message), "guest allocation 0x%llx+0x%llx is still pinned by GPU work or an import (%s)", static_cast<unsigned long long>(address), static_cast<unsigned long long>(bytes), why);
     throw std::runtime_error(message);
 }
 
@@ -269,7 +295,7 @@ void GuestAllocationsRequireUnpinned_nid_postfix(void* mutation, const void* poi
         bool progressed = false;
         if (state != nullptr && state->lock.owns_lock()) {
             state->lock.unlock();
-            if (waiter != nullptr) progressed = waiter();
+            if (waiter != nullptr) progressed = waiter(address, bytes);
             else std::this_thread::yield();
             state->lock.lock();
         } else {
@@ -430,6 +456,16 @@ Lease GuestAllocationsAcquire_nid_postfix() {
     Lease result;
     for (const auto& [address, range] : registry().ranges) {
         if (range->readable && range->bytes != 0) result.push_back(range);
+    }
+    return result;
+}
+
+Lease GuestAllocationsAcquireAll_nid_postfix() {
+    std::lock_guard lock(registry().mutex);
+    Lease result;
+    result.reserve(registry().ranges.size());
+    for (const auto& [address, range] : registry().ranges) {
+        if (range->bytes != 0) result.push_back(range);
     }
     return result;
 }

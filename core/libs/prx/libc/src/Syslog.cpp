@@ -18,8 +18,7 @@ namespace {
 constexpr int priorityMask = 0x07;
 constexpr int facilityMask = 0x3f8;
 constexpr int userFacility = 1 << 3;
-constexpr int kernelFacility = 0;
-constexpr int errorPriority = 3;
+constexpr int internalLogPriority = 3 | 0x02 | 0x20 | 0x01;
 
 std::mutex& OutputMutex() {
     static std::mutex mutex;
@@ -81,7 +80,7 @@ void APS5_VABI vsyslog_nid_postfix(int priority, const char* format, VaList* arg
     if (priority & ~(priorityMask | facilityMask)) {
         char complaint[64];
         std::snprintf(complaint, sizeof(complaint), "syslog: unknown facility/priority: %x", priority);
-        Emit(kernelFacility | errorPriority, complaint);
+        Emit(internalLogPriority, complaint);
         priority &= priorityMask | facilityMask;
     }
     if ((priority & facilityMask) == 0) priority |= userFacility;

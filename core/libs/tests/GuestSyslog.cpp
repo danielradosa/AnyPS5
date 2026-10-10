@@ -43,7 +43,7 @@ int main() {
     const char* expected =
         "[syslog:14] station radio at 128 kbps\n"
         "[syslog:19] open: No such file or directory, %m kept, 50%\n"
-        "[syslog:3] syslog: unknown facility/priority: 10004\n"
+        "[syslog:35] syslog: unknown facility/priority: 10004\n"
         "[syslog:12] masked\n"
         "[syslog:15] \n";
     Require(length == std::strlen(expected) && std::strcmp(text, expected) == 0);

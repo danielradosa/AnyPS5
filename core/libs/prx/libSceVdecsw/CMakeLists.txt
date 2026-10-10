@@ -1,28 +1,20 @@
-find_package(Threads REQUIRED)
-add_library(libSceVdecsw SHARED EXCLUDE_FROM_ALL Export.cpp AvcMetadata.cpp)
+add_library(libSceVdecsw SHARED EXCLUDE_FROM_ALL
+        ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp
+)
+
 target_include_directories(libSceVdecsw PRIVATE ${LIBS_INCLUDE_DIR})
-target_link_libraries(libSceVdecsw PRIVATE ffmpeg Threads::Threads)
-if(WIN32)
-    target_sources(libSceVdecsw PRIVATE Exports.def)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(libSceVdecsw PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/Exports.map")
-    set_property(TARGET libSceVdecsw APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Exports.map)
-endif()
 configure_windows_unwind(libSceVdecsw)
 
+target_link_libraries(libSceVdecsw PRIVATE libSceVideodec2)
+
 if(BUILD_TESTING)
-    add_test_executable(guest_avc_metadata_tests ${LIBS_INCLUDE_DIR}/tests/GuestAvcMetadata.cpp AvcMetadata.cpp)
-    target_include_directories(guest_avc_metadata_tests PRIVATE ${LIBS_INCLUDE_DIR})
-    target_link_libraries(guest_avc_metadata_tests PRIVATE libc)
-    configure_windows_unwind(guest_avc_metadata_tests)
-    add_test(NAME guest_avc_metadata COMMAND guest_avc_metadata_tests)
     add_test_executable(guest_vdecsw_tests ${LIBS_INCLUDE_DIR}/tests/GuestVdecsw.cpp)
     target_include_directories(guest_vdecsw_tests PRIVATE ${LIBS_INCLUDE_DIR})
-    target_link_libraries(guest_vdecsw_tests PRIVATE libSceVdecsw libc)
+    target_link_libraries(guest_vdecsw_tests PRIVATE libSceVdecsw libSceVideodec2 libc)
     configure_windows_unwind(guest_vdecsw_tests)
     add_test(NAME guest_vdecsw COMMAND guest_vdecsw_tests)
     if(WIN32)
-        set_tests_properties(guest_vdecsw guest_avc_metadata PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(guest_vdecsw PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceVdecsw>")
     endif()
 endif()

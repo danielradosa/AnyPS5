@@ -2,12 +2,10 @@
 #define CORE_LIBS_PRX_LIBKERNEL_PTHREAD_PTHREAD_HPP
 
 #include <sched.h>
-#ifndef _WIN32
-#include <pthread.h>
-#endif
 #include "SceTypes.hpp"
 #include "prx/libkernel/Time/include/TimedWait.hpp"
 #include <atomic>
+#include <bit>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +14,10 @@
 #include <shared_mutex>
 #include <string>
 #include <thread>
+
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 
 enum class MutexType : std::uint32_t {
     ErrorCheck = 1,
@@ -43,6 +45,12 @@ struct PthreadRwlockattrPrivate {
 };
 
 struct PthreadRwlockPrivate {
+    // TODO(technical debt): winpthreads initializes a static rwlock on first use and fails a
+    // concurrent first lock with EINVAL, which shared_timed_mutex ignores. Initialize it here.
+    PthreadRwlockPrivate() {
+        _lock.lock();
+        _lock.unlock();
+    }
     std::shared_timed_mutex _lock;
     std::atomic<std::thread::id> _writer;
 };
@@ -70,6 +78,13 @@ static constexpr std::uint32_t CPU_CLOCK_BIT = 0x80000000u;
 static constexpr std::uint32_t CPU_CLOCK_PROCESS_BIT = 0x40000000u;
 static constexpr std::uint32_t CPU_CLOCK_ID_MASK = ~(CPU_CLOCK_BIT | CPU_CLOCK_PROCESS_BIT);
 
+inline int GuestCpuFromHost(unsigned hostCpu, KernelCpumask threadAffinity) {
+    KernelCpumask mask = threadAffinity & DEFAULT_THREAD_AFFINITY;
+    if (mask == 0) mask = DEFAULT_THREAD_AFFINITY;
+    for (auto skip = hostCpu % static_cast<unsigned>(std::popcount(mask)); skip != 0; --skip) mask &= mask - 1;
+    return std::countr_zero(mask);
+}
+
 struct PthreadAttrPrivate {
     void* stackAddress = nullptr;
     std::size_t _stacksize;
@@ -82,15 +97,20 @@ struct PthreadAttrPrivate {
     int _solosched = 0;
 };
 
+inline std::atomic<std::int64_t> nextThreadId{100000};
+
 struct PthreadPrivate {
+    std::int64_t tid = nextThreadId.fetch_add(1, std::memory_order_relaxed);
 #ifdef _WIN32
     void* nativeHandle = nullptr;
 #else
-    std::thread _thr;
-    pthread_t nativeThread{};
+    pthread_t hostThread{};
 #endif
     std::thread::id threadId;
     std::atomic<unsigned> references{2};
+    std::atomic<bool> inWait{false};
+    std::atomic<int> pendingException{0};
+    void* wakeEvent = nullptr;
     void* stackAddress = nullptr;
     std::size_t stackSize = 0;
     std::atomic<int> waitCount{0};

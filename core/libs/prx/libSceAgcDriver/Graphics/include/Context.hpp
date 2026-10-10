@@ -125,7 +125,9 @@ struct Context {
     bool occlusionQueryPrecise = false;
     bool depthBounds = false;
     bool depthBiasClamp = false;
+    bool dualSrcBlend = false;
     bool samplerFilterMinmax = false;
+    bool nonSeamlessCubeMap = false;
     bool conservativeRasterization = false;
     VkBuffer emptyBuffer = VK_NULL_HANDLE;
     // The device's list of recorded dispatches whose copied written buffers await a CPU write-back
@@ -137,14 +139,18 @@ struct Context {
     // VK_EXT_descriptor_indexing with non-uniform sampled/storage image array indexing enabled
     // (bindless image tables in graphics stages).
     bool descriptorIndexing = false;
+    VkPhysicalDeviceDescriptorIndexingPropertiesEXT descriptorIndexingLimits{};
     bool imageInt64Atomics = false;
     bool geometryShader = false;
     bool sampleRateShading = false;
     bool nullDescriptors = false;
+    bool bufferInt64Atomics = false;
     bool primitiveListRestart = false;
     bool imageViewMinLod = false;
     bool pipelineExecutableInfo = false;
     std::uint32_t srgbDecodeFormats = 0;
+    bool provokingVertexLast = false;
+    bool provokingVertexModePerPipeline = false;
 
     template<typename TFunction>
     TFunction Function(const char* name) const {
