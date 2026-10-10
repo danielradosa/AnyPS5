@@ -2721,14 +2721,17 @@ std::string ShaderResources::Describe() const {
             }
         }
     }
-    // APS5_TRACE_DISPATCH_IO=2 also lists the words of small buffers (constants).
+    // APS5_TRACE_DISPATCH_IO=2 also lists the words of small buffers (constants), and the last 16
+    // words of constant-sized ones up to 64 KiB, after their offset.
     static const bool words = [] { const char* value = std::getenv("APS5_TRACE_DISPATCH_IO"); return value != nullptr && value[0] == '2'; }();
     const auto appendWords = [&](const std::uint32_t* data, std::size_t bytes) {
-        if (!words || bytes > 0x200) return;
-        text += " [";
-        for (std::size_t i = 0; i < bytes / 4; ++i) {
-            char word[12];
-            std::snprintf(word, sizeof(word), "%s%08x", i == 0 ? "" : " ", data[i]);
+        if (!words || bytes > 0x10000) return;
+        const std::size_t first = bytes > 0x200 ? bytes / 4 - 16 : 0;
+        char word[24];
+        std::snprintf(word, sizeof(word), first == 0 ? " [" : " [+0x%zx:", first * 4);
+        text += word;
+        for (std::size_t i = first; i < bytes / 4; ++i) {
+            std::snprintf(word, sizeof(word), "%s%08x", i == first ? "" : " ", data[i]);
             text += word;
         }
         text += "]";
