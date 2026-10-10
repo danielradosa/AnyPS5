@@ -3,6 +3,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
+#include <cstdio>
 #include <exception>
 
 namespace AgcDriver::Graphics {
@@ -61,7 +62,18 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
             ready = true;
             return;
         }
-        Check(context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory), "vkAllocateMemory buffer");
+        if (const auto result = context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory); result != VK_SUCCESS) {
+            // Name the failing request: its size, memory type and heap, and the heap's
+            // VK_EXT_memory_budget usage and budget when the device reports them.
+            const auto heap = context.memory.memoryTypes[allocation.memoryTypeIndex].heapIndex;
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT reported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+            VkPhysicalDeviceMemoryProperties2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+            queried.pNext = &reported;
+            if (context.memoryProperties2 != nullptr && context.physical != VK_NULL_HANDLE) context.memoryProperties2(context.physical, &queried);
+            char what[192];
+            std::snprintf(what, sizeof(what), "vkAllocateMemory buffer (%llu KiB, type %u flags 0x%x, heap %u: %llu of %llu MiB used)", static_cast<unsigned long long>(allocation.allocationSize >> 10u), allocation.memoryTypeIndex, context.memory.memoryTypes[allocation.memoryTypeIndex].propertyFlags, heap, static_cast<unsigned long long>(reported.heapUsage[heap] >> 20u), static_cast<unsigned long long>(reported.heapBudget[heap] >> 20u));
+            Check(result, what);
+        }
         Check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, buffer, memory, 0), "vkBindBufferMemory");
         initializeAddress(usage);
         if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) Check(context.Function<PFN_vkMapMemory>("vkMapMemory")(context.device, memory, 0, VK_WHOLE_SIZE, 0, &mapping), "vkMapMemory");
