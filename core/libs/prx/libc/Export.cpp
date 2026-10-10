@@ -24,21 +24,6 @@ extern "C" {
     throw std::runtime_error(std::string("std::_Atomic_assert: ") + (expression ? expression : "") + " (" + (file ? file : "") + ")");
 }
 
-// Live Cyberpunk 2077 import used in an fopen/fseek/ftell-like file-size
-// idiom as (handle, 0, 2); returning 0 reports success.
-int APS5_VABI vsnprintf_s_nid_postfix() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-// Live Cyberpunk 2077 import used as (handle, 0, 0) in the same file-size
-// idiom; returning 0 reports success.
-int APS5_VABI vsscanf_s_nid_postfix() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-
 std::uint64_t APS5_VABI _Mtx_destroy_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -50,11 +35,6 @@ std::uint64_t APS5_VABI _Cnd_destroy_nid_postfix() {
 }
 
 std::uint64_t APS5_VABI _Iswctype_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-std::uint64_t APS5_VABI _WStoul_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

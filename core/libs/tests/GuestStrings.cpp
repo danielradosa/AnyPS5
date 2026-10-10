@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <cstdarg>
 
 extern "C" {
 void* APS5_VABI memccpy_nid_postfix(void*, const void*, int, std::size_t);
@@ -30,7 +31,9 @@ int APS5_VABI memmove_s_nid_postfix(void*, std::size_t, const void*, std::size_t
 int APS5_VABI memset_s_nid_postfix(void*, std::size_t, int, std::size_t);
 char* APS5_VABI strnstr_nid_postfix(const char*, const char*, std::size_t);
 int APS5_VABI snprintf_s_nid_postfix(char*, std::size_t, const char*, ...);
+int APS5_VABI vsnprintf_s_nid_postfix(char*, std::size_t, const char*, void*);
 int APS5_VABI sscanf_s_nid_postfix(const char*, const char*, ...);
+int APS5_VABI vsscanf_s_nid_postfix(const char*, const char*, void*);
 int APS5_VABI __inet_aton_nid_postfix(const char*, void*);
 std::uint32_t APS5_VABI __inet_addr_nid_postfix(const char*);
 }
@@ -40,6 +43,36 @@ static void Require(bool condition) {
         std::fputs("Guest string check failed\n", stderr);
         std::abort();
     }
+}
+
+static int APS5_VABI CallVsnprintfS(char* buffer, std::size_t size, const char* format, ...) {
+#ifdef _WIN32
+    __builtin_sysv_va_list args;
+    __builtin_sysv_va_start(args, format);
+    const int result = vsnprintf_s_nid_postfix(buffer, size, format, reinterpret_cast<void*>(args));
+    __builtin_sysv_va_end(args);
+#else
+    std::va_list args;
+    va_start(args, format);
+    const int result = vsnprintf_s_nid_postfix(buffer, size, format, reinterpret_cast<void*>(&args));
+    va_end(args);
+#endif
+    return result;
+}
+
+static int APS5_VABI CallVsscanfS(const char* buffer, const char* format, ...) {
+#ifdef _WIN32
+    __builtin_sysv_va_list args;
+    __builtin_sysv_va_start(args, format);
+    const int result = vsscanf_s_nid_postfix(buffer, format, reinterpret_cast<void*>(args));
+    __builtin_sysv_va_end(args);
+#else
+    std::va_list args;
+    va_start(args, format);
+    const int result = vsscanf_s_nid_postfix(buffer, format, reinterpret_cast<void*>(&args));
+    va_end(args);
+#endif
+    return result;
 }
 
 static void CheckMemccpy() {
@@ -123,6 +156,14 @@ static void CheckBoundsCheckedFunctions() {
     Require(strnstr_nid_postfix(haystack, "st", 6) == haystack + 3);
     char formatted[8];
     Require(snprintf_s_nid_postfix(formatted, sizeof(formatted), "%d-%s", 42, "x") == 4 && std::strcmp(formatted, "42-x") == 0);
+    char vformatted[8];
+    Require(CallVsnprintfS(vformatted, sizeof(vformatted), "%d-%s", 42, "x") == 4 && std::strcmp(vformatted, "42-x") == 0);
+    Require(CallVsnprintfS(vformatted, 3, "%d-%s", 42, "x") == 4 && std::strcmp(vformatted, "42") == 0);
+    Require(CallVsnprintfS(vformatted, sizeof(vformatted), nullptr) < 0 && vformatted[0] == '\0');
+    vformatted[0] = 'z';
+    Require(CallVsnprintfS(vformatted, 0, "%d", 1) < 0 && vformatted[0] == 'z');
+    Require(CallVsnprintfS(vformatted, SIZE_MAX, "%d", 1) < 0 && vformatted[0] == 'z');
+    Require(CallVsnprintfS(nullptr, sizeof(vformatted), "%d", 1) < 0);
 }
 
 static void CheckSscanfS() {
@@ -144,6 +185,10 @@ static void CheckSscanfS() {
     Require(sscanf_s_nid_postfix("   ", "%d", &number) == EOF);
     Require(sscanf_s_nid_postfix("x", "%d", &number) == 0);
 #endif
+    int vnum = 0;
+    char vword[4] = {};
+    Require(CallVsscanfS("42 abc", "%d %s", &vnum, vword, 4u) == 2 && vnum == 42 && std::strcmp(vword, "abc") == 0);
+    Require(CallVsscanfS(nullptr, "%d", &vnum) == EOF && vnum == 42);
 }
 
 int main() {

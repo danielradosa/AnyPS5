@@ -347,6 +347,12 @@ int APS5_VABI sscanf_nid_postfix(const char* input, const char* format, ...) {
 
 #ifdef _WIN32
 
+int APS5_VABI vsscanf_s_nid_postfix(const char* buffer, const char* format, VaList* args) {
+    if (!buffer || !format || !args) { errno = 22; return EOF; }
+    LibcDetail::FormatArguments va(args);
+    return ScanGuest(buffer, format, true, [&] { return va.Next<void*>(); }, [&] { return va.Next<unsigned int>(); });
+}
+
 int APS5_VABI sscanf_s_nid_postfix(const char* buffer, const char* format, ...) {
     __builtin_sysv_va_list args;
     __builtin_sysv_va_start(args, format);
@@ -356,6 +362,15 @@ int APS5_VABI sscanf_s_nid_postfix(const char* buffer, const char* format, ...) 
 }
 
 #else
+
+int APS5_VABI vsscanf_s_nid_postfix(const char* buffer, const char* format, VaList* args) {
+    if (!buffer || !format || !args) { errno = 22; return EOF; }
+    std::va_list copy;
+    va_copy(copy, *reinterpret_cast<std::va_list*>(args));
+    const int result = ScanGuest(buffer, format, true, [&] { return va_arg(copy, void*); }, [&] { return va_arg(copy, unsigned int); });
+    va_end(copy);
+    return result;
+}
 
 int APS5_VABI sscanf_s_nid_postfix(const char* buffer, const char* format, ...) {
     std::va_list args;
@@ -401,6 +416,24 @@ int APS5_VABI vsnprintf_nid_postfix(char* str, size_t size, const char* format, 
     std::va_list copy;
     va_copy(copy, *reinterpret_cast<std::va_list*>(c));
     const int result = std::vsnprintf(str, size, format, copy);
+    va_end(copy);
+    return result;
+#endif
+}
+
+int APS5_VABI vsnprintf_s_nid_postfix(char* buffer, size_t size, const char* format, VaList* args) {
+    constexpr size_t RsizeMax = SIZE_MAX >> 1;
+    if (buffer == nullptr || format == nullptr || args == nullptr || size == 0 || size > RsizeMax) {
+        if (buffer != nullptr && size != 0 && size < RsizeMax) buffer[0] = 0;
+        return -1;
+    }
+#ifdef _WIN32
+    return LibcDetail::FormatWindows(buffer, size, format, args);
+#else
+    if (HasGuestWideFormat(format)) return LibcDetail::FormatWindows(buffer, size, format, args);
+    std::va_list copy;
+    va_copy(copy, *reinterpret_cast<std::va_list*>(args));
+    const int result = std::vsnprintf(buffer, size, format, copy);
     va_end(copy);
     return result;
 #endif
