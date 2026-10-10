@@ -1103,14 +1103,24 @@ std::shared_ptr<ImageMirror> acquireMirror(const Context& context, const std::sh
             if (const auto held = heapMirrorsBeside(*range); held + range->bytes > heapMirrorBudget()) throw std::runtime_error(heapMirrorError(*range, held, "past the budget"));
         }
     }
+    constexpr VkBufferUsageFlags mirrorUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     try {
-        mirror->buffer = std::make_shared<Buffer>(context, range->bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+        mirror->buffer = std::make_shared<Buffer>(context, range->bytes, mirrorUsage);
     } catch (const std::runtime_error& error) {
-        if (heap) throw std::runtime_error(heapMirrorError(*range, heapMirrorsBeside(*range), error.what()));
-        std::fprintf(stderr, "[gpu] image mirror of 0x%llx+0x%llx failed: %s; falling back to copies\n", static_cast<unsigned long long>(range->address), static_cast<unsigned long long>(range->bytes), error.what());
-        std::lock_guard lock(state.mutex);
-        state.failed.insert(range->address);
-        return nullptr;
+        static const bool deviceHeapMirrors = std::getenv("APS5_HEAP_MIRROR_DEVICE") != nullptr;
+        if (heap && !deviceHeapMirrors) throw std::runtime_error(heapMirrorError(*range, heapMirrorsBeside(*range), error.what()));
+        if (!heap) {
+            std::fprintf(stderr, "[gpu] image mirror of 0x%llx+0x%llx failed: %s; falling back to copies\n", static_cast<unsigned long long>(range->address), static_cast<unsigned long long>(range->bytes), error.what());
+            std::lock_guard lock(state.mutex);
+            state.failed.insert(range->address);
+            return nullptr;
+        }
+        try {
+            mirror->buffer = std::make_shared<Buffer>(context, range->bytes, mirrorUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        } catch (const std::runtime_error&) {
+            throw std::runtime_error(heapMirrorError(*range, heapMirrorsBeside(*range), error.what()));
+        }
+        std::fprintf(stderr, "[gpu] heap mirror of 0x%llx+0x%llx is in host-visible device memory: %s\n", static_cast<unsigned long long>(range->address), static_cast<unsigned long long>(range->bytes), error.what());
     }
     // Read stores GPU results pending in the range first (write-backs of earlier copies of it);
     // named for the [hooksync] attribution like the refresh's flush.
