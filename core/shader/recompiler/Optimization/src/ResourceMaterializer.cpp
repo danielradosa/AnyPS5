@@ -4,6 +4,7 @@
 #include "RdnaDecoder/RdnaDescriptorFormat.hpp"
 #include "RdnaDecoder/RdnaImageOpDecoder.hpp"
 #include "SpirvBackend/SpirvBufferFormat.hpp"
+#include "SpirvBackend/SpirvEmitter.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -840,7 +841,7 @@ void ResourceMaterializer::ApplyStaticInterface(IrProgram& program, bool nativeS
     resources.info.images = std::move(images);
     resources.guardedSrtSlots = Detail::ComputeGuardedFlatSlots(resources);
     resources.srtGuardOffset = mappingOffset;
-    if (!resources.guardedSrtSlots.empty()) resources.info.usesFaultBuffer = true;
+    if (!resources.guardedSrtSlots.empty() || LoopGuardLimit() != 0u) resources.info.usesFaultBuffer = true;
     PrepareImageModes(resources.info);
 }
 

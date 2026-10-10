@@ -29,6 +29,8 @@ public:
 
 };
 
+[[nodiscard]] std::uint32_t LoopGuardLimit();
+
 }
 
 #endif

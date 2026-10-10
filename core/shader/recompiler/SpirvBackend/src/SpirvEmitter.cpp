@@ -69,6 +69,12 @@ std::uint32_t WaveLdsScope(const IrProgram& program, const ShaderWorkgroupInputI
 
 }
 
+// APS5_LOOP_GUARD=<exits> (see SpirvEmitterState::loopGuardLimit), 0 when unset.
+std::uint32_t LoopGuardLimit() {
+    const char* guard = std::getenv("APS5_LOOP_GUARD");
+    return guard != nullptr ? static_cast<std::uint32_t>(std::strtoul(guard, nullptr, 0)) : 0u;
+}
+
 SpirvEmitterState::SpirvEmitterState(const IrProgram& program, const ShaderStageInputInfo& inputInfo) : module(program.Resources().stage == IrShaderStage::Mesh ? 0x00010400u : 0x00010300u), program(program), inputInfo(inputInfo), requirements(AnalyzeProgramRequirements(program)) {
 }
 
@@ -264,7 +270,7 @@ std::vector<std::uint32_t> SpirvEmitter::Emit(const IrProgram& program, const Sh
         state.tableIndexNonUniform = threads > program.WaveSize() || !oneSubgroup;
     }
     state.waveLdsScope = WaveLdsScope(program, workgroup, state.laneCount);
-    if (const char* guard = std::getenv("APS5_LOOP_GUARD")) state.loopGuardLimit = static_cast<std::uint32_t>(std::strtoul(guard, nullptr, 0));
+    state.loopGuardLimit = LoopGuardLimit();
     // Stopped invocations would leave the wave LDS barriers incomplete.
     state.bdaStopsInvocations = state.waveLdsScope == 0 && BdaInvocationsMayStop(program) && program.Resources().stage != IrShaderStage::Mesh;
     EmitModuleHeader(state, bindings);
