@@ -270,7 +270,7 @@ void BdaResources::CheckFault() const {
     // Recorded completions only log a thrown fault, and the dispatch's write-back is lost with it;
     // with ranges left out of the table a fault must stop the title instead.
     if (AddressSkipEnabled()) {
-        const auto skipped = AddressSkippedRange(report.address, report.bytes);
+        const auto skipped = report.reason == ShaderRecompiler::BdaAbi::FaultReason::Unmapped ? AddressSkippedRange(report.address, report.bytes) : std::string{};
         if (skipped.empty()) message << " (APS5_ADDRESS_SKIP_MIB makes BDA faults fatal)";
         else message << "; the access is in " << skipped << ", left out of the BDA table by APS5_ADDRESS_SKIP_MIB";
         std::fprintf(stderr, "FATAL: %s\n", message.str().c_str());

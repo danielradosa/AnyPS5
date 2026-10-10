@@ -2,6 +2,7 @@
 #include "prx/libSceAgcDriver/Execution/include/CaptureTrace.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include "prx/libSceAgcDriver/Graphics/shaders/MeshArguments_spv.h"
@@ -3546,6 +3547,11 @@ void Recorder::finish(std::unique_ptr<Batch> batch, bool wait, int source, bool 
             try {
                 action();
             } catch (const std::exception& error) {
+                if (AddressSkipEnabled()) {
+                    std::fprintf(stderr, "FATAL: deferred write-back failed with APS5_ADDRESS_SKIP_MIB set: %s\n", error.what());
+                    std::fflush(stderr);
+                    std::abort();
+                }
                 std::fprintf(stderr, "[gpu] deferred write-back failed: %s\n", error.what());
             }
         }
