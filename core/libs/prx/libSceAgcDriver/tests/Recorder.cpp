@@ -1076,6 +1076,22 @@ void depthMemoryStorageTests(const Device& device, Recorder& recorder) {
         };
         return DecodeTextureResource(words);
     };
+    const auto texel = [&](const StorageTexture& image) {
+        Buffer readback(context, 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        const auto commands = recorder.Commands();
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {1, 1, 1};
+        context.Function<PFN_vkCmdCopyImageToBuffer>("vkCmdCopyImageToBuffer")(commands, image.Image(), VK_IMAGE_LAYOUT_GENERAL, readback.Handle(), 1, &copy);
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT);
+        recorder.Submit();
+        device.WaitQueue();
+        recorder.Sync();
+        std::uint32_t value = 0;
+        std::memcpy(&value, readback.Bytes().data(), sizeof(value));
+        return value;
+    };
     std::memset(block, 0x3c, bytes);
     DepthSurfaceView(context, {address, 0, {width, height}, VK_FORMAT_D32_SFLOAT, 1.0f, 0});
     recorder.Submit();
@@ -1083,13 +1099,10 @@ void depthMemoryStorageTests(const Device& device, Recorder& recorder) {
     recorder.Sync();
     const auto reused = CachedStorageSurface(context, view(36, 0x1b));
     Require(reused != nullptr && reused->Descriptor().format == 36 && reused->Descriptor().width == width, "an R11G11B10 storage image over a D32 surface's memory was not made as reused memory");
-    std::string refusal;
-    try {
-        CachedStorageSurface(context, view(22, 0x18));
-    } catch (const std::runtime_error& error) {
-        refusal = error.what();
-    }
-    Require(refusal.find("storage image access to depth/stencil surface") != std::string::npos, "an R32F storage view of a D32 surface's own extent was not refused");
+    Require(!DepthPlaneView(context, {}, view(36, 0x1b)), "an R11G11B10 storage image over a D32 surface's memory was taken as its depth plane");
+    const auto plane = CachedStorageSurface(context, view(22, 0x18));
+    Require(plane != nullptr && plane->Descriptor().format == 22 && plane->Descriptor().width == width, "an R32F storage view of a D32 surface's own extent was not served");
+    Require(texel(*plane) == 0x3f800000u, "an R32F storage view of a D32 surface's own extent was not seeded from its depth plane");
     recorder.Submit();
     device.WaitQueue();
     recorder.Sync();

@@ -198,6 +198,8 @@ void RunDepthSurfaceReuseTests() {
     other.device = reinterpret_cast<VkDevice>(&otherDevice);
     const auto half = tsharp({halfDepth, FormatR32Float, 960, 540});
     Require(!DepthPlaneView(other, half, DecodeTextureResource(half)), "a depth surface of another device holds no plane of this one");
+    const auto integer = tsharp({depth16, FormatR16Uint, 256, 256, TileRenderTarget64KB});
+    Require(DepthPlaneView(context, integer, DecodeTextureResource(integer)), "a 16-bit integer storage view of a D16 surface's own extent addresses its depth plane, as its sampled copy does");
 
     ClearDepthSurfaces(context.device);
 }

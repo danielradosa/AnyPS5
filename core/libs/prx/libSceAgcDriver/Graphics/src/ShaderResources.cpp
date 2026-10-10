@@ -752,12 +752,17 @@ GuestTextureResource StorageSurface(const Context& context, const GuestTextureRe
 }
 
 // `guestBytes` is the surface size when the caller described the surface already (0: described here).
+std::shared_ptr<StorageTexture> lookupStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes);
+
 std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes) {
-    if (DepthSurfaceAt(viewed.baseAddress) && DepthPlaneView(context, words, viewed)) {
-        char text[112];
-        std::snprintf(text, sizeof(text), "AGC graphics: storage image access to depth/stencil surface 0x%llx is not implemented", static_cast<unsigned long long>(viewed.baseAddress));
-        throw std::runtime_error(text);
-    }
+    const bool plane = DepthSurfaceAt(viewed.baseAddress) && DepthPlaneView(context, words, viewed);
+    Require(!plane || !DepthStencilPlaneAt(viewed.baseAddress), "storage access to a depth surface's stencil plane is not implemented");
+    auto texture = lookupStorageTexture(context, words, viewed, mip, guestBytes);
+    if (plane) SeedStorageFromDepth(context, texture);
+    return texture;
+}
+
+std::shared_ptr<StorageTexture> lookupStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes) {
     static const bool disabled = std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
     if (disabled) return std::make_shared<StorageTexture>(context, *context.detiler, viewed, mip);
     static_cast<void>(words);
@@ -1513,6 +1518,7 @@ void ShaderResources::noteReusable() {
     reusable = false;
     directRegions.clear();
     if (NeedsCompletion() || HoldsLease()) return;
+    if (std::any_of(textures.begin(), textures.end(), [](const std::shared_ptr<Texture>& texture) { return texture != nullptr && texture->RefreshedPerUse(); })) return;
     if (TemplateDataRefresh() && std::any_of(allocations.begin(), allocations.end(), [](const Allocation& allocation) { return allocation.buffer != nullptr && !allocation.guest && allocation.size > MaxRefreshBytes; })) return;
     const auto regions = guestMemory.DirectRegions();
     if (!regions.has_value()) return;
@@ -1877,6 +1883,7 @@ bool ShaderResources::fastRevalidate(std::uint64_t serialBefore, std::span<const
         if (image == nullptr) return fail(FastFail::NoRecord);
         const auto& own = image->Descriptor();
         const auto address = own.baseAddress;
+        if (DepthSurfaceAt(address)) return fail(FastFail::NoRecord);
         const auto bytes = static_cast<std::size_t>(image->GuestBytes());
         if (GuestMemory::CollectWrites(address, bytes) == 0) return fail(FastFail::Collect);
         if (own.dccAddress != 0) {
@@ -1976,6 +1983,7 @@ bool ShaderResources::fastRevalidateEach() {
         const auto& own = image->Descriptor();
         if (own.dccAddress != 0) return false;
         const auto address = own.baseAddress;
+        if (DepthSurfaceAt(address)) return false;
         const auto bytes = static_cast<std::size_t>(image->GuestBytes());
         if (GuestMemory::CollectWrites(address, bytes) == 0) return false;
         if (PendingStorageOverlaps(address, bytes, image)) return false;
@@ -2915,7 +2923,7 @@ bool ShaderResources::precollectImages() {
 }
 
 std::shared_ptr<Texture> ShaderResources::fastTexture(const ImageRecord& record) {
-    if (record.texture == nullptr) return nullptr;
+    if (record.texture == nullptr || record.texture->RefreshedPerUse()) return nullptr;
     struct Outcome {
         bool profile;
         std::chrono::steady_clock::time_point start;
