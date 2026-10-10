@@ -5,6 +5,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DccMetadata.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
@@ -1019,6 +1020,79 @@ void viewPastLastMipTests(const Device& device, Recorder& recorder) {
     Require(CachedStorageSurface(context, allocatedView) == past, "a view of the allocated levels took another image than the view past the last mip");
     Require(texel(*past, 2) == 0x66666666u, "level 2 was not read from its addrlib tail slot");
     Require(texel(*past, 3) == 0x77777777u, "the level past the last mip was not read from its addrlib tail slot");
+}
+
+void depthMemoryStorageTests(const Device& device, Recorder& recorder) {
+    const auto& base = device.GetContext();
+    if (base.hostImportAlignment == 0) {
+        std::cout << "host imports unavailable: storage images over depth memory not tested\n";
+        return;
+    }
+    constexpr std::uint32_t width = 256;
+    constexpr std::uint32_t height = 128;
+    constexpr std::size_t bytes = 0x20000;
+#ifdef _WIN32
+    void* block = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
+    void* block = std::aligned_alloc(65536, bytes);
+#endif
+    Require(block != nullptr, "cannot allocate the depth memory block");
+    const auto address = reinterpret_cast<std::uint64_t>(block);
+    {
+        GuestAllocations::Mutation mutation;
+        mutation.Add(block, bytes, true, true, true);
+    }
+    struct Unregister {
+        const Context& context;
+        void* block;
+        std::uint64_t address;
+        ~Unregister() {
+            ClearCachedTextures(context.device);
+            ClearDepthSurfaces(context.device);
+            {
+                GuestAllocations::Mutation mutation;
+                mutation.Remove(block);
+            }
+            HostImportFor(context, address, bytes);
+        }
+    } unregister{base, block, address};
+    if (HostImportFor(base, address, bytes) == nullptr) {
+        std::cout << "host import of the depth memory block refused: storage images over depth memory not tested\n";
+        return;
+    }
+    TextureDetiler detiler(base);
+    auto context = base;
+    context.detiler = &detiler;
+    const auto view = [&](std::uint32_t format, std::uint32_t swizzle) {
+        const std::array<std::uint32_t, 8> words{
+            static_cast<std::uint32_t>(address >> 8u),
+            static_cast<std::uint32_t>((address >> 40u) & 0xffu) | (format << 20u) | (((width - 1u) & 3u) << 30u),
+            ((width - 1u) >> 2u) | ((height - 1u) << 14u),
+            0xfacu | (swizzle << 20u) | (9u << 28u),
+            0u,
+            0u,
+            0u,
+            0u,
+        };
+        return DecodeTextureResource(words);
+    };
+    std::memset(block, 0x3c, bytes);
+    DepthSurfaceView(context, {address, 0, {width, height}, VK_FORMAT_D32_SFLOAT, 1.0f, 0});
+    recorder.Submit();
+    device.WaitQueue();
+    recorder.Sync();
+    const auto reused = CachedStorageSurface(context, view(36, 0x1b));
+    Require(reused != nullptr && reused->Descriptor().format == 36 && reused->Descriptor().width == width, "an R11G11B10 storage image over a D32 surface's memory was not made as reused memory");
+    std::string refusal;
+    try {
+        CachedStorageSurface(context, view(22, 0x18));
+    } catch (const std::runtime_error& error) {
+        refusal = error.what();
+    }
+    Require(refusal.find("storage image access to depth/stencil surface") != std::string::npos, "an R32F storage view of a D32 surface's own extent was not refused");
+    recorder.Submit();
+    device.WaitQueue();
+    recorder.Sync();
 }
 
 void resourceReadTests(const Device& device, Recorder& recorder) {
@@ -3774,6 +3848,11 @@ int main(int argc, char** argv) {
             std::cout << "Single cube snapshot and storage sampling tests passed\n";
             return 0;
         }
+        if (argc == 2 && std::string_view(argv[1]) == "--depth-memory-only") {
+            depthMemoryStorageTests(device, recorder);
+            std::cout << "Storage images over depth memory tests passed\n";
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--unchanged-cpu-stamps-only") {
             unchangedCpuStampTests(device, recorder);
             return 0;
@@ -3818,6 +3897,7 @@ int main(int argc, char** argv) {
         remappedImportTests(device);
         movedMetadataTests(device, recorder);
         viewPastLastMipTests(device, recorder);
+        depthMemoryStorageTests(device, recorder);
         keysFillTests(device, recorder);
         denormalClearTests(device, recorder);
         unitShadowTests(device, recorder);

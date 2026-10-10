@@ -159,6 +159,23 @@ std::set<std::uint64_t>& clearedHtiles() {
     return *cleared;
 }
 
+DepthSurface* planeSurface(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource) {
+    const auto& list = surfaces();
+    const auto found = std::find_if(list.rbegin(), list.rend(), [&](const auto& surface) {
+        return surface->context.device == context.device && (surface->target.address == resource.baseAddress || (surface->target.stencilAddress != 0 && surface->target.stencilAddress == resource.baseAddress));
+    });
+    if (found == list.rend()) return nullptr;
+    const auto& target = (*found)->target;
+    if (resource.width != target.extent.width || resource.height != target.extent.height) return nullptr;
+    const bool stencil = target.stencilAddress != 0 && resource.baseAddress == target.stencilAddress;
+    if (!stencil) {
+        const bool d16 = target.format == VK_FORMAT_D16_UNORM || target.format == VK_FORMAT_D16_UNORM_S8_UINT;
+        const bool depthBits = words.size() >= 4 && ShaderRecompiler::DepthBitsTextureWidth(words[1], words[3]) == (d16 ? 16u : 32u);
+        if (ResolveTextureFormat(resource.format) != (d16 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R32_SFLOAT) && !depthBits) return nullptr;
+    }
+    return found->get();
+}
+
 }
 
 std::uint64_t DepthSliceBytes(VkExtent2D extent, std::uint32_t bytesPerTexel) {
@@ -178,6 +195,7 @@ VkImageView DepthSurfaceView(const Context& context, const DepthTarget& target) 
         return surface->view;
     }
     surfaces().push_back(std::make_unique<DepthSurface>(context, target));
+    std::fprintf(stderr, "[depth] surface 0x%llx stencil 0x%llx %ux%u vk format %d htile 0x%llx\n", static_cast<unsigned long long>(target.address), static_cast<unsigned long long>(target.stencilAddress), target.extent.width, target.extent.height, static_cast<int>(target.format), static_cast<unsigned long long>(target.htileAddress));
     return surfaces().back()->view;
 }
 
@@ -201,20 +219,13 @@ void ClearDepthSurfaces(VkDevice device) {
 
 std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, VkComponentMapping components) {
     std::lock_guard lock(surfacesMutex());
-    const auto& list = surfaces();
-    const auto found = std::find_if(list.rbegin(), list.rend(), [&](const auto& surface) {
-        return surface->context.device == context.device && (surface->target.address == resource.baseAddress || (surface->target.stencilAddress != 0 && surface->target.stencilAddress == resource.baseAddress));
-    });
-    if (found == list.rend()) return nullptr;
-    const auto& target = (*found)->target;
-    if (resource.width != target.extent.width || resource.height != target.extent.height) return nullptr;
-    const bool stencil = target.stencilAddress != 0 && resource.baseAddress == target.stencilAddress;
-    if (!stencil) {
-        const bool d16 = target.format == VK_FORMAT_D16_UNORM || target.format == VK_FORMAT_D16_UNORM_S8_UINT;
-        const bool depthBits = words.size() >= 4 && ShaderRecompiler::DepthBitsTextureWidth(words[1], words[3]) == (d16 ? 16u : 32u);
-        if (ResolveTextureFormat(resource.format) != (d16 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R32_SFLOAT) && !depthBits) return nullptr;
-    }
-    return (*found)->Sampled(words, resource, components);
+    auto* surface = planeSurface(context, words, resource);
+    return surface != nullptr ? surface->Sampled(words, resource, components) : nullptr;
+}
+
+bool DepthPlaneView(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource) {
+    std::lock_guard lock(surfacesMutex());
+    return planeSurface(context, words, resource) != nullptr;
 }
 
 bool DepthSurfaceAt(std::uint64_t address) {

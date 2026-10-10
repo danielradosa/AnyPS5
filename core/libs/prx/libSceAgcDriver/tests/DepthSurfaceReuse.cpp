@@ -149,6 +149,13 @@ std::shared_ptr<Texture> lookup(const Context& context, const View& view) {
     return DepthSurfaceTexture(context, words, DecodeTextureResource(words), VkComponentMapping{});
 }
 
+bool planeView(const Context& context, const View& view) {
+    const auto words = tsharp(view);
+    const bool plane = DepthPlaneView(context, words, DecodeTextureResource(words));
+    Require(plane == (lookup(context, view) != nullptr), "the storage path must take a view as a depth plane exactly when the sampled path does");
+    return plane;
+}
+
 }
 
 void RunDepthSurfaceReuseTests() {
@@ -176,6 +183,21 @@ void RunDepthSurfaceReuseTests() {
     Require(lookup(context, {depth32, FormatR32Float, 512, 512, TileDepth64KB, Type2DArray, 5}) == nullptr, "a 2D array view of another extent over a depth surface must be read as reused memory");
     Require(lookup(context, {depth32, FormatR32Uint, 384, 384, TileRenderTarget64KB}) == nullptr, "an R32 uint view without a depth layout must be read as reused memory");
     Require(lookup(context, {depth16, FormatR32Float, 256, 256}) == nullptr, "an R32F view of a D16 surface's own extent must be read as reused memory");
+
+    constexpr std::uint64_t halfDepth = 0x53a500000;
+    DepthSurfaceView(context, {halfDepth, 0, {960, 540}, VK_FORMAT_D32_SFLOAT, 1.0f, 0});
+    Require(planeView(context, {halfDepth, FormatR32Float, 960, 540}), "an R32F storage view of a D32 surface's own extent addresses its depth plane");
+    Require(planeView(context, {halfDepth, FormatR32Uint, 960, 540}), "a 32-bit raw depth bits storage view of a D32 surface addresses its depth plane");
+    Require(!planeView(context, {halfDepth, FormatR11G11B10Float, 960, 540, TileRenderTarget64KB}), "an R11G11B10 storage image over a D32 surface's memory is reused memory");
+    Require(!planeView(context, {halfDepth, FormatR32Uint, 960, 540, TileRenderTarget64KB}), "an R32 uint storage image without a depth layout over a D32 surface is reused memory");
+    Require(!planeView(context, {halfDepth, FormatR32Float, 480, 270}), "a storage image of another extent over a D32 surface is reused memory");
+    const auto bloom = tsharp({halfDepth, FormatR11G11B10Float, 960, 540, TileRenderTarget64KB});
+    Require(!DepthPlaneView(context, {}, DecodeTextureResource(bloom)), "a lookup without descriptor words keeps an R11G11B10 surface over a D32 surface as reused memory");
+    static int otherDevice = 0;
+    Context other = context;
+    other.device = reinterpret_cast<VkDevice>(&otherDevice);
+    const auto half = tsharp({halfDepth, FormatR32Float, 960, 540});
+    Require(!DepthPlaneView(other, half, DecodeTextureResource(half)), "a depth surface of another device holds no plane of this one");
 
     ClearDepthSurfaces(context.device);
 }
