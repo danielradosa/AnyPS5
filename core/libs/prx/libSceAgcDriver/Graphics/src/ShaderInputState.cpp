@@ -24,6 +24,7 @@ constexpr std::uint32_t spiPsInputCntl0 = 0x191;
 constexpr std::uint32_t spiPsInputEna = 0x1B3;
 constexpr std::uint32_t spiPsInputAddr = 0x1B4;
 constexpr std::uint32_t spiPsInControl = 0x1B6;
+constexpr std::uint32_t spiBarycCntl = 0x1B8;
 constexpr std::uint32_t dbShaderControl = 0x203;
 constexpr std::uint32_t spiShaderColFormat = 0x1C5;
 constexpr std::uint32_t defaultPixelInputs = 0x2u;
@@ -37,6 +38,12 @@ std::uint32_t read(const Registers& registers, std::uint32_t offset, RegisterBan
         throw std::runtime_error(text);
     }
     return it->second;
+}
+
+std::uint32_t readOr(const Registers& registers, std::uint32_t offset, RegisterBank bank, std::uint32_t absent) {
+    NoteRegisterRead(bank, offset);
+    const auto it = registers.find(offset);
+    return it == registers.end() ? absent : it->second;
 }
 
 template <typename T> T _readHeaderPod(std::span<const std::byte> header, std::uint64_t headerAddress, const void* pointer, std::size_t bytes = sizeof(T)) {
@@ -125,6 +132,7 @@ ShaderRecompiler::ShaderPixelStageInfo DecodePixelStageInfo(const Registers& con
         throw std::runtime_error("AGC graphics: DB_SHADER_CONTROL.CONSERVATIVE_Z_EXPORT uses the reserved value 3");
     }
     const auto colFormat = nullProgram ? 0u : read(context, spiShaderColFormat, RegisterBank::Context);
+    const auto barycentricControl = nullProgram ? 0u : readOr(context, spiBarycCntl, RegisterBank::Context, 0u);
     std::array<std::uint8_t, 8> targetOutputMode{};
     for (std::uint32_t i = 0; i < 8u; ++i) {
         targetOutputMode[i] = static_cast<std::uint8_t>((colFormat >> (4u * i)) & 0xFu);
@@ -146,6 +154,7 @@ ShaderRecompiler::ShaderPixelStageInfo DecodePixelStageInfo(const Registers& con
         .posZ = loaded(PixelInput::PositionZ),
         .posW = loaded(PixelInput::PositionW),
         .frontFace = loaded(PixelInput::FrontFace),
+        .frontFaceAllBits = loaded(PixelInput::FrontFace) && ((barycentricControl >> 24u) & 0x1u) != 0,
         .ancillary = loaded(PixelInput::Ancillary),
         .sampleShading = loaded(PixelInput::PerspectiveSample) && loaded(PixelInput::LinearSample),
         .noPerspective = loaded(PixelInput::LinearCenter),

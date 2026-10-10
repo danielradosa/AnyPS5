@@ -664,6 +664,13 @@ void PixelInputLayoutTests() {
     Require(readsBuiltin(read, spv::BuiltInFragCoord), "an ADDR-only centroid pair did not reserve v2/v3");
     read = pixelBuiltinsRead(0x102u, 0x106u, 2u);
     Require(!readsBuiltin(read, spv::BuiltInFragCoord) && !readsBuiltin(read, spv::BuiltInBaryCoordKHR), "an ADDR-only centroid pair was loaded");
+    queue.context.erase(0x1b8);
+    Require(decode(0x1002u, 0x1002u).frontFace && !decode(0x1002u, 0x1002u).frontFaceAllBits, "an absent SPI_BARYC_CNTL selected the all-bits front-face encoding");
+    queue.context[0x1b8] = 0x1000000u;
+    Require(decode(0x1002u, 0x1002u).frontFaceAllBits, "SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS did not reach the pixel stage");
+    Require(!decode(0x2u, 0x2u).frontFaceAllBits, "the front-face encoding was kept for a pixel shader without the FRONT_FACE input");
+    queue.context[0x1b8] = 0xfeffffffu;
+    Require(!decode(0x1002u, 0x1002u).frontFaceAllBits, "a SPI_BARYC_CNTL field other than FRONT_FACE_ALL_BITS selected the all-bits front-face encoding");
 }
 
 void OpaqueDestinationAlphaTests() {

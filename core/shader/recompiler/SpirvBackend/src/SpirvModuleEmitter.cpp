@@ -68,10 +68,11 @@ std::uint32_t EmitBuiltinU32(SpirvEmitterState& state, StageInputKind kind, std:
         return ConstantU32(state, 0u);
     }
     if (kind == StageInputKind::FrontFacing) {
+        const bool allBits = state.inputInfo.pixel != nullptr && state.inputInfo.pixel->psFrontFaceAllBits;
         const auto value = state.module.AllocateId();
         const auto bits = state.module.AllocateId();
         state.module.AddFunction(spv::OpLoad, TypeBool(state), value, variable);
-        state.module.AddFunction(spv::OpSelect, TypeU32(state), bits, value, ConstantU32(state, 0x3f800000u), ConstantU32(state, 0xbf800000u));
+        state.module.AddFunction(spv::OpSelect, TypeU32(state), bits, value, ConstantU32(state, allBits ? 1u : 0x3f800000u), ConstantU32(state, allBits ? 0u : 0xbf800000u));
         return bits;
     }
     if (kind == StageInputKind::HelperInvocation) {
