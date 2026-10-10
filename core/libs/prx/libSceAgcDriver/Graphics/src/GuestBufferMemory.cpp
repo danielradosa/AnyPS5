@@ -2353,6 +2353,16 @@ bool GuestBufferMemory::bindableInPlace(std::uint64_t offset, bool addressable) 
     return offset % context.limits.minStorageBufferOffsetAlignment == 0;
 }
 
+void traceStagingSite(std::uint64_t begin, std::uint64_t bytes, const char* site, bool recorder, bool imported, bool staged) {
+    static const bool trace = std::getenv("APS5_TRACE_STAGING") != nullptr;
+    if (!trace || bytes < (1u << 20u)) return;
+    static std::mutex mutex;
+    static std::set<std::tuple<std::uint64_t, std::string, int>> seen;
+    const int flags = (recorder ? 1 : 0) | (imported ? 2 : 0) | (staged ? 4 : 0);
+    std::lock_guard lock(mutex);
+    if (seen.insert({begin, site, flags}).second) std::fprintf(stderr, "[staging] %s region 0x%llx+0x%llx: recorder %d import %d staged %d\n", site, static_cast<unsigned long long>(begin), static_cast<unsigned long long>(bytes), recorder ? 1 : 0, imported ? 1 : 0, staged ? 1 : 0);
+}
+
 bool GuestBufferMemory::stagingEligible(const Region& region, bool addressable) const {
     // APS5_TRACE_STAGING: why a region of 1 MiB or more is not staged in device memory, once per
     // region start and reason.
@@ -2483,6 +2493,7 @@ void GuestBufferMemory::UploadPrepare(bool addressable) {
             // device-local buffer that the CPU fallback replaces (none without a recorder to
             // record the copies: UploadFinish then binds the region in place).
             bool staged = Recorder::Active() != nullptr && stagingEligible(region, addressable);
+            traceStagingSite(region.begin, region.end - region.begin, "prepare", Recorder::Active() != nullptr, true, staged);
             const bool misaligned = !bindableInPlace(region.begin - entry->base, addressable);
             if (staged) {
                 const auto allocateStart = std::chrono::steady_clock::now();
@@ -2617,6 +2628,7 @@ void GuestBufferMemory::UploadFinish(bool addressable) {
             // A staged region (see stagingEligible) is copied out of the import even when aligned;
             // without a recorder to record the copies it binds in place like any other.
             const bool staged = recorder != nullptr && stagingEligible(region, addressable);
+            traceStagingSite(region.begin, region.end - region.begin, "finish", recorder != nullptr, entry != nullptr, staged);
             if (entry != nullptr && !staged && bindableInPlace(region.begin - entry->base, addressable)) {
                 region.direct = entry;
                 region.snapshot.clear();
