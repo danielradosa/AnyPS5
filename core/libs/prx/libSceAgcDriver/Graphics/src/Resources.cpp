@@ -26,7 +26,7 @@ bool hostTracked(VkMemoryPropertyFlags properties) {
     return profile && (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 && (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0;
 }
 
-void noteHostBuffer(VkBufferUsageFlags usage, std::size_t bytes, bool taken) {
+void noteHostBuffer(const Context& context, VkBufferUsageFlags usage, std::size_t bytes, bool taken) {
     struct Live { std::uint64_t count = 0; std::uint64_t bytes = 0; };
     static std::mutex mutex;
     static std::map<std::pair<VkBufferUsageFlags, int>, Live> live;
@@ -42,7 +42,13 @@ void noteHostBuffer(VkBufferUsageFlags usage, std::size_t bytes, bool taken) {
     std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second.bytes > b.second.bytes; });
     std::uint64_t count = 0, total = 0;
     for (const auto& [key, value] : sorted) count += value.count, total += value.bytes;
-    AgcDriver::ProfilePrint_nid_no_patch("[hostbuffers] %llu live host buffers, %.0f MiB; largest classes (usage, size <= 2^n, count, MiB):", static_cast<unsigned long long>(count), total / 1048576.0);
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT heaps{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    queried.pNext = &heaps;
+    if (context.memoryProperties2 != nullptr && context.physical != VK_NULL_HANDLE) context.memoryProperties2(context.physical, &queried);
+    AgcDriver::ProfilePrint_nid_no_patch("[hostbuffers] heaps (used/budget MiB):");
+    for (std::uint32_t heap = 0; heap < context.memory.memoryHeapCount && heap < VK_MAX_MEMORY_HEAPS; ++heap) AgcDriver::ProfilePrint_nid_no_patch(" %u: %llu/%llu", heap, static_cast<unsigned long long>(heaps.heapUsage[heap] >> 20u), static_cast<unsigned long long>(heaps.heapBudget[heap] >> 20u));
+    AgcDriver::ProfilePrint_nid_no_patch("; %llu live host buffers, %.0f MiB; largest classes (usage, size <= 2^n, count, MiB):", static_cast<unsigned long long>(count), total / 1048576.0);
     for (std::size_t i = 0; i < sorted.size() && i < 8; ++i) AgcDriver::ProfilePrint_nid_no_patch(" 0x%x 2^%d x%llu %.0f", sorted[i].first.first, sorted[i].first.second, static_cast<unsigned long long>(sorted[i].second.count), sorted[i].second.bytes / 1048576.0);
     AgcDriver::ProfilePrint_nid_no_patch("\n");
 }
@@ -64,7 +70,7 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
         offset = allocation->offset;
         slab = allocation->slab;
         ready = true;
-        if (hostTracked(properties)) noteHostBuffer(this->usage, capacity, true);
+        if (hostTracked(properties)) noteHostBuffer(context, this->usage, capacity, true);
         return;
     }
     try {
@@ -102,7 +108,7 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
             initializeAddress(usage);
             mapping = slot.mapping;
             ready = true;
-            if (hostTracked(properties)) noteHostBuffer(this->usage, capacity, true);
+            if (hostTracked(properties)) noteHostBuffer(context, this->usage, capacity, true);
             return;
         }
         if (const auto result = context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory); result != VK_SUCCESS) {
@@ -121,7 +127,7 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
         initializeAddress(usage);
         if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) Check(context.Function<PFN_vkMapMemory>("vkMapMemory")(context.device, memory, 0, VK_WHOLE_SIZE, 0, &mapping), "vkMapMemory");
         ready = true;
-        if (hostTracked(properties)) noteHostBuffer(this->usage, capacity, true);
+        if (hostTracked(properties)) noteHostBuffer(context, this->usage, capacity, true);
     } catch (...) {
         release();
         throw;
@@ -134,7 +140,7 @@ Buffer::~Buffer() {
 
 void Buffer::release() noexcept {
     if (ready && cache) {
-        if (hostTracked(properties)) noteHostBuffer(usage, capacity, false);
+        if (hostTracked(properties)) noteHostBuffer(context, usage, capacity, false);
         cache->Put({buffer, memory, mapping, deviceAddress, allocationBytes, capacity, usage, properties, offset, slab});
         return;
     }
