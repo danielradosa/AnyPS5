@@ -228,6 +228,14 @@ void stateTests() {
     Require(!state.depthTest && state.stencilTest, "a depth test on an absent depth plane was kept beside a stencil plane");
     queue.context[0x200] = 0x007007bbu;
     expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, "depth bounds without a depth plane");
+    queue.context[0x200] = 0x007007b5;
+    queue.context[0x007] = 0x00010001;
+    state = AgcDriver::Graphics::DecodeState(queue);
+    Require(!state.depth.has_value() && !state.stencilTest && state.renderExtent.width == state.color.extent.width && state.renderExtent.height == state.color.extent.height, "a pass-through stencil state with a depth surface smaller than the color target cropped the draw");
+    queue.context[0x10b] = 0x2;
+    state = AgcDriver::Graphics::DecodeState(queue);
+    Require(state.depth.has_value() && state.stencilTest && state.renderExtent.width == 2 && state.renderExtent.height == 2, "a stencil state that writes lost its smaller depth surface");
+    queue.context[0x10b] = 0;
     queue = makeState();
     queue.context[0x10f] = 0x7fc00000;
     expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, "non-finite");

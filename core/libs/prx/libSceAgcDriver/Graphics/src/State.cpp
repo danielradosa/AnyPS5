@@ -576,11 +576,17 @@ State DecodeState(const QueueState& queue) {
         }
     }
     zero(cx, 0x207, ~LayerExports, "clip distances, layer, viewport or auxiliary vertex exports");
+    // A depth/stencil state that cannot change anything (tests always pass, no depth write, every
+    // stencil op KEEP, no depth bounds) keeps its depth surface only while that surface covers the
+    // color targets: a smaller one would crop the draw to its extent, where hardware writes the whole
+    // color target (Astro Bot's loading screen drew only the top-left quarter of its 4K target).
+    std::optional<State> withoutDepth;
     {
         const auto depthControl = read(cx, 0x200);
         const auto renderControl = find(cx, 0x000);
         const bool clear = renderControl != cx.end() && (renderControl->second & 3u) != 0;
         if (clear || ((depthControl & 0xbu) != 0 && depthSurfaceBound(cx))) {
+            if (!clear && (depthControl & 8u) == 0 && depthPassThrough(depthControl) && ((depthControl & 1u) == 0 || (read(cx, 0x10b) & 0xffffffu) == 0)) withoutDepth = result;
             decodeDepth(cx, depthControl, result);
         } else if (depthPassThrough(depthControl) || ((depthControl & 0xbu) != 0 && depthPlanesAbsent(cx))) {
             static bool reported = false;
@@ -675,6 +681,30 @@ State DecodeState(const QueueState& queue) {
     }
     if (result.hasColorTarget) {
         result.color = result.colors.front();
+        if (result.depth && withoutDepth && (result.depth->extent.width < result.renderExtent.width || result.depth->extent.height < result.renderExtent.height)) {
+            static bool reported = false;
+            if (!reported) {
+                reported = true;
+                std::fprintf(stderr, "[gpu] a pass-through depth/stencil state with a %ux%u depth surface under a %ux%u color target is rendered without the depth surface\n", result.depth->extent.width, result.depth->extent.height, result.renderExtent.width, result.renderExtent.height);
+            }
+            result.depth.reset();
+            result.depthTest = withoutDepth->depthTest;
+            result.depthWrite = withoutDepth->depthWrite;
+            result.depthCompare = withoutDepth->depthCompare;
+            result.depthBoundsTest = withoutDepth->depthBoundsTest;
+            result.minDepthBounds = withoutDepth->minDepthBounds;
+            result.maxDepthBounds = withoutDepth->maxDepthBounds;
+            result.stencilTest = withoutDepth->stencilTest;
+            result.stencilFront = withoutDepth->stencilFront;
+            result.stencilBack = withoutDepth->stencilBack;
+            result.depthBias = withoutDepth->depthBias;
+            result.depthBiasSlope = withoutDepth->depthBiasSlope;
+            result.depthBiasConstant = withoutDepth->depthBiasConstant;
+            result.depthBiasClamp = withoutDepth->depthBiasClamp;
+            result.depthBiasPerFace = withoutDepth->depthBiasPerFace;
+            result.backDepthBiasSlope = withoutDepth->backDepthBiasSlope;
+            result.backDepthBiasConstant = withoutDepth->backDepthBiasConstant;
+        }
         if (result.depth) result.renderExtent = {std::min(result.renderExtent.width, result.depth->extent.width), std::min(result.renderExtent.height, result.depth->extent.height)};
     } else if (result.depth) {
         result.renderExtent = result.depth->extent;
@@ -718,13 +748,15 @@ State DecodeState(const QueueState& queue) {
     // APS5_TRACE_VIEWPORTS: the viewport state of draws into targets at least 3840 wide, once per
     // distinct state (Astro Bot's final pass sometimes fills only the top-left quarter of its 4K target).
     static const bool traceViewports = std::getenv("APS5_TRACE_VIEWPORTS") != nullptr;
-    if (traceViewports && result.renderExtent.width >= 3840) {
+    std::uint32_t widestColor = 0;
+    for (const auto& color : result.colors) widestColor = std::max(widestColor, color.extent.width);
+    if (traceViewports && std::max(widestColor, result.renderExtent.width) >= 3840) {
         const auto peek = [](const Registers& registers, std::uint32_t offset, RegisterBank bank) { const auto found = find(registers, offset, bank); return found == registers.end() ? 0u : static_cast<std::uint32_t>(found->second); };
         const auto shaderWord = [&](std::uint32_t offset) { return peek(queue.shader, offset, RegisterBank::Shader); };
         const auto contextWord = [&](std::uint32_t offset) { return peek(cx, offset, RegisterBank::Context); };
         const auto contextFloat = [&](std::uint32_t offset) { return std::bit_cast<float>(contextWord(offset)); };
-        char text[768];
-        std::snprintf(text, sizeof(text), "[viewports] target 0x%llx %ux%u ps 0x%x/0x%x gs 0x%x/0x%x vs 0x%x/0x%x: viewport %.1f,%.1f %.1fx%.1f scissor %d,%d %ux%u; vport0 %g %g %g %g vport1 %g %g %g %g; VS_OUT 0x%x VTE 0x%x screen 0x%x 0x%x window 0x%x 0x%x generic 0x%x 0x%x vpscissor0 0x%x 0x%x mode 0x%x", static_cast<unsigned long long>(result.hasColorTarget ? result.color.address : 0), result.renderExtent.width, result.renderExtent.height, shaderWord(0x8), shaderWord(0x9), shaderWord(0x88), shaderWord(0x89), shaderWord(0x48), shaderWord(0x49), result.viewport.x, result.viewport.y, result.viewport.width, result.viewport.height, result.scissor.offset.x, result.scissor.offset.y, result.scissor.extent.width, result.scissor.extent.height, contextFloat(0x10f), contextFloat(0x110), contextFloat(0x111), contextFloat(0x112), contextFloat(0x115), contextFloat(0x116), contextFloat(0x117), contextFloat(0x118), contextWord(0x207), contextWord(0x206), contextWord(0xc), contextWord(0xd), contextWord(0x81), contextWord(0x82), contextWord(0x90), contextWord(0x91), contextWord(0x94), contextWord(0x95), contextWord(0x292));
+        char text[1024];
+        std::snprintf(text, sizeof(text), "[viewports] target 0x%llx %ux%u ps 0x%x/0x%x gs 0x%x/0x%x vs 0x%x/0x%x: viewport %.1f,%.1f %.1fx%.1f scissor %d,%d %ux%u; vport0 %g %g %g %g vport1 %g %g %g %g; VS_OUT 0x%x VTE 0x%x screen 0x%x 0x%x window 0x%x 0x%x generic 0x%x 0x%x vpscissor0 0x%x 0x%x mode 0x%x; color %u wide, depth %ux%u DB_DEPTH_CONTROL 0x%x DB_STENCIL_CONTROL 0x%x", static_cast<unsigned long long>(result.hasColorTarget ? result.color.address : 0), result.renderExtent.width, result.renderExtent.height, shaderWord(0x8), shaderWord(0x9), shaderWord(0x88), shaderWord(0x89), shaderWord(0x48), shaderWord(0x49), result.viewport.x, result.viewport.y, result.viewport.width, result.viewport.height, result.scissor.offset.x, result.scissor.offset.y, result.scissor.extent.width, result.scissor.extent.height, contextFloat(0x10f), contextFloat(0x110), contextFloat(0x111), contextFloat(0x112), contextFloat(0x115), contextFloat(0x116), contextFloat(0x117), contextFloat(0x118), contextWord(0x207), contextWord(0x206), contextWord(0xc), contextWord(0xd), contextWord(0x81), contextWord(0x82), contextWord(0x90), contextWord(0x91), contextWord(0x94), contextWord(0x95), contextWord(0x292), widestColor, result.depth ? result.depth->extent.width : 0u, result.depth ? result.depth->extent.height : 0u, contextWord(0x200), contextWord(0x10b));
         static std::mutex mutex;
         static std::set<std::string> seen;
         std::lock_guard lock(mutex);
