@@ -3,10 +3,51 @@
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
+#include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
+#include <algorithm>
+#include <bit>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
+#include <map>
+#include <mutex>
+#include <vector>
 
 namespace AgcDriver::Graphics {
+
+namespace {
+
+// APS5_PROFILE_DRAW: live host-memory Buffers (taken and not yet released, pooled or not) by
+// usage flags and power-of-two size class; every 10 s the [hostbuffers] line lists the classes
+// holding the most bytes, so a full host heap names the kind of buffer that fills it.
+bool hostTracked(VkMemoryPropertyFlags properties) {
+    static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    return profile && (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 && (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0;
+}
+
+void noteHostBuffer(VkBufferUsageFlags usage, std::size_t bytes, bool taken) {
+    struct Live { std::uint64_t count = 0; std::uint64_t bytes = 0; };
+    static std::mutex mutex;
+    static std::map<std::pair<VkBufferUsageFlags, int>, Live> live;
+    static auto reported = std::chrono::steady_clock::now();
+    std::lock_guard lock(mutex);
+    auto& entry = live[{usage, std::bit_width(bytes)}];
+    entry.count = taken ? entry.count + 1 : entry.count - 1;
+    entry.bytes = taken ? entry.bytes + bytes : entry.bytes - bytes;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - reported < std::chrono::seconds(10)) return;
+    reported = now;
+    std::vector<std::pair<std::pair<VkBufferUsageFlags, int>, Live>> sorted(live.begin(), live.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second.bytes > b.second.bytes; });
+    std::uint64_t count = 0, total = 0;
+    for (const auto& [key, value] : sorted) count += value.count, total += value.bytes;
+    AgcDriver::ProfilePrint_nid_no_patch("[hostbuffers] %llu live host buffers, %.0f MiB; largest classes (usage, size <= 2^n, count, MiB):", static_cast<unsigned long long>(count), total / 1048576.0);
+    for (std::size_t i = 0; i < sorted.size() && i < 8; ++i) AgcDriver::ProfilePrint_nid_no_patch(" 0x%x 2^%d x%llu %.0f", sorted[i].first.first, sorted[i].first.second, static_cast<unsigned long long>(sorted[i].second.count), sorted[i].second.bytes / 1048576.0);
+    AgcDriver::ProfilePrint_nid_no_patch("\n");
+}
+
+}
 
 Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) : context(context), size(size), capacity(BufferPool::Capacity(size, properties)), usage(BufferPool::Usage(usage, properties)), properties(properties) {
     Require(size != 0, "zero-sized GPU buffer");
@@ -23,6 +64,7 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
         offset = allocation->offset;
         slab = allocation->slab;
         ready = true;
+        if (hostTracked(properties)) noteHostBuffer(this->usage, capacity, true);
         return;
     }
     try {
@@ -60,6 +102,7 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
             initializeAddress(usage);
             mapping = slot.mapping;
             ready = true;
+            if (hostTracked(properties)) noteHostBuffer(this->usage, capacity, true);
             return;
         }
         if (const auto result = context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory); result != VK_SUCCESS) {
@@ -78,6 +121,7 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
         initializeAddress(usage);
         if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) Check(context.Function<PFN_vkMapMemory>("vkMapMemory")(context.device, memory, 0, VK_WHOLE_SIZE, 0, &mapping), "vkMapMemory");
         ready = true;
+        if (hostTracked(properties)) noteHostBuffer(this->usage, capacity, true);
     } catch (...) {
         release();
         throw;
@@ -90,6 +134,7 @@ Buffer::~Buffer() {
 
 void Buffer::release() noexcept {
     if (ready && cache) {
+        if (hostTracked(properties)) noteHostBuffer(usage, capacity, false);
         cache->Put({buffer, memory, mapping, deviceAddress, allocationBytes, capacity, usage, properties, offset, slab});
         return;
     }
