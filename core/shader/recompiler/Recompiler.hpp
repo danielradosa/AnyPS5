@@ -226,6 +226,7 @@ struct SpirvTarget {
     bool nonConstantImageOffsets = false;
     std::uint32_t srgbDecodeFormats = 0;
     bool narrowSubgroupClock = false;
+    bool fixedPushSlots = false;
 };
 
 struct BindingLayout {
@@ -363,6 +364,7 @@ struct DescriptorBinding {
     std::vector<bool> samplerUnnormalized;
     std::vector<bool> imageUnnormalized;
     std::vector<std::uint32_t> imageSamplers;
+    std::vector<bool> bufferRead;
 };
 
 struct VertexAttribute {

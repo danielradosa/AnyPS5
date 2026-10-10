@@ -1,5 +1,6 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/Shutdown.hpp"
+#include "tests/VideoOutTestEnvironment.hpp"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +57,7 @@ static void RequireOutputUnchanged(int handle, const VideoOutOutputStatus& befor
 }
 
 int main() {
+    VideoOutTestEnvironment environment;
     int handle = 0;
     try {
         handle = sceVideoOutOpen(SYSTEM_USER, MAIN_BUS, 0, nullptr);

@@ -374,6 +374,28 @@ void TestDecodeSplit(std::uint32_t context) {
     std::uint32_t whole = 0;
     std::uint32_t split = 0;
     Require(sceAjmInstanceCreate(context, 0, 0, &whole) == 0 && sceAjmInstanceCreate(context, 0, 0, &split) == 0);
+    std::vector<std::int16_t> reference(1152);
+    DecodeSideband expected{};
+    RunDecode(context, whole, MP3_MONO, sizeof(MP3_MONO), reference.data(), reference.size() * sizeof(std::int16_t), expected);
+    std::vector<std::int16_t> first(512);
+    std::vector<std::int16_t> second(640);
+    const AjmBuffer input{const_cast<std::uint8_t*>(MP3_MONO), sizeof(MP3_MONO)};
+    const AjmBuffer outputs[2] = {{first.data(), first.size() * sizeof(std::int16_t)}, {second.data(), second.size() * sizeof(std::int16_t)}};
+    std::vector<std::uint8_t> batch(0x100);
+    AjmBatchInfo info{};
+    DecodeSideband sideband{};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobDecodeSplit(&info, split, &input, 1, outputs, 2, &sideband) == 0);
+    Submit(context, info);
+    Require(expected.result == 0 && sideband.result == 0 && sideband.inputConsumed == expected.inputConsumed && sideband.outputWritten == expected.outputWritten && sideband.totalDecodedSamples == expected.totalDecodedSamples);
+    Require(std::equal(first.begin(), first.end(), reference.begin()) && std::equal(second.begin(), second.end(), reference.begin() + 512));
+    Require(sceAjmInstanceDestroy(context, whole) == 0 && sceAjmInstanceDestroy(context, split) == 0);
+}
+
+void TestDecodeSplitInputs(std::uint32_t context) {
+    std::uint32_t whole = 0;
+    std::uint32_t split = 0;
+    Require(sceAjmInstanceCreate(context, 0, 0, &whole) == 0 && sceAjmInstanceCreate(context, 0, 0, &split) == 0);
     std::vector<std::uint8_t> batch(4096);
     std::size_t offset = 0;
     for (int frame = 0; frame < 6; ++frame) {
@@ -965,6 +987,38 @@ void TestResampleMp3(std::uint32_t context) {
     for (const std::uint32_t instance : {plain, faster, slower}) Require(sceAjmInstanceDestroy(context, instance) == 0);
 }
 
+void TestResampleParametersEx(std::uint32_t context) {
+    std::uint32_t plain = 0;
+    std::uint32_t extended = 0;
+    Require(sceAjmInstanceCreate(context, 0, 0, &plain) == 0 && sceAjmInstanceCreate(context, 0, 0, &extended) == 0);
+    std::vector<std::int16_t> plainPcm(512);
+    std::vector<std::int16_t> extendedPcm(512);
+    for (const bool ex : {false, true}) {
+        std::vector<std::uint8_t> batch(4096);
+        AjmBatchInfo info{};
+        std::int64_t setResult[2] = {-1, -1};
+        DecodeSideband sideband{};
+        auto& pcm = ex ? extendedPcm : plainPcm;
+        const auto instance = ex ? extended : plain;
+        Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+        if (ex) Require(sceAjmBatchJobSetResampleParametersEx(&info, instance, 2.0f, 0.0f, 1, setResult) == 0);
+        else Require(sceAjmBatchJobSetResampleParameters(&info, instance, 2.0f, 1, setResult) == 0);
+        Require(sceAjmBatchJobDecode(&info, instance, MP3_MONO, sizeof(MP3_MONO), pcm.data(), pcm.size() * sizeof(std::int16_t), &sideband) == 0);
+        Submit(context, info);
+        Require(setResult[0] == 0 && sideband.result == 0);
+    }
+    Require(extendedPcm == plainPcm);
+    Require(GetResampleInfo(context, extended).ratio == 2.0f && GetResampleInfo(context, extended).samples == GetResampleInfo(context, plain).samples);
+
+    std::vector<std::uint8_t> batch(4096);
+    AjmBatchInfo info{};
+    std::int64_t result[2] = {-1, -1};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    for (const float bad : {0.0f, -1.0f, std::nanf(""), INFINITY}) Require(sceAjmBatchJobSetResampleParametersEx(&info, extended, bad, 0.0f, 1, result) == static_cast<int>(0x80930005));
+    Require(info.offset == 0);
+    Require(sceAjmInstanceDestroy(context, plain) == 0 && sceAjmInstanceDestroy(context, extended) == 0);
+}
+
 const std::uint8_t AT9_MONO_SILENT_SUPERFRAME[] = {
     0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x80, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -1273,6 +1327,7 @@ int main() {
     TestOpus(context);
     TestDecodeSingle(context);
     TestDecodeSplit(context);
+    TestDecodeSplitInputs(context);
     TestGaplessDecode(context);
     TestCodecInfo(context);
     TestGetInfo(context);
@@ -1284,6 +1339,7 @@ int main() {
     TestControlOpus(context);
     TestResampleOpus(context);
     TestResampleMp3(context);
+    TestResampleParametersEx(context);
     TestResampleAt9(context);
     TestControlResample(context);
     TestResampleRamp(context);
