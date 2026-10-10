@@ -29,11 +29,39 @@ constexpr std::size_t MAX_PARSED_CHARACTERS = 4096;
 constexpr std::int32_t WRITING_MASK_NONE = 0;
 constexpr std::int32_t WRITING_MASK_FORMAT_CHARACTERS = 1;
 constexpr std::uint64_t CHARACTER_FLAG_FORMAT = 1ull << 42;
+constexpr std::uint64_t TEXT_CODES_TAG = 0x5345444F43545854ull;
 constexpr int SYLLABLE_STRING_NON_DETECTION = 0;
 
 bool InSyllableScript(std::uint32_t code) {
     return (code >= 0x0900 && code <= 0x0FFF) || (code >= 0x1000 && code <= 0x109F) || (code >= 0x1100 && code <= 0x11FF) ||
         (code >= 0x1780 && code <= 0x17FF) || (code >= 0xA960 && code <= 0xA97F) || (code >= 0xD7B0 && code <= 0xD7FF);
+}
+
+struct TextCodesState {
+    std::uint64_t tag;
+    FontTextCharacter* current;
+    const FontTextCharacter* term;
+};
+
+static_assert(sizeof(TextCodesState) <= sizeof(FontTextCodes::systemUse));
+
+[[noreturn]] void Unsupported(const char* function, const std::string& what) {
+    throw std::runtime_error(std::string(function) + ": " + what);
+}
+
+FontTextCodes* SetTextCodesStep(FontTextCodes* textCodes, FontTextCharacter* character, const FontTextCharacter* term) {
+    textCodes->textOrder = character->textOrder;
+    textCodes->textCode = character->characterCode;
+    const TextCodesState state{TEXT_CODES_TAG, character, term};
+    std::memcpy(textCodes->systemUse, &state, sizeof(state));
+    return textCodes;
+}
+
+TextCodesState GetTextCodesStep(const char* function, const FontTextCodes* textCodesStep) {
+    TextCodesState state{};
+    std::memcpy(&state, textCodesStep->systemUse, sizeof(state));
+    if (state.tag != TEXT_CODES_TAG || !state.current) Unsupported(function, "text codes step not set up by sceFontCharactersRefersTextCodes");
+    return state;
 }
 
 struct CharacterStorage {
@@ -554,6 +582,29 @@ FontTextCharacter* APS5_VABI sceFontCharacterRefersTextNext(const FontTextCharac
         if (current->synthetic == 0 && current->clusterIndex == 0) return current;
     }
     return nullptr;
+}
+
+FontTextCodes* APS5_VABI sceFontCharactersRefersTextCodes(const FontTextCharacter* textCharacter, const FontTextCharacter* termCharacter, FontTextCodes* textCodes) {
+    if (!textCodes || !textCharacter) return nullptr;
+    if (textCharacter == termCharacter) Unsupported(__func__, "a start character equal to the term character is not modelled");
+    std::memset(textCodes, 0, sizeof(*textCodes));
+    return SetTextCodesStep(textCodes, const_cast<FontTextCharacter*>(textCharacter), termCharacter);
+}
+
+FontTextCodes* APS5_VABI sceFontTextCodesStepNext(FontTextCodes* textCodesStep) {
+    if (!textCodesStep) return nullptr;
+    const TextCodesState state = GetTextCodesStep(__func__, textCodesStep);
+    FontTextCharacter* next = state.current->next;
+    if (!next || next == state.term) return nullptr;
+    return SetTextCodesStep(textCodesStep, next, state.term);
+}
+
+FontTextCodes* APS5_VABI sceFontTextCodesStepBack(FontTextCodes* textCodesStep) {
+    if (!textCodesStep) return nullptr;
+    const TextCodesState state = GetTextCodesStep(__func__, textCodesStep);
+    FontTextCharacter* previous = state.current->prev;
+    if (!previous) return nullptr;
+    return SetTextCodesStep(textCodesStep, previous, state.term);
 }
 
 int APS5_VABI sceFontWritingInit(FontWriting* fontWriting, FontString fontString, const FontTextCharacter* fontCharacter) {
