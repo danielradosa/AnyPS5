@@ -311,11 +311,11 @@ std::map<int, int> g_running_lookups;
 struct RunningLookup {
     int rid;
     explicit RunningLookup(int id) : rid(id) {
-        std::lock_guard<std::mutex> lk(g_mutex);
+        std::lock_guard<HostMutex> lk(g_mutex);
         ++g_running_lookups[rid];
     }
     ~RunningLookup() {
-        std::lock_guard<std::mutex> lk(g_mutex);
+        std::lock_guard<HostMutex> lk(g_mutex);
         if (--g_running_lookups[rid] == 0) g_running_lookups.erase(rid);
     }
     RunningLookup(const RunningLookup&) = delete;
@@ -1278,7 +1278,7 @@ int APS5_VABI sceNetResolverGetError(int rid, int* status) {
 }
 
 int APS5_VABI sceNetResolverAbort(int rid, int flags) {
-    std::lock_guard<std::mutex> lk(g_mutex);
+    std::lock_guard<HostMutex> lk(g_mutex);
     if (g_resolvers.count(rid) == 0) return fail(NET_EBADF);
     if (flags != 0) throw std::runtime_error("sceNetResolverAbort: flags " + std::to_string(flags) + " are not supported");
     if (g_running_lookups.count(rid) != 0) throw std::runtime_error("sceNetResolverAbort: a running host lookup cannot be interrupted");

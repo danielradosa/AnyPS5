@@ -48,11 +48,6 @@ static int DoLstat(const std::filesystem::path& p, NativeStat* st) {
     if (std::filesystem::is_symlink(std::filesystem::symlink_status(p, error))) NotImplemented_nid_no_patch("lstat of a Windows symbolic link");
     return DoStat(p, st);
 }
-static int DoLstat(const std::filesystem::path& p, NativeStat* st) {
-    std::error_code error;
-    if (std::filesystem::is_symlink(std::filesystem::symlink_status(p, error))) NotImplemented_nid_no_patch("lstat of a Windows symbolic link");
-    return DoStat(p, st);
-}
 #else
 #include <sys/stat.h>
 using NativeStat = struct stat;
