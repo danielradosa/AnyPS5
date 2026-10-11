@@ -13,6 +13,7 @@
 #include <chrono>
 #include <atomic>
 #include <thread>
+#include <stdexcept>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -61,6 +62,7 @@ int APS5_VABI _Getmbcurmax_nid_postfix();
 int APS5_VABI ___mb_cur_max_nid_postfix();
 void APS5_VABI flockfile_nid_postfix(FileStream*);
 void APS5_VABI funlockfile_nid_postfix(FileStream*);
+int APS5_VABI ftrylockfile_nid_postfix(FileStream*);
 }
 static void Require(bool value) { if (!value) std::abort(); }
 static int APS5_VABI WriteFormatted(FileStream* stream, const char* format, ...) {
@@ -101,6 +103,57 @@ static bool CheckFileBytes(const std::string& filename, const std::string& expec
     if (actual == expected) return true;
     std::fprintf(stderr, "%s %s: expected %zu raw bytes, received %zu\n", reopen ? "freopen" : "fopen", mode, expected.size(), actual.size());
     return false;
+}
+
+static void CheckTryLock() {
+    FileStream stream(std::tmpfile());
+    const auto tryFromOtherThread = [&] {
+        int result = 0;
+        std::thread other([&] {
+            result = ftrylockfile_nid_postfix(&stream);
+            if (result == 0) funlockfile_nid_postfix(&stream);
+        });
+        other.join();
+        return result;
+    };
+    Require(ftrylockfile_nid_postfix(&stream) == 0);
+    Require(ftrylockfile_nid_postfix(&stream) == 0);
+    Require(tryFromOtherThread() == -1);
+    funlockfile_nid_postfix(&stream);
+    Require(tryFromOtherThread() == -1);
+    std::atomic<bool> written = false;
+    std::thread writer([&] {
+        Require(fputc_nid_postfix('B', &stream) == 'B');
+        written = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    Require(!written && fputc_nid_postfix('A', &stream) == 'A');
+    funlockfile_nid_postfix(&stream);
+    writer.join();
+    Require(written && tryFromOtherThread() == 0);
+    std::atomic<bool> held = false, release = false;
+    std::thread owner([&] {
+        flockfile_nid_postfix(&stream);
+        held = true;
+        while (!release) std::this_thread::yield();
+        funlockfile_nid_postfix(&stream);
+    });
+    while (!held) std::this_thread::yield();
+    const int contended = ftrylockfile_nid_postfix(&stream);
+    release = true;
+    owner.join();
+    Require(contended == -1 && ftrylockfile_nid_postfix(&stream) == 0);
+    funlockfile_nid_postfix(&stream);
+    Require(tryFromOtherThread() == 0);
+    Require(fseeko_nid_postfix(&stream, 0, SEEK_SET) == 0);
+    Require(fgetc_nid_postfix(&stream) == 'A' && fgetc_nid_postfix(&stream) == 'B');
+    stream.Close();
+    bool threw = false;
+    try { ftrylockfile_nid_postfix(&stream); } catch (const std::runtime_error&) { threw = true; }
+    Require(threw);
+    threw = false;
+    try { ftrylockfile_nid_postfix(nullptr); } catch (const std::invalid_argument&) { threw = true; }
+    Require(threw);
 }
 
 static bool CheckBinaryModes() {
@@ -364,5 +417,6 @@ int main() {
     Require(lockedWrite && fseeko_nid_postfix(&locked, 0, SEEK_SET) == 0);
     Require(fgetc_nid_postfix(&locked) == 'A' && fgetc_nid_postfix(&locked) == 'B');
     locked.Close();
+    CheckTryLock();
     return CheckBinaryModes() ? 0 : 1;
 }
