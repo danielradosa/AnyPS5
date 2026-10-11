@@ -51,6 +51,12 @@ std::uint16_t APS5_VABI umask_nid_postfix(std::uint16_t mask) {
     return creationMask.exchange(static_cast<std::uint16_t>(mask & 07777));
 }
 
+int APS5_VABI _fstatfs_nid_postfix(int d, void* buf);
+
+int APS5_VABI fstatfs_nid_postfix(int d, void* buf) {
+    return _fstatfs_nid_postfix(d, buf);
+}
+
 std::int64_t APS5_VABI readlink_nid_postfix(const char* path, char* buffer, std::size_t size) {
     if (path == nullptr) return Fail(GuestEfault);
     if (*path == '\0') return Fail(GuestEnoent);

@@ -11,6 +11,10 @@
 #include <string>
 
 extern "C" {
+int APS5_VABI fstatfs_nid_postfix(int, void*);
+int APS5_VABI _fstatfs_nid_postfix(int, void*);
+int APS5_VABI open_nid_postfix(const char*, int, int);
+int APS5_VABI close_nid_postfix(int);
 std::int64_t APS5_VABI readlink_nid_postfix(const char*, char*, std::size_t);
 int APS5_VABI fchdir_nid_postfix(int);
 int APS5_VABI chdir_nid_postfix(const char*);
@@ -44,6 +48,16 @@ int main() {
     Require(std::filesystem::create_directory(root));
     const auto file = (root / "file.txt").string();
     std::ofstream(file).put('x');
+    const int descriptor = open_nid_postfix(file.c_str(), 0, 0);
+    Require(descriptor >= 0);
+    unsigned char viaPublic[472] = {};
+    unsigned char viaSyscall[472] = {};
+    Require(fstatfs_nid_postfix(descriptor, viaPublic) == 0 && _fstatfs_nid_postfix(descriptor, viaSyscall) == 0);
+    Require(std::memcmp(viaPublic, viaSyscall, 4) == 0 && std::memcmp(viaPublic + 16, viaSyscall + 16, 8) == 0);
+    Require(std::memcmp(viaPublic + 280, viaSyscall + 280, 16) == 0);
+    Require(fstatfs_nid_postfix(descriptor, nullptr) == -1 && Error() == 14);
+    Require(close_nid_postfix(descriptor) == 0);
+    Require(fstatfs_nid_postfix(-1, viaPublic) == -1 && Error() == 9);
     char buffer[64];
     Require(readlink_nid_postfix(file.c_str(), buffer, sizeof(buffer)) == -1 && Error() == 22);
     Require(readlink_nid_postfix(root.string().c_str(), buffer, sizeof(buffer)) == -1 && Error() == 22);
