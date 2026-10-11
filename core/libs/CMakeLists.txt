@@ -172,7 +172,7 @@ if(BUILD_TESTING)
         set_tests_properties(guest_offline_imports PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceHttp>")
     endif()
-    add_test_executable(guest_npwebapi2_tests tests/GuestNpWebApi2.cpp)
+    add_test_executable(guest_npwebapi2_tests tests/GuestNpWebApi2RequestTimeout.cpp)
     target_include_directories(guest_npwebapi2_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(guest_npwebapi2_tests PRIVATE libSceNpWebApi2 libc)
     configure_windows_unwind(guest_npwebapi2_tests)
