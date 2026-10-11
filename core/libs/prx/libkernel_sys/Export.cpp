@@ -218,7 +218,9 @@ int APS5_VABI symlink_nid_postfix(const char* target, const char* created) {
     else
         std::filesystem::create_symlink(contents, native, error);
 #ifdef _WIN32
-    if (error.category() == std::system_category() && error.value() == WindowsPrivilegeNotHeld) return static_cast<int>(Fail(GuestEperm));
+    if (error == std::errc::function_not_supported ||
+        (error.category() == std::system_category() && error.value() == WindowsPrivilegeNotHeld))
+        return static_cast<int>(Fail(GuestEperm));
 #endif
     if (error) throw std::system_error(error, "symlink");
     RecordWrittenPath_nid_no_patch(native);
