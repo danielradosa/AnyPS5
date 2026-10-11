@@ -1691,6 +1691,7 @@ void traceKeyStore(const char* path, const GuestTextureResource& descriptor, std
 }
 
 void StorageTexture::captureGuestBytes(const std::vector<bool>* layers) {
+    const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::TextureSnapshot);
     comparedGuestBytes = {};
     const bool complete = layers == nullptr || std::all_of(layers->begin(), layers->end(), [](bool selected) { return selected; });
     for (std::uint32_t layer = 0; layer < trackedLayers; ++layer) {
@@ -1776,9 +1777,19 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
         // The clear is recorded into the open batch like a direct upload (the image kept by it): a
         // batch of its own submitted the recorder's work first and waited for all of it, 25-40 ms
         // under the GPU mutex at the movie stage. APS5_NO_RECORDED_CLEAR=1 waits as before.
-        static_cast<void>(HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes)));
-        if (GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) originalValid = false;
-        else captureGuestBytes(nullptr);
+        // Write stamps judge a watched surface that has an import, as on the direct path below:
+        // reading its bytes published each unit-shadowed 64 KiB unit and waited for the GPU once per
+        // unit (Astro Bot world map: ~75 per frame under the draw's lock). Without an import yet the
+        // copy is kept, since a later import may unwatch the range. APS5_CLEAR_SNAPSHOT=1 always
+        // takes the copy.
+        static const bool clearSnapshot = std::getenv("APS5_CLEAR_SNAPSHOT") != nullptr;
+        const auto* clearImport = HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes));
+        if (!clearSnapshot && clearImport != nullptr && GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) {
+            originalValid = false;
+            comparedGuestBytes = {};
+        } else {
+            captureGuestBytes(nullptr);
+        }
         forgetBorrowed(0, trackedLayers);
         stampLayers(false);
         static const bool recordClear = std::getenv("APS5_NO_RECORDED_CLEAR") == nullptr;
