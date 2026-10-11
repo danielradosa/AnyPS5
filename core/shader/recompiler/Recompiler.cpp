@@ -879,7 +879,9 @@ bool ResultMemo() {
     return resultMemo;
 }
 
-constexpr std::size_t ResultMemoEntries = 256;
+// Per source: Astro's hub draws cycle through more than 256 snapshots of one shader per frame
+// (7% hits, every miss evicting); results share their SPIR-V, so an entry is small.
+constexpr std::size_t ResultMemoEntries = 2048;
 
 struct ResultMemoCounters {
     std::atomic<std::uint64_t> hits{0}, misses{0}, evictions{0}, populateNanoseconds{0};
