@@ -34,11 +34,6 @@ std::uint64_t APS5_VABI _Cnd_destroy_nid_postfix() {
     return 0;
 }
 
-std::uint64_t APS5_VABI _Iswctype_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 std::uint64_t APS5_VABI _Cnd_init_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
