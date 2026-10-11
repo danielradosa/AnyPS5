@@ -512,6 +512,96 @@ void verifyStore() {
     require(ShaderDiskCache::Load(key, loaded), "a rewritten entry does not load");
 }
 
+void verifySpecializedStore() {
+    std::vector<std::uint32_t> module{0x07230203u, 0x00010300u, 0u, 64u, 0u, 0x00020011u, 1u, 0x0004002bu, 7u, 8u, 42u};
+    const std::array<PipelineSpecializationConstant, 2> constants{{{512u, 4u}, {516u, 0x3f800000u}}};
+    SpirvTarget target{};
+    target.vulkanVersion = 0x00401000u;
+    target.spirvVersion = 0x00010300u;
+    std::vector<std::byte> key;
+    ShaderDiskCache::BuildSpecializedKey(module, constants, target, key);
+    std::vector<std::byte> same;
+    ShaderDiskCache::BuildSpecializedKey(module, constants, target, same);
+    require(key == same, "the specialized module key is not deterministic");
+    const auto differs = [&](const std::vector<std::uint32_t>& otherModule, std::span<const PipelineSpecializationConstant> otherConstants, const SpirvTarget& otherTarget, const char* what) {
+        std::vector<std::byte> other;
+        ShaderDiskCache::BuildSpecializedKey(otherModule, otherConstants, otherTarget, other);
+        require(other != key, std::string("the specialized module key ignores ") + what);
+    };
+    auto changedModule = module;
+    changedModule.back() = 43u;
+    differs(changedModule, constants, target, "a module word");
+    auto longerModule = module;
+    longerModule.push_back(0u);
+    differs(longerModule, constants, target, "the module length");
+    auto changedConstants = constants;
+    changedConstants[1].value = 0x40000000u;
+    differs(module, changedConstants, target, "a specialization constant value");
+    differs(module, std::span(constants).first(1), target, "a missing specialization constant");
+    auto changedTarget = target;
+    changedTarget.spirvVersion = 0x00010400u;
+    differs(module, constants, changedTarget, "the SPIR-V version");
+    changedTarget = target;
+    changedTarget.nonConstantImageOffsets = true;
+    differs(module, constants, changedTarget, "non-constant image offsets");
+
+    const auto before = ShaderDiskCache::Totals();
+    std::vector<std::uint32_t> loaded;
+    require(!ShaderDiskCache::LoadSpecialized(key, loaded), "a specialized module loads before it was stored");
+    ShaderDiskCache::StoreSpecialized(key, module);
+    ShaderDiskCache::Flush();
+    require(ShaderDiskCache::Totals().specializedWrites == before.specializedWrites + 1, "the specialized module was not written");
+    require(ShaderDiskCache::LoadSpecialized(key, loaded) && loaded == module, "a stored specialized module does not load back unchanged");
+    const auto after = ShaderDiskCache::Totals();
+    require(after.specializedHits == before.specializedHits + 1 && after.hits == before.hits && after.misses == before.misses, "specialized module lookups were counted as variant lookups");
+    std::vector<std::byte> otherKey;
+    ShaderDiskCache::BuildSpecializedKey(changedModule, constants, target, otherKey);
+    require(!ShaderDiskCache::LoadSpecialized(otherKey, loaded), "another module's key loads the stored specialized module");
+    const auto path = ShaderDiskCache::EntryDirectory() / ShaderDiskCache::EntryName(key);
+    std::vector<std::byte> file;
+    require(ReadWholeFile(path, file), "cannot read the specialized module entry back");
+    auto corrupt = file;
+    corrupt[corrupt.size() - 3] ^= std::byte{0x10};
+    require(WriteFileAtomically(path, corrupt), "cannot damage the specialized module entry");
+    loaded.clear();
+    require(!ShaderDiskCache::LoadSpecialized(key, loaded) && loaded.empty(), "a corrupt specialized module loads");
+    require(ShaderDiskCache::Totals().loadFailures == after.loadFailures + 1, "the corrupt specialized module was not counted as a load failure");
+    std::filesystem::remove(path);
+}
+
+std::vector<std::uint32_t> exitModule() {
+    std::vector<std::uint32_t> module(8u << 20u);
+    for (std::size_t index = 0; index < module.size(); ++index) module[index] = static_cast<std::uint32_t>(index * 2654435761u);
+    module[0] = 0x07230203u;
+    return module;
+}
+
+std::vector<std::byte> exitKey(const std::vector<std::uint32_t>& module) {
+    SpirvTarget target{};
+    target.vulkanVersion = 0x00401000u;
+    target.spirvVersion = 0x00010300u;
+    std::vector<std::byte> key;
+    ShaderDiskCache::BuildSpecializedKey(module, {}, target, key);
+    return key;
+}
+
+int runStoreAndExit() {
+    const auto module = exitModule();
+    ShaderDiskCache::StoreSpecialized(exitKey(module), module);
+    return 0;
+}
+
+void verifyStoreDrainedAtExit(const char* self) {
+    const auto module = exitModule();
+    const auto key = exitKey(module);
+    std::filesystem::remove(ShaderDiskCache::EntryDirectory() / ShaderDiskCache::EntryName(key));
+    const std::string command = "\"" + std::string(self) + "\" --store-and-exit";
+    require(std::system(command.c_str()) == 0, "the storing process failed");
+    std::vector<std::uint32_t> loaded;
+    require(ShaderDiskCache::LoadSpecialized(key, loaded) && loaded == module, "a specialized module queued right before the process returned from main was not written");
+    std::filesystem::remove(ShaderDiskCache::EntryDirectory() / ShaderDiskCache::EntryName(key));
+}
+
 struct ComputeRequest {
     std::vector<std::uint32_t> code{0xe0700000u, 0x80000000u, 0xbf810000u};
     std::array<std::uint32_t, 4> userData{0x10000000u, 0x00000000u, 0x40u, 0x00027facu};
@@ -541,6 +631,7 @@ int runLoadingProcess() {
     const auto loaded = Recompile(cached.request);
     const auto totals = ShaderDiskCache::Totals();
     require(totals.hits == 1 && totals.misses == 0 && totals.loadFailures == 0, "the second process did not load the stored variant (hits " + std::to_string(totals.hits) + ", misses " + std::to_string(totals.misses) + ")");
+    require(totals.specializedHits == 1, "the second process specialized the module again instead of loading it (" + std::to_string(totals.specializedHits) + " specialized modules loaded)");
     ComputeRequest fresh(false);
     const auto compiled = Recompile(fresh.request);
     requireSameResult(compiled, loaded, "loaded against compiled");
@@ -556,6 +647,7 @@ void verifyAcrossProcesses(const char* self) {
     ShaderDiskCache::Flush();
     const auto after = ShaderDiskCache::Totals();
     require(after.misses == before.misses + 1 && after.writes == before.writes + 1, "the first compile was not looked up and stored");
+    require(after.specializedWrites == before.specializedWrites + 1, "the first compile did not store its specialized module");
     require(!compiled.spirv.empty(), "the compile produced no SPIR-V");
     const std::string command = "\"" + std::string(self) + "\" --load";
     require(std::system(command.c_str()) == 0, "the loading process failed");
@@ -1022,19 +1114,23 @@ void verifyDefaultDirectory(const char* self) {
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--load") return runLoadingProcess();
+        if (argc == 2 && std::string_view(argv[1]) == "--store-and-exit") return runStoreAndExit();
         if (argc == 2 && std::string_view(argv[1]) == "--no-failure-memo") return runWithoutFailureMemo();
         const auto directory = std::filesystem::temp_directory_path() / ("aps5-shader-disk-cache-test-" + std::to_string(std::random_device{}()));
         std::filesystem::remove_all(directory);
         verifyDefaultDirectory(argv[0]);
         setEnvironment("ANYPS5_NO_SHADER_CACHE", "0");
         setEnvironment("ANYPS5_SHADER_CACHE_DIR", directory.string());
+        setEnvironment("APS5_SPECIALIZED_CACHE_MIN_MS", "0");
         verifyResultRoundTrip();
         verifyEntryRoundTrip();
         verifyArtifactStorageIsolation();
         verifyKeySensitivity();
         verifyFloatModeSerialization();
         verifyStore();
+        verifySpecializedStore();
         verifyAcrossProcesses(argv[0]);
+        verifyStoreDrainedAtExit(argv[0]);
         verifyEmissionFailureMemo();
         verifyFailureMemoSwitch(argv[0]);
         verifyInvocationIsolation();

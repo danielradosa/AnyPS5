@@ -29,6 +29,8 @@ struct Counters {
     std::uint64_t writeFailures = 0;
     std::uint64_t bytesRead = 0;
     std::uint64_t bytesWritten = 0;
+    std::uint64_t specializedHits = 0;
+    std::uint64_t specializedWrites = 0;
 };
 
 [[nodiscard]] std::uint64_t SourceVersion();
@@ -48,6 +50,11 @@ void EncodeResult(const RecompileResult& result, std::vector<std::byte>& out);
 
 [[nodiscard]] bool Load(std::span<const std::byte> key, CompiledVariant& variant);
 void Store(std::vector<std::byte> key, std::shared_ptr<const CompiledVariant> variant);
+
+void BuildSpecializedKey(std::span<const std::uint32_t> module, std::span<const PipelineSpecializationConstant> constants, const SpirvTarget& target, std::vector<std::byte>& key);
+[[nodiscard]] bool LoadSpecialized(std::span<const std::byte> key, std::vector<std::uint32_t>& spirv);
+void StoreSpecialized(std::vector<std::byte> key, std::vector<std::uint32_t> spirv);
+[[nodiscard]] double SpecializedStoreMinMs();
 void Flush();
 [[nodiscard]] Counters Totals();
 

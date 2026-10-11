@@ -658,6 +658,7 @@ void decodeAllocation(Reader& reader, CompiledBindingLayout& allocation) {
 
 constexpr std::string_view NeutralSwitches[] = {
     "APS5_PROFILE_DRAW",
+    "APS5_SPECIALIZED_CACHE_MIN_MS",
     "APS5_DUMP_IR",
     "APS5_NO_CODE_HASH_KEY",
     "APS5_NO_FAILURE_MEMO",
@@ -687,6 +688,45 @@ std::string hex(std::uint64_t value) {
     return text;
 }
 
+constexpr std::uint64_t SpecializedTag = 0x4345505355ull;
+
+std::vector<std::byte> encodeWords(std::span<const std::byte> key, std::span<const std::uint32_t> words) {
+    const auto payload = std::as_bytes(words);
+    const FileHeader header{FileMagic, FormatVersion, SourceVersion(), key.size(), payload.size(), HashBytes(key), HashBytes(payload)};
+    std::vector<std::byte> file(sizeof(header) + key.size() + payload.size());
+    std::memcpy(file.data(), &header, sizeof(header));
+    std::memcpy(file.data() + sizeof(header), key.data(), key.size());
+    std::memcpy(file.data() + sizeof(header) + key.size(), payload.data(), payload.size());
+    return file;
+}
+
+LoadStatus checkedPayload(std::span<const std::byte> file, std::span<const std::byte> key, std::span<const std::byte>& payload) {
+    if (file.size() < sizeof(FileHeader)) return LoadStatus::Rejected;
+    FileHeader header;
+    std::memcpy(&header, file.data(), sizeof(header));
+    if (header.magic != FileMagic || header.format != FormatVersion || header.sourceVersion != SourceVersion()) return LoadStatus::Rejected;
+    const auto body = file.size() - sizeof(header);
+    if (header.keyBytes > body || header.payloadBytes != body - header.keyBytes) return LoadStatus::Rejected;
+    const auto storedKey = file.subspan(sizeof(header), static_cast<std::size_t>(header.keyBytes));
+    payload = file.subspan(sizeof(header) + static_cast<std::size_t>(header.keyBytes));
+    if (HashBytes(storedKey) != header.keyHash) return LoadStatus::Rejected;
+    if (storedKey.size() != key.size() || !std::equal(storedKey.begin(), storedKey.end(), key.begin())) return LoadStatus::KeyMismatch;
+    if (HashBytes(payload) != header.payloadHash) return LoadStatus::Rejected;
+    return LoadStatus::Loaded;
+}
+
+LoadStatus decodeWords(std::span<const std::byte> file, std::span<const std::byte> key, std::vector<std::uint32_t>& words) {
+    std::span<const std::byte> payload;
+    const auto status = checkedPayload(file, key, payload);
+    if (status != LoadStatus::Loaded) return status;
+    if (payload.size() < 20u || payload.size() % sizeof(std::uint32_t) != 0u) return LoadStatus::Rejected;
+    std::vector<std::uint32_t> decoded(payload.size() / sizeof(std::uint32_t));
+    std::memcpy(decoded.data(), payload.data(), payload.size());
+    if (decoded[0] != 0x07230203u) return LoadStatus::Rejected;
+    words = std::move(decoded);
+    return LoadStatus::Loaded;
+}
+
 class DiskStore {
 public:
     DiskStore() {
@@ -695,29 +735,51 @@ public:
         this->root = root;
         directory = root / hex(SourceVersion());
         std::thread([this] { run(); }).detach();
+        static DiskStore* self = this;
+        std::atexit([] {
+            std::unique_lock lock(self->mutex);
+            self->idle.wait_for(lock, std::chrono::seconds(10), [] { return self->jobs.empty() && !self->writing; });
+        });
     }
 
     [[nodiscard]] bool Enabled() const { return !directory.empty(); }
     [[nodiscard]] const std::filesystem::path& Directory() const { return directory; }
 
     bool Load(std::span<const std::byte> key, CompiledVariant& variant) {
+        return load(key, [&](std::span<const std::byte> file) { return DecodeEntry(file, key, variant); }, false);
+    }
+
+    bool LoadSpecialized(std::span<const std::byte> key, std::vector<std::uint32_t>& spirv) {
+        return load(key, [&](std::span<const std::byte> file) { return decodeWords(file, key, spirv); }, true);
+    }
+
+    void StoreSpecialized(std::vector<std::byte> key, std::vector<std::uint32_t> spirv) {
+        {
+            std::lock_guard lock(mutex);
+            jobs.push_back({std::move(key), nullptr, std::make_shared<const std::vector<std::uint32_t>>(std::move(spirv))});
+        }
+        wake.notify_one();
+    }
+
+    template <typename TDecode>
+    bool load(std::span<const std::byte> key, const TDecode& decode, bool specialized) {
         const auto started = std::chrono::steady_clock::now();
         const auto name = EntryName(key);
         thread_local std::vector<std::byte>* fileSlot = nullptr;
         auto& file = ThreadOwned(fileSlot);
         bool loaded = false;
         if (!ReadWholeFile(directory / name, file)) {
-            misses.fetch_add(1, std::memory_order_relaxed);
+            if (!specialized) misses.fetch_add(1, std::memory_order_relaxed);
         } else {
-            switch (DecodeEntry(file, key, variant)) {
+            switch (decode(file)) {
                 case LoadStatus::Loaded:
-                    hits.fetch_add(1, std::memory_order_relaxed);
+                    (specialized ? specializedHits : hits).fetch_add(1, std::memory_order_relaxed);
                     bytesRead.fetch_add(file.size(), std::memory_order_relaxed);
                     loaded = true;
                     break;
                 case LoadStatus::Absent:
                 case LoadStatus::KeyMismatch:
-                    misses.fetch_add(1, std::memory_order_relaxed);
+                    if (!specialized) misses.fetch_add(1, std::memory_order_relaxed);
                     break;
                 case LoadStatus::Rejected: {
                     const auto failures = loadFailures.fetch_add(1, std::memory_order_relaxed);
@@ -735,7 +797,7 @@ public:
     void Store(std::vector<std::byte> key, std::shared_ptr<const CompiledVariant> variant) {
         {
             std::lock_guard lock(mutex);
-            jobs.push_back({std::move(key), std::move(variant)});
+            jobs.push_back({std::move(key), std::move(variant), nullptr});
         }
         wake.notify_one();
     }
@@ -754,6 +816,8 @@ public:
         counters.writeFailures = writeFailures.load(std::memory_order_relaxed);
         counters.bytesRead = bytesRead.load(std::memory_order_relaxed);
         counters.bytesWritten = bytesWritten.load(std::memory_order_relaxed);
+        counters.specializedHits = specializedHits.load(std::memory_order_relaxed);
+        counters.specializedWrites = specializedWrites.load(std::memory_order_relaxed);
         return counters;
     }
 
@@ -761,6 +825,7 @@ private:
     struct Job {
         std::vector<std::byte> key;
         std::shared_ptr<const CompiledVariant> variant;
+        std::shared_ptr<const std::vector<std::uint32_t>> spirv;
     };
 
     void run() {
@@ -787,9 +852,9 @@ private:
     }
 
     void write(const Job& job) {
-        const auto file = EncodeEntry(job.key, *job.variant);
+        const auto file = job.variant != nullptr ? EncodeEntry(job.key, *job.variant) : encodeWords(job.key, *job.spirv);
         if (WriteFileAtomically(directory / EntryName(job.key), file)) {
-            writes.fetch_add(1, std::memory_order_relaxed);
+            (job.variant != nullptr ? writes : specializedWrites).fetch_add(1, std::memory_order_relaxed);
             bytesWritten.fetch_add(file.size(), std::memory_order_relaxed);
         } else {
             const auto failures = writeFailures.fetch_add(1, std::memory_order_relaxed);
@@ -839,11 +904,11 @@ private:
         const auto totals = Totals();
         const auto loadNs = loadNanoseconds.load(std::memory_order_relaxed);
         const auto delta = [](std::uint64_t after, std::uint64_t before) { return static_cast<unsigned long long>(after - before); };
-        if (totals.hits == reported.hits && totals.misses == reported.misses && totals.writes == reported.writes && totals.loadFailures == reported.loadFailures && totals.writeFailures == reported.writeFailures) return;
-        std::fprintf(stderr, "[shader-disk-cache] (10 s): %llu hits, %llu misses, %llu writes (%.1f MiB), %llu load failures, %llu write failures; %.1f MiB read in %.1f ms (totals: %llu hits, %llu misses, %llu writes)\n",
+        if (totals.hits == reported.hits && totals.misses == reported.misses && totals.writes == reported.writes && totals.loadFailures == reported.loadFailures && totals.writeFailures == reported.writeFailures && totals.specializedHits == reported.specializedHits && totals.specializedWrites == reported.specializedWrites) return;
+        std::fprintf(stderr, "[shader-disk-cache] (10 s): %llu hits, %llu misses, %llu writes (%.1f MiB), %llu load failures, %llu write failures; %.1f MiB read in %.1f ms (totals: %llu hits, %llu misses, %llu writes); specialized modules %llu loaded, %llu written\n",
                      delta(totals.hits, reported.hits), delta(totals.misses, reported.misses), delta(totals.writes, reported.writes), static_cast<double>(totals.bytesWritten - reported.bytesWritten) / (1024.0 * 1024.0),
                      delta(totals.loadFailures, reported.loadFailures), delta(totals.writeFailures, reported.writeFailures), static_cast<double>(totals.bytesRead - reported.bytesRead) / (1024.0 * 1024.0), static_cast<double>(loadNs - reportedLoadNs) / 1e6,
-                     static_cast<unsigned long long>(totals.hits), static_cast<unsigned long long>(totals.misses), static_cast<unsigned long long>(totals.writes));
+                     static_cast<unsigned long long>(totals.hits), static_cast<unsigned long long>(totals.misses), static_cast<unsigned long long>(totals.writes), delta(totals.specializedHits, reported.specializedHits), delta(totals.specializedWrites, reported.specializedWrites));
         reported = totals;
         reportedLoadNs = loadNs;
     }
@@ -855,7 +920,7 @@ private:
     std::condition_variable idle;
     std::deque<Job> jobs;
     bool writing = false;
-    std::atomic<std::uint64_t> hits{0}, misses{0}, writes{0}, loadFailures{0}, writeFailures{0}, bytesRead{0}, bytesWritten{0}, loadNanoseconds{0};
+    std::atomic<std::uint64_t> hits{0}, misses{0}, writes{0}, loadFailures{0}, writeFailures{0}, bytesRead{0}, bytesWritten{0}, loadNanoseconds{0}, specializedHits{0}, specializedWrites{0};
     std::atomic<std::int64_t> lastReport{0};
     std::mutex reportMutex;
     Counters reported;
@@ -929,17 +994,9 @@ std::vector<std::byte> EncodeEntry(std::span<const std::byte> key, const Compile
 }
 
 LoadStatus DecodeEntry(std::span<const std::byte> file, std::span<const std::byte> key, CompiledVariant& variant) {
-    if (file.size() < sizeof(FileHeader)) return LoadStatus::Rejected;
-    FileHeader header;
-    std::memcpy(&header, file.data(), sizeof(header));
-    if (header.magic != FileMagic || header.format != FormatVersion || header.sourceVersion != SourceVersion()) return LoadStatus::Rejected;
-    const auto body = file.size() - sizeof(header);
-    if (header.keyBytes > body || header.payloadBytes != body - header.keyBytes) return LoadStatus::Rejected;
-    const auto storedKey = file.subspan(sizeof(header), static_cast<std::size_t>(header.keyBytes));
-    const auto payload = file.subspan(sizeof(header) + static_cast<std::size_t>(header.keyBytes));
-    if (HashBytes(storedKey) != header.keyHash) return LoadStatus::Rejected;
-    if (storedKey.size() != key.size() || !std::equal(storedKey.begin(), storedKey.end(), key.begin())) return LoadStatus::KeyMismatch;
-    if (HashBytes(payload) != header.payloadHash) return LoadStatus::Rejected;
+    std::span<const std::byte> payload;
+    const auto status = checkedPayload(file, key, payload);
+    if (status != LoadStatus::Loaded) return status;
     Reader reader(payload);
     CompiledVariant decoded;
     decodeArtifact(reader, decoded.artifact);
@@ -968,6 +1025,47 @@ bool Load(std::span<const std::byte> key, CompiledVariant& variant) {
 void Store(std::vector<std::byte> key, std::shared_ptr<const CompiledVariant> variant) {
     auto& instance = store();
     if (instance.Enabled()) instance.Store(std::move(key), std::move(variant));
+}
+
+void BuildSpecializedKey(std::span<const std::uint32_t> module, std::span<const PipelineSpecializationConstant> constants, const SpirvTarget& target, std::vector<std::byte>& key) {
+    key.clear();
+    Writer writer(key);
+    writer.Value(FileMagic);
+    writer.Value(FormatVersion);
+    writer.Value(SourceVersion());
+    writer.Value(SpecializedTag);
+    const auto bytes = std::as_bytes(module);
+    writer.Value(static_cast<std::uint64_t>(module.size()));
+    writer.Value(HashBytes(bytes, 0x5eed0003ull));
+    writer.Value(HashBytes(bytes, 0x5eed0004ull));
+    writer.Value(static_cast<std::uint64_t>(constants.size()));
+    for (const auto& constant : constants) {
+        writer.Value(constant.id);
+        writer.Value(constant.value);
+    }
+    writer.Value(target.vulkanVersion);
+    writer.Value(target.spirvVersion);
+    writer.Value(target.nonConstantImageOffsets);
+    const auto& switches = switchKey();
+    key.insert(key.end(), switches.begin(), switches.end());
+}
+
+bool LoadSpecialized(std::span<const std::byte> key, std::vector<std::uint32_t>& spirv) {
+    auto& instance = store();
+    return instance.Enabled() && instance.LoadSpecialized(key, spirv);
+}
+
+void StoreSpecialized(std::vector<std::byte> key, std::vector<std::uint32_t> spirv) {
+    auto& instance = store();
+    if (instance.Enabled()) instance.StoreSpecialized(std::move(key), std::move(spirv));
+}
+
+double SpecializedStoreMinMs() {
+    static const double value = [] {
+        const char* text = std::getenv("APS5_SPECIALIZED_CACHE_MIN_MS");
+        return text != nullptr && *text != '\0' ? std::strtod(text, nullptr) : 20.0;
+    }();
+    return value;
 }
 
 void Flush() {
