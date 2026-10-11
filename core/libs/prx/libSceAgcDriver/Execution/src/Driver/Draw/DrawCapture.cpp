@@ -84,8 +84,7 @@ ShaderRecompiler::RecompileResult Driver::materializeDrawStage(std::size_t i, st
         static const bool dumpShaders = std::getenv("APS5_DUMP_SHADERS") != nullptr;
         const auto dump = dumpShaders ? dumpRequest(program.binary.codeAddress, request) : std::string{};
         std::string reason = error.what();
-        if (const auto newline = reason.find('
-'); newline != std::string::npos) reason.resize(newline);
+        if (const auto newline = reason.find('\n'); newline != std::string::npos) reason.resize(newline);
         const char* stage = program.binary.stage == Stage::Fragment ? "pixel" : "draw";
         char where[128];
         if (dump.empty()) std::snprintf(where, sizeof(where), "%s shader 0x%llx: ", stage, static_cast<unsigned long long>(program.binary.codeAddress));
