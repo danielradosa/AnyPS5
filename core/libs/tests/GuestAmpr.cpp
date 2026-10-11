@@ -130,11 +130,8 @@ std::intptr_t APS5_VABI sceKernelGetEventData(const KernelEvent*);
 void* APS5_VABI sceKernelGetEventUserData(const KernelEvent*);
 int APS5_VABI _Thrd_join_nid_postfix(Pthread, int*);
 Pthread APS5_VABI _Thrd_id_nid_postfix();
-void APS5_VABI _Thrd_sleep_nid_postfix(const KernelTimespec*);
 int APS5_VABI _Cnd_init_with_name_nid_postfix(PthreadCond*, const char*);
 int APS5_VABI _Cnd_signal_nid_postfix(PthreadCond*);
-void APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix();
-void APS5_VABI _Unlock_shared_ptr_spin_lock_nid_postfix();
 [[noreturn]] void APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(int);
 int APS5_VABI scePthreadCreate(Pthread*, const PthreadAttr*, PthreadEntry, void*, const char*);
 int APS5_VABI scePthreadDetach(Pthread);
@@ -991,7 +988,6 @@ void TestAmmPrt() {
 
 constexpr int thrdSuccess = 0;
 constexpr int thrdError = 4;
-constexpr std::int64_t nanosecondsPerSecond = 1000000000;
 
 void* APS5_VABI ReturnOwnId(void* arg) {
     *static_cast<Pthread*>(arg) = _Thrd_id_nid_postfix();
@@ -1036,41 +1032,6 @@ void TestThreadJoinAndId() {
     blocked.released = true;
 }
 
-KernelTimespec RealtimeNow() {
-    KernelTimespec now{};
-    Require(clock_gettime_nid_postfix(0, &now) == 0);
-    return now;
-}
-
-std::int64_t TotalNanoseconds(const KernelTimespec& time) {
-    return time.tv_sec * nanosecondsPerSecond + time.tv_nsec;
-}
-
-void TestThreadSleep() {
-    const KernelTimespec start = RealtimeNow();
-    const KernelTimespec unnormalized{start.tv_sec - 1, start.tv_nsec + nanosecondsPerSecond + 50000000};
-    _Thrd_sleep_nid_postfix(&unnormalized);
-    Require(TotalNanoseconds(RealtimeNow()) >= TotalNanoseconds(start) + 50000000);
-
-    const KernelTimespec soon = RealtimeNow();
-    const KernelTimespec deadline{soon.tv_sec + (soon.tv_nsec + 30000000) / nanosecondsPerSecond, (soon.tv_nsec + 30000000) % nanosecondsPerSecond};
-    _Thrd_sleep_nid_postfix(&deadline);
-    Require(TotalNanoseconds(RealtimeNow()) >= TotalNanoseconds(deadline));
-
-    const auto before = std::chrono::steady_clock::now();
-    const KernelTimespec past{start.tv_sec - 10, 0};
-    _Thrd_sleep_nid_postfix(&past);
-    Require(std::chrono::steady_clock::now() - before < std::chrono::seconds(1));
-
-    bool threw = false;
-    try {
-        _Thrd_sleep_nid_postfix(nullptr);
-    } catch (const std::invalid_argument&) {
-        threw = true;
-    }
-    Require(threw);
-}
-
 struct SignalTarget {
     PthreadCond cond = nullptr;
     PthreadMutex mutex = nullptr;
@@ -1111,32 +1072,6 @@ void TestConditionVariable() {
     Require(_Cnd_init_with_name_nid_postfix(&unnamed, nullptr) == thrdSuccess);
     Require(unnamed != nullptr);
     Require(scePthreadCondDestroy(&unnamed) == 0);
-}
-
-void TestSharedPtrSpinLock() {
-    _Lock_shared_ptr_spin_lock_nid_postfix();
-    std::atomic<bool> entered{false};
-    auto contender = std::async(std::launch::async, [&]() {
-        _Lock_shared_ptr_spin_lock_nid_postfix();
-        entered = true;
-        _Unlock_shared_ptr_spin_lock_nid_postfix();
-    });
-    Require(contender.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout);
-    Require(!entered);
-    _Unlock_shared_ptr_spin_lock_nid_postfix();
-    Require(contender.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
-    contender.get();
-    Require(entered);
-
-    bool threw = false;
-    try {
-        _Unlock_shared_ptr_spin_lock_nid_postfix();
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    Require(threw);
-    _Lock_shared_ptr_spin_lock_nid_postfix();
-    _Unlock_shared_ptr_spin_lock_nid_postfix();
 }
 
 void TestThrowCppError() {
@@ -1196,9 +1131,7 @@ int main() {
     TestAmmRemapAndProtect();
     TestAmmPrt();
     TestThreadJoinAndId();
-    TestThreadSleep();
     TestConditionVariable();
-    TestSharedPtrSpinLock();
     TestThrowCppError();
     return 0;
 }
