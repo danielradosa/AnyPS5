@@ -18,6 +18,18 @@ namespace AgcDriver::Graphics {
 
 namespace {
 
+void checkAllocation(const Context& context, VkResult result, const VkMemoryAllocateInfo& allocation, const char* kind) {
+    if (result == VK_SUCCESS) return;
+    const auto heap = context.memory.memoryTypes[allocation.memoryTypeIndex].heapIndex;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT reported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    queried.pNext = &reported;
+    if (context.memoryProperties2 != nullptr && context.physical != VK_NULL_HANDLE) context.memoryProperties2(context.physical, &queried);
+    char what[224];
+    std::snprintf(what, sizeof(what), "vkAllocateMemory %s (%llu KiB, type %u flags 0x%x, heap %u: %llu of %llu MiB used)", kind, static_cast<unsigned long long>(allocation.allocationSize >> 10u), allocation.memoryTypeIndex, context.memory.memoryTypes[allocation.memoryTypeIndex].propertyFlags, heap, static_cast<unsigned long long>(reported.heapUsage[heap] >> 20u), static_cast<unsigned long long>(reported.heapBudget[heap] >> 20u));
+    Check(result, what);
+}
+
 // APS5_PROFILE_DRAW: live host-memory Buffers (taken and not yet released, pooled or not) by
 // usage flags and power-of-two size class; every second the [hostbuffers] line lists the classes
 // holding the most bytes, so a full host heap names the kind of buffer that fills it.
@@ -111,18 +123,7 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
             if (hostTracked(properties)) noteHostBuffer(context, this->usage, capacity, true);
             return;
         }
-        if (const auto result = context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory); result != VK_SUCCESS) {
-            // Name the failing request: its size, memory type and heap, and the heap's
-            // VK_EXT_memory_budget usage and budget when the device reports them.
-            const auto heap = context.memory.memoryTypes[allocation.memoryTypeIndex].heapIndex;
-            VkPhysicalDeviceMemoryBudgetPropertiesEXT reported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-            VkPhysicalDeviceMemoryProperties2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
-            queried.pNext = &reported;
-            if (context.memoryProperties2 != nullptr && context.physical != VK_NULL_HANDLE) context.memoryProperties2(context.physical, &queried);
-            char what[192];
-            std::snprintf(what, sizeof(what), "vkAllocateMemory buffer (%llu KiB, type %u flags 0x%x, heap %u: %llu of %llu MiB used)", static_cast<unsigned long long>(allocation.allocationSize >> 10u), allocation.memoryTypeIndex, context.memory.memoryTypes[allocation.memoryTypeIndex].propertyFlags, heap, static_cast<unsigned long long>(reported.heapUsage[heap] >> 20u), static_cast<unsigned long long>(reported.heapBudget[heap] >> 20u));
-            Check(result, what);
-        }
+        checkAllocation(context, context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory), allocation, "buffer");
         Check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, buffer, memory, 0), "vkBindBufferMemory");
         initializeAddress(usage);
         if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) Check(context.Function<PFN_vkMapMemory>("vkMapMemory")(context.device, memory, 0, VK_WHOLE_SIZE, 0, &mapping), "vkMapMemory");
@@ -194,7 +195,7 @@ DeviceBuffer::DeviceBuffer(const Context& context, std::size_t size, VkBufferUsa
         allocation.allocationSize = requirements.size;
         allocationBytes = requirements.size;
         allocation.memoryTypeIndex = context.MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        Check(context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory), "vkAllocateMemory device buffer");
+        checkAllocation(context, context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory), allocation, "device buffer");
         Check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, buffer, memory, 0), "vkBindBufferMemory device");
     } catch (...) {
         release();
