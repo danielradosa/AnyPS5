@@ -4,6 +4,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/SonyCrt.hpp"
+#include "prx/libc/include/exceptions/Runtime.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
 #include "prx/libkernel/Pthread/include/Cond.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
@@ -240,6 +241,7 @@ static std::atomic_flag sharedPtrSpinLock;
 extern "C" {
 int APS5_VABI pthread_join_nid_postfix(Pthread thread, void** value);
 Pthread APS5_VABI scePthreadSelf();
+void APS5_VABI sceKernelDebugRaiseException(int code, int argument);
 int APS5_VABI wcsrtombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t** source, std::size_t limit, void* state);
 }
 
@@ -271,6 +273,20 @@ static constexpr std::errc CppErrors[] = {
 
 static int ThrdInitResult(int result) {
     return result == 0 ? ThrdSuccess : result == SCE_KERNEL_ERROR_ENOMEM ? ThrdNomem : ThrdError;
+}
+
+static constexpr int DefaultUnexpectedException = static_cast<int>(0xA0020009);
+
+static void APS5_VABI DestroyTypeInfo_nid_no_patch(std::type_info*) {}
+
+static void APS5_VABI DeleteTypeInfo_nid_no_patch(std::type_info*) {
+    throw std::runtime_error("deleting guest RTTI is not supported");
+}
+
+static void APS5_VABI NoopTypeInfo_nid_no_patch(const std::type_info*) {}
+
+static bool APS5_VABI FunctionTypeInfoCatch_nid_no_patch(const std::type_info*, const std::type_info*, void**) {
+    return false;
 }
 
 extern "C" {
@@ -910,10 +926,7 @@ int APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
+std::uint64_t _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;
 
 int APS5_VABI _Cnd_signal_nid_postfix(PthreadCond* cond) {
     return scePthreadCondSignal(cond) == 0 ? ThrdSuccess : ThrdError;
@@ -929,10 +942,8 @@ int APS5_VABI _Cnd_init_with_name_nid_postfix(PthreadCond* cond, const char* nam
     return ThrdInitResult(scePthreadCondInit(cond, nullptr, name));
 }
 
-int APS5_VABI _ZTVN10__cxxabiv120__function_type_infoE_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
+LibcException::ShimTypeInfoVtable _ZTVN10__cxxabiv120__function_type_infoE_nid_postfix {0, &typeid(__cxxabiv1::__function_type_info),
+    DestroyTypeInfo_nid_no_patch, DeleteTypeInfo_nid_no_patch, NoopTypeInfo_nid_no_patch, NoopTypeInfo_nid_no_patch, FunctionTypeInfoCatch_nid_no_patch};
 
 int APS5_VABI _ZTVSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
@@ -944,15 +955,10 @@ int APS5_VABI _ZNKSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE3get
     return 0;
 }
 
-int APS5_VABI _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
+std::uint64_t _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;
 
-int APS5_VABI _ZTVN10__cxxabiv119__pointer_type_infoE_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
+LibcException::ShimTypeInfoVtable _ZTVN10__cxxabiv119__pointer_type_infoE_nid_postfix {0, &typeid(__cxxabiv1::__pointer_type_info),
+    DestroyTypeInfo_nid_no_patch, DeleteTypeInfo_nid_no_patch, NoopTypeInfo_nid_no_patch, NoopTypeInfo_nid_no_patch, PointerTypeInfoCatch_nid_no_patch};
 
 int APS5_VABI _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
@@ -985,9 +991,14 @@ int APS5_VABI wcstombs_s_nid_postfix(std::size_t* result, char* destination, std
     return wcsrtombs_s_nid_postfix(result, destination, capacity, &source, limit, state.data());
 }
 
-int APS5_VABI __cxa_call_unexpected_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+[[noreturn]] void APS5_VABI __cxa_call_unexpected_nid_postfix(void* exception) {
+    __cxa_begin_catch_nid_postfix(exception);
+    auto* unwind = static_cast<_Unwind_Exception*>(exception);
+    if (LibcException::Native(unwind->exception_class) && LibcException::FromUnwind(unwind)->unexpected)
+        throw std::runtime_error("__cxa_call_unexpected: an installed unexpected handler is not supported");
+    sceKernelDebugRaiseException(DefaultUnexpectedException, 0);
+    sceKernelDebugRaiseException(DefaultUnexpectedException, 0);
+    __builtin_trap();
 }
 
 APS5_EXPORT("0hlfW1O4Aa4", sceAmprLocaleconv);

@@ -65,4 +65,13 @@ extern "C" {
 LibcException::TypeInfoVtable _ZTVN10__cxxabiv117__class_type_infoE_nid_postfix {0, &typeid(__cxxabiv1::__class_type_info)};
 LibcException::TypeInfoVtable _ZTVN10__cxxabiv120__si_class_type_infoE_nid_postfix {0, &typeid(__cxxabiv1::__si_class_type_info)};
 LibcException::TypeInfoVtable _ZTVN10__cxxabiv121__vmi_class_type_infoE_nid_postfix {0, &typeid(__cxxabiv1::__vmi_class_type_info)};
+
+bool APS5_VABI PointerTypeInfoCatch_nid_no_patch(const std::type_info* self, const std::type_info* thrown, void** adjusted) {
+    if (!self || !thrown || !adjusted) throw std::invalid_argument("invalid RTTI catch arguments");
+    void* object = *adjusted;
+    if (object && std::strcmp(LibcException::Kind(thrown), "N10__cxxabiv119__pointer_type_infoE") == 0) std::memcpy(&object, object, sizeof(object));
+    if (!LibcException::Match(self, thrown, object)) return false;
+    *adjusted = object;
+    return true;
+}
 }

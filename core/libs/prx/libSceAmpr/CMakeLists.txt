@@ -23,4 +23,14 @@ if(BUILD_TESTING)
         set_tests_properties(guest_ampr_threads PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAmpr>")
     endif()
+
+    add_test_executable(guest_ampr_unexpected_tests ${LIBS_INCLUDE_DIR}/tests/GuestAmprUnexpected.cpp)
+    target_include_directories(guest_ampr_unexpected_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_ampr_unexpected_tests PRIVATE libSceAmpr libkernel libc)
+    configure_windows_unwind(guest_ampr_unexpected_tests)
+    add_test(NAME guest_ampr_unexpected COMMAND guest_ampr_unexpected_tests)
+    if(WIN32)
+        set_tests_properties(guest_ampr_unexpected PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAmpr>")
+    endif()
 endif()

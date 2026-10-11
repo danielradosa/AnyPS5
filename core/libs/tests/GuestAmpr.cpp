@@ -1,6 +1,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libc/include/GuestArena.hpp"
+#include "prx/libc/include/exceptions/Runtime.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
 #include <array>
 #include <atomic>
@@ -15,6 +16,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <typeinfo>
 #include <utility>
 
 extern "C" {
@@ -150,6 +152,10 @@ int APS5_VABI scePthreadMutexUnlock(PthreadMutex*);
 int APS5_VABI scePthreadCondDestroy(PthreadCond*);
 int APS5_VABI scePthreadCondWait(PthreadCond*, PthreadMutex*);
 int APS5_VABI clock_gettime_nid_postfix(int, KernelTimespec*);
+extern std::uint64_t _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix;
+extern std::uint64_t _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix;
+extern LibcException::ShimTypeInfoVtable _ZTVN10__cxxabiv119__pointer_type_infoE_nid_postfix;
+extern LibcException::ShimTypeInfoVtable _ZTVN10__cxxabiv120__function_type_infoE_nid_postfix;
 }
 
 static void RequireAt(bool value, int line) {
@@ -1170,6 +1176,104 @@ void TestThrowCppError() {
     }
 }
 
+struct GuestTypeInfo {
+    const void* vtable;
+    const char* name;
+};
+
+struct GuestPointerTypeInfo {
+    const void* vtable;
+    const char* name;
+    unsigned flags;
+    const void* pointee;
+};
+
+template<typename TRecord>
+const std::type_info* AsTypeInfo(const TRecord& record) {
+    return reinterpret_cast<const std::type_info*>(&record);
+}
+
+template<typename TRecord, typename TValue>
+[[noreturn]] void ThrowGuest(const TRecord& type, TValue value) {
+    void* object = __cxa_allocate_exception_nid_postfix(sizeof(value));
+    std::memcpy(object, &value, sizeof(value));
+    __cxa_throw_nid_postfix(object, const_cast<std::type_info*>(AsTypeInfo(type)), nullptr);
+}
+
+void ThrownTarget() {}
+
+void TestLocaleFacetIds() {
+    auto& numGet = _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix;
+    auto& timeGet = _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix;
+    Require(numGet == 0 && timeGet == 0 && &numGet != &timeGet);
+    numGet = 5;
+    timeGet = 6;
+    Require(numGet == 5 && timeGet == 6);
+    numGet = 0;
+    timeGet = 0;
+}
+
+void TestShimTypeInfoVtables() {
+    auto& pointerVtable = _ZTVN10__cxxabiv119__pointer_type_infoE_nid_postfix;
+    auto& functionVtable = _ZTVN10__cxxabiv120__function_type_infoE_nid_postfix;
+    Require(pointerVtable.offset == 0 && std::strcmp(pointerVtable.type->name(), "N10__cxxabiv119__pointer_type_infoE") == 0);
+    Require(functionVtable.offset == 0 && std::strcmp(functionVtable.type->name(), "N10__cxxabiv120__function_type_infoE") == 0);
+
+    const GuestPointerTypeInfo intPointer{&pointerVtable.destroy, "Pi", 0, &typeid(int)};
+    const GuestPointerTypeInfo constIntPointer{&pointerVtable.destroy, "PKi", 1, &typeid(int)};
+    const GuestTypeInfo function{&functionVtable.destroy, "FvvE"};
+    const GuestPointerTypeInfo functionPointer{&pointerVtable.destroy, "PFvvE", 0, &function};
+
+    int value = 7;
+    bool caught = false;
+    try {
+        ThrowGuest(intPointer, &value);
+    } catch (const int* pointer) {
+        caught = pointer == &value;
+    }
+    Require(caught);
+    caught = false;
+    try {
+        ThrowGuest(intPointer, &value);
+    } catch (void* pointer) {
+        caught = pointer == &value;
+    }
+    Require(caught);
+    caught = false;
+    bool asObjectPointer = false;
+    try {
+        try {
+            ThrowGuest(functionPointer, &ThrownTarget);
+        } catch (void*) {
+            asObjectPointer = true;
+        }
+    } catch (void (*pointer)()) {
+        caught = pointer == &ThrownTarget;
+    }
+    Require(caught && !asObjectPointer);
+
+    int* stored = &value;
+    void* adjusted = &stored;
+    Require(pointerVtable.canCatch(AsTypeInfo(constIntPointer), AsTypeInfo(intPointer), &adjusted) && adjusted == &value);
+    adjusted = &stored;
+    Require(!pointerVtable.canCatch(AsTypeInfo(intPointer), AsTypeInfo(constIntPointer), &adjusted) && adjusted == &stored);
+    void (*target)() = &ThrownTarget;
+    adjusted = &target;
+    Require(!functionVtable.canCatch(AsTypeInfo(function), AsTypeInfo(function), &adjusted) && adjusted == &target);
+
+    pointerVtable.destroy(const_cast<std::type_info*>(AsTypeInfo(intPointer)));
+    pointerVtable.noop1(AsTypeInfo(intPointer));
+    pointerVtable.noop2(AsTypeInfo(intPointer));
+    functionVtable.destroy(const_cast<std::type_info*>(AsTypeInfo(function)));
+    bool rejected = false;
+    try {
+        functionVtable.deleteObject(const_cast<std::type_info*>(AsTypeInfo(function)));
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    Require(rejected);
+}
+
 }
 
 int main() {
@@ -1200,5 +1304,7 @@ int main() {
     TestThreadJoinAndId();
     TestConditionVariable();
     TestThrowCppError();
+    TestLocaleFacetIds();
+    TestShimTypeInfoVtables();
     return 0;
 }
