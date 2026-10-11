@@ -1,4 +1,5 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "prx/libkernel/File/include/FileFlags.hpp"
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -11,6 +12,11 @@
 
 extern "C" {
 std::int64_t APS5_VABI readlink_nid_postfix(const char*, char*, std::size_t);
+int APS5_VABI fchdir_nid_postfix(int);
+int APS5_VABI chdir_nid_postfix(const char*);
+char* APS5_VABI getcwd_nid_postfix(char*, std::size_t);
+int APS5_VABI sceKernelOpen(const char*, int, std::uint16_t);
+int APS5_VABI sceKernelClose(int);
 int APS5_VABI setsid_nid_postfix(void);
 int APS5_VABI link_nid_postfix(const char*, const char*);
 std::uint16_t APS5_VABI umask_nid_postfix(std::uint16_t);
@@ -74,6 +80,20 @@ int main() {
     Require(link_nid_postfix(nullptr, linked.c_str()) == -1 && Error() == 14);
     Require(link_nid_postfix(original.c_str(), "") == -1 && Error() == 2);
     Require(std::filesystem::remove(linked) && std::filesystem::hard_link_count(original) == 1);
+    const int directory = sceKernelOpen(root.string().c_str(), SCE_KERNEL_O_RDONLY | SCE_KERNEL_O_DIRECTORY, 0);
+    Require(directory >= 0);
+    const int fileDescriptor = sceKernelOpen(file.c_str(), SCE_KERNEL_O_RDONLY, 0);
+    Require(fileDescriptor >= 0);
+    Require(fchdir_nid_postfix(-1) == -1 && Error() == 9);
+    Require(fchdir_nid_postfix(fileDescriptor) == -1 && Error() == 20);
+    Require(fchdir_nid_postfix(directory) == 0);
+    char directoryPath[1024];
+    Require(getcwd_nid_postfix(directoryPath, sizeof(directoryPath)) == directoryPath);
+    Require(std::strcmp(directoryPath, ("/" + root.filename().string()).c_str()) == 0);
+    Require(sceKernelClose(fileDescriptor) == 0);
+    Require(sceKernelClose(directory) == 0);
+    Require(fchdir_nid_postfix(directory) == -1 && Error() == 9);
+    Require(chdir_nid_postfix("/") == 0);
     std::filesystem::remove_all(root);
     return 0;
 }
