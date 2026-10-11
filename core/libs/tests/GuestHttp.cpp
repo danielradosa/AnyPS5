@@ -233,6 +233,11 @@ int main() {
     Require(sceHttpWaitRequest(epoll, events, 2, 0) == invalidId);
     Require(sceHttpDestroyEpoll(1, epoll) == invalidId);
     Require(sceHttpDestroyEpoll(1, nullptr) == invalidValue);
+    HttpEpollHandle next = nullptr;
+    Require(sceHttpCreateEpoll(1, &next) == 0 && next != nullptr && next != epoll);
+    Require(sceHttpAbortWaitRequest(epoll) == invalidId);
+    Require(sceHttpWaitRequest(next, events, 2, 0) == 0);
+    Require(sceHttpDestroyEpoll(1, next) == 0);
     bool releasedByDestroy = false;
     for (int attempt = 1; attempt <= 20 && !releasedByDestroy; ++attempt) {
         HttpEpollHandle destroyed = nullptr;

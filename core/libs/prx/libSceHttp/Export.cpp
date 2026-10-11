@@ -30,6 +30,7 @@ struct HttpEpoll {
     bool destroyed = false;
 };
 static std::mutex g_epollMutex;
+static std::uintptr_t g_nextEpoll = 0;
 static std::map<HttpEpollHandle, std::shared_ptr<HttpEpoll>> g_epolls;
 
 extern "C" {
@@ -66,10 +67,10 @@ int APS5_VABI sceHttpCreateConnectionWithURL(int tmpl_id, const char* url, int e
 int APS5_VABI sceHttpCreateEpoll(int http_ctx_id, HttpEpollHandle* eh) {
     (void)http_ctx_id;
     if (!eh) return ERROR_INVALID_VALUE;
-    auto epoll = std::make_shared<HttpEpoll>();
     std::lock_guard lock(g_epollMutex);
-    g_epolls.emplace(epoll.get(), epoll);
-    *eh = epoll.get();
+    const auto handle = reinterpret_cast<HttpEpollHandle>(++g_nextEpoll);
+    g_epolls.emplace(handle, std::make_shared<HttpEpoll>());
+    *eh = handle;
     return 0;
 }
 
