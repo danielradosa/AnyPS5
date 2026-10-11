@@ -1785,6 +1785,12 @@ int main() {
     *__error_nid_postfix() = 0;
     Require(madvise_nid_postfix(reinterpret_cast<void*>(0x800000000000), 1, 0) == -1 && *__error_nid_postfix() == 22);
     Require(madvise_nid_postfix(reinterpret_cast<void*>(0x7fffffffc000), 0x4000, 4) == 0);
+    *__error_nid_postfix() = 0;
+    Require(madvise_nid_postfix(memory, page, 10) == 0);
+    Require(madvise_nid_postfix(reinterpret_cast<void*>(0x800000000000), 1, 10) == 0);
+    Require(madvise_nid_postfix(memory, std::numeric_limits<std::size_t>::max(), 10) == 0);
+    Require(madvise_nid_postfix(reinterpret_cast<void*>(std::numeric_limits<std::uintptr_t>::max()), 2, 10) == 0);
+    Require(*__error_nid_postfix() == 0 && memory[0] == 42 && memory[page * 2] == 73);
     Require(munmap_nid_postfix(memory + 1, page) == -1 && *__error_nid_postfix() == 22);
     Require(munmap_nid_postfix(memory, 0) == -1 && *__error_nid_postfix() == 22);
     Require(memory[0] == 42);
