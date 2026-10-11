@@ -62,7 +62,7 @@ RuntimeDescriptor descriptor(SpirvValueEmitContext& context, const IrValue& inst
     const auto word3 = memory.gpuDescriptor ? context.Arg(*handle, 3u) : state.module.SpecializationConstant(TypeU32(state), first + 1u, 0u);
     const auto u32 = TypeU32(state);
     auto base = ConstantU32(state, 0u);
-    if (memory.gpuDescriptor || BufferAccessOf(instruction.Opcode()) == BufferAccess::Atomic) {
+    if (memory.gpuDescriptor) {
         const auto u64 = TypeScalarU64(state);
         const auto high = Binary(state, spv::OpShiftLeftLogical, u64, Unary(state, spv::OpUConvert, u64, field(state, context.Arg(*handle, 1u), 0u, 16u)), BdaConstant(state, 32u));
         base = Binary(state, spv::OpBitwiseOr, u64, Unary(state, spv::OpUConvert, u64, context.Arg(*handle, 0u)), high);
@@ -601,8 +601,16 @@ std::uint32_t EmitRuntimeBufferAtomic(SpirvValueEmitContext& context, const IrVa
                 const auto storage = directAccess(context, instruction, bits == 64u);
                 const auto byte = EmitAddU32(state, access.guest, storage.byteOffset);
                 const auto unaligned = nonzero(state, EmitAndConstant(state, byte, bits / 8u - 1u));
-                const auto guest = Binary(state, spv::OpIAdd, TypeScalarU64(state), resource.base, Unary(state, spv::OpUConvert, TypeScalarU64(state), access.guest));
-                faultIf(context, instruction, unaligned, guest, bits / 8u, BdaAbi::FaultReason::Unaligned);
+                const auto* handle = instruction.Argument(0)->Resolve();
+                const auto sum = state.module.AllocateId();
+                const auto low = state.module.AllocateId();
+                const auto carry = state.module.AllocateId();
+                state.module.AddFunction(spv::OpIAddCarry, TypeU32Pair(state), sum, context.Arg(*handle, 0u), access.guest);
+                state.module.AddFunction(spv::OpCompositeExtract, TypeU32(state), low, sum, 0u);
+                state.module.AddFunction(spv::OpCompositeExtract, TypeU32(state), carry, sum, 1u);
+                const auto high = EmitAddU32(state, field(state, context.Arg(*handle, 1u), 0u, 16u), carry);
+                EmitIfCondition(state, unaligned, [&] { RecordBdaFaultWords(state, low, high, ConstantU32(state, bits / 8u), BdaInstructionPc(state, instruction), BdaAbi::FaultReason::Unaligned); });
+                StopBdaInvocationIf(state, unaligned);
                 const auto index = Binary(state, spv::OpShiftRightLogical, TypeU32(state), byte, ConstantU32(state, bits == 64u ? 3u : 2u));
                 return EmitValueOrDefaultIfCondition(state, both(state, Unary(state, spv::OpLogicalNot, TypeBool(state), unaligned), EmitMemoryElementInBounds(state, storage, index)), type, zero, [&] {
                     const auto pointer = EmitStorageBufferElementPointer(state, storage, index, bits == 64u ? TypeStorageBufferU64ElementPointer(state) : TypeStorageBufferElementPointer(state));
