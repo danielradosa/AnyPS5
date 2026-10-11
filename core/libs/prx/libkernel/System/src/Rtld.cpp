@@ -14,12 +14,22 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <intrin.h>
 #else
 #include <dlfcn.h>
 #include <link.h>
 #endif
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+extern "C" void* __tls_get_addr(void* index);
+#endif
+
 namespace {
+
+struct GuestTlsIndex {
+    std::uint64_t module;
+    std::uint64_t offset;
+};
 
 std::mutex rtldHeapMutex;
 std::array<void*, 10> rtldHeapApi{};
@@ -144,6 +154,20 @@ void APS5_VABI _sceKernelSetThreadAtexitReport_nid_postfix(thread_atexit_report_
 
 void APS5_VABI _sceKernelSetThreadDtors_nid_postfix(thread_dtors_func_t callback) {
     ThreadLifecycle::SetThreadDtors(callback);
+}
+
+void* APS5_VABI __tls_get_addr_nid_postfix(GuestTlsIndex* index) {
+    if (index == nullptr)
+        throw std::invalid_argument("__tls_get_addr: null TLS index");
+#ifdef _WIN32
+    const auto module = *reinterpret_cast<const DWORD*>(index->module);
+    auto* const* blocks = reinterpret_cast<std::uint8_t* const*>(__readgsqword(0x58));
+    return blocks[module] + index->offset;
+#elif defined(__APPLE__)
+    throw std::runtime_error("__tls_get_addr: guest TLS indices are not resolved by the host on macOS");
+#else
+    return __tls_get_addr(index);
+#endif
 }
 
 }
