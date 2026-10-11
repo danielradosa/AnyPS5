@@ -53,6 +53,7 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Process.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Sandbox.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/SystemConfiguration.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/System/src/SoftwareVersion.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Signals.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/SignalSets.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/System/src/Notification.cpp
@@ -666,6 +667,15 @@ if(BUILD_TESTING)
     add_test(NAME guest_system_configuration COMMAND guest_system_configuration_tests)
     if(WIN32)
         set_tests_properties(guest_system_configuration PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
+    endif()
+    add_test_executable(guest_software_version_tests ${LIBS_INCLUDE_DIR}/tests/GuestSoftwareVersion.cpp)
+    target_include_directories(guest_software_version_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_software_version_tests PRIVATE libkernel libc)
+    configure_windows_unwind(guest_software_version_tests)
+    add_test(NAME guest_software_version COMMAND guest_software_version_tests)
+    if(WIN32)
+        set_tests_properties(guest_software_version PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
     add_test_executable(guest_system_command_tests ${LIBS_INCLUDE_DIR}/tests/GuestSystemCommand.cpp)
