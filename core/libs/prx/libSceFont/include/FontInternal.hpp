@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -31,7 +32,8 @@ struct FontState {
     FT_Face face = nullptr;
     float scaleW = 16.0f;
     float scaleH = 16.0f;
-    std::unordered_map<std::int32_t, std::int32_t> scriptLanguages;
+    std::map<int, int> scriptLanguages;
+    std::map<int, int> typographicFeatures;
 
     FontState() = default;
     FontState(const FontState&) = delete;

@@ -53,6 +53,30 @@ int ReadFontStyle(FontHandle fontHandle, bool checkMagic, Getter&& getter) {
     return rc;
 }
 
+template<typename Access>
+int AccessFontSettings(FontHandle fontHandle, Access&& access) {
+    return ReadFontStyle(fontHandle, true, [&](FontHandleNative*) {
+        FontState* state = TryGetState(fontHandle);
+        return state ? access(*state) : SCE_FONT_ERROR_INVALID_FONT_HANDLE;
+    });
+}
+
+int SetFontSetting(FontHandle fontHandle, std::map<int, int> FontState::*table, int key, int value) {
+    return AccessFontSettings(fontHandle, [&](FontState& state) {
+        (state.*table)[key] = value;
+        return SCE_FONT_OK;
+    });
+}
+
+int GetFontSetting(FontHandle fontHandle, std::map<int, int> FontState::*table, int key, int* value) {
+    if (!value) return SCE_FONT_ERROR_INVALID_PARAMETER;
+    return AccessFontSettings(fontHandle, [&](FontState& state) {
+        const auto found = (state.*table).find(key);
+        *value = found == (state.*table).end() ? 0 : found->second;
+        return SCE_FONT_OK;
+    });
+}
+
 void ResetScaleOutputs(float* w, float* h) {
     if (w) *w = 0.0f;
     if (h) *h = 0.0f;
@@ -71,38 +95,6 @@ void ResetWeightOutputs(float* weightXScale, float* weightYScale, std::uint32_t*
 
 float ClampWeightDelta(float scale) {
     return std::clamp(scale - 1.0f, -0.04f, 0.04f);
-}
-
-bool SupportedScript(std::int32_t script) {
-    return script == 0x0000 || script == 0x0100 || script == 0x0600 || script == 0x3000;
-}
-
-bool SupportedLanguage(std::int32_t language) {
-    switch (language) {
-        case 0x0000:
-        case 0x0100:
-        case 0x0101:
-        case 0x0102:
-        case 0x0103:
-        case 0x0104:
-        case 0x0105:
-        case 0x0600:
-        case 0x0601:
-        case 0x0602:
-        case 0x3000:
-        case 0x3011:
-        case 0x3021:
-        case 0x3022:
-        case 0x3023:
-        case 0x3041:
-            return true;
-        default:
-            return false;
-    }
-}
-
-bool LanguageBelongsToScript(std::int32_t script, std::int32_t language) {
-    return ((language ^ script) & 0xFF00) == 0;
 }
 
 }
@@ -131,6 +123,22 @@ int APS5_VABI sceFontGetAttribute(FontHandle fontHandle, int attribute, int* now
         *nowAttribute = 0x40 | ((font->flags >> 15) & 1);
         return SCE_FONT_OK;
     });
+}
+
+int APS5_VABI sceFontSetScriptLanguage(FontHandle fontHandle, int fontScript, int fontLanguage) {
+    return SetFontSetting(fontHandle, &FontState::scriptLanguages, fontScript, fontLanguage);
+}
+
+int APS5_VABI sceFontGetScriptLanguage(FontHandle fontHandle, int fontScript, int* fontLanguage) {
+    return GetFontSetting(fontHandle, &FontState::scriptLanguages, fontScript, fontLanguage);
+}
+
+int APS5_VABI sceFontSetTypographicDesign(FontHandle fontHandle, int typographic, int feature) {
+    return SetFontSetting(fontHandle, &FontState::typographicFeatures, typographic, feature);
+}
+
+int APS5_VABI sceFontGetTypographicDesign(FontHandle fontHandle, int typographic, int* feature) {
+    return GetFontSetting(fontHandle, &FontState::typographicFeatures, typographic, feature);
 }
 
 int APS5_VABI sceFontSetScalePixel(FontHandle fontHandle, float w, float h) {
@@ -164,27 +172,6 @@ int APS5_VABI sceFontSetEffectSlant(FontHandle fontHandle, float slantRatio) {
 int APS5_VABI sceFontSetEffectWeight(FontHandle fontHandle, float weightXScale, float weightYScale, std::uint32_t mode) {
     if (mode != 0) return SCE_FONT_ERROR_INVALID_PARAMETER;
     return UpdateFontStyle(fontHandle, [&](FontHandleNative* font) { return StyleStateSetWeightScale(&font->style, weightXScale, weightYScale); });
-}
-
-int APS5_VABI sceFontSetScriptLanguage(FontHandle fontHandle, std::int32_t fontScript, std::int32_t fontLanguage) {
-    if (!SupportedScript(fontScript) || !SupportedLanguage(fontLanguage) || !LanguageBelongsToScript(fontScript, fontLanguage)) {
-        throw std::runtime_error(std::string("Unsupported fontScript ") + std::to_string(fontScript) + " and fontLanguage " +
-                                 std::to_string(fontLanguage) +
-                                 " were passed to sceFontSetScriptLanguage: only scripts 0x0000 (default), 0x0100 (latin), "
-                                 "0x0600 (arabic) and 0x3000 (CJK) with a documented language of the same script family are pinned. "
-                                 "See docs/dev/TechnicalDebt.md");
-    }
-    auto* font = GetNativeFont(fontHandle);
-    std::uint32_t fontLock = 0;
-    if (!font || font->magic != HANDLE_MAGIC || !AcquireFontLock(font, fontLock)) return SCE_FONT_ERROR_INVALID_FONT_HANDLE;
-    FontState* state = TryGetState(fontHandle);
-    if (!state) {
-        ReleaseFontLock(font, fontLock);
-        throw std::runtime_error("sceFontSetScriptLanguage: the font handle carries no font state. See docs/dev/TechnicalDebt.md");
-    }
-    state->scriptLanguages[fontScript] = fontLanguage;
-    ReleaseFontLock(font, fontLock);
-    return SCE_FONT_OK;
 }
 
 int APS5_VABI sceFontGetScalePixel(FontHandle fontHandle, float* w, float* h) {
