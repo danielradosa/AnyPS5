@@ -1,5 +1,6 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -13,6 +14,7 @@ extern "C" int APS5_VABI sceContentExportInit2(const ContentExportInitParam2* in
 extern "C" int APS5_VABI sceContentExportTerm(void);
 extern "C" int APS5_VABI sceContentExportStart(void);
 extern "C" int APS5_VABI sceContentExportFinish(int exportId);
+extern "C" int APS5_VABI sceContentExportFromData(int exportId, const ContentExportParam* param, std::size_t contentLength, ContentExportDataProvideFunction dataProvider, void* userData, char* path, std::size_t pathBufLen);
 extern "C" int APS5_VABI sceContentExportFromFile(int exportId, const ContentExportParam* param, const char* sourcePath, char* path, std::size_t pathBufLen);
 extern "C" int APS5_VABI sceContentExportFromFileWithThumbnail(int exportId, const ContentExportParam* param, const char* sourcePath, const char* thumbnailPath, char* path, std::size_t pathBufLen);
 
@@ -28,6 +30,51 @@ bool Throws(TAction action) {
         return true;
     }
     return false;
+}
+
+template <typename TAction>
+bool ThrowsProviderError(TAction action) {
+    try {
+        action();
+    } catch (const std::runtime_error& error) {
+        return std::string(error.what()).find("data provider") != std::string::npos;
+    }
+    return false;
+}
+
+struct WholeBuffer {
+    std::uint8_t unused[0x48];
+    const void* data;
+    std::uint64_t size;
+};
+
+std::int32_t APS5_VABI ProvideWholeBuffer(void** data, std::uint64_t* size, void* userData) {
+    const auto* whole = static_cast<const WholeBuffer*>(userData);
+    *data = const_cast<void*>(whole->data);
+    *size = whole->size;
+    return 1;
+}
+
+struct Chunks {
+    std::vector<std::string> parts;
+    std::vector<std::int32_t> results;
+    std::size_t calls = 0;
+};
+
+std::int32_t APS5_VABI ProvideChunks(void** data, std::uint64_t* size, void* userData) {
+    auto& chunks = *static_cast<Chunks*>(userData);
+    const std::size_t index = chunks.calls++;
+    Require(index < chunks.parts.size());
+    *data = chunks.parts[index].empty() ? nullptr : chunks.parts[index].data();
+    *size = chunks.parts[index].size();
+    return chunks.results[index];
+}
+
+std::size_t CountExports() {
+    std::error_code error;
+    std::size_t count = 0;
+    for (std::filesystem::directory_iterator entry(ResolvePath_nid_no_patch("/_ce"), error), end; !error && entry != end; entry.increment(error)) ++count;
+    return count;
 }
 
 std::string ReadAll(const std::filesystem::path& path) {
@@ -117,6 +164,49 @@ int main() {
     exportedThumbnail.replace_extension(".thumbnail.png");
     Require(ReadAll(exportedThumbnail) == "thumb");
 
+    const std::string png("\x89PNG\r\n\x1a\n\0\0\0\rIHDR", 16);
+    WholeBuffer whole{};
+    whole.data = png.data();
+    whole.size = png.size();
+    char dataPath[64];
+    Require(sceContentExportFromData(first, &image, png.size(), ProvideWholeBuffer, &whole, dataPath, sizeof(dataPath)) == 0);
+    Require(std::strncmp(dataPath, "/_ce/", 5) == 0 && std::strcmp(dataPath + std::strlen(dataPath) - 4, ".png") == 0);
+    Require(std::strcmp(dataPath, path) != 0 && std::strcmp(dataPath, thumbnailed) != 0);
+    const std::filesystem::path exportedData = ResolvePath_nid_no_patch(dataPath);
+    Require(ReadAll(exportedData) == png);
+
+    Chunks chunks{{"first ", "second ", "third"}, {0, 0, 1}};
+    char chunkedPath[64];
+    Require(sceContentExportFromData(first, &video, 18, ProvideChunks, &chunks, chunkedPath, sizeof(chunkedPath)) == 0);
+    Require(chunks.calls == 3 && std::strcmp(chunkedPath + std::strlen(chunkedPath) - 4, ".mp4") == 0);
+    const std::filesystem::path exportedChunks = ResolvePath_nid_no_patch(chunkedPath);
+    Require(ReadAll(exportedChunks) == "first second third");
+
+    Chunks emptyLast{{"whole", ""}, {0, 1}};
+    char emptyLastPath[64];
+    Require(sceContentExportFromData(first, &image, 5, ProvideChunks, &emptyLast, emptyLastPath, sizeof(emptyLastPath)) == 0);
+    Require(emptyLast.calls == 2);
+    const std::filesystem::path exportedEmptyLast = ResolvePath_nid_no_patch(emptyLastPath);
+    Require(ReadAll(exportedEmptyLast) == "whole");
+
+    const std::size_t exportCount = CountExports();
+    char rejected[64];
+    Require(sceContentExportFromData(first, &unknown, png.size(), ProvideWholeBuffer, &whole, rejected, sizeof(rejected)) == ErrorNotSupportedFormat);
+    Require(sceContentExportFromData(first, &longTitle, png.size(), ProvideWholeBuffer, &whole, rejected, sizeof(rejected)) == ErrorLargeTitle);
+    Require(Throws([&] { sceContentExportFromData(first + second + 1, &image, png.size(), ProvideWholeBuffer, &whole, rejected, sizeof(rejected)); }));
+    Require(Throws([&] { sceContentExportFromData(first, &image, png.size(), nullptr, &whole, rejected, sizeof(rejected)); }));
+    Require(Throws([&] { sceContentExportFromData(first, &image, png.size(), ProvideWholeBuffer, &whole, rejected, 4); }));
+    Chunks shorter{{"short"}, {1}};
+    Require(ThrowsProviderError([&] { sceContentExportFromData(first, &image, 10, ProvideChunks, &shorter, rejected, sizeof(rejected)); }));
+    Chunks longer{{"too long"}, {1}};
+    Require(ThrowsProviderError([&] { sceContentExportFromData(first, &image, 5, ProvideChunks, &longer, rejected, sizeof(rejected)); }));
+    Chunks continued{{"whole", ""}, {0, 0}};
+    Require(ThrowsProviderError([&] { sceContentExportFromData(first, &image, 5, ProvideChunks, &continued, rejected, sizeof(rejected)); }));
+    Require(continued.calls == 2);
+    Chunks failed{{""}, {-1}};
+    Require(ThrowsProviderError([&] { sceContentExportFromData(first, &image, 5, ProvideChunks, &failed, rejected, sizeof(rejected)); }));
+    Require(CountExports() == exportCount);
+
     Require(sceContentExportFinish(first) == 0);
     Require(Throws([&] { sceContentExportFinish(first); }));
     Require(Throws([&] { sceContentExportFromFile(first, &image, "/content_export_test_source.bin", path, sizeof(path)); }));
@@ -129,6 +219,9 @@ int main() {
     std::filesystem::remove(exported, error);
     std::filesystem::remove(exportedVideo, error);
     std::filesystem::remove(exportedThumbnail, error);
+    std::filesystem::remove(exportedData, error);
+    std::filesystem::remove(exportedChunks, error);
+    std::filesystem::remove(exportedEmptyLast, error);
     std::filesystem::remove(ResolvePath_nid_no_patch("/_ce"), error);
     std::filesystem::remove(source, error);
     std::filesystem::remove(thumbnail, error);

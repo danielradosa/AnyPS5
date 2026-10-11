@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
+#include <cstdio>
 #include <filesystem>
 #include <mutex>
 #include <set>
@@ -13,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 namespace {
 std::atomic<bool> g_initialized{false};
@@ -54,17 +57,76 @@ bool IsRegularFile(const std::filesystem::path& path) {
     return std::filesystem::is_regular_file(path, error);
 }
 
+void CheckSession(const std::string& prefix, std::int32_t exportId) {
+    if (!g_initialized.load()) throw std::logic_error(prefix + "not initialized");
+    if (!g_sessions.contains(exportId)) throw std::invalid_argument(prefix + "unknown export session");
+}
+
+int CheckParam(const ContentExportParam& param) {
+    if (!IsTerminated(param.title)) return ErrorLargeTitle;
+    if (!IsTerminated(param.comment)) return ErrorLargeComment;
+    if (!IsTerminated(param.content_type) || ExtensionFor(param.content_type) == nullptr) return ErrorNotSupportedFormat;
+    return 0;
+}
+
+std::string ReserveName(const std::filesystem::path& directory, const char* extension) {
+    std::string name;
+    do {
+        name = "export_" + std::to_string(g_nextExport++);
+    } while (std::filesystem::exists(directory / (name + extension)));
+    return name;
+}
+
+std::FILE* OpenForWrite(const std::filesystem::path& path) {
+#ifdef _WIN32
+    return ::_wfopen(path.c_str(), L"wb");
+#else
+    return std::fopen(path.c_str(), "wb");
+#endif
+}
+
+class ProvidedFile {
+public:
+    ProvidedFile(std::string prefix, std::filesystem::path path) : m_prefix(std::move(prefix)), m_path(std::move(path)), m_file(OpenForWrite(m_path)) {
+        if (m_file == nullptr) m_openError = errno;
+    }
+    ~ProvidedFile() {
+        if (m_file != nullptr) std::fclose(m_file);
+        if (m_kept) return;
+        std::error_code ignored;
+        std::filesystem::remove(m_path, ignored);
+    }
+    ProvidedFile(const ProvidedFile&) = delete;
+    ProvidedFile& operator=(const ProvidedFile&) = delete;
+    int Open() const { return m_file != nullptr ? 0 : Failure(m_openError); }
+    int Write(const void* data, std::uint64_t size) const {
+        if (size == 0 || std::fwrite(data, 1, size, m_file) == size) return 0;
+        return Failure(errno);
+    }
+    int Keep() {
+        if (std::fclose(std::exchange(m_file, nullptr)) != 0) return Failure(errno);
+        m_kept = true;
+        return 0;
+    }
+private:
+    int Failure(int error) const {
+        if (error == ENOSPC) return ErrorDiskFull;
+        throw std::system_error(error, std::generic_category(), m_prefix + "cannot write " + m_path.string());
+    }
+    std::string m_prefix;
+    std::filesystem::path m_path;
+    std::FILE* m_file;
+    int m_openError = 0;
+    bool m_kept = false;
+};
+
 int ExportFile(const char* funcName, std::int32_t exportId, const ContentExportParam* param, const char* sourcePath, const char* thumbnailPath, char* path, std::size_t pathBufLen) {
     const std::string prefix = std::string(funcName) + ": ";
     if (param == nullptr || sourcePath == nullptr || path == nullptr || pathBufLen == 0) throw std::invalid_argument(prefix + "invalid argument");
     std::lock_guard lock(g_mutex);
-    if (!g_initialized.load()) throw std::logic_error(prefix + "not initialized");
-    if (!g_sessions.contains(exportId)) throw std::invalid_argument(prefix + "unknown export session");
-    if (!IsTerminated(param->title)) return ErrorLargeTitle;
-    if (!IsTerminated(param->comment)) return ErrorLargeComment;
-    if (!IsTerminated(param->content_type)) return ErrorNotSupportedFormat;
+    CheckSession(prefix, exportId);
+    if (const int error = CheckParam(*param)) return error;
     const char* extension = ExtensionFor(param->content_type);
-    if (extension == nullptr) return ErrorNotSupportedFormat;
     const std::filesystem::path source = ResolvePath_nid_no_patch(sourcePath);
     if (!IsRegularFile(source)) return ErrorFileNotFound;
     std::filesystem::path thumbnail;
@@ -74,10 +136,7 @@ int ExportFile(const char* funcName, std::int32_t exportId, const ContentExportP
         if (!IsThumbnailExtension(thumbnail)) return ErrorNotSupportedThumbnail;
     }
     const std::filesystem::path directory = ResolvePath_nid_no_patch(ExportRoot);
-    std::string name;
-    do {
-        name = "export_" + std::to_string(g_nextExport++);
-    } while (std::filesystem::exists(directory / (name + extension)));
+    const std::string name = ReserveName(directory, extension);
     const std::string guestPath = std::string(ExportRoot) + "/" + name + extension;
     if (guestPath.size() + 1 > pathBufLen) throw std::invalid_argument(prefix + "path buffer is too small");
     const std::filesystem::path destination = directory / (name + extension);
@@ -117,8 +176,50 @@ int APS5_VABI sceContentExportFinish(std::int32_t exportId) {
     return 0;
 }
 
-int APS5_VABI sceContentExportFromData(std::int32_t exportId, const ContentExportParam* param, std::size_t contentLength, void* dataProvider, void* userData, char* path, std::size_t pathBufLen) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceContentExportFromData(std::int32_t exportId, const ContentExportParam* param, std::size_t contentLength, ContentExportDataProvideFunction dataProvider, void* userData, char* path, std::size_t pathBufLen) {
+    const std::string prefix = std::string(__func__) + ": ";
+    if (param == nullptr || dataProvider == nullptr || path == nullptr || pathBufLen == 0) throw std::invalid_argument(prefix + "invalid argument");
+    if (contentLength == 0) throw std::invalid_argument(prefix + "empty content");
+    std::filesystem::path directory;
+    std::filesystem::path destination;
+    std::string guestPath;
+    {
+        std::lock_guard lock(g_mutex);
+        CheckSession(prefix, exportId);
+        if (const int error = CheckParam(*param)) return error;
+        const char* extension = ExtensionFor(param->content_type);
+        directory = ResolvePath_nid_no_patch(ExportRoot);
+        const std::string name = ReserveName(directory, extension);
+        guestPath = std::string(ExportRoot) + "/" + name + extension;
+        destination = directory / (name + extension);
+    }
+    if (guestPath.size() + 1 > pathBufLen) throw std::invalid_argument(prefix + "path buffer is too small");
+    try {
+        std::filesystem::create_directories(directory);
+    } catch (const std::filesystem::filesystem_error& error) {
+        if (error.code() == std::errc::no_space_on_device) return ErrorDiskFull;
+        throw;
+    }
+    ProvidedFile file(prefix, destination);
+    if (const int error = file.Open()) return error;
+    std::uint64_t written = 0;
+    for (;;) {
+        const bool complete = written == contentLength;
+        void* data = nullptr;
+        std::uint64_t size = 0;
+        const std::int32_t status = dataProvider(&data, &size, userData);
+        if (status != 0 && status != 1) throw std::runtime_error(prefix + "data provider returned " + std::to_string(status));
+        if (size > contentLength - written) throw std::runtime_error(prefix + "data provider returned more than the content length");
+        if (size != 0 && data == nullptr) throw std::runtime_error(prefix + "data provider returned no data");
+        if (const int error = file.Write(data, size)) return error;
+        written += size;
+        if (status == 1) break;
+        if (complete) throw std::runtime_error(prefix + "data provider continued after the content length");
+    }
+    if (written != contentLength) throw std::runtime_error(prefix + "data provider ended before the content length");
+    if (const int error = file.Keep()) return error;
+    RecordWrittenPath_nid_no_patch(destination);
+    std::memcpy(path, guestPath.c_str(), guestPath.size() + 1);
     return 0;
 }
 

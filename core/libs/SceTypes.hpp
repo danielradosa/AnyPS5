@@ -1607,6 +1607,9 @@ struct ContentExportParam {
     char comment[257];
     char content_type[65];
 };
+static_assert(sizeof(ContentExportParam) == 0x243);
+
+using ContentExportDataProvideFunction = std::int32_t (APS5_VABI *)(void**, std::uint64_t*, void*);
 
 struct ContentSearchInitParam { std::size_t memory_size; };
 
