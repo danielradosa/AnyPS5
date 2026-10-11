@@ -765,6 +765,18 @@ int APS5_VABI _ZNK3sce4Json5Value8toStringERNS0_6StringE(const Value* self, Stri
     return 0;
 }
 
+using ParserReadCallback = int (APS5_VABI*)(char&, void*);
+
+int APS5_VABI _ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(Value* out, const char* text, std::size_t size);
+
+int APS5_VABI _ZN3sce4Json6Parser5parseERNS0_5ValueEPFiRcPvES5_(Value* out, ParserReadCallback read, void* context) {
+    if (read == nullptr) throw std::invalid_argument("sce::Json::Parser::parse: null read callback");
+    std::string text;
+    char ch = 0;
+    while (read(ch, context) == 0 && ch != '\0') text.push_back(ch);
+    return _ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(out, text.data(), text.size());
+}
+
 int APS5_VABI _ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(Value* out, const char* text, std::size_t size) {
     if (text == nullptr) throw std::invalid_argument("sce::Json::Parser::parse: null text");
     Node parsed{};

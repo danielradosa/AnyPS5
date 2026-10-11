@@ -85,6 +85,7 @@ Value* APS5_VABI _ZN3sce4Json5Value10referValueERKNS0_6StringE(Value*, const Str
 const Value* APS5_VABI _ZNK3sce4Json5ValueixEm(const Value*, std::size_t);
 int APS5_VABI _ZN3sce4Json5Value9serializeERNS0_6StringE(Value*, String*);
 int APS5_VABI _ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(Value*, const char*, std::size_t);
+int APS5_VABI _ZN3sce4Json6Parser5parseERNS0_5ValueEPFiRcPvES5_(Value*, int (APS5_VABI*)(char&, void*), void*);
 bool APS5_VABI _ZNK3sce4Json6Object5emptyEv(const Object*);
 std::size_t APS5_VABI _ZNK3sce4Json6Object4sizeEv(const Object*);
 const Object* APS5_VABI _ZNK3sce4Json5Value9getObjectEv(const Value*);
@@ -548,6 +549,37 @@ static void ValueClear() {
     _ZN3sce4Json5ValueD1Ev(&value);
 }
 
+struct ReadState {
+    const char* text;
+    std::size_t position;
+    int calls;
+};
+
+static int APS5_VABI ReadNext(char& ch, void* context) {
+    auto* state = static_cast<ReadState*>(context);
+    ++state->calls;
+    if (state->text[state->position] == '\0') {
+        ch = '\0';
+        return -1;
+    }
+    ch = state->text[state->position++];
+    return 0;
+}
+
+static void StreamParse() {
+    Value root{};
+    _ZN3sce4Json5ValueC1Ev(&root);
+    ReadState valid{"{\"list\": [1, 2.5, true]}", 0, 0};
+    Require(_ZN3sce4Json6Parser5parseERNS0_5ValueEPFiRcPvES5_(&root, ReadNext, &valid) == 0);
+    Require(valid.calls == static_cast<int>(std::strlen(valid.text)) + 1);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&root) == TypeObject);
+    ReadState invalid{"{\"list\": [1, 2.5", 0, 0};
+    Require(_ZN3sce4Json6Parser5parseERNS0_5ValueEPFiRcPvES5_(&root, ReadNext, &invalid) < 0);
+    ReadState trailing{"[1] 2", 0, 0};
+    Require(_ZN3sce4Json6Parser5parseERNS0_5ValueEPFiRcPvES5_(&root, ReadNext, &trailing) < 0);
+    _ZN3sce4Json5ValueD1Ev(&root);
+}
+
 int main() {
     AllocatorErrors();
     ParseAndRoundTrip();
@@ -558,4 +590,5 @@ int main() {
     ValueAccess();
     InitParameters();
     ValueClear();
+    StreamParse();
 }
