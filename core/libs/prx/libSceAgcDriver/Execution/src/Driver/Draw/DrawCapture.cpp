@@ -32,9 +32,28 @@ ShaderRecompiler::RecompileResult Driver::materializeDrawStage(std::size_t i, st
     auto& stageCapture = stageCaptures[i];
     stageCapture.forgetSerial = GuestMemory::ForgetSerial();
     stageCapture.pushOffset = pushOffset;
+    // A capture or materialization that throws names the draw stage's shader and, with
+    // APS5_DUMP_SHADERS, writes its request with the regions read so far.
+    const auto failed = [&](const std::exception& error) {
+        static const bool dumpShaders = std::getenv("APS5_DUMP_SHADERS") != nullptr;
+        auto dumped = request;
+        dumped.context.memory = shaderMemory.Regions();
+        const auto dump = dumpShaders ? dumpRequest(program.binary.codeAddress, dumped) : std::string{};
+        std::string reason = error.what();
+        if (const auto newline = reason.find('\n'); newline != std::string::npos) reason.resize(newline);
+        const char* stage = program.binary.stage == Stage::Fragment ? "pixel" : "draw";
+        char where[128];
+        if (dump.empty()) std::snprintf(where, sizeof(where), "%s shader 0x%llx: ", stage, static_cast<unsigned long long>(program.binary.codeAddress));
+        else std::snprintf(where, sizeof(where), "%s shader 0x%llx (%s): ", stage, static_cast<unsigned long long>(program.binary.codeAddress), dump.c_str());
+        return std::runtime_error(where + reason);
+    };
     const auto capture = [&] {
-        const SampledReadScope sampling(evidenceReads);
-        return shaderMemory.Capture(invocation);
+        try {
+            const SampledReadScope sampling(evidenceReads);
+            return shaderMemory.Capture(invocation);
+        } catch (const std::exception& error) {
+            throw failed(error);
+        }
     }();
 
     stageCapture.regions = shaderMemory.TakeRecentRegions();
@@ -81,15 +100,7 @@ ShaderRecompiler::RecompileResult Driver::materializeDrawStage(std::size_t i, st
     try {
         stageCapture.compiled = invocation.Materialize(*capture);
     } catch (const std::exception& error) {
-        static const bool dumpShaders = std::getenv("APS5_DUMP_SHADERS") != nullptr;
-        const auto dump = dumpShaders ? dumpRequest(program.binary.codeAddress, request) : std::string{};
-        std::string reason = error.what();
-        if (const auto newline = reason.find('\n'); newline != std::string::npos) reason.resize(newline);
-        const char* stage = program.binary.stage == Stage::Fragment ? "pixel" : "draw";
-        char where[128];
-        if (dump.empty()) std::snprintf(where, sizeof(where), "%s shader 0x%llx: ", stage, static_cast<unsigned long long>(program.binary.codeAddress));
-        else std::snprintf(where, sizeof(where), "%s shader 0x%llx (%s): ", stage, static_cast<unsigned long long>(program.binary.codeAddress), dump.c_str());
-        throw std::runtime_error(where + reason);
+        throw failed(error);
     }
     timing.Mark("materialize");
     ShaderRecompiler::RecompileResult result = *stageCapture.compiled;
