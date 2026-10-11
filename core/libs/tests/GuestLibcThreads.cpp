@@ -16,6 +16,7 @@ int APS5_VABI _Cnd_init_nid_postfix(void** handle);
 void APS5_VABI _Cnd_destroy_nid_postfix(void** handle);
 int APS5_VABI _Cnd_wait_nid_postfix(void** condition, void** mutex);
 int APS5_VABI _Cnd_broadcast_nid_postfix(void** handle);
+int APS5_VABI _Cnd_signal_nid_postfix(void** handle);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -175,9 +176,36 @@ static void ConditionBroadcast() {
     _Mtx_destroy_nid_postfix(&mutex);
 }
 
+static void ConditionSignal() {
+    void* condition = nullptr;
+    Require(_Cnd_init_nid_postfix(&condition) == success);
+    void* mutex = CreateMutex(tryable);
+    std::atomic<bool> waiting = false;
+    bool ready = false, woken = false;
+    std::thread waiter([&] {
+        Require(_Mtx_lock_nid_postfix(&mutex) == success);
+        waiting = true;
+        while (!ready) Require(_Cnd_wait_nid_postfix(&condition, &mutex) == success);
+        woken = true;
+        Require(_Mtx_unlock_nid_postfix(&mutex) == success);
+    });
+    while (!waiting) std::this_thread::yield();
+    Require(_Mtx_lock_nid_postfix(&mutex) == success);
+    ready = true;
+    Require(_Cnd_signal_nid_postfix(&condition) == success);
+    Require(_Mtx_unlock_nid_postfix(&mutex) == success);
+    waiter.join();
+    Require(woken && _Cnd_signal_nid_postfix(&condition) == success);
+    void* invalidCondition = nullptr;
+    RequireThrows<std::invalid_argument>([&] { _Cnd_signal_nid_postfix(&invalidCondition); });
+    _Cnd_destroy_nid_postfix(&condition);
+    _Mtx_destroy_nid_postfix(&mutex);
+}
+
 int main() {
     MutexBasics();
     RecursiveMutex();
     MutualExclusion();
     ConditionBroadcast();
+    ConditionSignal();
 }

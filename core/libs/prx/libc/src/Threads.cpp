@@ -168,6 +168,11 @@ int APS5_VABI _Cnd_wait_nid_postfix(void** conditionHandle, void** mutexHandle) 
     return threadSuccess;
 }
 
+int APS5_VABI _Cnd_signal_nid_postfix(void** handle) {
+    ResolveCondition(handle, "_Cnd_signal")->native.notify_one();
+    return threadSuccess;
+}
+
 int APS5_VABI _Cnd_broadcast_nid_postfix(void** handle) {
     ResolveCondition(handle, "_Cnd_broadcast")->native.notify_all();
     return threadSuccess;
