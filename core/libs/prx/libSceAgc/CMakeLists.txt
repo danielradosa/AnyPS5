@@ -4,6 +4,7 @@ add_library(libSceAgc SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Acb/src/Dispatch.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Acb/src/Memory.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Acb/src/Sync.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Acb/src/Workload.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Cb/src/Branch.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Cb/src/Dispatch.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Cb/src/Registers.cpp
@@ -13,6 +14,7 @@ add_library(libSceAgc SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Command/src/Draw.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Command/src/RegisterDefaults.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Command/src/Packet.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Command/src/Workload.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/DcbDraw/src/DrawIndexed.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/DcbDraw/src/DrawNonIndexed.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/DcbDraw/src/IndexBuffer.cpp
@@ -105,6 +107,19 @@ if(BUILD_TESTING)
     add_test(NAME agc_platform_tests COMMAND agc_platform_tests)
     if(WIN32)
         set_tests_properties(agc_platform_tests PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
+add_test_executable(agc_workload_tests EXCLUDE_FROM_ALL tests/Workload.cpp)
+target_include_directories(agc_workload_tests PRIVATE ${LIBS_INCLUDE_DIR})
+target_link_libraries(agc_workload_tests PRIVATE libSceAgc libSceAgcDriver libc)
+configure_windows_unwind(agc_workload_tests)
+if(BUILD_TESTING)
+    set_target_properties(agc_workload_tests PROPERTIES EXCLUDE_FROM_ALL FALSE)
+    add_test(NAME agc_workload_tests COMMAND agc_workload_tests)
+    if(WIN32)
+        set_tests_properties(agc_workload_tests PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 endif()

@@ -88,6 +88,15 @@ int main() {
     Require(std::string_view(name) == "unchanged");
     Require(sceAgcDriverRegisterWorkloadStream(1u, memory) == 0);
     Require(sceAgcDriverUnregisterWorkloadStream(1u) == 0);
+    const std::array<std::uint8_t, 32> stream{};
+    Require(sceAgcDriverRegisterWorkloadStream(0u, stream.data()) == static_cast<int>(0x8A6C0033));
+    Require(sceAgcDriverRegisterWorkloadStream(32u, stream.data()) == static_cast<int>(0x8A6C0033));
+    Require(sceAgcDriverRegisterWorkloadStream(2u, nullptr) == static_cast<int>(0x8A6C0035));
+    Require(sceAgcDriverRegisterWorkloadStream(2u, stream.data()) == 0);
+    Require(sceAgcDriverRegisterWorkloadStream(2u, stream.data()) == static_cast<int>(0x8A6C0033));
+    Require(sceAgcDriverUnregisterWorkloadStream(2u) == 0);
+    Require(sceAgcDriverUnregisterWorkloadStream(2u) == static_cast<int>(0x8A6C003A));
+    Require(sceAgcDriverUnregisterWorkloadStream(0u) == static_cast<int>(0x8A6C0033));
     Require(!sceAgcDriverIsCaptureInProgress());
     Require(!sceAgcDriverIsTraceInProgress());
     Require(!sceAgcDriverIsSubmitValidationEnabled());

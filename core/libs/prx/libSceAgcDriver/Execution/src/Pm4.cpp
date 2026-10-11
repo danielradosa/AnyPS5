@@ -3,6 +3,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/PreciseWait.hpp"
 #include <algorithm>
+#include <atomic>
 #include <thread>
 #include <chrono>
 #include <cstdio>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 extern "C" void* APS5_VABI mmap_nid_postfix(void* address, std::size_t length, int protection, int flags, int descriptor, std::int64_t offset) noexcept;
 
@@ -158,6 +160,68 @@ std::vector<std::byte> copyDataSource(std::span<const std::uint32_t> packet, std
     return data;
 }
 
+constexpr std::uint32_t AtomicMemOperationMask = 0x7fu;
+constexpr std::uint32_t AtomicMemCommandMask = 0xf00u;
+constexpr std::uint32_t AtomicMemCachePolicy = 3u << 25u;
+constexpr std::uint32_t AtomicMemPrefetchEngine = 1u << 30u;
+constexpr std::uint32_t TcOpNoReturn = 0x40u;
+constexpr std::uint32_t TcOp64 = 0x20u;
+
+bool atomicMemOperation(std::uint32_t control) {
+    const auto operation = control & AtomicMemOperationMask;
+    const auto atomic = operation & 0x1fu;
+    return (operation & TcOpNoReturn) != 0 && (atomic == 0x07 || atomic == 0x08 || (atomic >= 0x0f && atomic <= 0x19));
+}
+
+std::size_t atomicMemBytes(std::uint32_t control) {
+    return (control & TcOp64) != 0 ? 8 : 4;
+}
+
+template <typename T>
+void applyAtomic(T& target, std::uint32_t control, std::uint64_t sourceData, std::uint64_t compareData) {
+    using Signed = std::make_signed_t<T>;
+    std::atomic_ref<T> value(target);
+    const auto source = static_cast<T>(sourceData);
+    const auto update = [&](auto next) {
+        T current = value.load();
+        while (!value.compare_exchange_weak(current, next(current))) {}
+    };
+    switch (control & 0x1fu) {
+        case 0x07: value.exchange(source); return;
+        case 0x08: {
+            T expected = static_cast<T>(compareData);
+            value.compare_exchange_strong(expected, source);
+            return;
+        }
+        case 0x0f: value.fetch_add(source); return;
+        case 0x10: value.fetch_sub(source); return;
+        case 0x11: update([&](T current) { return static_cast<Signed>(source) < static_cast<Signed>(current) ? source : current; }); return;
+        case 0x12: update([&](T current) { return std::min(source, current); }); return;
+        case 0x13: update([&](T current) { return static_cast<Signed>(source) > static_cast<Signed>(current) ? source : current; }); return;
+        case 0x14: update([&](T current) { return std::max(source, current); }); return;
+        case 0x15: value.fetch_and(source); return;
+        case 0x16: value.fetch_or(source); return;
+        case 0x17: value.fetch_xor(source); return;
+        case 0x18: update([&](T current) { return current >= source ? T{0} : static_cast<T>(current + 1u); }); return;
+        case 0x19: update([&](T current) { return current == 0 || current > source ? source : static_cast<T>(current - 1u); }); return;
+        default: throw std::runtime_error("ATOMIC_MEM operation 0x" + ToHex(control & AtomicMemOperationMask) + " is not implemented");
+    }
+}
+
+void executeAtomicMem(std::span<const std::uint32_t> packet) {
+    const auto control = packet[1];
+    if (!atomicMemOperation(control)) throw std::runtime_error("ATOMIC_MEM operation 0x" + ToHex(control & AtomicMemOperationMask) + " is not implemented");
+    const auto destination = address(packet[2], packet[3]);
+    const auto bytes = atomicMemBytes(control);
+    const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::Store);
+    GuestMemory::FlushGpuWrites(destination, bytes);
+    GuestMemory::CheckRange(reinterpret_cast<void*>(destination), bytes, bytes, true);
+    GuestMemory::StoreOwnBytes(destination, bytes, [&] {
+        if (bytes == 8) applyAtomic(*reinterpret_cast<std::uint64_t*>(destination), control, address(packet[4], packet[5]), address(packet[6], packet[7]));
+        else applyAtomic(*reinterpret_cast<std::uint32_t*>(destination), control, packet[4], packet[6]);
+    });
+}
+
 }
 
 std::string Name(std::uint32_t header) {
@@ -196,7 +260,7 @@ std::string_view UnsupportedReason(std::uint32_t header) {
         }
     }
     switch (opcode) {
-        case 0x11: case 0x12: case 0x13: case 0x15: case 0x16: case 0x20: case 0x22: case 0x26: case 0x27:
+        case 0x11: case 0x12: case 0x13: case 0x15: case 0x16: case 0x1e: case 0x20: case 0x22: case 0x26: case 0x27:
         case 0x2a: case 0x2d: case 0x2f: case 0x35: case 0x37: case 0x40: case 0x42: case 0x45: case 0x46: case 0x50:
         case 0x58: case 0x63: case 0x64: case 0x69: case 0x76: case 0x79: case 0x7a:
         case 0x81: case 0x83: case 0x9f: case 0x28: return {};
@@ -269,8 +333,20 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
     const bool registerWrite = opcode == 0x69 || opcode == 0x76 || opcode == 0x79 || opcode == 0x7a;
     auto allowedFlags = opcode == 0x11 || opcode == 0x15 || opcode == 0x16 ? 2u : registerWrite ? 6u : opcode == 0x3c || opcode == 0x93 ? 2u : 0u;
     if (opcode != 0x20 && opcode != 0x22) allowedFlags |= 1u;
+    if (opcode == 0x37 && IsTagMarker(packet)) allowedFlags |= 4u;
     if ((flags & ~allowedFlags) != 0) throw std::runtime_error("PM4 header flags 0x" + ToHex(flags) + " are not implemented");
     switch (opcode) {
+        case 0x1e: {
+            size(9);
+            require((packet[1] & ~(AtomicMemOperationMask | AtomicMemCommandMask | AtomicMemCachePolicy | (queue == 0 ? AtomicMemPrefetchEngine : 0u))) == 0, "ATOMIC_MEM engine or reserved fields are not implemented");
+            const auto command = (packet[1] & AtomicMemCommandMask) >> 8u;
+            require(command != 1, "ATOMIC_MEM compare loop is not implemented");
+            require(command <= 3, "invalid ATOMIC_MEM command");
+            if (!atomicMemOperation(packet[1])) throw std::runtime_error("ATOMIC_MEM operation 0x" + ToHex(packet[1] & AtomicMemOperationMask) + " is not implemented");
+            require((packet[2] & (atomicMemBytes(packet[1]) - 1u)) == 0, "misaligned ATOMIC_MEM address");
+            require((packet[8] & ~0x1fffu) == 0, "ATOMIC_MEM loop interval reserved bits are not implemented");
+            break;
+        }
         case 0x11:
             size(4);
             require(packet[1] == 1 && (packet[2] & 3u) == 0 && packet[3] <= 0xffffu, "unsupported indirect base index, alignment or address bits");
@@ -447,6 +523,7 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
             require(packet[1] <= 0xbffcu && (packet[1] & 3u) == 0 && packet[2] <= 0x3000u - packet[1] / 4u, "constant RAM dump range overflow or misalignment");
             break;
         case 0x37: {
+            if (IsTagMarker(packet)) break;
             require(packet.size() >= 5, "WRITE_DATA has no data");
             require((packet[1] & ~(0x40110f00u | WriteDataCachePolicy)) == 0, "WRITE_DATA engine or reserved fields are not implemented");
             const auto destination = (packet[1] >> 8u) & 0xfu;
@@ -487,7 +564,10 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue) {
 bool IsTagMarker(std::span<const std::uint32_t> packet) {
     // libSceAgc brackets waits and draws with predicated SET_UCONFIG_REG writes of a tag value to
     // 0x342; they carry no register state.
-    return packet.size() >= 3 && ((packet[0] >> 8u) & 0xffu) == 0x79u && (packet[0] & 1u) != 0 && packet[1] == 0x342u;
+    if (packet.size() < 3) return false;
+    const auto opcode = (packet[0] >> 8u) & 0xffu;
+    if (opcode == 0x79u) return packet[1] == 0x342u;
+    return opcode == 0x37u && packet.size() >= 5 && (packet[1] & ~(0x40110000u | WriteDataCachePolicy)) == 0 && (packet[2] == 0xc342u || packet[2] == 0xc343u);
 }
 
 namespace {
@@ -574,7 +654,7 @@ std::optional<LabelWrite> DecodeLabelWrite(std::span<const std::uint32_t> packet
         std::memcpy(label.inlineBytes.data(), &value, label.inlineSize);
         return label;
     }
-    if (opcode == 0x37 && packet.size() > 4) {
+    if (opcode == 0x37 && packet.size() > 4 && !IsTagMarker(packet)) {
         const auto destination = address(packet[2], packet[3]);
         if (destination == 0) return std::nullopt;
         // WR_ONE_ADDR stores every value at the same address: the last one remains.
@@ -644,9 +724,19 @@ bool UsesGpuCacheBarrier(std::span<const std::uint32_t> packet) {
 
 bool AccessesMemory(std::uint32_t header) {
     switch ((header >> 8u) & 0xffu) {
-        case 0x22: case 0x27: case 0x3c: case 0x93: case 0x49: case 0x16: case 0x2d: case 0x35: case 0x24: case 0x25: case 0x2c: case 0x38: case 0x37: case 0x40: case 0x45: case 0x50: case 0x63: case 0x64: case 0x83: case 0x9f: return true;
+        case 0x1e: case 0x22: case 0x27: case 0x3c: case 0x93: case 0x49: case 0x16: case 0x2d: case 0x35: case 0x24: case 0x25: case 0x2c: case 0x38: case 0x37: case 0x40: case 0x45: case 0x50: case 0x63: case 0x64: case 0x83: case 0x9f: return true;
         default: return false;
     }
+}
+
+std::uint64_t AtomicMemAddress(std::span<const std::uint32_t> packet) {
+    require(packet.size() == 9 && ((packet[0] >> 8u) & 0xffu) == 0x1eu, "expected ATOMIC_MEM packet");
+    return address(packet[2], packet[3]);
+}
+
+std::size_t AtomicMemBytes(std::span<const std::uint32_t> packet) {
+    require(packet.size() == 9 && ((packet[0] >> 8u) & 0xffu) == 0x1eu, "expected ATOMIC_MEM packet");
+    return atomicMemBytes(packet[1]);
 }
 
 std::uint64_t DispatchArgumentAddress(std::span<const std::uint32_t> packet, const QueueState& queue) {
@@ -931,7 +1021,9 @@ void Execute(std::span<const std::uint32_t> packet, QueueState& queue) {
             if (waitCompares(packet, false, value)) GuestMemory::Write(address(packet[6], packet[7]), std::as_bytes(packet.subspan(8, 1)), 4);
             return;
         }
+        case 0x1e: executeAtomicMem(packet); return;
         case 0x37: {
+            if (IsTagMarker(packet)) return;
             const auto destination = address(packet[2], packet[3]);
             if ((packet[1] & 0x10000u) != 0) {
                 for (const auto& value : packet.subspan(4)) GuestMemory::Write(destination, std::as_bytes(std::span(&value, 1)), 4);

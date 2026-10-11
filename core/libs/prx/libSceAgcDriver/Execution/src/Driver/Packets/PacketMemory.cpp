@@ -8,6 +8,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
+#include "prx/libSceAgcDriver/Resource/include/Registration.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -94,7 +95,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
                 countLabelOutcome(reason);
                 ++immediateLabels;
             }
-        } else if (opcode == 0x49 ? ((packet[2] >> 29u) == 0 || (packet[3] | (static_cast<std::uint64_t>(packet[4]) << 32u)) == 0) : (packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u)) == 0) {
+        } else if (opcode == 0x49 ? ((packet[2] >> 29u) == 0 || (packet[3] | (static_cast<std::uint64_t>(packet[4]) << 32u)) == 0) : ((packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u)) == 0 || Pm4::IsTagMarker(packet))) {
             orderedAlready = true;
             ++noOpLabels;
         } else {
@@ -176,7 +177,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
 
     static const bool syncFlip = std::getenv("APS5_SYNC_FLIP") != nullptr;
     const bool drains = drainAll ? ((Pm4::AccessesMemory(header) && opcode != 0x16) || opcode == 0x42 || opcode == 0x46 || opcode == 0x58 || header == FlipPacketHeader)
-                                 : (!wroteOnGpu && !orderedAlready && (opcode == 0x49 || opcode == 0x37 || opcode == 0x40 || opcode == 0x45 || opcode == 0x50 || opcode == 0x83 || sampleDump || (drawPacket && drawDrain) || (header == FlipPacketHeader && syncFlip)));
+                                 : (!wroteOnGpu && !orderedAlready && (opcode == 0x49 || opcode == 0x37 || opcode == 0x40 || opcode == 0x45 || opcode == 0x50 || opcode == 0x83 || (opcode == 0x1e && !WorkloadSlotTableCovers(Pm4::AtomicMemAddress(packet), Pm4::AtomicMemBytes(packet))) || sampleDump || (drawPacket && drawDrain) || (header == FlipPacketHeader && syncFlip)));
     if (drains) {
 
         static const bool unlockedDrain = std::getenv("APS5_NO_UNLOCKED_DRAIN") == nullptr && !drainAll;

@@ -4,6 +4,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
 #include "prx/libSceAgcDriver/Submit/include/Dcb.hpp"
 #include "prx/libSceAgcDriver/Submit/include/Acb.hpp"
+#include "prx/libSceAgcDriver/Resource/include/Registration.hpp"
 #include "prx/libc/include/Shutdown.hpp"
 #include <atomic>
 #include <chrono>
@@ -23,6 +24,8 @@
 #endif
 
 extern "C" int APS5_VABI sceKernelAvailableFlexibleMemorySize(size_t* size);
+extern "C" int APS5_VABI sceAgcDriverRegisterWorkloadStream(std::uint32_t streamId, const void* stream);
+extern "C" int APS5_VABI sceAgcDriverUnregisterWorkloadStream(std::uint32_t streamId);
 
 namespace {
 
@@ -63,7 +66,7 @@ void testCatalog() {
         const auto reason = AgcDriver::Pm4::UnsupportedReason(packet[0]);
         if (!reason.empty()) expectFailure([&] { AgcDriver::Pm4::Validate(packet, 0); }, std::string(reason).c_str());
     }
-    check(values.size() == 55, "reference opcode catalog is incomplete");
+    check(values.size() == 56, "reference opcode catalog is incomplete");
     expectFailure([] { AgcDriver::Pm4::Validate(makePacket(0xff, {0}), 0); }, "not known");
     const std::array<std::pair<std::uint32_t, const char*>, 12> custom{{
         {5, "DRAW_RESET"}, {6, "WAIT_FLIP_DONE"}, {9, "DISPATCH_RESET"}, {10, "SET_MARKER"}, {11, "PUSH_MARKER"},
@@ -380,6 +383,99 @@ void testMemory() {
     check(data[0] == 0 && data[1] == 31 && data[2] == 32, "a copied queue state lost its constant RAM");
     expectFailure([&] { execute(state, makePacket(0x81, {0xbffc, 1, 2})); }, "overflow");
     expectFailure([&] { execute(state, makePacket(0x40, {0x10105, 0, 0, low(data.data()), high(data.data())})); }, "64-bit immediate");
+}
+
+template <typename T>
+T atomicResult(std::uint32_t control, T initial, std::uint64_t source, std::uint64_t compare = 0, std::uint32_t queue = 0) {
+    alignas(8) std::array<T, 2> memory{initial, static_cast<T>(0x5a5a5a5a5a5a5a5aull)};
+    AgcDriver::QueueState state;
+    const auto packet = makePacket(0x1e, {control, low(memory.data()), high(memory.data()), static_cast<std::uint32_t>(source), static_cast<std::uint32_t>(source >> 32u), static_cast<std::uint32_t>(compare), static_cast<std::uint32_t>(compare >> 32u), 0});
+    AgcDriver::Pm4::Validate(packet, queue);
+    AgcDriver::Pm4::Execute(packet, state);
+    check(memory[1] == static_cast<T>(0x5a5a5a5a5a5a5a5aull), "ATOMIC_MEM wrote past its operand");
+    return memory[0];
+}
+
+void testAtomicMem() {
+    check(AgcDriver::Pm4::Name(0xc0071e00u) == "ATOMIC_MEM" && AgcDriver::Pm4::AccessesMemory(0xc0071e00u), "ATOMIC_MEM name or memory access mismatch");
+    check(atomicResult<std::uint64_t>(0x40000267u, ~0ull, 0x8000000000000002ull) == 0x8000000000000002ull, "SWAP_64 from the PFP did not store the source");
+    check(atomicResult<std::uint64_t>(0x00000275u, 0x8000000000000002ull, ~2ull, 0, 0x20) == 0x8000000000000000ull, "AND_64 on a compute queue did not clear the bit");
+    check(atomicResult<std::uint64_t>(0x00000067u, 1, 0x1122334455667788ull) == 0x1122334455667788ull, "single-pass SWAP_64 failed");
+    check(atomicResult<std::uint64_t>(0x06000367u, 1, 7) == 7, "send-and-continue SWAP_64 with a cache policy failed");
+    check(atomicResult<std::uint64_t>(0x68u, 5, 9, 5) == 9 && atomicResult<std::uint64_t>(0x68u, 5, 9, 4) == 5, "CMPSWAP_64 mismatch");
+    check(atomicResult<std::uint64_t>(0x6fu, 0xffffffffull, 1) == 0x100000000ull, "ADD_64 lost the carry into the high dword");
+    check(atomicResult<std::uint64_t>(0x70u, 0, 1) == ~0ull, "SUB_64 mismatch");
+    check(atomicResult<std::uint64_t>(0x71u, 5, ~0ull) == ~0ull && atomicResult<std::uint64_t>(0x72u, 5, ~0ull) == 5, "SMIN_64 or UMIN_64 mismatch");
+    check(atomicResult<std::uint64_t>(0x73u, 5, ~0ull) == 5 && atomicResult<std::uint64_t>(0x74u, 5, ~0ull) == ~0ull, "SMAX_64 or UMAX_64 mismatch");
+    check(atomicResult<std::uint64_t>(0x76u, 0xf0ull, 0x0f00000000000000ull) == 0x0f000000000000f0ull && atomicResult<std::uint64_t>(0x77u, 0xffull, 0x0full) == 0xf0ull, "OR_64 or XOR_64 mismatch");
+    check(atomicResult<std::uint64_t>(0x78u, 3, 3) == 0 && atomicResult<std::uint64_t>(0x79u, 0, 7) == 7, "INC_64 or DEC_64 wrap mismatch");
+    check(atomicResult<std::uint32_t>(0x47u, 5, 0xdeadbeef00000009ull) == 9, "SWAP_32 used the high source dword");
+    check(atomicResult<std::uint32_t>(0x48u, 5, 9, 0xffffffff00000005ull) == 9 && atomicResult<std::uint32_t>(0x48u, 5, 9, 4) == 5, "CMPSWAP_32 mismatch");
+    check(atomicResult<std::uint32_t>(0x4fu, 0xffffffffu, 2) == 1 && atomicResult<std::uint32_t>(0x50u, 1, 2) == 0xffffffffu, "ADD_32 or SUB_32 did not wrap at 32 bits");
+    check(atomicResult<std::uint32_t>(0x51u, 5, 0xffffffffu) == 0xffffffffu && atomicResult<std::uint32_t>(0x52u, 5, 0xffffffffu) == 5, "SMIN_32 or UMIN_32 mismatch");
+    check(atomicResult<std::uint32_t>(0x53u, 5, 0xffffffffu) == 5 && atomicResult<std::uint32_t>(0x54u, 5, 0xffffffffu) == 0xffffffffu, "SMAX_32 or UMAX_32 mismatch");
+    check(atomicResult<std::uint32_t>(0x55u, 0xf0f0u, 0xff00u) == 0xf000u && atomicResult<std::uint32_t>(0x56u, 0xf0f0u, 0x0f00u) == 0xfff0u && atomicResult<std::uint32_t>(0x57u, 0xf0f0u, 0xff00u) == 0x0ff0u, "AND_32, OR_32 or XOR_32 mismatch");
+    check(atomicResult<std::uint32_t>(0x58u, 2, 3) == 3 && atomicResult<std::uint32_t>(0x58u, 3, 3) == 0 && atomicResult<std::uint32_t>(0x58u, 9, 3) == 0, "INC_32 mismatch");
+    check(atomicResult<std::uint32_t>(0x59u, 5, 7) == 4 && atomicResult<std::uint32_t>(0x59u, 0, 7) == 7 && atomicResult<std::uint32_t>(0x59u, 8, 7) == 7, "DEC_32 mismatch");
+
+    alignas(8) std::array<std::uint64_t, 2> memory{};
+    const auto packet = [&](std::uint32_t control, std::uint64_t address, std::uint32_t loop = 0) {
+        return makePacket(0x1e, {control, static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(address >> 32u), 1, 0, 0, 0, loop});
+    };
+    const auto at = reinterpret_cast<std::uint64_t>(memory.data());
+    AgcDriver::Pm4::Validate(packet(0x267u, at, 0x1fffu), 0x20);
+    for (const auto control : {0x07u, 0x27u, 0x41u, 0x61u, 0x20u, 0x60u, 0x5au, 0x7au, 0x44u, 0x4cu}) expectFailure([&] { AgcDriver::Pm4::Validate(packet(control, at), 0); }, "is not implemented");
+    expectFailure([&] { AgcDriver::Pm4::Validate(packet(0x167u, at), 0); }, "compare loop");
+    expectFailure([&] { AgcDriver::Pm4::Validate(packet(0x467u, at), 0); }, "invalid ATOMIC_MEM command");
+    expectFailure([&] { AgcDriver::Pm4::Validate(packet(0x40000267u, at), 0x20); }, "engine or reserved");
+    expectFailure([&] { AgcDriver::Pm4::Validate(packet(0x80000267u, at), 0); }, "engine or reserved");
+    for (const auto reserved : {0x80u, 0x1000u, 0x01000000u, 0x08000000u}) expectFailure([&] { AgcDriver::Pm4::Validate(packet(0x267u | reserved, at), 0); }, "engine or reserved");
+    expectFailure([&] { AgcDriver::Pm4::Validate(packet(0x267u, at + 4), 0); }, "misaligned");
+    expectFailure([&] { AgcDriver::Pm4::Validate(packet(0x247u, at + 2), 0); }, "misaligned");
+    AgcDriver::Pm4::Validate(packet(0x247u, at + 4), 0);
+    expectFailure([&] { AgcDriver::Pm4::Validate(packet(0x267u, at, 0x2000u), 0); }, "loop interval");
+    expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x1e, {0x267u, low(memory.data()), high(memory.data()), 1, 0, 0, 0}), 0); }, "packet size");
+    expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x1e, {0x267u, low(memory.data()), high(memory.data()), 1, 0, 0, 0, 0}, 4), 0); }, "header flags");
+    AgcDriver::QueueState state;
+    expectFailure([&] { AgcDriver::Pm4::Execute(packet(0x27u, at), state); }, "is not implemented");
+    check(memory[0] == 0, "an unimplemented ATOMIC_MEM operation wrote memory");
+    expectFailure([&] { execute(state, packet(0x267u, 0x1000)); }, "guest");
+#ifdef _WIN32
+    auto* readOnly = VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    check(readOnly != nullptr, "VirtualAlloc failed");
+    DWORD previous = 0;
+    check(VirtualProtect(readOnly, 4096, PAGE_READONLY, &previous) != 0, "VirtualProtect failed");
+    try {
+        expectFailure([&] { execute(state, packet(0x267u, reinterpret_cast<std::uint64_t>(readOnly))); }, "write permission");
+    } catch (...) { VirtualFree(readOnly, 0, MEM_RELEASE); throw; }
+    check(VirtualFree(readOnly, 0, MEM_RELEASE) != 0, "VirtualFree failed");
+#endif
+}
+
+void testWorkloadTagMarkers() {
+    for (const auto queue : {0u, 0x20u}) {
+        for (const auto flags : {0u, 4u}) {
+            AgcDriver::QueueState state;
+            const auto tag = makePacket(0x79, {0x342, 0xcc000001u, 2}, flags);
+            const auto highTag = makePacket(0x37, {0x06010000u, 0xc343u, 0x80000000u, 0}, flags);
+            check(AgcDriver::Pm4::IsTagMarker(tag) && AgcDriver::Pm4::IsTagMarker(highTag), "workload tags are not tag markers");
+            AgcDriver::Pm4::Validate(tag, queue);
+            AgcDriver::Pm4::Validate(highTag, queue);
+            AgcDriver::Pm4::Execute(tag, state);
+            AgcDriver::Pm4::Execute(highTag, state);
+            check(!state.userConfig.contains(0x342) && !state.userConfig.contains(0x343), "a workload tag wrote register state");
+            check(!AgcDriver::Pm4::DecodeLabelWrite(highTag).has_value(), "a tag register write decoded as a memory label");
+            AgcDriver::Pm4::Validate(makePacket(0x37, {0x06010000u, 0xc342u, 0, 0}, flags), queue);
+        }
+        expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x37, {0x06010000u, 0xc344u, 0, 0}), queue); }, "register or GDS destination");
+        expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x37, {0x06010000u, 0xc343u, 0, 0}, 8), queue); }, "header flags");
+    }
+    alignas(4) std::uint32_t target = 0;
+    expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x37, {0x500u, low(&target), high(&target), 1}, 4), 0); }, "header flags");
+    expectFailure([&] { AgcDriver::Pm4::Validate(makePacket(0x79, {0x242, 4}), 0x20); }, "compute queue");
+    AgcDriver::QueueState state;
+    execute(state, makePacket(0x79, {0x343, 7}));
+    check(state.userConfig.at(0x343) == 7, "a register write next to the tag register was dropped");
 }
 
 void testCopies() {
@@ -929,6 +1025,44 @@ void testNopPadSubmission() {
     check(results[1] == 0 && results[2] == 83, "COND_EXEC did not count a one-dword NOP as one dword");
 }
 
+std::vector<std::uint32_t> workloadsActive(std::uint64_t slot, std::uint32_t queue) {
+    const auto flags = queue == 0 ? 4u : 0u;
+    const auto engine = queue == 0 ? 0x40000000u : 0u;
+    return joinPackets({makePacket(0x79, {0x342, 0xcc000003u, 2}, flags), makePacket(0x37, {0x06010000u, 0xc343u, 0x80000000u, 0}, flags),
+                        makePacket(0x1e, {engine | 0x267u, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(slot >> 32u), 2, 0x80000000u, 0, 0, 0})});
+}
+
+std::vector<std::uint32_t> workloadComplete(std::uint64_t slot, std::uint32_t queue) {
+    const auto flags = queue == 0 ? 4u : 0u;
+    const auto engine = queue == 0 ? 0x40000000u : 0u;
+    return joinPackets({makePacket(0x79, {0x342, 0xcd000023u}, flags),
+                        makePacket(0x1e, {engine | 0x275u, static_cast<std::uint32_t>(slot), static_cast<std::uint32_t>(slot >> 32u), 0xfffffffdu, 0xffffffffu, 0, 0, 0})});
+}
+
+void testWorkloadSubmission() {
+    alignas(8) static std::uint64_t guestSlot = 0;
+    const std::array<std::uint8_t, 32> descriptor{};
+    check(sceAgcDriverRegisterWorkloadStream(3, descriptor.data()) == 0, "workload stream registration failed");
+    const auto driverSlot = AgcDriverWorkloadStreamSlot_nid_no_patch(3);
+    const auto guestAddress = reinterpret_cast<std::uint64_t>(&guestSlot);
+    check(driverSlot != 0 && AgcDriver::WorkloadSlotTableCovers(driverSlot, 8) && !AgcDriver::WorkloadSlotTableCovers(guestAddress, 8), "workload slot table range mismatch");
+    for (const auto queue : {0u, 0x20u}) {
+        for (const auto address : {guestAddress, driverSlot}) {
+            std::atomic_ref<std::uint64_t> slot(*reinterpret_cast<std::uint64_t*>(address));
+            slot.store(~0ull);
+            auto active = workloadsActive(address, queue);
+            submitWords(active, queue);
+            AgcDriverWaitIdle_nid_postfix();
+            check(slot.load() == 0x8000000000000002ull, "a submitted SetWorkloadsActive did not store the workload mask");
+            auto complete = workloadComplete(address, queue);
+            submitWords(complete, queue);
+            AgcDriverWaitIdle_nid_postfix();
+            check(slot.load() == 0x8000000000000000ull, "a submitted SetWorkloadComplete did not clear the workload's bit");
+        }
+    }
+    check(sceAgcDriverUnregisterWorkloadStream(3) == 0 && AgcDriverWorkloadStreamSlot_nid_no_patch(3) == 0, "workload stream unregistration failed");
+}
+
 std::vector<std::uint32_t> branch(std::uint32_t mode, std::uint32_t function, const std::vector<std::uint32_t>* first, const std::vector<std::uint32_t>* second) {
     const auto address = [](const std::vector<std::uint32_t>* target) { return target ? reinterpret_cast<std::uintptr_t>(target->data()) : std::uintptr_t{0}; };
     const auto size = [](const std::vector<std::uint32_t>* target) { return target ? static_cast<std::uint32_t>(target->size()) : 0u; };
@@ -1128,12 +1262,14 @@ int main(int argc, char** argv) {
         testWriteChangedKeepsUntouchedBytes();
         testWriteChangedStoresExactlyTheChangedRuns();
         testRegisters();
+        testWorkloadTagMarkers();
         testRegisterFile();
         testContextAndBases();
         testIndexedDraw();
         testAutoDraw();
         testIndirectDraw();
         testMemory();
+        testAtomicMem();
         testCopies();
         testMemoryCopyDecode();
         testMemorySynchronization();
@@ -1151,6 +1287,7 @@ int main(int argc, char** argv) {
         testConditionalSubmission();
         testSuspendPointWritesQueuedLabels();
         testNopPadSubmission();
+        testWorkloadSubmission();
         testBranchSubmission();
         LibcRunShutdown_nid_postfix();
         std::puts("PM4 catalog, registers, state, memory, conditional execution and submission tests passed");
