@@ -5,8 +5,11 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "Optimization/ResourceProgram.hpp"
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 namespace AgcDriver::DriverDetail {
 
@@ -75,7 +78,20 @@ ShaderRecompiler::RecompileResult Driver::materializeDrawStage(std::size_t i, st
     phaseTiming.Phase(DrawRowCapture);
 
     timing.Mark("capture_resources");
-    stageCapture.compiled = invocation.Materialize(*capture);
+    try {
+        stageCapture.compiled = invocation.Materialize(*capture);
+    } catch (const std::exception& error) {
+        static const bool dumpShaders = std::getenv("APS5_DUMP_SHADERS") != nullptr;
+        const auto dump = dumpShaders ? dumpRequest(program.binary.codeAddress, request) : std::string{};
+        std::string reason = error.what();
+        if (const auto newline = reason.find('
+'); newline != std::string::npos) reason.resize(newline);
+        const char* stage = program.binary.stage == Stage::Fragment ? "pixel" : "draw";
+        char where[128];
+        if (dump.empty()) std::snprintf(where, sizeof(where), "%s shader 0x%llx: ", stage, static_cast<unsigned long long>(program.binary.codeAddress));
+        else std::snprintf(where, sizeof(where), "%s shader 0x%llx (%s): ", stage, static_cast<unsigned long long>(program.binary.codeAddress), dump.c_str());
+        throw std::runtime_error(where + reason);
+    }
     timing.Mark("materialize");
     ShaderRecompiler::RecompileResult result = *stageCapture.compiled;
     phaseTiming.Phase(DrawRowRecompile);
