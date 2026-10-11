@@ -33,6 +33,7 @@ double APS5_VABI trunc_nid_postfix(double);
 double APS5_VABI fabs_nid_postfix(double);
 double APS5_VABI sqrt_nid_postfix(double);
 double APS5_VABI fma_nid_postfix(double, double, double);
+double APS5_VABI remainder_nid_postfix(double, double);
 float APS5_VABI asinf_nid_postfix(float);
 float APS5_VABI acosf_nid_postfix(float);
 float APS5_VABI atan2f_nid_postfix(float, float);
@@ -107,6 +108,9 @@ static void CheckExactOperations() {
     Require(fma_nid_postfix(tenth, 10., -1.) == 0x1p-54);
     Require(fma_nid_postfix(0x1p1023, 2., -0x1p1023) == 0x1p1023);
     Require(std::isnan(fma_nid_postfix(infinity, 0., 1.)));
+    Require(remainder_nid_postfix(5.0, 3.0) == -1.0 && remainder_nid_postfix(7.0, 2.0) == -1.0 && remainder_nid_postfix(5.0, 2.0) == 1.0);
+    Require(std::signbit(remainder_nid_postfix(-4.0, 2.0)) && remainder_nid_postfix(1.0, INFINITY) == 1.0);
+    Require(std::isnan(remainder_nid_postfix(1.0, 0.0)) && std::isnan(remainder_nid_postfix(INFINITY, 1.0)));
 }
 
 static void CheckIntegerConversions() {
