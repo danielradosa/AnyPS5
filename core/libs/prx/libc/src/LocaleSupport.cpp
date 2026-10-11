@@ -33,6 +33,7 @@ namespace {
 std::mutex g_localeInitMutex;
 bool g_localeInitialized = false;
 std::vector<GuestLocale::Facet*> g_registeredFacets;
+std::array<signed char, GuestLocale::StandardStreamCount + 2> g_standardStreamOpens{};
 
 void APS5_VABI DestroyClassicLocale(GuestLocale::Facet*) {
     throw std::runtime_error("Cannot destroy the classic locale");
@@ -289,7 +290,11 @@ GuestLocale::Implementation* _ZSt21_sceLibcClassicLocale_nid_postfix = &g_classi
 
 void APS5_VABI _ZNSt8ios_baseD2Ev_nid_postfix(GuestLocale::IosBase* self) {
     if (self == nullptr) throw std::invalid_argument("ios_base destructor: null object");
-    if (self->standardStream != 0 || self->storage != nullptr || self->callbacks != nullptr) throw std::runtime_error("ios_base destructor: unsupported stream storage or callbacks");
+    if (self->standardStream != 0) {
+        if (static_cast<std::uint64_t>(self->standardStream) >= g_standardStreamOpens.size()) throw std::out_of_range("ios_base destructor: standard stream index out of range");
+        if (--std::atomic_ref<signed char>(g_standardStreamOpens[self->standardStream]) > 0) return;
+    }
+    if (self->storage != nullptr || self->callbacks != nullptr) throw std::runtime_error("ios_base destructor: unsupported stream storage or callbacks");
     if (self->locale != &_ZSt21_sceLibcClassicLocale_nid_postfix) throw std::runtime_error("ios_base destructor: unsupported locale ownership");
     self->locale = nullptr;
 }

@@ -142,6 +142,14 @@ static void CheckStreamDestruction() {
     object.stream.callbacks = &object;
     RequireException([&] { _ZNSt8ios_baseD2Ev_nid_postfix(&object.stream); });
     Require(object.stream.locale == &_ZSt21_sceLibcClassicLocale_nid_postfix);
+    object.stream.callbacks = nullptr;
+    object.stream.standardStream = 3;
+    _ZNSt8ios_baseD2Ev_nid_postfix(&object.stream);
+    Require(object.stream.locale == nullptr && object.before == 0x12345678 && object.after == 0x87654321);
+    object.stream.locale = &_ZSt21_sceLibcClassicLocale_nid_postfix;
+    object.stream.standardStream = 10;
+    RequireException([&] { _ZNSt8ios_baseD2Ev_nid_postfix(&object.stream); });
+    Require(object.stream.locale == &_ZSt21_sceLibcClassicLocale_nid_postfix);
 }
 
 int main() {

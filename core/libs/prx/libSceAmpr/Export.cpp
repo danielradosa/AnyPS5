@@ -3,10 +3,12 @@
 #include <ctime>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestLocale.hpp"
 #include "prx/libc/include/SonyCrt.hpp"
 #include "prx/libc/include/exceptions/Runtime.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
 #include "prx/libkernel/Pthread/include/Cond.hpp"
+#include "prx/libkernel/Pthread/include/Mutex.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 #include <algorithm>
 #include <array>
@@ -14,6 +16,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -25,6 +28,7 @@ static constexpr int SCE_KERNEL_ERROR_EPERM = 0x80020001;
 static constexpr int SCE_KERNEL_ERROR_ESRCH = 0x80020003;
 static constexpr int SCE_KERNEL_ERROR_EBUSY = 0x80020010;
 static constexpr int SCE_KERNEL_ERROR_ENOMEM = 0x8002000C;
+static constexpr int SCE_KERNEL_ERROR_EDEADLK = 0x8002000B;
 
 static int Append(Apr::CommandBufferObject* buffer, const void* command, uint32_t bytes) {
     if (!buffer->base || bytes > buffer->size - buffer->offset) return SCE_AMPR_ERROR_BUFFER_FULL;
@@ -232,6 +236,7 @@ struct Xtime {
 static constexpr int ThrdSuccess = 0;
 static constexpr int ThrdError = 4;
 static constexpr int ThrdNomem = 1;
+static constexpr int ThrdBusy = 3;
 static constexpr int GuestClockRealtime = 0;
 static constexpr std::int64_t NanosPerSecond = 1000000000;
 static constexpr std::int64_t LongestSleepSeconds = 86400;
@@ -242,6 +247,10 @@ extern "C" {
 int APS5_VABI pthread_join_nid_postfix(Pthread thread, void** value);
 Pthread APS5_VABI scePthreadSelf();
 void APS5_VABI sceKernelDebugRaiseException(int code, int argument);
+int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg, const char* name);
+int APS5_VABI _Cnd_init_with_name_nid_postfix(PthreadCond* cond, const char* name);
+[[noreturn]] void APS5_VABI _ZSt14_Throw_C_errori_nid_postfix(int code);
+[[noreturn]] void APS5_VABI __cxa_pure_virtual_nid_postfix();
 int APS5_VABI wcsrtombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t** source, std::size_t limit, void* state);
 }
 
@@ -288,6 +297,50 @@ static void APS5_VABI NoopTypeInfo_nid_no_patch(const std::type_info*) {}
 static bool APS5_VABI FunctionTypeInfoCatch_nid_no_patch(const std::type_info*, const std::type_info*, void**) {
     return false;
 }
+
+struct GuestPad {
+    const void* vtable;
+    PthreadCond cond;
+    PthreadMutex mutex;
+    bool started;
+};
+
+static_assert(offsetof(GuestPad, cond) == 0x8 && offsetof(GuestPad, mutex) == 0x10 && offsetof(GuestPad, started) == 0x18 && sizeof(GuestPad) == 0x20);
+
+static constexpr char PadName[] = "SceLibc_Thr";
+static const __cxxabiv1::__class_type_info PadTypeInfo{"St4_Pad"};
+static const void* const PadVtable[] {nullptr, &PadTypeInfo, reinterpret_cast<const void*>(__cxa_pure_virtual_nid_postfix)};
+
+static int PadMutexInit(PthreadMutex* mutex) {
+    *mutex = nullptr;
+    PthreadMutexattr attributes = nullptr;
+    if (const int result = scePthreadMutexattrInit(&attributes)) return ThrdInitResult(result);
+    const int result = scePthreadMutexInit(mutex, &attributes, PadName);
+    const int destroyed = scePthreadMutexattrDestroy(&attributes);
+    if (result != 0) return ThrdInitResult(result);
+    if (destroyed != 0) {
+        scePthreadMutexDestroy(mutex);
+        return ThrdError;
+    }
+    return ThrdSuccess;
+}
+
+static int PadLock(PthreadMutex* mutex) {
+    const int result = scePthreadMutexLock(mutex);
+    return result == 0 ? ThrdSuccess : result == SCE_KERNEL_ERROR_EDEADLK ? ThrdBusy : ThrdError;
+}
+
+static void* APS5_VABI PadCall_nid_no_patch(void* argument) {
+    auto* pad = static_cast<GuestPad*>(argument);
+    void (APS5_VABI *go)(GuestPad*);
+    std::memcpy(&go, pad->vtable, sizeof(go));
+    go(pad);
+    return nullptr;
+}
+
+static std::mutex standardStreamLock;
+static std::array<GuestLocale::IosBase*, GuestLocale::StandardStreamCount + 2> standardStreams{};
+static std::array<signed char, GuestLocale::StandardStreamCount + 2> standardStreamOpens{};
 
 extern "C" {
 
@@ -885,9 +938,14 @@ int APS5_VABI sceAmprAmmWaitCommandBufferCompletion(std::uint32_t id) {
     return AmmSubmitted_nid_no_patch(id) ? 0 : SCE_KERNEL_ERROR_ESRCH;
 }
 
-int APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* stream) {
+    if (!stream) throw std::invalid_argument("ios_base::_Addstd: null stream");
+    std::lock_guard lock(standardStreamLock);
+    std::size_t index = 1;
+    while (index < GuestLocale::StandardStreamCount && standardStreams[index] && standardStreams[index] != stream) ++index;
+    stream->standardStream = static_cast<std::int64_t>(index);
+    standardStreams[index] = stream;
+    ++standardStreamOpens[index];
 }
 
 [[noreturn]] void APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(int code) {
@@ -902,28 +960,46 @@ int APS5_VABI _Thrd_join_nid_postfix(Pthread thread, int* code) {
     return ThrdSuccess;
 }
 
-int APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(GuestPad* self) {
+    if (!self) throw std::invalid_argument("_Pad::_Release: null pad");
+    if (const int result = PadLock(&self->mutex)) _ZSt14_Throw_C_errori_nid_postfix(result);
+    self->started = true;
+    scePthreadCondSignal(&self->cond);
+    scePthreadMutexUnlock(&self->mutex);
 }
 
-int APS5_VABI _ZNSt4_PadC2Ev_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI _ZNSt4_PadC2Ev_nid_postfix(GuestPad* self) {
+    if (!self) throw std::invalid_argument("_Pad constructor: null pad");
+    self->vtable = &PadVtable[2];
+    if (const int result = _Cnd_init_with_name_nid_postfix(&self->cond, PadName)) _ZSt14_Throw_C_errori_nid_postfix(result);
+    if (const int result = PadMutexInit(&self->mutex)) {
+        scePthreadCondDestroy(&self->cond);
+        _ZSt14_Throw_C_errori_nid_postfix(result);
+    }
+    self->started = false;
+    if (const int result = PadLock(&self->mutex)) {
+        scePthreadMutexDestroy(&self->mutex);
+        scePthreadCondDestroy(&self->cond);
+        _ZSt14_Throw_C_errori_nid_postfix(result);
+    }
 }
 
-int APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(GuestPad* self) {
+    if (!self) throw std::invalid_argument("_Pad destructor: null pad");
+    self->vtable = &PadVtable[2];
+    scePthreadMutexUnlock(&self->mutex);
+    scePthreadMutexDestroy(&self->mutex);
+    scePthreadCondDestroy(&self->cond);
 }
 
 Pthread APS5_VABI _Thrd_id_nid_postfix(void) {
     return scePthreadSelf();
 }
 
-int APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(GuestPad* self, Pthread* thread) {
+    if (!self) throw std::invalid_argument("_Pad::_Launch: null pad");
+    if (scePthreadCreate(thread, nullptr, PadCall_nid_no_patch, self, PadName) != 0) _ZSt14_Throw_C_errori_nid_postfix(ThrdNomem);
+    while (!self->started) scePthreadCondWait(&self->cond, &self->mutex);
 }
 
 std::uint64_t _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;

@@ -1,7 +1,9 @@
 #include "SceTypes.hpp"
+#include "prx/libc/include/GuestLocale.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -9,6 +11,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <thread>
+#include <typeinfo>
 
 struct GuestXtime {
     std::int64_t sec;
@@ -24,6 +27,13 @@ int APS5_VABI wcstombs_s_nid_postfix(std::size_t* result, char* destination, std
 int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg, const char* name);
 int APS5_VABI pthread_detach_nid_postfix(Pthread thread);
 int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp);
+Pthread APS5_VABI scePthreadSelf();
+int APS5_VABI scePthreadGetname(Pthread thread, char* name);
+void APS5_VABI _ZNSt4_PadC2Ev_nid_postfix(void* self);
+void APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(void* self);
+void APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(void* self, Pthread* thread);
+void APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(void* self);
+void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* stream);
 }
 
 static constexpr int ThrdSuccess = 0;
@@ -197,10 +207,85 @@ static void TestWcstombs() {
     Require(result == Failed);
 }
 
+struct PadBase {
+    const void* vtable;
+    PthreadCond cond;
+    PthreadMutex mutex;
+    bool started;
+};
+
+struct LaunchedPad {
+    PadBase base{};
+    std::atomic<bool> releasing{false};
+    Pthread runner = nullptr;
+    std::array<char, 32> name{};
+};
+
+static void APS5_VABI PadGo(LaunchedPad* pad) {
+    pad->runner = scePthreadSelf();
+    Require(scePthreadGetname(pad->runner, pad->name.data()) == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    pad->releasing = true;
+    _ZNSt4_Pad8_ReleaseEv_nid_postfix(pad);
+}
+
+static const void* const LaunchedPadVtable[] {nullptr, nullptr, reinterpret_cast<const void*>(PadGo)};
+
+static void TestPad() {
+    LaunchedPad pad;
+    _ZNSt4_PadC2Ev_nid_postfix(&pad);
+    const auto* slots = static_cast<const void* const*>(pad.base.vtable);
+    Require(slots != nullptr && slots[-2] == nullptr && !pad.base.started && pad.base.cond != nullptr && pad.base.mutex != nullptr);
+    Require(std::strcmp(static_cast<const std::type_info*>(slots[-1])->name(), "St4_Pad") == 0);
+    pad.base.vtable = &LaunchedPadVtable[2];
+    Pthread thread = nullptr;
+    _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(&pad, &thread);
+    Require(pad.releasing && pad.base.started);
+    int code = -1;
+    Require(_Thrd_join_nid_postfix(thread, &code) == ThrdSuccess && code == 0);
+    Require(pad.runner == thread && std::strcmp(pad.name.data(), "SceLibc_Thr") == 0);
+    _ZNSt4_PadD2Ev_nid_postfix(&pad);
+    Require(pad.base.vtable == slots);
+
+    bool rejected = false;
+    try {
+        _ZNSt4_PadC2Ev_nid_postfix(nullptr);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    Require(rejected);
+}
+
+static void TestAddStandardStream() {
+    std::array<GuestLocale::IosBase, 9> streams{};
+    _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[0]);
+    Require(streams[0].standardStream == 1);
+    _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[0]);
+    Require(streams[0].standardStream == 1);
+    for (std::size_t index = 1; index < streams.size(); ++index) {
+        _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[index]);
+        Require(streams[index].standardStream == static_cast<std::int64_t>(index < 7 ? index + 1 : 8));
+    }
+    _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[3]);
+    Require(streams[3].standardStream == 4);
+    _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[7]);
+    Require(streams[7].standardStream == 8);
+
+    bool rejected = false;
+    try {
+        _ZNSt8ios_base7_AddstdEPS__nid_postfix(nullptr);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    Require(rejected);
+}
+
 int main() {
     TestThreadJoin();
     TestThreadSleep();
     TestSpinLock();
     TestWcstombs();
+    TestPad();
+    TestAddStandardStream();
     return 0;
 }

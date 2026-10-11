@@ -75,6 +75,8 @@ struct WideCollateVtable {
     std::int64_t (APS5_VABI *hash)(const CollateFacet* self, const std::uint16_t* first, const std::uint16_t* last);
 };
 
+inline constexpr std::size_t StandardStreamCount = 8;
+
 struct IosBase {
     const void* vtable;
     std::int64_t standardStream;
