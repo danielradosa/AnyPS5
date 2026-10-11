@@ -12,13 +12,22 @@
 
 extern "C" {
 
-// unknown signature
-APS5_EXPORT("zARR5aCmkoY", sceAgcDcbA_zARR5aCmkoY);
-void* APS5_VABI sceAgcDcbA_zARR5aCmkoY(void) {
- NotImplemented_nid_no_patch(__func__);
- return nullptr;
+std::uint32_t* APS5_VABI sceAgcDcbAtomicGds_0900(CommandBuffer* buf, std::uint32_t engine, std::uint32_t operation, std::uint32_t completion, std::uint32_t dataMode, std::uint32_t autoIncrementBytes, std::uint16_t base, std::uint16_t size, std::uint32_t offsets, std::uint32_t destination, std::uint64_t source0, std::uint64_t source1) {
+    const std::uint32_t waitForCompletion = completion == 1u && (operation & 0x20u) == 0 ? 1u : 0u;
+    auto* packet = Agc::Command::Allocate(buf, 11, __func__);
+    packet[0] = Agc::Command::Header(0x1du, 11);
+    packet[1] = ((engine & 3u) << 30u) | (operation & 0xffu) | ((operation << 7u) & 0x10000u) | (waitForCompletion << 17u) | ((operation & 0x20u) << 13u) | ((operation & 0x40u) << 14u);
+    packet[2] = (autoIncrementBytes & 0x3fu) | ((dataMode & 1u) << 8u);
+    packet[3] = base;
+    packet[4] = size;
+    packet[5] = offsets & 0x00ff00ffu;
+    packet[6] = destination;
+    packet[7] = static_cast<std::uint32_t>(source0);
+    packet[8] = static_cast<std::uint32_t>(source0 >> 32u);
+    packet[9] = static_cast<std::uint32_t>(source1);
+    packet[10] = static_cast<std::uint32_t>(source1 >> 32u);
+    return packet;
 }
-
 
 uint32_t* APS5_VABI sceAgcDcbJump(CommandBuffer* buf, uint8_t mode, uint8_t cache_policy, const uint32_t* target, uint32_t size_in_dwords) {
     return Agc::Command::WriteJump(buf, mode, cache_policy, target, size_in_dwords, __func__);
