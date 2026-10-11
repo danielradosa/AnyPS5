@@ -276,6 +276,11 @@ void PadInput::Update() {
         released = true;
     }
     if (released) publish();
+    for (std::size_t index = 0; index < bindings.size(); ++index) {
+        if (bindings[index].control != Pad::InputControl::Shake || !pressed[index]) continue;
+        publish();
+        break;
+    }
     if (!mouseEnabled) return;
     if (SDL_GetKeyboardFocus() == nullptr) {
         std::fill(pressed.begin(), pressed.end(), false);
@@ -313,6 +318,7 @@ void PadInput::publish() {
 
     std::array<bool, 4> negative{};
     std::array<bool, 4> positive{};
+    bool shaking = false;
     for (std::size_t index = 0; index < bindings.size(); ++index) {
         if (!pressed[index]) continue;
         const auto& binding = bindings[index];
@@ -334,7 +340,16 @@ void PadInput::publish() {
             case Pad::InputControl::TouchRight: state.touchRight = true; break;
             case Pad::InputControl::ToggleMouse: break;
             case Pad::InputControl::ToggleFullscreen: break;
+            case Pad::InputControl::Shake: shaking = true; break;
         }
+    }
+    if (shaking) {
+        constexpr float gravity = 9.80665f;
+        const auto phase = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 50;
+        const float sign = phase % 2 == 0 ? 1.0f : -1.0f;
+        state.hasMotion = true;
+        state.accel = {sign * 2.5f * gravity, gravity, 0.0f};
+        state.gyro = {0.0f, 0.0f, sign * 6.0f};
     }
     for (std::size_t axis = 0; axis < state.sticks.size(); ++axis) {
         if (negative[axis] || positive[axis]) state.sticks[axis] = negative[axis] == positive[axis] ? 128 : negative[axis] ? 0 : 255;

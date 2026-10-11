@@ -14,7 +14,9 @@ Supported input sources are:
 
 Game-controller bindings are enabled automatically and are not affected by keyboard or mouse overrides in this file.
 
-Supported actions are `Cross`, `Circle`, `Triangle`, `Square`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `Options`, `Up`, `Right`, `Down`, `Left`, `LeftStickLeft`, `LeftStickRight`, `LeftStickUp`, `LeftStickDown`, `RightStickLeft`, `RightStickRight`, `RightStickUp`, `RightStickDown`, `TouchLeft`, `TouchRight`, `ToggleMouse`, and `ToggleFullscreen`.
+Supported actions are `Cross`, `Circle`, `Triangle`, `Square`, `L1`, `R1`, `L2`, `R2`, `L3`, `R3`, `Options`, `Up`, `Right`, `Down`, `Left`, `LeftStickLeft`, `LeftStickRight`, `LeftStickUp`, `LeftStickDown`, `RightStickLeft`, `RightStickRight`, `RightStickUp`, `RightStickDown`, `TouchLeft`, `TouchRight`, `ToggleMouse`, `ToggleFullscreen`, and `Shake`.
+
+`Shake` (X by default) stands in for shaking a controller that has no motion sensor: while it is held, the pad reports a sideways acceleration of 2.5 g that flips direction every 50 ms, with a matching rotation around the forward axis, instead of the controller's own sensor data.
 
 For example, this changes Cross to F or Space, moves the left stick to IJKL, uses the mouse buttons for Square and R2, and keeps all other built-in bindings:
 
