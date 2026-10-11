@@ -854,6 +854,87 @@ std::int64_t APS5_VABI recvmsg_nid_postfix(int descriptor, GuestMsghdr* message,
     message->controlLength = 0;
     return received;
 }
+struct GuestSendfileHeaders {
+    GuestIovec* headers;
+    int headerCount;
+    GuestIovec* trailers;
+    int trailerCount;
+};
+static_assert(sizeof(GuestSendfileHeaders) == 32 && offsetof(GuestSendfileHeaders, trailers) == 16);
+std::int64_t APS5_VABI sceKernelPread(int descriptor, void* buffer, std::size_t length, std::int64_t offset);
+static bool SendfileIovecs(const GuestIovec* iov, int count) {
+    if (!iov) return true;
+    if (count < 0 || count > 1024) return false;
+    std::uint64_t total = 0;
+    for (int i = 0; i < count; ++i) {
+        if (iov[i].length > INT_MAX - total) return false;
+        total += iov[i].length;
+    }
+    return true;
+}
+static int SendAll(const Socket& socket, const void* data, std::uint64_t length, std::int64_t& sent) {
+    if (!data && length) return 14;
+    const char* bytes = static_cast<const char*>(data);
+    while (length) {
+        const auto result = ::send(socket.value, bytes, static_cast<int>(std::min<std::uint64_t>(length, INT_MAX)), NativeSendFlags(GuestNoSignal));
+        if (result < 0) return NativeError();
+        bytes += result;
+        length -= static_cast<std::uint64_t>(result);
+        sent += result;
+    }
+    return 0;
+}
+static int SendIovecs(const Socket& socket, const GuestIovec* iov, int count, std::int64_t& sent) {
+    for (int i = 0; iov && i < count; ++i)
+        if (const int error = SendAll(socket, iov[i].base, iov[i].length, sent)) return error;
+    return 0;
+}
+int APS5_VABI sendfile_nid_postfix(int file, int descriptor, std::int64_t offset, std::uint64_t length,
+    const GuestSendfileHeaders* headers, std::int64_t* sbytes, int flags) {
+    (void)flags;
+    if (offset < 0) return Fail(22);
+    if (headers && (!SendfileIovecs(headers->headers, headers->headerCount) || !SendfileIovecs(headers->trailers, headers->trailerCount)))
+        return Fail(22);
+    std::int64_t sent = 0;
+    const auto finish = [&](int error) {
+        if (sbytes) *sbytes = sent;
+        return error ? Fail(error) : 0;
+    };
+    if (GuestSockets::IsOpen(file)) return finish(22);
+    std::vector<char> chunk;
+    try {
+        chunk.resize(0x10000);
+    } catch (const std::bad_alloc&) {
+        return Fail(12);
+    }
+    const auto read = [&](std::int64_t position, std::uint64_t remaining) {
+        const auto result = sceKernelPread(file, chunk.data(), static_cast<std::size_t>(std::min<std::uint64_t>(remaining, chunk.size())), position);
+        return result < 0 ? -(result & 0xffff) : result;
+    };
+    std::uint64_t remaining = length ? length : UINT64_MAX;
+    auto received = read(offset, remaining);
+    if (received == -9) return Fail(9);
+    if (received < 0) return finish(received == -21 || received == -29 ? 22 : static_cast<int>(-received));
+    const auto socket = Lookup(descriptor);
+    if (!socket) return finish(9);
+    if (socket->type != 1) return finish(22);
+    sockaddr_storage peer{};
+    socklen_t size = sizeof(peer);
+    if (::getpeername(socket->value, reinterpret_cast<sockaddr*>(&peer), &size)) return finish(57);
+    if (headers)
+        if (const int error = SendIovecs(*socket, headers->headers, headers->headerCount, sent)) return finish(error);
+    while (received > 0) {
+        if (const int error = SendAll(*socket, chunk.data(), static_cast<std::uint64_t>(received), sent)) return finish(error);
+        offset += received;
+        remaining -= static_cast<std::uint64_t>(received);
+        if (remaining == 0) break;
+        received = read(offset, remaining);
+        if (received < 0) return finish(static_cast<int>(-received));
+    }
+    if (headers)
+        if (const int error = SendIovecs(*socket, headers->trailers, headers->trailerCount, sent)) return finish(error);
+    return finish(0);
+}
 int APS5_VABI poll_nid_postfix(GuestPollDescriptor* descriptors, std::uint32_t count, int timeout) {
     if (timeout < -1) return Fail(22);
     if (count && !descriptors) return Fail(14);
