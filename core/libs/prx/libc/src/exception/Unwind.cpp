@@ -380,8 +380,48 @@ bool Expression(const Byte* p, const _Unwind_Context& context, Word cfa, Word& r
     result = stack[0]; return true;
 }
 
+#ifdef _WIN32
+bool NativeRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
+    const Word pc = context.registers[16];
+    DWORD64 base = 0;
+    const auto function = RtlLookupFunctionEntry(pc, &base, nullptr);
+    if (!function) return false;
+    CONTEXT record {};
+    DWORD64* const integers[17] {&record.Rax, &record.Rdx, &record.Rcx, &record.Rbx, &record.Rsi, &record.Rdi, &record.Rbp, &record.Rsp,
+        &record.R8, &record.R9, &record.R10, &record.R11, &record.R12, &record.R13, &record.R14, &record.R15, &record.Rip};
+    for (unsigned i = 0; i < 17; ++i) *integers[i] = context.registers[i];
+    std::memcpy(record.FltSave.XmmRegisters, context.vectorRegisters, sizeof(context.vectorRegisters));
+    KNONVOLATILE_CONTEXT_POINTERS saved {};
+    void* handlerData = nullptr;
+    DWORD64 establisher = 0;
+    if (RtlVirtualUnwind(UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER, base, pc, function, &record, &handlerData, &establisher, &saved)) return false;
+    Word returnAddress;
+    std::memcpy(&returnAddress, reinterpret_cast<const void*>(record.Rsp - sizeof(Word)), sizeof(returnAddress));
+    if (returnAddress != record.Rip) return false;
+    constexpr unsigned hardware[16] {0, 2, 1, 3, 6, 7, 5, 4, 8, 9, 10, 11, 12, 13, 14, 15};
+    frame = {};
+    frame.start = base + function->BeginAddress;
+    frame.returnRegister = 16;
+    rules = {};
+    for (unsigned i = 0; i < 16; ++i)
+        if (saved.IntegerContext[hardware[i]]) rules.registers[i] = {1, std::intptr_t(Word(saved.IntegerContext[hardware[i]]) - record.Rsp)};
+    for (unsigned i = 0; i < 16; ++i)
+        if (saved.FloatingContext[i]) rules.registers[17 + i] = {1, std::intptr_t(Word(saved.FloatingContext[i]) - record.Rsp)};
+    rules.registers[16] = {1, -std::intptr_t(sizeof(Word))};
+    context.cfa = record.Rsp;
+    context.region = frame.start;
+    context.lsda = 0;
+    context.personality = 0;
+    return true;
+}
+#endif
+
 bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
+#ifdef _WIN32
+    if (!DecodeFrame(context, frame)) return NativeRules(context, frame, rules);
+#else
     if (!DecodeFrame(context, frame)) return false;
+#endif
     Rules initial;
     if (!Instructions(frame.cieBegin, frame.cieEnd, frame, ~Word(0), initial, {})) return false;
 #ifdef _WIN32
