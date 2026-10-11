@@ -2,6 +2,7 @@
 #define CORE_LIBS_PRX_LIBC_INCLUDE_APPLICATIONHEAP_HPP
 
 #include <cstddef>
+#include "prx/libc/include/general/VabiMacros.hpp"
 
 extern "C" {
 
@@ -17,6 +18,9 @@ void* ApplicationHeapCalloc_nid_no_patch(std::size_t count, std::size_t bytes);
 int ApplicationHeapPosixAlign_nid_no_patch(void** pointer, std::size_t alignment, std::size_t bytes);
 std::size_t ApplicationHeapUsableSize_nid_no_patch(void* pointer);
 int ApplicationHeapStatsFast_nid_no_patch(void* stats);
+
+void* APS5_VABI scriptingGetMem(std::size_t alignment, std::size_t bytes);
+void APS5_VABI scriptingFreeMem(void* pointer);
 
 }
 
