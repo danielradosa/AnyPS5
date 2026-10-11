@@ -222,6 +222,8 @@ public:
         *count = 0;
         const auto end = address + bytes;
         if (clear && !collectable(address, end)) return false;
+        // Consecutive views are neighbours in the map: a target spans hundreds of them.
+        auto next = views.end();
         for (auto cursor = address; cursor < end;) {
             const auto nextClean = cleanRanges.upper_bound(cursor);
             if (nextClean != cleanRanges.begin()) {
@@ -232,8 +234,9 @@ public:
                 }
             }
             const auto base = cursor & ~(pageBytes - 1);
-            const auto found = views.find(base);
+            const auto found = next != views.end() && next->first == base ? next : views.find(base);
             if (found != views.end()) {
+                next = std::next(found);
                 auto& view = found->second;
                 const auto stop = std::min(end, base + pageBytes);
                 if (view.protection == PAGE_NOACCESS) return false;
