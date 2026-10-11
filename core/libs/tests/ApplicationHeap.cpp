@@ -101,9 +101,9 @@ int APS5_VABI posixAlign(void** pointer, std::size_t alignment, std::size_t byte
 }
 
 std::size_t APS5_VABI usableSize(void* pointer) {
-    require(pointer == storage.data());
+    require(pointer == nullptr || pointer == storage.data());
     ++usableCalls;
-    return storage.size();
+    return pointer == nullptr ? 0 : storage.size();
 }
 
 template<typename TValue, std::size_t TSize>
@@ -226,7 +226,7 @@ int main(int argc, char** argv) {
     require(frees == 2);
     require(ApplicationHeapUsableSize_nid_no_patch(storage.data()) == storage.size() && usableCalls == 1);
     require(malloc_usable_size_nid_postfix(storage.data()) == storage.size() && usableCalls == 2);
-    require(ApplicationHeapUsableSize_nid_no_patch(nullptr) == 0 && malloc_usable_size_nid_postfix(nullptr) == 0 && usableCalls == 2);
+    require(ApplicationHeapUsableSize_nid_no_patch(nullptr) == 0 && malloc_usable_size_nid_postfix(nullptr) == 0 && usableCalls == 4);
     require(ApplicationHeapCalloc_nid_no_patch(3, 16) == storage.data() && lastSize == 48);
     require(ApplicationHeapPosixAlign_nid_no_patch(&pointer, 64, 128) == 0 && pointer == storage.data() && lastAlignment == 64);
     reject([] { ApplicationHeapAlign_nid_no_patch(3, 64); });
