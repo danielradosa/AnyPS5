@@ -1258,13 +1258,23 @@ void depthPlaneUploadTests(const Device& device, Recorder& recorder) {
         recorder.Sync();
     };
     const auto before = DepthPlaneUploads();
+    const auto refreshes = DepthPlaneRefreshes();
+    const auto skips = DepthPlaneSkips();
     sample();
     Require(DepthPlaneUploads() == before + 1, "the layer without a host depth surface was not read from guest memory");
+    Require(DepthPlaneRefreshes() == refreshes + 1, "the first sample of a depth plane copy recorded no copy");
     sample();
     Require(DepthPlaneUploads() == before + 1, "an unchanged layer without a host depth surface was read again");
+    Require(DepthPlaneRefreshes() == refreshes + 1 && DepthPlaneSkips() == skips + 1, "a depth plane copy whose layers did not change was copied again");
+    NoteDepthTargetDrawn(context, {address, 0, {width, height}, VK_FORMAT_D32_SFLOAT, 1.0f, 0});
+    sample();
+    Require(DepthPlaneRefreshes() == refreshes + 2 && DepthPlaneUploads() == before + 1, "a draw into the host depth slice did not refresh the plane copy, or read the unchanged guest layer again");
+    sample();
+    Require(DepthPlaneRefreshes() == refreshes + 2 && DepthPlaneSkips() == skips + 2, "the plane copy was copied again after it took the drawn slice");
     static_cast<volatile std::uint8_t*>(block)[slice + 64] = 0x3f;
     sample();
     Require(DepthPlaneUploads() == before + 2, "a layer the CPU wrote was not read again");
+    Require(DepthPlaneRefreshes() == refreshes + 3, "a layer the CPU wrote did not refresh the plane copy");
 }
 
 void resourceReadTests(const Device& device, Recorder& recorder) {

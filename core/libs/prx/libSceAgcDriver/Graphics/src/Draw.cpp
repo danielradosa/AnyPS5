@@ -1877,6 +1877,15 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
         targetViews.push_back(binding.target->View());
     }
     if (state.depth) targetViews.push_back(DepthSurfaceView(context, *state.depth));
+    // Once the draw is recorded its depth target may hold new values: a plane copy sampled later
+    // (or by this draw, before its writes) copies the slice again.
+    struct DepthWritten {
+        const Context& context;
+        const DepthTarget* target;
+        ~DepthWritten() {
+            if (target != nullptr) NoteDepthTargetDrawn(context, *target);
+        }
+    } depthWritten{context, state.depth ? &*state.depth : nullptr};
     timer.phase(PhasePrepare);
     const bool recordDraws = RecordDraws();
     auto* recorder = Recorder::Active();

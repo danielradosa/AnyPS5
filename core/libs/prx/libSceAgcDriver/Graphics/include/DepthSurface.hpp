@@ -27,6 +27,11 @@ std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<c
 // Layers DepthSurfaceTexture read from guest memory into a plane copy (layers without a host depth
 // surface, read again only after their range changed).
 std::uint64_t DepthPlaneUploads();
+// Plane copies that recorded GPU work, and samples that found every layer as the copy last took it.
+std::uint64_t DepthPlaneRefreshes();
+std::uint64_t DepthPlaneSkips();
+// A draw that bound the surface as its depth target was recorded (it may have written it).
+void NoteDepthTargetDrawn(const Context& context, const DepthTarget& target);
 class StorageTexture;
 void SeedStorageFromDepth(const Context& context, const std::shared_ptr<StorageTexture>& storage);
 
