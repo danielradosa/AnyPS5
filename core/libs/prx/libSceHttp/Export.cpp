@@ -5,12 +5,13 @@
 #include "prx/libSceHttp/src/HttpErrors.hpp"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string_view>
-#include <thread>
 
 // No network is emulated: contexts, templates and requests can be created, but any request
 // that would touch the network fails with the library's network error.
@@ -22,6 +23,14 @@ struct RequestStatusRegistration {
 };
 static std::mutex g_statusMutex;
 static std::map<int, RequestStatusRegistration> g_statusCallbacks;
+
+struct HttpEpoll {
+    std::condition_variable changed;
+    bool aborted = false;
+    bool destroyed = false;
+};
+static std::mutex g_epollMutex;
+static std::map<HttpEpollHandle, std::shared_ptr<HttpEpoll>> g_epolls;
 
 extern "C" {
 
@@ -57,7 +66,10 @@ int APS5_VABI sceHttpCreateConnectionWithURL(int tmpl_id, const char* url, int e
 int APS5_VABI sceHttpCreateEpoll(int http_ctx_id, HttpEpollHandle* eh) {
     (void)http_ctx_id;
     if (!eh) return ERROR_INVALID_VALUE;
-    *eh = new HttpEpoll{};
+    auto epoll = std::make_shared<HttpEpoll>();
+    std::lock_guard lock(g_epollMutex);
+    g_epolls.emplace(epoll.get(), epoll);
+    *eh = epoll.get();
     return 0;
 }
 
@@ -103,7 +115,13 @@ int APS5_VABI sceHttpDeleteTemplate(int tmpl_id) {
 
 int APS5_VABI sceHttpDestroyEpoll(int http_ctx_id, HttpEpollHandle eh) {
     (void)http_ctx_id;
-    delete eh;
+    if (!eh) return ERROR_INVALID_VALUE;
+    std::lock_guard lock(g_epollMutex);
+    const auto found = g_epolls.find(eh);
+    if (found == g_epolls.end()) return ERROR_INVALID_ID;
+    found->second->destroyed = true;
+    found->second->changed.notify_all();
+    g_epolls.erase(found);
     return 0;
 }
 
@@ -258,9 +276,14 @@ int APS5_VABI sceHttpUnsetEpoll(int id) {
 
 int APS5_VABI sceHttpWaitRequest(HttpEpollHandle eh, HttpNBEvent* nbev, int maxevents, int timeout) {
     if (!eh || !nbev || maxevents <= 0) return ERROR_INVALID_VALUE;
-    if (timeout < 0) NotImplemented_nid_no_patch(__func__);
-    std::this_thread::sleep_for(std::chrono::microseconds(timeout));
-    return 0;
+    std::unique_lock lock(g_epollMutex);
+    const auto found = g_epolls.find(eh);
+    if (found == g_epolls.end()) return ERROR_INVALID_ID;
+    const std::shared_ptr<HttpEpoll> epoll = found->second;
+    const auto woken = [&epoll] { return epoll->aborted || epoll->destroyed; };
+    if (timeout < 0) epoll->changed.wait(lock, woken);
+    else if (timeout > 0) epoll->changed.wait_for(lock, std::chrono::microseconds(timeout), woken);
+    return epoll->aborted ? ERROR_ABORTED : 0;
 }
 
 int APS5_VABI sceHttpCreateRequestWithURL(int conn_id, int method, const char* url, uint64_t content_length) {
@@ -433,8 +456,13 @@ int APS5_VABI sceHttpSetRedirectCallback(int id, HttpRedirectCallback cbfunc, vo
     return 0;
 }
 
-int APS5_VABI sceHttpAbortWaitRequest(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceHttpAbortWaitRequest(HttpEpollHandle eh) {
+    if (!eh) return ERROR_INVALID_VALUE;
+    std::lock_guard lock(g_epollMutex);
+    const auto found = g_epolls.find(eh);
+    if (found == g_epolls.end()) return ERROR_INVALID_ID;
+    found->second->aborted = true;
+    found->second->changed.notify_all();
     return 0;
 }
 }

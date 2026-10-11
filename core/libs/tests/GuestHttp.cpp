@@ -1,9 +1,12 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 extern "C" {
 int APS5_VABI sceHttpUriParse(SceHttpUriElement*, const char*, void*, std::size_t*, std::size_t);
@@ -19,6 +22,7 @@ int APS5_VABI sceHttpUriSweepPath(char*, const char*, std::size_t);
 int APS5_VABI sceHttpCreateEpoll(int, HttpEpollHandle*);
 int APS5_VABI sceHttpDestroyEpoll(int, HttpEpollHandle);
 int APS5_VABI sceHttpWaitRequest(HttpEpollHandle, HttpNBEvent*, int, int);
+int APS5_VABI sceHttpAbortWaitRequest(HttpEpollHandle);
 int APS5_VABI sceHttpReadData(int, void*, std::size_t);
 int APS5_VABI sceHttpCreateRequest2(int, const char*, const char*, std::uint64_t);
 int APS5_VABI sceHttpsEnableOption(int, std::uint32_t);
@@ -210,7 +214,38 @@ int main() {
     Require(sceHttpWaitRequest(epoll, nullptr, 2, 0) == invalidValue);
     Require(sceHttpWaitRequest(epoll, events, 0, 0) == invalidValue);
     Require(sceHttpWaitRequest(nullptr, events, 2, 0) == invalidValue);
+    constexpr int aborted = static_cast<int>(0x80431080);
+    constexpr int invalidId = static_cast<int>(0x80431100);
+    HttpNBEvent event{};
+    Require(sceHttpWaitRequest(epoll, &event, 1, 10) == 0);
+    Require(sceHttpAbortWaitRequest(nullptr) == invalidValue);
+    Require(sceHttpAbortWaitRequest(reinterpret_cast<HttpEpollHandle>(&event)) == invalidId);
+    Require(sceHttpWaitRequest(reinterpret_cast<HttpEpollHandle>(&event), events, 2, 0) == invalidId);
+    std::atomic<int> abortedWait{1};
+    std::thread abortedWaiter([&] { abortedWait = sceHttpWaitRequest(epoll, events, 2, -1); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    Require(sceHttpAbortWaitRequest(epoll) == 0);
+    abortedWaiter.join();
+    Require(abortedWait == aborted);
+    Require(sceHttpWaitRequest(epoll, events, 2, 0) == aborted);
     Require(sceHttpDestroyEpoll(1, epoll) == 0);
+    Require(sceHttpAbortWaitRequest(epoll) == invalidId);
+    Require(sceHttpWaitRequest(epoll, events, 2, 0) == invalidId);
+    Require(sceHttpDestroyEpoll(1, epoll) == invalidId);
+    Require(sceHttpDestroyEpoll(1, nullptr) == invalidValue);
+    bool releasedByDestroy = false;
+    for (int attempt = 1; attempt <= 20 && !releasedByDestroy; ++attempt) {
+        HttpEpollHandle destroyed = nullptr;
+        Require(sceHttpCreateEpoll(1, &destroyed) == 0);
+        std::atomic<int> destroyedWait{1};
+        std::thread destroyedWaiter([&] { destroyedWait = sceHttpWaitRequest(destroyed, events, 2, -1); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(10 * attempt));
+        Require(sceHttpDestroyEpoll(1, destroyed) == 0);
+        destroyedWaiter.join();
+        Require(destroyedWait == 0 || destroyedWait == invalidId);
+        releasedByDestroy = destroyedWait == 0;
+    }
+    Require(releasedByDestroy);
 
     char data[16];
     Require(sceHttpReadData(1, data, sizeof(data)) == network);
