@@ -768,6 +768,11 @@ std::uint32_t ResourceMaterializer::RuntimeImageMode(const ImageResource& image,
         }
     }
     if (decoded.mipCount > (image.mipMode == ImageMipMode::DynamicStorage ? RuntimeAbi::StorageMipSlots : 1u)) throw std::runtime_error("runtime storage image mip capacity exceeded");
+    if (image.flatLineExplicitLod && image.dimension == RdnaImageDimension::Dim2D && decoded.dimension == RdnaImageDimension::Dim1D) {
+        const bool oneTexel = ((descriptor.dwords[1] >> 30u) & 3u) == 0u && (descriptor.dwords[2] & 0xfffu) == 0u;
+        const bool oneMip = ((descriptor.dwords[3] >> 12u) & 0xfu) == ((descriptor.dwords[3] >> 16u) & 0xfu);
+        if (rawImageType(descriptor) != ImageType::Color1D || !oneTexel || !oneMip) throw std::runtime_error("image descriptor is incompatible with the static runtime image interface: image_sample_l with a 2D address reads a 1D T# wider than one texel or with more than one mip, and which address VGPR then holds the LOD is not measured");
+    }
     if ((descriptorImageSwizzle(descriptor) & 06666u) == 0u && !decoded.fmask && !decoded.depthBits && decoded.conversionFormat == IrBufferFormat::Invalid && !decoded.srgbDecode) {
         for (std::uint32_t index = 0u; index < modes.size(); ++index) {
             if (modes[index].constantSwizzle && modes[index].numericClass == decoded.numericClass) return index;

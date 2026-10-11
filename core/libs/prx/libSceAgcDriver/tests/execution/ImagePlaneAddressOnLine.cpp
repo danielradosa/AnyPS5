@@ -81,6 +81,20 @@ std::array<std::uint32_t, 8> LineDescriptor() {
     };
 }
 
+std::array<std::uint32_t, 8> OneTexelDescriptor(std::uint32_t mips) {
+    const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(Line.data()));
+    return {
+        static_cast<std::uint32_t>(address >> 8u),
+        static_cast<std::uint32_t>((address >> 40u) & 0xffu) | (Format8888UNorm << 20u),
+        0u,
+        0xfacu | ((mips - 1u) << 16u) | (Type1D << 28u),
+        0u,
+        (mips - 1u) << 4u,
+        0u,
+        0u,
+    };
+}
+
 std::array<std::uint32_t, 8> PlaneDescriptor() {
     const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(Plane.data()));
     return {
@@ -164,14 +178,21 @@ void CheckPlane() {
     }
 }
 
-void RequireRefused(AgcDriver::VulkanDevice& device) {
+void RequireRefused(AgcDriver::VulkanDevice& device, const std::array<std::uint32_t, 8>& texture, const std::string& name) {
     std::string refusal;
     try {
-        Run(device, ExplicitLodCode, LineDescriptor());
+        Run(device, ExplicitLodCode, texture);
     } catch (const std::exception& error) {
         refusal = error.what();
     }
-    Require(refusal.find("incompatible with the static runtime image interface") != std::string::npos, "image_sample_l 2d on a 1D texture was not refused: " + refusal);
+    Require(refusal.find("incompatible with the static runtime image interface") != std::string::npos, "image_sample_l 2d on " + name + " was not refused: " + refusal);
+}
+
+void CheckOneTexel() {
+    for (std::uint32_t tid = 0; tid < Threads; ++tid) {
+        const float value = std::bit_cast<float>(Buffer[tid * Words + SampleResult]) * 255.0f;
+        Require(std::lround(value) == 77, "image_sample_l 2d on a 1-texel 1D texture with v " + std::to_string(LineV[tid % LineV.size()]) + ": thread " + std::to_string(tid) + " reads " + std::to_string(value) + ", expected 77");
+    }
 }
 
 }
@@ -188,7 +209,12 @@ int main() {
         FillInput(false);
         Run(*device, Code, PlaneDescriptor());
         CheckPlane();
-        RequireRefused(*device);
+        RequireRefused(*device, LineDescriptor(), "a 16-texel 1D texture");
+        RequireRefused(*device, OneTexelDescriptor(2u), "a 1-texel 1D texture with 2 mips");
+        FillTexture(Line, LineDescriptor(), 1u);
+        FillInput(true);
+        Run(*device, ExplicitLodCode, OneTexelDescriptor(1u));
+        CheckOneTexel();
         std::puts("image plane address on line tests passed");
         return 0;
     } catch (const std::exception& error) {

@@ -87,6 +87,7 @@ struct ImageResource {
     bool constantSwizzleCompatible = true;
     bool flatVolumeCompatible = true;
     bool flatLineCompatible = true;
+    bool flatLineExplicitLod = false;
     std::uint32_t byElements = 0;
     std::uint32_t byComponents = 0;
     IrBufferFormat packedFormat = IrBufferFormat::Invalid;
