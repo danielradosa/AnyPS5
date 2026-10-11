@@ -182,6 +182,16 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceNpWebApi2>")
     endif()
 
+    add_test_executable(guest_rudp_context_queries_tests tests/GuestRudpContextQueries.cpp)
+    target_include_directories(guest_rudp_context_queries_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(guest_rudp_context_queries_tests PRIVATE libSceRudp libc)
+    configure_windows_unwind(guest_rudp_context_queries_tests)
+    add_test(NAME guest_rudp_context_queries COMMAND guest_rudp_context_queries_tests)
+    if(WIN32)
+        set_tests_properties(guest_rudp_context_queries PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceRudp>")
+    endif()
+
     if(UNIX AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$" OR CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64"))
         add_subdirectory(tests/register_context)
     endif()
