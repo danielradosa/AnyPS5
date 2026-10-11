@@ -967,11 +967,12 @@ bool collectMemoEnabled() {
 }
 
 // The per-thread memo ring (see WriteTracker::Memo): sized to a packet's working set (a dispatch
-// collects each of its few dozen image surfaces in stage A and again in stage B). Entries of a
+// collects each of its few dozen image surfaces in stage A and again in stage B), and to the
+// hundreds of draws a queue now runs per epoch (labels and own-label waits keep it). Entries of a
 // thread that never bumps its epoch never match (each collect gets a fresh epoch), as intended.
 // APS5_SHARED_COLLECT_MEMO=1 uses the tracker's shared ring under its mutex instead.
 struct ThreadCollectMemo {
-    std::array<WriteTracker::Memo, 64> entries{};
+    std::array<WriteTracker::Memo, 256> entries{};
     std::size_t next = 0;
 };
 thread_local ThreadCollectMemo threadCollectMemo;
