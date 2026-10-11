@@ -19,8 +19,8 @@ int ApplicationHeapPosixAlign_nid_no_patch(void** pointer, std::size_t alignment
 std::size_t ApplicationHeapUsableSize_nid_no_patch(void* pointer);
 int ApplicationHeapStatsFast_nid_no_patch(void* stats);
 
-void* APS5_VABI scriptingGetMem(std::size_t alignment, std::size_t bytes);
-void APS5_VABI scriptingFreeMem(void* pointer);
+void* APS5_VABI scriptingGetMem_nid_postfix(std::size_t alignment, std::size_t bytes);
+void APS5_VABI scriptingFreeMem_nid_postfix(void* pointer);
 
 }
 

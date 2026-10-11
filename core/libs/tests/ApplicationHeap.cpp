@@ -27,8 +27,8 @@ char* APS5_VABI strndup_nid_postfix(const char*, std::size_t);
 char* APS5_VABI getcwd_nid_postfix(char*, std::size_t);
 int* APS5_VABI __error_nid_postfix();
 int APS5_VABI atexit_nid_postfix(void (APS5_VABI*)());
-void* APS5_VABI scriptingGetMem(std::size_t, std::size_t);
-void APS5_VABI scriptingFreeMem(void*);
+void* APS5_VABI scriptingGetMem_nid_postfix(std::size_t, std::size_t);
+void APS5_VABI scriptingFreeMem_nid_postfix(void*);
 }
 
 namespace {
@@ -329,8 +329,8 @@ int main(int argc, char** argv) {
     reallocation = ApplicationHeapAllocate_nid_no_patch(32);
     require(reallocf_nid_postfix(reallocation, 0) == nullptr && frees == freeCount + 2);
     fail = false;
-    void* scriptMem = scriptingGetMem(64, 128);
+    void* scriptMem = scriptingGetMem_nid_postfix(64, 128);
     require(scriptMem == storage.data() && lastSize == 128 && lastAlignment == 64);
-    scriptingFreeMem(scriptMem);
+    scriptingFreeMem_nid_postfix(scriptMem);
     require(frees > 0);
 }

@@ -1,7 +1,6 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/GuestHeap.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
-#include "prx/libc/include/general/ExportMacros.hpp"
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -264,13 +263,11 @@ int ApplicationHeapStatsFast_nid_no_patch(void* stats) {
 
 extern "C" {
 
-APS5_EXPORT("ayuoL6Vjz2k", scriptingGetMem);
-void* APS5_VABI scriptingGetMem(std::size_t alignment, std::size_t bytes) {
+void* APS5_VABI scriptingGetMem_nid_postfix(std::size_t alignment, std::size_t bytes) {
     return ApplicationHeapAlign_nid_no_patch(alignment, bytes);
 }
 
-APS5_EXPORT("yV45DG6ei28", scriptingFreeMem);
-void APS5_VABI scriptingFreeMem(void* pointer) {
+void APS5_VABI scriptingFreeMem_nid_postfix(void* pointer) {
     ApplicationHeapFree_nid_no_patch(pointer);
 }
 
