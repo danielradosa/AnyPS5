@@ -11,20 +11,22 @@ int* APS5_VABI __error_nid_postfix();
 static void Require(bool value) { if (!value) std::abort(); }
 
 int main() {
-    const auto* original = __progname_nid_postfix;
-    const auto savedError = *__error_nid_postfix();
+    const char* const original = __progname_nid_postfix;
     *__error_nid_postfix() = 45;
     Require(getprogname_nid_postfix() == original);
     Require(std::strcmp(getprogname_nid_postfix(), "eboot.bin") == 0);
-    char name[] = "guest-program";
-    __progname_nid_postfix = name;
-    Require(getprogname_nid_postfix() == name);
-    name[0] = 'G';
-    Require(std::strcmp(getprogname_nid_postfix(), "Guest-program") == 0);
-    __progname_nid_postfix = "";
-    Require(getprogname_nid_postfix() == __progname_nid_postfix);
-    Require(*getprogname_nid_postfix() == '\0');
     Require(*__error_nid_postfix() == 45);
+
+    char renamed[] = "quake2";
+    __progname_nid_postfix = renamed;
+    Require(getprogname_nid_postfix() == renamed);
+    renamed[0] = 'Q';
+    Require(std::strcmp(getprogname_nid_postfix(), "Quake2") == 0);
+
+    __progname_nid_postfix = "";
+    Require(getprogname_nid_postfix()[0] == '\0');
+
     __progname_nid_postfix = original;
-    *__error_nid_postfix() = savedError;
+    Require(getprogname_nid_postfix() == original);
+    Require(*__error_nid_postfix() == 45);
 }

@@ -9,6 +9,11 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#ifdef __linux__
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
@@ -52,6 +57,9 @@ constexpr int PcAclExtended = 59;
 constexpr int PcAclPathMax = 60;
 constexpr int PcMacPresent = 63;
 constexpr int PcAclNfs4 = 64;
+#ifdef _WIN32
+constexpr int WindowsPrivilegeNotHeld = 1314;
+#endif
 
 std::atomic<std::uint16_t> creationMask{022};
 
@@ -185,8 +193,35 @@ int APS5_VABI fchdir_nid_postfix(int fd) {
     int error = 0;
     const char* path = GetDirectoryDescriptorPath_nid_no_patch(fd, &error);
     if (path == nullptr) return static_cast<int>(Fail(error));
+#ifdef __linux__
+    if (::faccessat(fd, ".", X_OK, AT_EACCESS) != 0) return static_cast<int>(Fail(errno));
+#endif
     error = SetWorkingDirectory_nid_no_patch(path);
     if (error != 0) return static_cast<int>(Fail(error));
+    return 0;
+}
+
+int APS5_VABI symlink_nid_postfix(const char* target, const char* created) {
+    if (target == nullptr || created == nullptr) return static_cast<int>(Fail(GuestEfault));
+    if (*target == '\0' || *created == '\0') return static_cast<int>(Fail(GuestEnoent));
+    if (*target == '/') {
+        NotImplemented_nid_no_patch("symlink: absolute targets");
+        return -1;
+    }
+    const auto native = ResolvePath_nid_no_patch(created);
+    std::error_code error;
+    if (std::filesystem::exists(std::filesystem::symlink_status(native, error))) return static_cast<int>(Fail(GuestEexist));
+    if (!std::filesystem::is_directory(native.parent_path(), error)) return static_cast<int>(Fail(GuestEnoent));
+    const std::filesystem::path contents(target);
+    if (std::filesystem::is_directory(native.parent_path() / contents, error))
+        std::filesystem::create_directory_symlink(contents, native, error);
+    else
+        std::filesystem::create_symlink(contents, native, error);
+#ifdef _WIN32
+    if (error.category() == std::system_category() && error.value() == WindowsPrivilegeNotHeld) return static_cast<int>(Fail(GuestEperm));
+#endif
+    if (error) throw std::system_error(error, "symlink");
+    RecordWrittenPath_nid_no_patch(native);
     return 0;
 }
 

@@ -1,13 +1,14 @@
 #include <cstdint>
 #include <cstddef>
 #include <cerrno>
-#include <cstdio>
 #include <ctime>
 #include <cstring>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <new>
 #include <stdexcept>
+#include <string>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -102,6 +103,99 @@ const bool timeZoneFixed = [] {
 
 }  // namespace
 #endif
+
+namespace {
+
+bool isFreeBsdConversion(char specifier) {
+    return specifier == 'k' || specifier == 'l' || specifier == 's' || specifier == 'v' || specifier == '+';
+}
+
+bool isModifiedPercent(const char* afterPercent) {
+    return (afterPercent[0] == 'E' || afterPercent[0] == 'O') && afterPercent[1] == '%';
+}
+
+std::size_t freeBsdConversionLength(const char* afterPercent, char& conversion) {
+    const char* cursor = afterPercent;
+    if ((*cursor == 'E' || *cursor == 'O') && isFreeBsdConversion(cursor[1])) ++cursor;
+    if (!isFreeBsdConversion(*cursor)) return 0;
+    conversion = *cursor;
+    return static_cast<std::size_t>(cursor - afterPercent) + 1;
+}
+
+bool hasFreeBsdConversion(const char* format) {
+    while (*format != '\0') {
+        if (*format++ != '%' || *format == '\0') continue;
+        char conversion = 0;
+        if (freeBsdConversionLength(format, conversion) != 0) return true;
+        format += isModifiedPercent(format) ? 2 : 1;
+    }
+    return false;
+}
+
+const char* guestZoneName(const GuestTm& guest) {
+    if (guest.tm_zone != nullptr) return guest.tm_zone;
+#ifdef _WIN32
+    return _tzname[guest.tm_isdst != 0 ? 1 : 0];
+#else
+    return tzname[guest.tm_isdst != 0 ? 1 : 0];
+#endif
+}
+
+std::string expandFreeBsdConversions(const char* format, const GuestTm& guest) {
+    std::string result;
+    while (*format != '\0') {
+        const char next = *format++;
+        if (next != '%' || *format == '\0') {
+            result += next;
+            continue;
+        }
+        if (isModifiedPercent(format)) {
+            result += '%';
+            result += *format++;
+            result += *format++;
+            continue;
+        }
+        char conversion = 0;
+        const std::size_t length = freeBsdConversionLength(format, conversion);
+        if (length == 0) {
+            result += '%';
+            result += *format++;
+            continue;
+        }
+        format += length;
+        char text[32];
+        switch (conversion) {
+        case 'k':
+            std::snprintf(text, sizeof(text), "%2d", guest.tm_hour);
+            result += text;
+            break;
+        case 'l':
+            std::snprintf(text, sizeof(text), "%2d", guest.tm_hour % 12 == 0 ? 12 : guest.tm_hour % 12);
+            result += text;
+            break;
+        case 's': {
+            std::tm host = toHostTm(guest);
+            std::snprintf(text, sizeof(text), "%lld", static_cast<long long>(std::mktime(&host)));
+            result += text;
+            break;
+        }
+        case 'v':
+            result += "%e-%b-%Y";
+            break;
+        default:
+            result += "%a %b %e %H:%M:%S ";
+            for (const char* zone = guestZoneName(guest); *zone != '\0'; ++zone) {
+                if (*zone == '%') result += '%';
+                result += *zone;
+            }
+            result += " %Y";
+            break;
+        }
+    }
+    return result;
+}
+
+}
 
 extern "C" {
 
@@ -214,7 +308,9 @@ int64_t APS5_VABI mktime_nid_postfix(GuestTm* timeptr) {
 
 size_t APS5_VABI libc_strftime_nid_postfix(char* str, size_t count, const char* format, const GuestTm* timeptr) {
     const std::tm host = toHostTm(*timeptr);
-    return std::strftime(str, count, format, &host);
+    if (!hasFreeBsdConversion(format)) return std::strftime(str, count, format, &host);
+    const std::string expanded = expandFreeBsdConversions(format, *timeptr);
+    return std::strftime(str, count, expanded.c_str(), &host);
 }
 
 char* APS5_VABI asctime_nid_postfix(const GuestTm* timeptr) {
@@ -223,8 +319,11 @@ char* APS5_VABI asctime_nid_postfix(const GuestTm* timeptr) {
 }
 
 char* APS5_VABI ctime_nid_postfix(const int64_t* timer) {
-    const GuestTm* local = localtime_nid_postfix(timer);
-    return local != nullptr ? asctime_nid_postfix(local) : nullptr;
+    if (const GuestTm* local = localtime_nid_postfix(timer)) return asctime_nid_postfix(local);
+    static char unknown[26];
+    std::memcpy(unknown, "??? ??? ?? ??:??:?? ????\n", sizeof(unknown));
+    errno = EINVAL;
+    return unknown;
 }
 
 size_t APS5_VABI strftime_nid_postfix(char* str, size_t count, const char* format, const GuestTm* timeptr) {
@@ -280,11 +379,11 @@ int64_t APS5_VABI clock_nid_postfix() {
 #endif
 }
 
-int APS5_VABI ctime_s_nid_postfix(char* buffer, std::size_t size, const std::time_t* time) {
+int APS5_VABI ctime_s_nid_postfix(char* buffer, std::size_t size, const std::int64_t* time) {
     return SonyCtimeS(buffer, size, time);
 }
 
-int APS5_VABI asctime_s_nid_postfix(char* buffer, std::size_t size, const std::tm* time) {
+int APS5_VABI asctime_s_nid_postfix(char* buffer, std::size_t size, const GuestTm* time) {
     return SonyAsctimeS(buffer, size, time);
 }
 

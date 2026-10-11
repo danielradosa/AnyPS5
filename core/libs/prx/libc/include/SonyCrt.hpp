@@ -15,6 +15,10 @@
 #include <stdexcept>
 
 #include "SceTypes.hpp"
+#include "prx/libc/include/GuestTime.hpp"
+#include "prx/libc/include/general/VabiMacros.hpp"
+
+extern "C" GuestTm* APS5_VABI localtime_s_nid_postfix(const std::int64_t* timer, GuestTm* result);
 
 namespace {
 
@@ -66,25 +70,26 @@ inline char* SonyStrtokS(char* str, const char* delim, char** context) {
     return token;
 }
 
-inline int SonyCtimeS(char* buffer, std::size_t size, const std::time_t* time) {
+inline int SonyFormatAsctime(char* buffer, std::size_t size, const GuestTm& time) {
     static const char* const days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
     static const char* const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    if (!buffer || size < 26 || !time) return EINVAL;
-    const std::tm* parts = std::localtime(time);
-    if (!parts || parts->tm_wday < 0 || parts->tm_wday > 6 || parts->tm_mon < 0 || parts->tm_mon > 11) return EINVAL;
-    std::snprintf(buffer, size, "%.3s %.3s %2d %.2d:%.2d:%.2d %4d\n", days[parts->tm_wday], months[parts->tm_mon],
-        parts->tm_mday, parts->tm_hour, parts->tm_min, parts->tm_sec, 1900 + parts->tm_year);
+    if (!buffer || size < 26) return EINVAL;
+    if (time.tm_wday < 0 || time.tm_wday > 6 || time.tm_mon < 0 || time.tm_mon > 11) return EINVAL;
+    std::snprintf(buffer, size, "%.3s %.3s %2d %.2d:%.2d:%.2d %4d\n", days[time.tm_wday], months[time.tm_mon],
+        time.tm_mday, time.tm_hour, time.tm_min, time.tm_sec, 1900 + time.tm_year);
     return 0;
 }
 
-inline int SonyAsctimeS(char* buffer, std::size_t size, const std::tm* time) {
-    static const char* const days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-    static const char* const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+inline int SonyCtimeS(char* buffer, std::size_t size, const std::int64_t* time) {
     if (!buffer || size < 26 || !time) return EINVAL;
-    if (time->tm_wday < 0 || time->tm_wday > 6 || time->tm_mon < 0 || time->tm_mon > 11) return EINVAL;
-    std::snprintf(buffer, size, "%.3s %.3s %2d %.2d:%.2d:%.2d %4d\n", days[time->tm_wday], months[time->tm_mon],
-        time->tm_mday, time->tm_hour, time->tm_min, time->tm_sec, 1900 + time->tm_year);
-    return 0;
+    GuestTm parts{};
+    if (!localtime_s_nid_postfix(time, &parts)) return EINVAL;
+    return SonyFormatAsctime(buffer, size, parts);
+}
+
+inline int SonyAsctimeS(char* buffer, std::size_t size, const GuestTm* time) {
+    if (!buffer || size < 26 || !time) return EINVAL;
+    return SonyFormatAsctime(buffer, size, *time);
 }
 
 inline void SonyIgnoreHandlerS(const char* message, void* pointer, int error) {
@@ -131,34 +136,25 @@ inline std::size_t SonyMbstowcs(std::uint16_t* dest, const char* src, std::size_
 }
 
 inline SonyLconv* SonyLocaleconv(void) {
-    static SonyLconv value{};
-    static bool initialized = false;
-    if (!initialized) {
-        for (auto& pointer : value.reserved_pointers) pointer = nullptr;
-        for (auto& byte : value.reserved_max) byte = CHAR_MAX;
-        for (auto& byte : value.reserved_pad) byte = 0;
-        initialized = true;
-    }
-    if (const std::lconv* host = std::localeconv()) {
-        value.decimal_point = host->decimal_point;
-        value.thousands_sep = host->thousands_sep;
-        value.grouping = host->grouping;
-        value.int_curr_symbol = host->int_curr_symbol;
-        value.currency_symbol = host->currency_symbol;
-        value.mon_decimal_point = host->mon_decimal_point;
-        value.mon_thousands_sep = host->mon_thousands_sep;
-        value.mon_grouping = host->mon_grouping;
-        value.positive_sign = host->positive_sign;
-        value.negative_sign = host->negative_sign;
-        value.int_frac_digits = host->int_frac_digits;
-        value.frac_digits = host->frac_digits;
-        value.p_cs_precedes = host->p_cs_precedes;
-        value.p_sep_by_space = host->p_sep_by_space;
-        value.n_cs_precedes = host->n_cs_precedes;
-        value.n_sep_by_space = host->n_sep_by_space;
-        value.p_sign_posn = host->p_sign_posn;
-        value.n_sign_posn = host->n_sign_posn;
-    }
+    static char empty[] = "";
+    static char point[] = ".";
+    static char falseText[] = "false";
+    static char trueText[] = "true";
+    static SonyLconv value = [] {
+        SonyLconv init{};
+        for (auto& pointer : init.monetary) pointer = empty;
+        for (auto& byte : init.chars) byte = CHAR_MAX;
+        init.decimal_point = point;
+        init.grouping = empty;
+        init.thousands_sep = empty;
+        init.frac_grouping = empty;
+        init.frac_sep = empty;
+        init.false_text = falseText;
+        init.true_text = trueText;
+        init.no_text = empty;
+        init.yes_text = empty;
+        return init;
+    }();
     return &value;
 }
 

@@ -111,7 +111,7 @@ long double APS5_VABI remquol_nid_postfix(long double x, long double y, int* quo
 long double APS5_VABI nextafterl_nid_postfix(long double from, long double to) { return CheckNeighbor_nid_no_patch(from, to, std::nextafter(from, to)); }
 long double APS5_VABI nexttowardl_nid_postfix(long double from, long double to) { return CheckNeighbor_nid_no_patch(from, to, std::nexttoward(from, to)); }
 
-long double APS5_VABI frexpl_nid_postfix(long double value, int* exponent) { return std::frexp(value, exponent); }
+long double APS5_VABI frexpl_nid_postfix(long double value, int* exponent) { return std::isfinite(value) ? std::frexp(value, exponent) : value; }
 long double APS5_VABI ldexpl_nid_postfix(long double value, int exponent) { return std::ldexp(value, exponent); }
 long double APS5_VABI modfl_nid_postfix(long double value, long double* integral) {
     if (std::isinf(value)) {

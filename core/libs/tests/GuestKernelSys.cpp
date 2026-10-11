@@ -10,6 +10,10 @@
 #include <source_location>
 #include <stdexcept>
 #include <string>
+#ifdef __linux__
+#include <cerrno>
+#include <unistd.h>
+#endif
 
 extern "C" {
 int APS5_VABI fstatfs_nid_postfix(int, void*);
@@ -25,6 +29,7 @@ int APS5_VABI sceKernelOpen(const char*, int, std::uint16_t);
 int APS5_VABI sceKernelClose(int);
 int APS5_VABI setsid_nid_postfix(void);
 int APS5_VABI link_nid_postfix(const char*, const char*);
+int APS5_VABI symlink_nid_postfix(const char*, const char*);
 std::uint16_t APS5_VABI umask_nid_postfix(std::uint16_t);
 int* APS5_VABI __error_nid_postfix();
 }
@@ -149,10 +154,41 @@ int main() {
     char directoryPath[1024];
     Require(getcwd_nid_postfix(directoryPath, sizeof(directoryPath)) == directoryPath);
     Require(std::strcmp(directoryPath, ("/" + root.filename().string()).c_str()) == 0);
+#ifdef __linux__
+    Require(chdir_nid_postfix("/") == 0);
+    const auto originalPermissions = std::filesystem::status(root).permissions();
+    std::filesystem::permissions(root, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    const bool searchDenied = ::access(root.c_str(), X_OK) == -1 && errno == EACCES;
+    const int deniedResult = searchDenied ? fchdir_nid_postfix(directory) : 0;
+    const int deniedError = Error();
+    const bool cwdUnchanged = getcwd_nid_postfix(directoryPath, sizeof(directoryPath)) == directoryPath && std::strcmp(directoryPath, "/") == 0;
+    std::filesystem::permissions(root, std::filesystem::perms::owner_exec);
+    const int searchOnlyResult = fchdir_nid_postfix(directory);
+    std::filesystem::permissions(root, originalPermissions);
+    if (searchDenied) Require(deniedResult == -1 && deniedError == EACCES && cwdUnchanged);
+    Require(searchOnlyResult == 0);
+#endif
     Require(sceKernelClose(fileDescriptor) == 0);
     Require(sceKernelClose(directory) == 0);
     Require(fchdir_nid_postfix(directory) == -1 && Error() == 9);
     Require(chdir_nid_postfix("/") == 0);
+    const auto symbolic = (root / "symbolic").string();
+    const int created = symlink_nid_postfix("original.bin", symbolic.c_str());
+    if (created == 0) {
+        Require(std::filesystem::is_symlink(std::filesystem::symlink_status(symbolic)));
+        Require(readlink_nid_postfix(symbolic.c_str(), buffer, sizeof(buffer)) == 12 && std::memcmp(buffer, "original.bin", 12) == 0);
+        Require(std::filesystem::file_size(symbolic) == std::filesystem::file_size(original));
+        Require(symlink_nid_postfix("original.bin", symbolic.c_str()) == -1 && Error() == 17);
+        const auto dangling = (root / "dangling").string();
+        Require(symlink_nid_postfix("missing.bin", dangling.c_str()) == 0);
+        Require(readlink_nid_postfix(dangling.c_str(), buffer, sizeof(buffer)) == 11 && !std::filesystem::exists(dangling));
+    } else {
+        Require(created == -1 && Error() == 1);
+        std::fprintf(stderr, "symbolic links unavailable: the symlink success cases not tested\n");
+    }
+    Require(symlink_nid_postfix("original.bin", (root / "missing" / "symbolic").string().c_str()) == -1 && Error() == 2);
+    Require(symlink_nid_postfix(nullptr, symbolic.c_str()) == -1 && Error() == 14);
+    Require(symlink_nid_postfix("original.bin", "") == -1 && Error() == 2);
     std::filesystem::remove_all(root);
     return 0;
 }

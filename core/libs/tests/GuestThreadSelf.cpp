@@ -144,4 +144,5 @@ int main() {
     pthread_set_name_np_nid_postfix(mainSelf, nullptr);
     Require(scePthreadGetname(mainSelf, name) == SCE_OK && name[0] == '\0');
     pthread_set_name_np_nid_postfix(nullptr, "ignored");
+
 }

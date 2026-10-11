@@ -206,6 +206,8 @@ public:
         }
     }
 
+    bool AtEnd() const { return m_offset == m_data.size(); }
+
 private:
     std::string_view m_data;
     std::uint64_t m_offset = 0u;
@@ -324,6 +326,7 @@ void writePixelInfo(Writer& writer, const ShaderPixelStageInfo& info) {
         writer.WriteU8(static_cast<std::uint8_t>(value));
     }
     writer.WriteBool(info.dualSourceBlend);
+    writer.WriteBool(info.alphaToCoverage);
     writer.WriteBool(info.frontFaceAllBits);
 }
 
@@ -372,7 +375,8 @@ ShaderPixelStageInfo readPixelInfo(Reader& reader, std::uint32_t version) {
         }
     }
     if (version >= 15u) info.dualSourceBlend = reader.ReadBool();
-    if (version >= 16u) info.frontFaceAllBits = reader.ReadBool();
+    if (version >= 16u) info.alphaToCoverage = reader.ReadBool();
+    if (version >= 17u) info.frontFaceAllBits = reader.ReadBool();
     if (version < 5u) {
         const auto input = [](PixelInput value, bool present) { return present ? PixelInputBit(value) : 0u; };
         info.inputAddr = input(PixelInput::PerspectiveSample, info.hasPerspectiveCenterVgpr && inputAddrOrCenterVgpr == 2u) | input(PixelInput::PerspectiveCenter, info.hasPerspectiveCenterVgpr) |
@@ -734,7 +738,7 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     std::string buffer;
     Writer writer(buffer);
     writer.WriteU32(0x41505335u);
-    writer.WriteU32(16u);
+    writer.WriteU32(17u);
     writeShaderBinary(writer, request.shader);
     writeGuestContext(writer, request.context);
     writeSpirvTarget(writer, request.target);
@@ -753,6 +757,7 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     writer.WriteU32(request.target.srgbDecodeFormats);
     if (request.context.compute.has_value()) writer.WriteU32(request.context.compute->scratchDwords);
     writer.WriteBool(request.target.narrowSubgroupClock);
+    writer.WriteBool(request.target.float64DenormPreserve);
     return base64Encode(buffer);
 }
 
@@ -761,7 +766,7 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     Reader reader(decoded);
     if (reader.ReadU32() != 0x41505335u) throw std::runtime_error("invalid recompile request signature");
     const auto version = reader.ReadU32();
-    if (version < 1u || version > 16u) throw std::runtime_error("unsupported recompile request serialization version");
+    if (version < 1u || version > 17u) throw std::runtime_error("unsupported recompile request serialization version");
     DeserializedRequest result{};
     result.request.shader = readShaderBinary(reader, result.shaderCode, result.shaderHeader);
     result.request.context = readGuestContext(reader, result, version);
@@ -781,6 +786,12 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     if (version >= 9u) result.request.target.srgbDecodeFormats = reader.ReadU32();
     if (version >= 10u && result.request.context.compute.has_value()) result.request.context.compute->scratchDwords = reader.ReadU32();
     if (version >= 12u) result.request.target.narrowSubgroupClock = reader.ReadBool();
+    if (version > 16u || (version == 16u && !reader.AtEnd())) {
+        result.request.target.float64DenormPreserve = reader.ReadBool();
+    } else if (version == 16u && result.request.context.pixel.has_value()) {
+        result.request.context.pixel->frontFaceAllBits = result.request.context.pixel->alphaToCoverage;
+        result.request.context.pixel->alphaToCoverage = false;
+    }
     return result;
 }
 

@@ -139,6 +139,21 @@ int APS5_VABI sceContentExportStart(void) {
     return exportId;
 }
 
+int APS5_VABI sceContentExportGetProgress(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceContentExportCancel(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceContentExportFromDataWithThumbnail(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
 int APS5_VABI sceContentExportTerm(void) {
     std::lock_guard lock(g_mutex);
     bool expected = true;

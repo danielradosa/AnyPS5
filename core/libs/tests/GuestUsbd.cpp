@@ -29,6 +29,7 @@ void APS5_VABI sceUsbdFreeTransfer(void* transfer);
 void APS5_VABI sceUsbdFillInterruptTransfer(void* transfer, void* devHandle, std::uint8_t endpoint, std::uint8_t* buffer, std::int32_t length,
     void (APS5_VABI *callback)(void*), void* userData, std::uint32_t timeout);
 std::int32_t APS5_VABI sceUsbdSubmitTransfer(void* transfer);
+std::int32_t APS5_VABI sceUsbdCancelTransfer(void* transfer);
 void APS5_VABI sceUsbdFreeConfigDescriptor(void* config);
 }
 
@@ -96,6 +97,7 @@ int main() {
         threw = true;
     }
     Require(threw, "submitting a transfer without a device did not throw");
+    Require(sceUsbdCancelTransfer(transfer) == static_cast<std::int32_t>(0x80240005), "cancelling an unsubmitted transfer did not report not found");
     sceUsbdFreeTransfer(transfer);
     sceUsbdFreeTransfer(nullptr);
     sceUsbdFreeConfigDescriptor(nullptr);

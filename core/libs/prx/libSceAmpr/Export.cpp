@@ -7,15 +7,15 @@
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
 #include "prx/libkernel/Pthread/include/Cond.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <system_error>
-#include <algorithm>
-#include <array>
-#include <limits>
 #include <thread>
 
 static constexpr int SCE_AMPR_ERROR_BUFFER_FULL = 0x8002001C;
@@ -360,7 +360,11 @@ int APS5_VABI sceAmprAprCommandBufferReadFileGather(Apr::CommandBufferObject* bu
     (void)mapState;
     (void)scatterGatherState;
     if (!ValidReadLength(size) || !ValidReadOffset(offset)) return SCE_KERNEL_ERROR_EINVAL;
-    return AppendRead(buffer, Apr::Opcode::ReadFileGather, 0, nullptr, size, offset);
+    if (!buffer || (buffer->recording & Apr::ScatterGatherValid) == 0u) return SCE_KERNEL_ERROR_EINVAL;
+    const Apr::CompactReadFileGatherCommand command{
+        static_cast<std::uint32_t>(Apr::Opcode::CompactReadFileGather) | static_cast<std::uint32_t>(offset >> 32u) << 8u,
+        static_cast<std::uint32_t>(size - 1u), static_cast<std::uint32_t>(offset)};
+    return Append(buffer, &command, sizeof(command));
 }
 
 int APS5_VABI sceAmprAprCommandBufferReadFileGatherScatter(Apr::CommandBufferObject* buffer, std::uint64_t* mapState, std::uint64_t* scatterGatherState, void* destination, std::uint64_t size, std::uint64_t offset) {
@@ -421,7 +425,7 @@ int APS5_VABI sceAmprCommandBufferConstructNop(Apr::CommandBufferObject* buffer,
 }
 
 int APS5_VABI sceAmprCommandBufferConstructor(Apr::CommandBufferObject* buffer) {
-    *buffer = {nullptr, 0, 0, 0, Apr::BufferType::Generic};
+    *buffer = {Apr::BufferType::Generic, 0, 0, 0, 0, nullptr};
     return 0;
 }
 
@@ -584,7 +588,7 @@ uint32_t APS5_VABI sceAmprMeasureCommandSizeReadFile(void) {
 
 std::uint64_t APS5_VABI sceAmprMeasureCommandSizeReadFileGather(std::uint64_t size, std::uint64_t offset) {
     if (!ValidReadLength(size) || !ValidReadOffset(offset)) return MeasureInvalid;
-    return sizeof(Apr::ReadFileCommand);
+    return sizeof(Apr::CompactReadFileGatherCommand);
 }
 
 std::uint64_t APS5_VABI sceAmprMeasureCommandSizeReadFileGatherScatter(void* destination, std::uint64_t size, std::uint64_t offset) {
@@ -1007,7 +1011,7 @@ char* APS5_VABI sceAmprStrtokS(char* str, const char* delim, char** context) {
 }
 
 APS5_EXPORT("2UFh+YKfuzk", sceAmprCtimeS);
-int APS5_VABI sceAmprCtimeS(char* buffer, std::size_t size, const std::time_t* time) {
+int APS5_VABI sceAmprCtimeS(char* buffer, std::size_t size, const std::int64_t* time) {
     return SonyCtimeS(buffer, size, time);
 }
 
@@ -1037,7 +1041,7 @@ std::size_t APS5_VABI sceAmprMbstowcs(std::uint16_t* dest, const char* src, std:
 }
 
 APS5_EXPORT("qPe7-h5Jnuc", sceAmprAsctimeS);
-int APS5_VABI sceAmprAsctimeS(char* buffer, std::size_t size, const std::tm* time) {
+int APS5_VABI sceAmprAsctimeS(char* buffer, std::size_t size, const GuestTm* time) {
     return SonyAsctimeS(buffer, size, time);
 }
 

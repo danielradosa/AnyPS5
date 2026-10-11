@@ -65,6 +65,31 @@ void noteHostBuffer(const Context& context, VkBufferUsageFlags usage, std::size_
     AgcDriver::ProfilePrint_nid_no_patch("\n");
 }
 
+VkDeviceSize ClassAllocationBytes(const VkMemoryRequirements& requirements, std::size_t capacity) {
+    const auto alignment = std::max<VkDeviceSize>(requirements.alignment, 1);
+    return std::max<VkDeviceSize>(requirements.size, (static_cast<VkDeviceSize>(capacity) + alignment - 1) / alignment * alignment);
+}
+
+VkBuffer BindExactBuffer(const Context& context, std::size_t size, VkBufferUsageFlags usage, VkDeviceMemory memory, VkDeviceSize offset, VkDeviceSize availableBytes) {
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size = size;
+    info.usage = usage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    Check(context.Function<PFN_vkCreateBuffer>("vkCreateBuffer")(context.device, &info, nullptr, &buffer), "vkCreateBuffer pooled");
+    try {
+        VkMemoryRequirements requirements{};
+        context.Function<PFN_vkGetBufferMemoryRequirements>("vkGetBufferMemoryRequirements")(context.device, buffer, &requirements);
+        Require(requirements.size <= availableBytes, "pooled buffer memory is smaller than the requested buffer");
+        Require(requirements.alignment == 0 || offset % requirements.alignment == 0, "pooled buffer offset breaks the requested buffer's alignment");
+        Check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, buffer, memory, offset), "vkBindBufferMemory pooled");
+    } catch (...) {
+        context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer")(context.device, buffer, nullptr);
+        throw;
+    }
+    return buffer;
+}
+
 }
 
 Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) : context(context), size(size), capacity(BufferPool::Capacity(size, properties)), usage(BufferPool::Usage(usage, properties)), properties(properties) {
@@ -81,13 +106,25 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
         capacity = allocation->bytes;
         offset = allocation->offset;
         slab = allocation->slab;
+        if (allocation->bufferBytes != size) {
+            context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer")(context.device, buffer, nullptr);
+            buffer = VK_NULL_HANDLE;
+            deviceAddress = 0;
+            try {
+                buffer = BindExactBuffer(context, size, this->usage, memory, offset, allocationBytes);
+                initializeAddress(usage);
+            } catch (...) {
+                release();
+                throw;
+            }
+        }
         ready = true;
         if (hostTracked(properties)) noteHostBuffer(context, this->usage, capacity, true);
         return;
     }
     try {
         VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        info.size = capacity;
+        info.size = size;
         info.usage = this->usage;
         info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         Check(context.Function<PFN_vkCreateBuffer>("vkCreateBuffer")(context.device, &info, nullptr, &buffer), "vkCreateBuffer");
@@ -96,8 +133,8 @@ Buffer::Buffer(const Context& context, std::size_t size, VkBufferUsageFlags usag
         VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         const VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, nullptr, VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, 0};
         if (addressable) allocation.pNext = &flags;
-        allocation.allocationSize = requirements.size;
-        allocationBytes = requirements.size;
+        allocation.allocationSize = ClassAllocationBytes(requirements, capacity);
+        allocationBytes = allocation.allocationSize;
         // The CPU reads most of these buffers back (write-back, diffs), which is very slow from
         // write-combined memory, so the default host properties prefer cached host memory.
         constexpr VkMemoryPropertyFlags hostDefault = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -142,7 +179,7 @@ Buffer::~Buffer() {
 void Buffer::release() noexcept {
     if (ready && cache) {
         if (hostTracked(properties)) noteHostBuffer(context, usage, capacity, false);
-        cache->Put({buffer, memory, mapping, deviceAddress, allocationBytes, capacity, usage, properties, offset, slab});
+        cache->Put({buffer, memory, mapping, deviceAddress, allocationBytes, capacity, usage, properties, offset, slab, size});
         return;
     }
     if (slab) {
@@ -181,19 +218,28 @@ DeviceBuffer::DeviceBuffer(const Context& context, std::size_t size, VkBufferUsa
         memory = allocation->memory;
         allocationBytes = allocation->allocationBytes;
         capacity = allocation->bytes;
+        if (allocation->bufferBytes == size) return;
+        context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer")(context.device, buffer, nullptr);
+        buffer = VK_NULL_HANDLE;
+        try {
+            buffer = BindExactBuffer(context, size, this->usage, memory, 0, allocationBytes);
+        } catch (...) {
+            release();
+            throw;
+        }
         return;
     }
     try {
         VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        info.size = capacity;
+        info.size = size;
         info.usage = this->usage;
         info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         Check(context.Function<PFN_vkCreateBuffer>("vkCreateBuffer")(context.device, &info, nullptr, &buffer), "vkCreateBuffer device");
         VkMemoryRequirements requirements{};
         context.Function<PFN_vkGetBufferMemoryRequirements>("vkGetBufferMemoryRequirements")(context.device, buffer, &requirements);
         VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocation.allocationSize = requirements.size;
-        allocationBytes = requirements.size;
+        allocation.allocationSize = ClassAllocationBytes(requirements, capacity);
+        allocationBytes = allocation.allocationSize;
         allocation.memoryTypeIndex = context.MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         checkAllocation(context, context.Function<PFN_vkAllocateMemory>("vkAllocateMemory")(context.device, &allocation, nullptr, &memory), allocation, "device buffer");
         Check(context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory")(context.device, buffer, memory, 0), "vkBindBufferMemory device");
@@ -209,7 +255,7 @@ DeviceBuffer::~DeviceBuffer() {
 
 void DeviceBuffer::release() noexcept {
     if (buffer && memory && cache) {
-        cache->Put({buffer, memory, nullptr, 0, allocationBytes, capacity, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT});
+        cache->Put({buffer, memory, nullptr, 0, allocationBytes, capacity, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, false, size});
         return;
     }
     if (buffer) context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer")(context.device, buffer, nullptr);

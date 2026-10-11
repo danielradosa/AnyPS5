@@ -10,6 +10,7 @@
 #include <cmath>
 
 #include "SceTypes.hpp"
+#include "prx/libSceVideoOut/include/Output.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceVideoOut/include/VideoOutDriver.hpp"
 

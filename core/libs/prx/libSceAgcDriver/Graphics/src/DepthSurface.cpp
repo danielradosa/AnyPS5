@@ -166,6 +166,10 @@ public:
         else Recorder::CountBarriers(Recorder::CommandClass::Draw, 3);
     }
 
+    bool Holds(const Texture* texture) const {
+        return std::any_of(textures.begin(), textures.end(), [&](const auto& entry) { return entry.second.get() == texture; });
+    }
+
     VkImageAspectFlags pendingClear = 0;
     float clearDepth = 0.0f;
     std::uint8_t clearStencil = 0;
@@ -484,6 +488,8 @@ DepthSurface* planeSurface(const Context& context, std::span<const std::uint32_t
         const bool depthBits = words.size() >= 4 && ShaderRecompiler::DepthBitsTextureWidth(words[1], words[3]) == (d16 ? 16u : 32u);
         const bool integer = d16 && format == VK_FORMAT_R16_UINT && !depthBits;
         if (format != (d16 ? VK_FORMAT_R16_UNORM : VK_FORMAT_R32_SFLOAT) && !depthBits && !integer) return nullptr;
+    } else if (BytesPerElement(resource.format) != 1u) {
+        return nullptr;
     }
     return found->get();
 }
@@ -638,16 +644,31 @@ void SeedStorageFromDepth(const Context& context, const std::shared_ptr<StorageT
     }
 }
 
+bool DepthSurfaceHolds(const Context& context, const GuestTextureResource& resource, const Texture* texture) {
+    if (resource.dimension != TextureDimension::k2D || resource.baseArray != 0) return false;
+    const auto address = resource.baseAddress;
+    std::lock_guard lock(surfacesMutex());
+    const auto& list = surfaces();
+    const auto found = std::find_if(list.rbegin(), list.rend(), [&](const auto& surface) {
+        return surface->context.device == context.device && (surface->target.address == address || (surface->target.stencilAddress != 0 && surface->target.stencilAddress == address));
+    });
+    return found != list.rend() && (*found)->pendingClear == 0 && (*found)->writer.expired() && (*found)->Holds(texture);
+}
+
 VkImageAspectFlags HtileFillClears(std::uint32_t pattern, bool stencilInHtile) {
     VkImageAspectFlags cleared = (pattern & 0xfu) == 0 ? VK_IMAGE_ASPECT_DEPTH_BIT : 0u;
     if (stencilInHtile && ((pattern >> 8u) & 0x3u) == 0) cleared |= VK_IMAGE_ASPECT_STENCIL_BIT;
     return cleared;
 }
 
+std::uint64_t HtileMetadataBytes(VkExtent2D extent) {
+    const auto blocks = static_cast<std::uint64_t>((extent.width + 1023u) / 1024u) * ((extent.height + 511u) / 512u);
+    return blocks * 32768u;
+}
+
 bool HtileFillCovers(std::uint64_t htile, VkExtent2D extent, std::uint64_t address, std::size_t bytes) {
     if (htile == 0 || htile < address || htile >= address + bytes) return false;
-    const auto tiles = static_cast<std::uint64_t>((extent.width + 7u) / 8u) * ((extent.height + 7u) / 8u);
-    return address + bytes - htile >= tiles * 4u;
+    return address + bytes - htile >= HtileMetadataBytes(extent);
 }
 
 void NoteDepthMetadataFill(std::uint64_t address, std::size_t bytes, std::uint32_t pattern) {

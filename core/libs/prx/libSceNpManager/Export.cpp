@@ -245,4 +245,10 @@ int APS5_VABI sceNpGetUserIdByAccountId(uint64_t account_id, int* user_id) {
     return SCE_NP_ERROR_SIGNED_OUT;
 }
 
+int APS5_VABI sceNpGetSandboxInfo(void* sandbox_info) {
+    (void)sandbox_info;
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
 }

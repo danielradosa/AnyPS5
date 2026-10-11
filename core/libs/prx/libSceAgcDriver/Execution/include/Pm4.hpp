@@ -148,6 +148,7 @@ std::uint32_t DmaDestination(std::span<const std::uint32_t> packet);
 // recorded GPU work that writes them), and both steps in one for the packet.
 std::uint64_t DispatchArgumentAddress(std::span<const std::uint32_t> packet, const QueueState& queue);
 std::array<std::uint32_t, 5> ReadDispatchArguments(std::uint64_t arguments, std::uint32_t initiator);
+std::array<std::uint32_t, 3> PartialGroupThreads(const std::array<std::uint32_t, 3>& groups, const std::array<std::uint32_t, 3>& numThreads);
 std::array<std::uint32_t, 5> ResolveDispatch(std::span<const std::uint32_t> packet, const QueueState& queue);
 DrawParameters ResolveDraw(std::span<const std::uint32_t> packet, const QueueState& queue);
 

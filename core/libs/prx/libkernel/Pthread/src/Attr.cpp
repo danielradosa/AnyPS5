@@ -84,6 +84,7 @@ int APS5_VABI scePthreadAttrGet(Pthread thread, PthreadAttr* attr) {
     (*attr)->_inheritsched = 4;
     (*attr)->_affinity = thread->affinity.load(std::memory_order_relaxed);
     (*attr)->_scope = thread->scope;
+    (*attr)->_affinityExplicit = true;
     return SCE_OK;
 }
 
@@ -138,6 +139,7 @@ int APS5_VABI scePthreadAttrGetstacksize(const PthreadAttr* attr, size_t* stack_
 int APS5_VABI scePthreadAttrSetaffinity(PthreadAttr* attr, KernelCpumask mask) {
     if (!attr || !*attr) throw std::runtime_error("scePthreadAttrSetaffinity: null attr");
     (*attr)->_affinity = mask;
+    (*attr)->_affinityExplicit = true;
     return SCE_OK;
 }
 

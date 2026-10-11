@@ -928,13 +928,13 @@ int APS5_VABI sceNetEpollCreate(const char* name, int flags) {
 }
 
 int APS5_VABI sceNetGetMemoryPoolStats(int memid, NetMemoryPoolStats* stats) {
-    if (stats == nullptr) {
-        return fail(NET_EINVAL);
-    }
     std::lock_guard lk(g_mutex);
     const auto pool = g_pools.find(memid);
     if (pool == g_pools.end()) {
         return fail(NET_EBADF);
+    }
+    if (stats == nullptr) {
+        return fail(NET_EINVAL);
     }
     *stats = {pool->second, 0, 0};
     return 0;
@@ -1287,6 +1287,11 @@ int APS5_VABI sceNetResolverAbort(int rid, int flags) {
     if (g_resolvers.count(rid) == 0) return fail(NET_EBADF);
     if (flags != 0) throw std::runtime_error("sceNetResolverAbort: flags " + std::to_string(flags) + " are not supported");
     if (g_running_lookups.count(rid) != 0) throw std::runtime_error("sceNetResolverAbort: a running host lookup cannot be interrupted");
+    return 0;
+}
+
+int APS5_VABI sceNetShowIfconfig() {
+    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 

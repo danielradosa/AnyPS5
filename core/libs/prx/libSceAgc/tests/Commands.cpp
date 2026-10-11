@@ -117,6 +117,21 @@ void testPackets() {
     check(noDown.cursor_up == scratch.data() + 6, "allocation past the top of a buffer without a down cursor advanced its cursor");
 }
 
+void testNop() {
+    Storage storage;
+    storage.words.fill(0xdeadbeefu);
+    auto* single = sceAgcSetNop(&storage.buffer, 1);
+    auto* pair = sceAgcSetNop(&storage.buffer, 2);
+    auto* triple = sceAgcSetNop(&storage.buffer, 3);
+    const std::array<std::uint32_t, 7> expected{0xffff1000u, 0xc0001000u, 0, 0xc0011000u, 0, 0, 0xdeadbeefu};
+    check(single == storage.words.data() && pair == single + 1 && triple == pair + 2, "incorrect NOP placement");
+    check(std::equal(expected.begin(), expected.end(), storage.words.begin()), "incorrect NOP packet");
+    check(storage.buffer.cursor_up == storage.words.data() + 6, "incorrect NOP cursor advance");
+    expectFailure([&] { sceAgcSetNop(&storage.buffer, 0); });
+    expectFailure([&] { sceAgcSetNop(&storage.buffer, 0x4002u); });
+    check(storage.buffer.cursor_up == storage.words.data() + 6, "invalid NOP advanced the cursor");
+}
+
 void testClearState() {
     Storage storage;
     storage.words.fill(0xdeadbeefu);
@@ -124,12 +139,14 @@ void testClearState() {
         auto* packet = sceAgcDcbClearState(&storage.buffer, command);
         check(packet == storage.words.data() + command * 2 && packet[0] == 0xc0001200u && packet[1] == command, "incorrect CLEAR_STATE packet");
     }
-    check(storage.buffer.cursor_up == storage.words.data() + 32 && storage.words[32] == 0xdeadbeefu, "incorrect CLEAR_STATE cursor advance");
+    auto* maskedZero = sceAgcDcbClearState(&storage.buffer, 0x10u);
+    check(maskedZero == storage.words.data() + 32 && maskedZero[0] == 0xc0001200u && maskedZero[1] == 0, "CLEAR_STATE did not mask the command to four bits");
+    auto* maskedF = sceAgcDcbClearState(&storage.buffer, 0xffffffffu);
+    check(maskedF == storage.words.data() + 34 && maskedF[0] == 0xc0001200u && maskedF[1] == 0xfu, "CLEAR_STATE did not mask the command to four bits");
+    check(storage.buffer.cursor_up == storage.words.data() + 36 && storage.words[36] == 0xdeadbeefu, "incorrect CLEAR_STATE cursor advance");
     const auto before = storage.words;
-    expectFailure([&] { sceAgcDcbClearState(&storage.buffer, 0x10u); });
-    expectFailure([&] { sceAgcDcbClearState(&storage.buffer, 0xffffffffu); });
     expectFailure([] { sceAgcDcbClearState(nullptr, 0); });
-    check(storage.words == before && storage.buffer.cursor_up == storage.words.data() + 32, "invalid CLEAR_STATE modified the buffer");
+    check(storage.words == before && storage.buffer.cursor_up == storage.words.data() + 36, "invalid CLEAR_STATE modified the buffer");
 }
 
 struct ContextGrowth {
@@ -211,6 +228,19 @@ void testIndexBuffer() {
         return;
     }
     throw std::runtime_error("misaligned index buffer was accepted");
+}
+
+void testIndirectBase() {
+    Storage storage;
+    alignas(8) std::uint32_t arguments[4]{};
+    const auto address = reinterpret_cast<std::uintptr_t>(arguments);
+    const auto* bound = sceAgcDcbSetBaseIndirectArgs(&storage.buffer, 0, arguments);
+    check(bound[1] == 1 && bound[2] == static_cast<std::uint32_t>(address) && bound[3] == static_cast<std::uint32_t>(address >> 32u), "indirect base address mismatch");
+    const auto* cleared = sceAgcDcbSetBaseIndirectArgs(&storage.buffer, 1, nullptr);
+    check(cleared == bound + 4 && (cleared[0] & 2u) != 0 && cleared[1] == 1 && cleared[2] == 0 && cleared[3] == 0, "indirect base was not cleared");
+    const auto before = storage.words;
+    expectFailure([&] { sceAgcDcbSetBaseIndirectArgs(&storage.buffer, 0, reinterpret_cast<const volatile void*>(address + 4)); });
+    check(storage.words == before, "misaligned indirect base modified packet memory");
 }
 
 void testContextState() {
@@ -451,10 +481,12 @@ int main(int argc, char** argv) {
             return 0;
         }
         testPackets();
+        testNop();
         testClearState();
         testIndexedIndirectDraws();
         testMarkers();
         testIndexBuffer();
+        testIndirectBase();
         testContextState();
         testFlip();
         testRegisters();

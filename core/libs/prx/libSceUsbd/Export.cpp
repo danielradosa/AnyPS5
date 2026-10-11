@@ -15,6 +15,7 @@
 namespace {
 
 constexpr std::int32_t SCE_USBD_ERROR_INVALID_ARG = static_cast<std::int32_t>(0x80240002);
+constexpr std::int32_t SCE_USBD_ERROR_NOT_FOUND = static_cast<std::int32_t>(0x80240005);
 constexpr std::uint8_t TRANSFER_FREE_BUFFER = 0x02;
 constexpr std::uint8_t TRANSFER_TYPE_INTERRUPT = 3;
 
@@ -135,8 +136,8 @@ std::int32_t APS5_VABI sceUsbdSubmitTransfer(UsbdTransfer* transfer) {
 }
 
 std::int32_t APS5_VABI sceUsbdCancelTransfer(UsbdTransfer* transfer) {
-    (void)transfer;
-    NoHandle(__func__);
+    if (transfer == nullptr) throw std::runtime_error(std::string(__func__) + ": null transfer");
+    return SCE_USBD_ERROR_NOT_FOUND;
 }
 
 void* APS5_VABI sceUsbdRefDevice(void* device) {
