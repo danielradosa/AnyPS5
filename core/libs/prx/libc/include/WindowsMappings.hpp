@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <limits>
 #include <map>
 #include <memory>
 #include <vector>
@@ -224,14 +225,20 @@ public:
         if (clear && !collectable(address, end)) return false;
         // Consecutive views are neighbours in the map: a target spans hundreds of them.
         auto next = views.end();
+        // No clean range holds the cursor below `cleanFrom` (the next one's start) until the loop
+        // remembers one: pinned pages never become clean, so their runs skip the search.
+        std::uintptr_t cleanFrom = 0;
         for (auto cursor = address; cursor < end;) {
-            const auto nextClean = cleanRanges.upper_bound(cursor);
-            if (nextClean != cleanRanges.begin()) {
-                const auto clean = std::prev(nextClean);
-                if (cursor < clean->second) {
-                    cursor = std::min(end, clean->second);
-                    continue;
+            if (cursor >= cleanFrom) {
+                const auto nextClean = cleanRanges.upper_bound(cursor);
+                if (nextClean != cleanRanges.begin()) {
+                    const auto clean = std::prev(nextClean);
+                    if (cursor < clean->second) {
+                        cursor = std::min(end, clean->second);
+                        continue;
+                    }
                 }
+                cleanFrom = nextClean == cleanRanges.end() ? std::numeric_limits<std::uintptr_t>::max() : nextClean->first;
             }
             const auto base = cursor & ~(pageBytes - 1);
             const auto found = next != views.end() && next->first == base ? next : views.find(base);
@@ -260,6 +267,7 @@ public:
                     }
                     view.seen = view.page->generation;
                     rememberClean(base, base + pageBytes);
+                    cleanFrom = 0;
                 }
                 cursor = stop;
             } else {
