@@ -136,9 +136,15 @@ void Driver::waitMemory(std::span<const std::uint32_t> packet, std::uint32_t que
         ++outcomes.atEntry;
         return;
     }
-    if (heldAtSubmit) return;
+    // Held at submit (the submission bumped) or stored by this queue's own label: no CPU store is
+    // ordered here, so the epoch stays, as for a same-queue recorder hit below.
+    if (heldAtSubmit) {
+        epochPoint.bump = false;
+        return;
+    }
     if (std::uint32_t writer = queue; !requireMemory && storedSince(packet, awaited, awaitedBytes, received, &writer)) {
         if (writer != queue) notePendingWait(packet, queue, received);
+        else epochPoint.bump = false;
         return;
     }
 
