@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include "prx/libc/include/GuestArena.hpp"
+#include "prx/libc/include/GuestBacktrace.hpp"
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -10,8 +11,10 @@
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <mutex>
+#include <vector>
 #include "Sse4aEmulation.hpp"
 
 namespace {
@@ -339,9 +342,8 @@ LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-std::size_t CaptureFrames(const CONTEXT* context, std::uint64_t* frames, std::size_t capacity) {
+std::size_t CaptureFrames(std::uint64_t frame, std::uint64_t* frames, std::size_t capacity) {
     std::size_t count = 0;
-    std::uint64_t frame = context->Rbp;
     while (count < capacity && frame != 0 && (frame & 7) == 0 && IsReadable(frame) && IsReadable(frame + 8)) {
         const auto returnAddress = reinterpret_cast<const std::uint64_t*>(frame)[1];
         if (!IsExecutable(returnAddress)) break;
@@ -398,7 +400,7 @@ void ReportAllThreads() {
             context.ContextFlags = CONTEXT_FULL;
             const BOOL haveContext = GetThreadContext(thread, &context);
             std::uint64_t frames[12] = {};
-            const std::size_t frameCount = haveContext ? CaptureFrames(&context, frames, sizeof(frames) / sizeof(frames[0])) : 0;
+            const std::size_t frameCount = haveContext ? CaptureFrames(context.Rbp, frames, sizeof(frames) / sizeof(frames[0])) : 0;
             ResumeThread(thread);
             char name[128] = "";
             PWSTR description = nullptr;
@@ -482,6 +484,22 @@ const bool g_crashReportInstalled = [] {
     }
     return true;
 }();
+
+}
+
+namespace GuestBacktrace {
+
+extern "C" std::vector<std::string> GuestBacktrace_nid_no_patch(const void* frame) {
+    std::uint64_t frames[GuestBacktraceDepth];
+    const auto count = CaptureFrames(reinterpret_cast<std::uint64_t>(frame), frames, GuestBacktraceDepth);
+    std::vector<std::string> described;
+    char line[MAX_PATH + 64];
+    for (std::size_t index = 0; index < count; ++index) {
+        DescribeAddress(frames[index], line, sizeof(line));
+        described.emplace_back(line);
+    }
+    return described;
+}
 
 }
 #endif

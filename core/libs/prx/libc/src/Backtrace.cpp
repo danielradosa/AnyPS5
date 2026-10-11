@@ -1,11 +1,13 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestBacktrace.hpp"
 
 #ifdef __linux__
 #include <dlfcn.h>
@@ -29,11 +31,21 @@ struct FrameRecord {
 };
 static_assert(sizeof(FrameRecord) == NameOffset);
 
-[[gnu::noinline]] std::vector<Frame> CaptureFrames(int limit) {
+[[gnu::noinline]] std::vector<Frame> CaptureFrames(int limit, const void* returnAddress = nullptr) {
     void* addresses[MaxFrames];
-    const int captured = backtrace(addresses, MaxFrames);
+    int captured = backtrace(addresses, MaxFrames);
+    int first = 2;
+    if (returnAddress != nullptr) {
+        first = 0;
+        while (first < captured && addresses[first] != returnAddress) ++first;
+        if (first == captured) {
+            addresses[0] = const_cast<void*>(returnAddress);
+            first = 0;
+            captured = 1;
+        }
+    }
     std::vector<Frame> frames;
-    for (int index = 2; index < captured && (limit < 0 || static_cast<int>(frames.size()) < limit); ++index) {
+    for (int index = first; index < captured && (limit < 0 || static_cast<int>(frames.size()) < limit); ++index) {
         Dl_info info{};
         if (dladdr(addresses[index], &info) == 0 || info.dli_fbase == nullptr || info.dli_fname == nullptr) continue;
         const auto offset = reinterpret_cast<std::uintptr_t>(addresses[index]) - reinterpret_cast<std::uintptr_t>(info.dli_fbase);
@@ -90,6 +102,21 @@ int APS5_VABI sceLibcBacktraceSelf(int limit, void* buffer, std::size_t size, in
 
 }
 
+namespace GuestBacktrace {
+
+extern "C" std::vector<std::string> GuestBacktrace_nid_no_patch(const void* frame) {
+    const auto frames = CaptureFrames(static_cast<int>(GuestBacktraceDepth), static_cast<void* const*>(frame)[1]);
+    std::vector<std::string> described;
+    for (const auto& captured : frames) {
+        char offset[16];
+        std::snprintf(offset, sizeof(offset), "+0x%x", static_cast<unsigned>(captured.offset));
+        described.push_back(captured.module + offset);
+    }
+    return described;
+}
+
+}
+
 #else
 
 extern "C" {
@@ -112,5 +139,18 @@ int APS5_VABI sceLibcBacktraceSelf(int limit, void* buffer, std::size_t size, in
 }
 
 }
+
+#ifndef _WIN32
+
+namespace GuestBacktrace {
+
+extern "C" std::vector<std::string> GuestBacktrace_nid_no_patch(const void* frame) {
+    (void)frame;
+    throw std::runtime_error("GuestBacktrace: guest frames cannot be walked on this platform");
+}
+
+}
+
+#endif
 
 #endif
