@@ -28,6 +28,8 @@ extern LibcFloatConstant _FInf_nid_postfix;
 extern LibcFloatConstant _FNan_nid_postfix;
 short APS5_VABI _FDtest_nid_postfix(const float*);
 int APS5_VABI __fpclassifyf_nid_postfix(float);
+int APS5_VABI isnanf_nid_postfix(float);
+int APS5_VABI __signbitl_nid_postfix(long double);
 float APS5_VABI fmodf_nid_postfix(float, float);
 double APS5_VABI trunc_nid_postfix(double);
 double APS5_VABI fabs_nid_postfix(double);
@@ -296,8 +298,24 @@ static void CheckFloatClassification() {
     Require(_FDtest_nid_postfix(reinterpret_cast<const float*>(&_FNan_nid_postfix)) == 2);
 }
 
+static void CheckMissingClassificationExports() {
+    const float infinity = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    Require(isnanf_nid_postfix(nan) == 1);
+    Require(isnanf_nid_postfix(infinity) == 0 && isnanf_nid_postfix(-infinity) == 0);
+    Require(isnanf_nid_postfix(0.f) == 0 && isnanf_nid_postfix(-1.f) == 0);
+
+    const long double negativeNan = std::copysign(std::numeric_limits<long double>::quiet_NaN(), -1.L);
+    Require(__signbitl_nid_postfix(0.L) == 0 && __signbitl_nid_postfix(-0.L) == 1);
+    Require(__signbitl_nid_postfix(1.L) == 0 && __signbitl_nid_postfix(-1.L) == 1);
+    Require(__signbitl_nid_postfix(std::numeric_limits<long double>::infinity()) == 0);
+    Require(__signbitl_nid_postfix(-std::numeric_limits<long double>::infinity()) == 1);
+    Require(__signbitl_nid_postfix(negativeNan) == 1);
+}
+
 int main() {
     CheckFloatClassification();
+    CheckMissingClassificationExports();
     CheckIntegerConversions();
     Require(floor_nid_postfix(2.75) == 2.0 && floor_nid_postfix(-2.25) == -3.0);
     Require(ceil_nid_postfix(2.25) == 3.0 && ceil_nid_postfix(-2.75) == -2.0);
