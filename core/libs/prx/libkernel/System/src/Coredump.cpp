@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <atomic>
 #include <cstdio>
+#include <string>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -51,9 +52,11 @@ int APS5_VABI sceCoredumpSetUserDataType(void) {
     return 0;
 }
 
-int APS5_VABI sceCoredumpDebugTextOut(void) {
-    NotImplemented_nid_no_patch("dei8oUx6DbU");
-    return 0;
+void APS5_VABI sceCoredumpDebugTextOut(const char* text, int length) {
+    if (text == nullptr || length <= 0) return;
+    std::string line("[coredump] ");
+    line.append(text, static_cast<std::size_t>(length));
+    std::fwrite(line.data(), 1, line.size(), stderr);
 }
 
 int APS5_VABI sceCoredumpGetStopInfoCpu(void) {
