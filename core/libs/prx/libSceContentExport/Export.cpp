@@ -215,6 +215,7 @@ int APS5_VABI sceContentExportFromData(std::int32_t exportId, const ContentExpor
         written += size;
         if (status == 1) break;
         if (complete) throw std::runtime_error(prefix + "data provider continued after the content length");
+        if (size == 0) throw std::runtime_error(prefix + "data provider asked to continue without providing data");
     }
     if (written != contentLength) throw std::runtime_error(prefix + "data provider ended before the content length");
     if (const int error = file.Keep()) return error;
