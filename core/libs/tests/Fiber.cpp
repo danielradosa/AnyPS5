@@ -209,6 +209,7 @@ void CheckAttachContextAndRun() {
     }
     Require(threw, "running a fiber without a context throws");
     Require(_sceFiberAttachContextAndRun(nullptr, g_lateContext.data(), g_lateContext.size(), 44, nullptr) == FiberErrorNull, "attach and run a null fiber");
+    Require(_sceFiberAttachContextAndRun(reinterpret_cast<FiberObject*>(reinterpret_cast<unsigned char*>(&g_lateStorage) + 4), nullptr, 0, 44, nullptr) == FiberErrorAlignment, "attach and run a misaligned fiber");
     Require(_sceFiberAttachContextAndRun(g_late, g_lateContext.data() + 8, 1024, 44, nullptr) == FiberErrorAlignment, "attach a misaligned context");
     Require(_sceFiberAttachContextAndRun(g_late, g_lateContext.data(), 256, 44, nullptr) == FiberErrorRange, "attach a context below 512 bytes");
     Require(_sceFiberAttachContextAndRun(g_late, g_lateContext.data(), 1032, 44, nullptr) == FiberErrorInvalid, "attach a size that is not a multiple of 16");
@@ -221,6 +222,7 @@ void CheckAttachContextAndRun() {
     Require(_sceFiberAttachContextAndRun(g_late, g_otherContext.data(), g_otherContext.size(), 0, nullptr) == FiberErrorInvalid, "second attach");
     Require(_sceFiberAttachContextAndRun(g_late, nullptr, 0, 55, &returned) == 0 && returned == 56, "attach and run without a new context");
     Require(sceFiberFinalize(g_late) == 0, "finalize attached fiber");
+    Require(_sceFiberAttachContextAndRun(g_late, g_otherContext.data(), g_otherContext.size(), 0, nullptr) == FiberErrorInvalid, "attach and run a finalized fiber");
 
     Require(_sceFiberInitializeWithInternalOptionImpl(g_late, "late checked", CheckedEntry, 0, nullptr, 0, nullptr, 0x10, 0) == 0, "initialize size checked without a context");
     Require(sceFiberGetInfo(g_late, &info) == 0 && info.size_context_margin == ~0ull, "no margin without a context");
@@ -258,6 +260,8 @@ void CheckAttachContextAndSwitch() {
     info.size = sizeof(info);
     Require(_sceFiberInitializeImpl_nid_postfix(g_switcher, "switcher", SwitcherEntry, 0, g_switcherContext.data(), g_switcherContext.size(), nullptr, 0) == 0, "initialize switcher");
     Require(_sceFiberInitializeImpl_nid_postfix(g_switched, "switched", SwitchedEntry, 77, nullptr, 0, nullptr, 0) == 0, "initialize switched without a context");
+    Require(_sceFiberAttachContextAndSwitch(nullptr, g_switchedContext.data(), g_switchedContext.size(), 0, nullptr) == FiberErrorNull, "attach and switch a null fiber");
+    Require(_sceFiberAttachContextAndSwitch(reinterpret_cast<FiberObject*>(reinterpret_cast<unsigned char*>(&g_switchedStorage) + 4), nullptr, 0, 0, nullptr) == FiberErrorAlignment, "attach and switch a misaligned fiber");
     Require(_sceFiberAttachContextAndSwitch(g_switched, g_switchedContext.data(), g_switchedContext.size(), 0, nullptr) == FiberErrorPermission, "attach and switch outside a fiber");
     Require(sceFiberGetInfo(g_switched, &info) == 0 && info.addr_context == nullptr, "nothing attached outside a fiber");
     std::uint64_t returned = 0;
@@ -265,6 +269,7 @@ void CheckAttachContextAndSwitch() {
     Require(sceFiberGetInfo(g_switched, &info) == 0 && info.addr_context == g_switchedContext.data() && info.size_context == g_switchedContext.size(), "switch attached the context");
     Require(sceFiberFinalize(g_switcher) == 0, "finalize switcher");
     Require(sceFiberFinalize(g_switched) == 0, "finalize switched");
+    Require(_sceFiberAttachContextAndSwitch(g_switched, nullptr, 0, 0, nullptr) == FiberErrorInvalid, "attach and switch a finalized fiber");
 }
 
 }
