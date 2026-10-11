@@ -31,6 +31,8 @@ int APS5_VABI sceSslGetSerialNumber(int, void*, std::uint8_t*, std::size_t*);
 namespace {
 
 constexpr int NotFound = static_cast<int>(0x8095f004);
+constexpr int InvalidId = static_cast<int>(0x8095f006);
+constexpr int InvalidValue = static_cast<int>(0x8095f007);
 constexpr int InvalidArg = static_cast<int>(0x8095177a);
 
 void Check(bool condition, const char* message) {
@@ -124,7 +126,9 @@ void TestCertificateReaders() {
     const auto released = Stats(context);
     Check(released.currentInuseSize == 0 && released.maxInuseSize == peak, "pool usage not released or peak forgotten");
     Check(sceSslTerm_nid_postfix(context) == 0, "context term failed");
-    Throws<std::invalid_argument>([&] { Stats(context); }, "terminated context accepted");
+    SceSsl::MemoryPoolStats terminated{1, 1, 1, 1};
+    Check(sceSslGetMemoryPoolStats(context, &terminated) == InvalidId && !terminated.poolSize && !terminated.maxInuseSize &&
+        !terminated.currentInuseSize && !terminated.reserved, "terminated context accepted");
 }
 
 void TestBuffersAndIsolation() {
@@ -154,7 +158,7 @@ void TestBuffersAndIsolation() {
     Check(sceSslGetNameEntryInfo(context, name, 3, nullptr, 0, nullptr, 0, &length) == InvalidArg, "past-end entry index accepted");
     Check(sceSslGetNameEntryInfo(context, name, 0, nullptr, 1, nullptr, 0, &length) == InvalidArg, "null OID buffer accepted");
     Check(sceSslGetSerialNumber(context, list.certs[0], nullptr, nullptr) == InvalidArg, "null serial length accepted");
-    Check(sceSslGetMemoryPoolStats(context, nullptr) == InvalidArg, "null stats accepted");
+    Check(sceSslGetMemoryPoolStats(context, nullptr) == InvalidValue, "null stats accepted");
     Throws<std::invalid_argument>([&] { sceSslGetIssuerName(other, list.certs[0]); }, "foreign certificate accepted");
     Throws<std::invalid_argument>([&] { sceSslFreeSslCertName(other, name); }, "foreign name freed");
     Throws<std::invalid_argument>([&] { sceSslFreeCaList(other, &list); }, "foreign list freed");
