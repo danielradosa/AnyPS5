@@ -349,7 +349,7 @@ constexpr std::array<const char*, PhaseCount> DrawPhaseNames{"validate", "vertex
 enum SyncReason : std::size_t { SyncNone, SyncNotResident, SyncNoRecorder, SyncDisabled, SyncCopiedWrites, SyncLease, SyncCount };
 constexpr std::array<const char*, SyncCount> SyncReasonNames{"none", "non-resident target", "no recorder", "disabled", "copied writes", "lease"};
 constexpr std::size_t IndirectPathCount = static_cast<std::size_t>(IndirectDrawPath::Count);
-constexpr std::array<const char*, IndirectPathCount> IndirectDrawPathNames{"gpu-side", "patched SGPR not folded", "fetch offset unknown", "non-vertex path", "GE_INDX_OFFSET", "draw index", "vertex range too large", "feature gap", "pending image results", "pending label or copied write", "not imported", "disabled"};
+constexpr std::array<const char*, IndirectPathCount> IndirectDrawPathNames{"gpu-side", "patched SGPR not folded", "fetch offset unknown", "non-vertex path", "GE_INDX_OFFSET", "draw index", "vertex range too large", "feature gap", "pending image results", "pending label", "copied writer", "not imported", "disabled"};
 
 // What became of one draw, for the totals.
 struct DrawOutcome {
@@ -1908,10 +1908,10 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
                 }
                 return IndirectDrawPath::PendingImage;
             }
-            if (recorder != nullptr && recorder->PendingLabelIn(address, bytes)) return IndirectDrawPath::PendingLabelOrCopy;
+            if (recorder != nullptr && recorder->PendingLabelIn(address, bytes)) return IndirectDrawPath::PendingLabel;
             const auto overlaps = [&](const auto& writer) { return writer->WritesOverlap(address, bytes); };
-            if (context.copiedWriters != nullptr && std::any_of(context.copiedWriters->begin(), context.copiedWriters->end(), overlaps)) return IndirectDrawPath::PendingLabelOrCopy;
-            if (std::any_of(DrawCopiedWriters()->begin(), DrawCopiedWriters()->end(), overlaps)) return IndirectDrawPath::PendingLabelOrCopy;
+            if (context.copiedWriters != nullptr && std::any_of(context.copiedWriters->begin(), context.copiedWriters->end(), overlaps)) return IndirectDrawPath::CopiedWriter;
+            if (std::any_of(DrawCopiedWriters()->begin(), DrawCopiedWriters()->end(), overlaps)) return IndirectDrawPath::CopiedWriter;
             if ((import = HostImportFor(context, address, bytes)) == nullptr) return IndirectDrawPath::NotImported;
             return IndirectDrawPath::Gpu;
         };

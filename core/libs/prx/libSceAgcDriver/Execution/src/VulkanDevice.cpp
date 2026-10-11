@@ -3554,16 +3554,23 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
     // Only copied written buffers (and BDA fault checks) need work once the GPU is done; without them
     // the batch can signal its labels from the GPU.
     if (resources.NeedsCompletion()) {
-        // Listed for DispatchIndirect until the write-back ran (a non-reusable object, so once).
+        // Listed for DispatchIndirect, indirect draws, fills and copies until the write-back ran (a
+        // non-reusable object, so once), but only when the write-back stores on the CPU
+        // (HasCopiedWrites, evaluated after MarkGpuWrites): a fault check, a lease release or an
+        // in-place, staged or GPU-copied-back write stores nothing there, and GPU readers are ordered
+        // by their own barriers, as Draw.cpp lists only draws with copied writes. Debug aid:
+        // APS5_LIST_ALL_COMPLETION_WRITERS=1 lists every build with completion work, as before.
+        static const bool listAll = std::getenv("APS5_LIST_ALL_COMPLETION_WRITERS") != nullptr;
+        const bool listed = listAll || resources.HasCopiedWrites();
         auto writers = state->copiedWriters;
         auto kept = record.resources;
-        recorder.OnComplete([kept, writers] {
+        recorder.OnComplete([kept, writers, listed] {
             // Delisted before the write-back: one that fails must not keep indirect dispatches on the CPU.
-            writers->erase(std::remove(writers->begin(), writers->end(), kept), writers->end());
+            if (listed) writers->erase(std::remove(writers->begin(), writers->end(), kept), writers->end());
             kept->WriteBackBuffers();
         });
         // Listed after the registration: a throw there leaves nothing that would pin the CPU path forever.
-        writers->push_back(kept);
+        if (listed) writers->push_back(kept);
     }
     recordStep(PhaseRecordCompletion);
 }
