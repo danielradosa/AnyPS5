@@ -29,7 +29,11 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         const auto label = Pm4::DecodeLabelWrite(packet);
         const bool storesNothing = (packet[2] >> 29u) == 0 || (packet[3] | (static_cast<std::uint64_t>(packet[4]) << 32u)) == 0;
         if (label.has_value() || storesNothing) {
-            bumpEpoch(&EpochBumps::drains);
+            // A GPU label write orders nothing the CPU wrote into this queue (later waits and
+            // submissions bump); keeping the epoch lets the draws until then reuse their page
+            // walks. Debug aid: APS5_LABEL_EPOCH=1 bumps here as before.
+            static const bool labelEpoch = std::getenv("APS5_LABEL_EPOCH") != nullptr;
+            if (labelEpoch) bumpEpoch(&EpochBumps::drains);
             GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
             std::lock_guard gpuLock(GuestMemory::GpuMutex());
             const auto localDevice = device.Load();
