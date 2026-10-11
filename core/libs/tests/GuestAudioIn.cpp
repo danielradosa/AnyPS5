@@ -10,6 +10,7 @@
 #include <vector>
 
 extern "C" {
+int APS5_VABI sceAudioInInit();
 int APS5_VABI sceAudioInOpen(int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
 int APS5_VABI sceAudioInHqOpen(int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
 int APS5_VABI sceAudioInAsyncOpen(int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
@@ -121,6 +122,7 @@ void TestNoDevice() {
 
 int main(int argc, char** argv) {
     Require(argc == 2);
+    Require(sceAudioInInit() == 0);
     if (std::strcmp(argv[1], "capture") == 0) TestCapture();
     else TestNoDevice();
 }
