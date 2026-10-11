@@ -27,6 +27,7 @@ int APS5_VABI scePthreadSetcanceltype(int type, int* old_type);
 void APS5_VABI scePthreadTestcancel();
 int APS5_VABI scePthreadSetprio(Pthread thread, int prio);
 int APS5_VABI scePthreadGetprio(Pthread thread, int* prio);
+int APS5_VABI scePthreadGetaffinity(Pthread thread, KernelCpumask* mask);
 }
 
 static constexpr int GUEST_SCHED_FIFO = 1;
