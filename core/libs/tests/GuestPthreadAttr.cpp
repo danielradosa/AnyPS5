@@ -260,4 +260,16 @@ int main() {
     Require(scePthreadAttrDestroy(&stackAttr) == SCE_OK);
     Require(pthread_attr_setstack_nid_postfix(&stackAttr, &stackMarker, STACK_SIZE) == 22);
     Require(pthread_attr_getstackaddr_nid_postfix(&stackAttr, &reportedAddress) == 22);
+
+    PthreadAttr soloAttr = nullptr;
+    Require(pthread_attr_setsolosched_np_nid_postfix(nullptr, 1) == 22);
+    Require(pthread_attr_setsolosched_np_nid_postfix(&soloAttr, 1) == 22);
+    Require(scePthreadAttrInit(&soloAttr) == SCE_OK);
+    int solosched = -1;
+    Require(scePthreadAttrGetsolosched(&soloAttr, &solosched) == SCE_OK && solosched == 0);
+    Require(pthread_attr_setsolosched_np_nid_postfix(&soloAttr, 1) == 0);
+    Require(scePthreadAttrGetsolosched(&soloAttr, &solosched) == SCE_OK && solosched == 1);
+    Require(pthread_attr_setsolosched_np_nid_postfix(&soloAttr, 0) == 0);
+    Require(scePthreadAttrGetsolosched(&soloAttr, &solosched) == SCE_OK && solosched == 0);
+    Require(scePthreadAttrDestroy(&soloAttr) == SCE_OK);
 }
