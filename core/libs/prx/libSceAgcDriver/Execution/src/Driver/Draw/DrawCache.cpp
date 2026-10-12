@@ -56,11 +56,13 @@ void Driver::accountDrawVariant(const DispatchVariant& variant, bool added) {
     }
 }
 
-void Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::shared_ptr<const DrawDecode> decode) {
+bool Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::shared_ptr<const DrawDecode> decode, bool prepared, bool onlyIfAbsent) {
     std::lock_guard cacheLock(drawCacheMutex);
-    auto& counters = drawEntryCounters;
-    ++counters.inserts;
+    DrawEntryCounters ignored;
+    auto& counters = prepared ? ignored : drawEntryCounters;
     const auto found = drawCache.find(key);
+    if (onlyIfAbsent && found != drawCache.end()) return false;
+    ++counters.inserts;
     auto replacement = std::make_shared<DrawEntry>();
     replacement->stages.resize(fresh.size());
     replacement->decode = std::move(decode);
@@ -88,6 +90,7 @@ void Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<Disp
         }
     }
     replacement->touched = drawCacheHits;
+    replacement->prepared = prepared;
     if (found == drawCache.end()) {
         drawOrder.push_front(key);
         replacement->order = drawOrder.begin();
@@ -106,6 +109,7 @@ void Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<Disp
         drawCache.erase(last);
         ++drawCacheEvictions;
     }
+    return true;
 }
 
 void Driver::eraseDrawEntry(std::uint64_t key, const std::shared_ptr<DrawEntry>& expected) {

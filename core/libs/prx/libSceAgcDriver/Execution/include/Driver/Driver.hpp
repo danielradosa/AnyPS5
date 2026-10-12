@@ -6,6 +6,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Packets/PacketHistory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/DispatchCache.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawCache.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPrep.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/DispatchTiming.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawTiming.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/BufferCopy.hpp"
@@ -114,7 +115,7 @@ private:
     static bool verifyDrawRecipe();
     static std::size_t drawCacheEntries();
     void accountDrawVariant(const DispatchVariant& variant, bool added);
-    void insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::shared_ptr<const DrawDecode> decode);
+    bool insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::shared_ptr<const DrawDecode> decode, bool prepared = false, bool onlyIfAbsent = false);
     void eraseDrawEntry(std::uint64_t key, const std::shared_ptr<DrawEntry>& expected);
     std::shared_ptr<const DrawRecipe> findDrawRecipe(std::uint64_t key, const std::vector<std::shared_ptr<DispatchVariant>>& stages);
     void attachDrawRecipe(std::uint64_t key, const std::vector<std::shared_ptr<DispatchVariant>>& stages, std::shared_ptr<const DrawRecipe> recipe);
@@ -134,6 +135,23 @@ private:
     static std::optional<DrawVerdict> precheckRegisters(const QueueState& queue, const Pm4::DrawParameters& drawParameters, const std::function<bool()>& listRestart, std::string& rejected);
     static std::uint32_t drawUserWord(const DrawProgram& program, std::int32_t sgpr);
     DrawVerdict draw(QueueState& queue, std::span<const std::uint32_t> packet, const Submission& submission, std::string& rejected);
+    static bool drawPrepEnabled();
+    static bool drawPrepSync();
+    static std::size_t drawPrepAhead();
+    void startDrawPrep();
+    void stopDrawPrep() noexcept;
+    bool beginDrawPrep(const Submission& submission, const QueueState& queue);
+    void endDrawPrep() noexcept;
+    void drawPrepProgress(std::size_t cursor);
+    void awaitDrawPrep(std::size_t cursor);
+    void runDrawPrep() noexcept;
+    void walkDrawPrep(const Submission& submission);
+    bool waitWorkerPast(std::size_t offset, double DrawPrepState::*waited);
+    void prepareDraw(const Submission& submission, std::span<const std::uint32_t> packet);
+    bool entryCurrent(const DrawEntry& entry, const std::vector<DrawProgram>& programs) const;
+    void reportDrawPrep(bool final);
+    static void prepRead(std::uint64_t address, std::span<std::byte> out);
+    static ShaderMemory::PendingWrite prepPendingWrite(std::uint64_t address, std::size_t bytes, std::span<std::byte> known);
     void addDriverPhases(DispatchClass which, const std::array<double, DriverPhaseCount>& ms, bool hit, bool validated);
     static PendingDispatchPhases& pendingDispatchPhases();
     static std::chrono::steady_clock::time_point& packetStartedAt();
@@ -315,6 +333,7 @@ private:
     std::uint64_t drawCacheHits = 0, drawCacheEvictions = 0, drawCacheVariants = 0, drawCacheVariantBytes = 0;
 
     DrawEntryCounters drawEntryCounters;
+    DrawPrepState drawPrep;
 
     std::mutex driverPhasesMutex;
     std::array<DriverPhaseTotals, DispatchClassCount> driverPhaseTotals{};

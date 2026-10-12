@@ -74,6 +74,13 @@ void Driver::run(std::uint32_t id) noexcept {
 
     GuestMemory::TagGpuLockThread(id);
     if (id == 0) StartWorkerSampler();
+    struct DrawPrepThread {
+        Driver& driver;
+        DrawPrepThread(Driver& driver, bool start) : driver(driver) {
+            if (start) driver.startDrawPrep();
+        }
+        ~DrawPrepThread() { driver.stopDrawPrep(); }
+    } drawPrepThread{*this, id == 0 && drawPrepEnabled()};
     Submission submission;
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     auto& costs = submissionCosts(id);

@@ -57,6 +57,7 @@ struct DrawEntry {
     std::atomic<std::shared_ptr<const std::vector<DrawRecipeRecord>>> recipes;
     std::uint64_t touched = 0;
     std::list<std::uint64_t>::iterator order;
+    bool prepared = false;
 };
 
 enum class DrawMiss : std::size_t { FrontDiffering, FragmentDiffering, OtherDiffering, Layout, Gate, Stages, Count };
@@ -69,6 +70,7 @@ struct DrawEntryCounters {
 
     std::uint64_t registerKeyLookups = 0, registerKeyHits = 0, decodeSkipped = 0, decodePartial = 0, facadeMismatches = 0, verifyDecodes = 0, verifyDecodeMismatches = 0;
     double keyUs = 0;
+    std::uint64_t preparedLookups = 0, preparedHits = 0;
     std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
 };
 

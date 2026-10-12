@@ -465,8 +465,8 @@ std::optional<ShaderRecompiler::PreparedShaderInvocation> TryInvocationFor(const
     struct PreparedKeyStorage {};
     auto& key = HostThreadLocal<std::vector<std::uint64_t>, PreparedKeyStorage>();
     ShaderRecompiler::BuildPreparedShaderKey(request, key);
-    std::unique_lock lock(snapshot.prepared->mutex, std::try_to_lock);
-    if (!lock.owns_lock() || snapshot.prepared->pending || snapshot.prepared->failure != nullptr) return std::nullopt;
+    std::unique_lock lock(snapshot.prepared->mutex);
+    if (snapshot.prepared->pending || snapshot.prepared->failure != nullptr) return std::nullopt;
     auto invocationRequest = request;
     for (const auto& entry : snapshot.prepared->entries) {
         if (entry.codeOffset != codeOffset) continue;

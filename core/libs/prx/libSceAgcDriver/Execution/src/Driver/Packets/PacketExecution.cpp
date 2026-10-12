@@ -78,6 +78,16 @@ void Driver::execute(const Submission& submission) {
         state = &queues[submission.queue];
     }
     auto& queue = *state;
+    struct DrawPrepJob {
+        Driver& driver;
+        bool active;
+        void End() noexcept {
+            if (!active) return;
+            active = false;
+            driver.endDrawPrep();
+        }
+        ~DrawPrepJob() { End(); }
+    } drawPrepJob{*this, drawPrepEnabled() && beginDrawPrep(submission, queue)};
     static const bool traceGpu = std::getenv("APS5_TRACE_GPU") != nullptr;
     if (traceGpu) std::fprintf(stderr, "[gpu] %.1f execute serial=%llu queue=0x%x dwords=%zu\n", TraceMs(), static_cast<unsigned long long>(submission.serial), submission.queue, submission.commands.size());
 
@@ -123,6 +133,7 @@ void Driver::execute(const Submission& submission) {
         const auto packet = std::span(submission.commands).subspan(cursor, count);
         const auto opcode = (header >> 8u) & 0xffu;
         auto nextCursor = cursor + count;
+        if (drawPrepJob.active) drawPrepProgress(cursor);
         if (APS5_ENABLE_TIMING_LOG && submission.queue == 0 && pendingFrameTiming == nullptr) includeTimingSubmission(submission, false);
         PerformanceContext timingContext(submission.queue == 0 ? pendingFrameTiming.get() : FrameTiming::Async());
         PerformanceTimer timing("Driver.Packet");
@@ -260,6 +271,7 @@ void Driver::execute(const Submission& submission) {
             }
         } else if (drawPacket) {
             landPendingWaits(submission.queue);
+            if (drawPrepJob.active && drawPrepSync()) awaitDrawPrep(cursor);
             bool drawn = false;
             timed(&WorkerProfile::drawMs, [&] {
                 static const bool traceDraws = std::getenv("APS5_TRACE_DRAWS") != nullptr;
@@ -315,6 +327,7 @@ void Driver::execute(const Submission& submission) {
         cursor = nextCursor;
     }
 
+    drawPrepJob.End();
     PerformanceContext endContext(submission.queue == 0 ? frameTiming() : FrameTiming::Async());
     PerformanceTimer endTiming("Driver.EndSubmission");
     static const bool submitAtEnd = std::getenv("APS5_SUBMIT_AT_END") != nullptr;
