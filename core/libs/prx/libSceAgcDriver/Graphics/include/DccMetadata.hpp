@@ -97,6 +97,11 @@ DccKeys ProvedCurrentDccKeys(std::uint64_t metaAddress, std::uint64_t surfaceByt
 // A surface's texels as a read sees them: the guest bytes, or the clear value of fast-cleared keys.
 void ReadTextureSurface(const GuestTextureResource& resource, DccKeys keys, std::span<std::byte> bytes);
 void NoteKeysFillOnGpu(std::uint64_t begin, std::size_t count, DccKeys keys);
+// The keys [metaAddress, metaAddress + count) will hold once recorded work lands, when the newest
+// recorded writer of the whole range is a uniform fill the pending-store memo noted (the title's
+// fill through NoteKeysFillOnGpu, or the driver's own uncompressed store) and no unit shadow covers
+// the range; nullopt otherwise, and without GuestMemory::GpuMutex or an active recorder.
+std::optional<DccKeys> PendingKeysFill(std::uint64_t metaAddress, std::size_t count);
 std::optional<DccKeys> WaitForKeyWriters(const GuestTextureResource& resource, std::uint64_t guestBytes);
 
 }

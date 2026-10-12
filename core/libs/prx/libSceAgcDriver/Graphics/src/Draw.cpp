@@ -109,13 +109,18 @@ std::array<std::byte, 16> clearTexel(const ColorTarget& color, DccKeys keys) {
     return texel;
 }
 
-bool clearToTexel(StorageTexture& image, const std::array<std::byte, 16>& texel, std::uint32_t elementBytes, const char*& refusal) {
+bool clearToTexel(StorageTexture& image, const std::array<std::byte, 16>& texel, std::uint32_t elementBytes, const char*& refusal, bool pendingRegisterKeys = false) {
     std::array<std::byte, 16> repeated{};
     for (std::size_t offset = 0; offset + elementBytes <= repeated.size(); offset += elementBytes) std::memcpy(repeated.data() + offset, texel.data(), elementBytes);
     std::array<std::uint32_t, 4> pattern{};
     std::memcpy(pattern.data(), repeated.data(), repeated.size());
-    return image.FillClear(std::span<const std::uint32_t, 4>(pattern), StorageTexture::WholeImage, refusal);
+    return image.FillClear(std::span<const std::uint32_t, 4>(pattern), StorageTexture::WholeImage, refusal, pendingRegisterKeys);
 }
+
+// Register clears materialized while recorded work still wrote the keys, per 10 s on the [draws]
+// line: cleared at once (the memo proved the writer is the title's 0x20 fill), and cleared after
+// waiting for the writers.
+std::atomic<std::uint64_t> registerClearsUnsynced{0}, registerClearsSynced{0};
 
 void writeTexels(const ColorTarget& color, const std::array<std::byte, 16>& texel) {
     const auto elementBytes = static_cast<std::size_t>(color.elementBytes);
@@ -156,15 +161,25 @@ void materializeRegisterClear(const Context& context, const ColorTarget& color, 
     if (ProvedCurrentDccKeys(color.dccAddress, color.bytes, resident.TargetKeyProof()) != DccKeys::ClearRegister) return;
     const auto texel = clearTexel(color, DccKeys::ClearRegister);
     const char* refusal = nullptr;
-    bool cleared = clearToTexel(resident, texel, color.elementBytes, refusal);
+    // The title's 0x20 key fill, still recorded, needs no wait when the memo proves it is the newest
+    // writer of the keys: the clear reads no keys, and the uncompressed store below lands behind the
+    // fill. Not over a listed copied writer's surface: the wait ran its CPU write-back first, which
+    // the clear then overwrites (the fill HLE's rule). APS5_SYNC_REGISTER_CLEAR=1 always waits.
+    static const bool sync = std::getenv("APS5_SYNC_REGISTER_CLEAR") != nullptr;
+    const auto writesSurface = [&](const auto& writer) { return writer->WritesOverlap(resident.Descriptor().baseAddress, static_cast<std::size_t>(resident.GuestBytes())); };
+    const auto drawWriters = DrawCopiedWriters();
+    const bool copiedWriter = (context.copiedWriters != nullptr && std::any_of(context.copiedWriters->begin(), context.copiedWriters->end(), writesSurface)) || std::any_of(drawWriters->begin(), drawWriters->end(), writesSurface);
+    bool cleared = clearToTexel(resident, texel, color.elementBytes, refusal, !sync && !copiedWriter);
     const auto keyBytes = static_cast<std::size_t>(color.bytes / 256);
-    if (!cleared && keyBytes != 0) {
-        if (auto* recorder = Recorder::Active(); recorder != nullptr && recorder->PendingWriteOverlaps(color.dccAddress, keyBytes)) {
-            Recorder::CountSync(2);
-            recorder->SyncThrough(color.dccAddress, keyBytes);
-            if (CurrentDccKeys(color.dccAddress, color.bytes) != DccKeys::ClearRegister) return;
-            cleared = clearToTexel(resident, texel, color.elementBytes, refusal);
-        }
+    auto* recorder = Recorder::Active();
+    const bool keysPending = keyBytes != 0 && recorder != nullptr && recorder->PendingWriteOverlaps(color.dccAddress, keyBytes);
+    if (cleared && keysPending) registerClearsUnsynced.fetch_add(1, std::memory_order_relaxed);
+    if (!cleared && keysPending) {
+        Recorder::CountSync(2);
+        recorder->SyncThrough(color.dccAddress, keyBytes);
+        registerClearsSynced.fetch_add(1, std::memory_order_relaxed);
+        if (CurrentDccKeys(color.dccAddress, color.bytes) != DccKeys::ClearRegister) return;
+        cleared = clearToTexel(resident, texel, color.elementBytes, refusal);
     }
     if (cleared) {
         MarkDccUncompressed(context, color.dccAddress, color.bytes, colorKeyCount(color, color.bytes));
@@ -565,6 +580,7 @@ void reportDraw(const std::array<double, PhaseCount>& us, const ShaderResources:
         n += std::snprintf(line + n, sizeof(line) - static_cast<std::size_t>(n), " %s %.1f", DrawPhaseNames[i], profile.maxUs[i] / 1000.0);
     }
     if (room()) n += std::snprintf(line + n, sizeof(line) - static_cast<std::size_t>(n), "; hook waits inside draws %.1f ms (max %.1f; the draws' own syncs, %.1f ms, not counted)", profile.hookWaitUs / 1000.0, profile.maxHookWaitUs / 1000.0, profile.ownSyncUs / 1000.0);
+    if (room()) n += std::snprintf(line + n, sizeof(line) - static_cast<std::size_t>(n), "; register clears over pending keys %llu at once, %llu after a sync", static_cast<unsigned long long>(registerClearsUnsynced.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(registerClearsSynced.exchange(0, std::memory_order_relaxed)));
     std::uint64_t indirectCpu = 0;
     for (std::size_t i = 1; i < IndirectPathCount; ++i) indirectCpu += profile.indirect[i];
     if ((profile.indirect[0] != 0 || indirectCpu != 0) && room()) {

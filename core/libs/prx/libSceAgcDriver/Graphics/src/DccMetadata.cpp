@@ -249,7 +249,18 @@ bool StoreUncompressedOnGpu(const Context& context, Recorder& recorder, std::uin
         auto& memo = Memo();
         std::lock_guard lock(memo.mutex);
         const auto end = begin + count;
-        std::erase_if(memo.entries, [&](const GpuKeyStore& store) { return begin < store.end && store.begin < end; });
+        // An overlapped entry keeps describing its pending work outside the store (a title fill over
+        // several surfaces' keys, stored over for one of them before it lands).
+        std::vector<GpuKeyStore> kept;
+        for (const auto& store : memo.entries) {
+            if (!(begin < store.end && store.begin < end)) {
+                kept.push_back(store);
+                continue;
+            }
+            if (store.begin < begin) kept.push_back({store.begin, begin, store.keys, store.note});
+            if (end < store.end) kept.push_back({end, store.end, store.keys, store.note});
+        }
+        memo.entries = std::move(kept);
         if (MemoRecorder(memo) == &recorder) memo.entries.push_back({begin, end, DccKeys::Uncompressed, recorder.LastWriteNote(begin, count)});
     }
     CountStore(Scans().gpuStores);
@@ -500,6 +511,12 @@ DccKeys CurrentDccKeys(std::uint64_t metaAddress, std::uint64_t surfaceBytes) {
     return currentDccKeys(metaAddress, DccKeyBytes(surfaceBytes), memoized);
 }
 
+std::optional<DccKeys> PendingKeysFill(std::uint64_t metaAddress, std::size_t count) {
+    auto* recorder = Recorder::Active();
+    if (metaAddress == 0 || count == 0 || recorder == nullptr || !GuestMemory::GpuMutex().HeldByThisThread()) return std::nullopt;
+    return PendingStoreKeys(*recorder, metaAddress, count);
+}
+
 DccKeys CurrentDccKeys(std::uint64_t metaAddress, std::uint64_t surfaceBytes, std::size_t keyCount) {
     Require(keyCount >= DccKeyBytes(surfaceBytes), "a DCC key range covers fewer keys than one per 256 surface bytes");
     bool memoized = false;
@@ -538,8 +555,9 @@ void MarkDccUncompressed(const Context& context, std::uint64_t metaAddress, std:
     // code, and the range is stored without looking (the fill lands after the kernel). That includes
     // a pending GPU store of the driver's own (the memo): a title kernel recorded into the same batch
     // after it may write clear keys, and nothing orders inside a batch, so a fresh fill is recorded
-    // (idempotent, no wait) rather than trusting the earlier one.
-    const bool pending = recorder != nullptr && recorder->PendingWriteOverlaps(metaAddress, count);
+    // (idempotent, no wait) rather than trusting the earlier one. Without the recorder (CPU keys only,
+    // or no device lock) the lock-free snapshot answers, as in the overload above.
+    const bool pending = recorder != nullptr ? recorder->PendingWriteOverlaps(metaAddress, count) : Recorder::SnapshotWriteOverlaps(metaAddress, count);
     if (!pending && AlreadyUncompressed(metaAddress, count)) return;
     if (recorder != nullptr && StoreUncompressedOnGpu(context, *recorder, metaAddress, count)) return;
     StoreUncompressedOnCpu(metaAddress, count);

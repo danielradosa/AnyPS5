@@ -285,8 +285,12 @@ public:
     // the range is stamped written so every other reader of it (other images over the memory,
     // captures, snapshots) takes the bytes through the flush hook, and this image alone is current.
     // False, naming why in `refusal`, when the fill must be stored as before.
+    // `pendingRegisterKeys` also accepts keys recorded work still writes when PendingKeysFill proves
+    // that work is a register-clear (0x20) fill: those keys read as stored once it lands, and an
+    // uncompressed key store the caller records after the clear lands behind the fill (the key-store
+    // run's leading barrier, Recorder::recordKeyStores).
     static constexpr std::uint32_t WholeImage = ~0u;
-    bool FillClear(std::span<const std::uint32_t, 4> pattern, std::uint32_t layer, const char*& refusal);
+    bool FillClear(std::span<const std::uint32_t, 4> pattern, std::uint32_t layer, const char*& refusal, bool pendingRegisterKeys = false);
     // The cached, live image whose surface is exactly [address, address + bytes), if any (the newest
     // of several: see ClassifyFill).
     static std::shared_ptr<StorageTexture> FindLive(std::uint64_t address, std::uint64_t bytes);

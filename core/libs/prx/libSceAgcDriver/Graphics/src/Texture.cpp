@@ -3462,7 +3462,7 @@ bool StorageTexture::clearByKeysFill(DccKeys keys, std::uint8_t key) {
     return true;
 }
 
-bool StorageTexture::FillClear(std::span<const std::uint32_t, 4> pattern, std::uint32_t layer, const char*& refusal) {
+bool StorageTexture::FillClear(std::span<const std::uint32_t, 4> pattern, std::uint32_t layer, const char*& refusal, bool pendingRegisterKeys) {
     // Debug aid (APS5_TRACE_FILL_COVER=1): the first layer covers refused, with the surface, the
     // pattern and the generation the refusal was memoized at (ClassifyFill's layerRefusedGeneration).
     static const bool trace = std::getenv("APS5_TRACE_FILL_COVER") != nullptr;
@@ -3492,8 +3492,10 @@ bool StorageTexture::FillClear(std::span<const std::uint32_t, 4> pattern, std::u
     if (descriptor.dccAddress != 0) {
         // Under a clear code reads see that value whatever the texels hold, and keys a recorded
         // kernel still writes are not in the bytes yet: only keys that read as uncompressed now let
-        // the image stand for the texels.
-        if (Recorder::SnapshotWriteOverlaps(descriptor.dccAddress, static_cast<std::size_t>(guestBytes / 256))) {
+        // the image stand for the texels. A register-clear fill the memo proves is the newest writer
+        // is the exception the caller may allow: it leaves keys that read as stored.
+        const auto keyCount = static_cast<std::size_t>(guestBytes / 256);
+        if (Recorder::SnapshotWriteOverlaps(descriptor.dccAddress, keyCount) && !(pendingRegisterKeys && PendingKeysFill(descriptor.dccAddress, keyCount) == DccKeys::ClearRegister)) {
             refusal = "keys pending";
             return false;
         }
