@@ -12,7 +12,6 @@
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
 #include <cstdlib>
-#include <cstring>
 
 namespace AgcDriver::DriverDetail {
 
@@ -26,9 +25,7 @@ double MillisecondsSince(std::chrono::steady_clock::time_point start) {
 
 bool Driver::drawPrepEnabled() {
     static const bool enabled = [] {
-        const char* text = std::getenv("APS5_DRAW_PREP");
-        if (text == nullptr || std::strcmp(text, "0") == 0) return false;
-        return std::getenv("APS5_LOCKED_DRAW_PREPARE") == nullptr && std::getenv("APS5_DUMP_DRAW_SHADERS") == nullptr && std::getenv("APS5_DUMP_DRAW_SLOT1") == nullptr && drawEntries() && registerKeyEnabled();
+        return std::getenv("APS5_NO_DRAW_PREP") == nullptr && std::getenv("APS5_LOCKED_DRAW_PREPARE") == nullptr && std::getenv("APS5_DUMP_DRAW_SHADERS") == nullptr && std::getenv("APS5_DUMP_DRAW_SLOT1") == nullptr && drawEntries() && registerKeyEnabled();
     }();
     return enabled;
 }

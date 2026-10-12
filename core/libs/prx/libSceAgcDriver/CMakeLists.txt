@@ -1093,9 +1093,9 @@ if(BUILD_TESTING)
         set_tests_properties(agc_driver_fault_only_indirect_args_all PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
-    set_tests_properties(agc_driver_draw_prep_ahead PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_DRAW_PREP=1;APS5_DRAW_PREP_SYNC=1")
+    set_tests_properties(agc_driver_draw_prep_ahead PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_DRAW_PREP_SYNC=1")
     add_test(NAME agc_driver_draw_prep_ahead_verify COMMAND agc_driver_draw_prep_ahead_tests)
-    set_tests_properties(agc_driver_draw_prep_ahead_verify PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_DRAW_PREP=1;APS5_DRAW_PREP_SYNC=1;APS5_VERIFY_DRAW_ENTRIES=1" SKIP_RETURN_CODE 77)
+    set_tests_properties(agc_driver_draw_prep_ahead_verify PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_DRAW_PREP_SYNC=1;APS5_VERIFY_DRAW_ENTRIES=1" SKIP_RETURN_CODE 77)
     if(WIN32)
         set_tests_properties(agc_driver_draw_prep_ahead_verify PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
