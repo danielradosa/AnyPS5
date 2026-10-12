@@ -7,6 +7,7 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/macos/GuestImages.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Strings.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/BsdStrings.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/LastSetBit.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AllocatingStrings.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/WideConversion.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Multibyte.cpp
@@ -418,6 +419,15 @@ if(BUILD_TESTING)
             set_tests_properties(guest_heap_diagnostics PROPERTIES ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
         endif()
+    add_test_executable(guest_last_set_bit_tests ${LIBS_INCLUDE_DIR}/tests/GuestLastSetBit.cpp)
+    target_include_directories(guest_last_set_bit_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_last_set_bit_tests PRIVATE libc)
+    configure_windows_unwind(guest_last_set_bit_tests)
+    add_test(NAME guest_last_set_bit COMMAND guest_last_set_bit_tests)
+    set_tests_properties(guest_last_set_bit PROPERTIES TIMEOUT 10)
+    if(WIN32)
+        set_tests_properties(guest_last_set_bit PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test_executable(mspace_tests ${LIBS_INCLUDE_DIR}/tests/Mspace.cpp)
     target_include_directories(mspace_tests PRIVATE ${LIBS_INCLUDE_DIR})
