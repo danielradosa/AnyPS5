@@ -729,6 +729,10 @@ bool AccessesMemory(std::uint32_t header) {
     }
 }
 
+bool CopyDataToRegister(std::span<const std::uint32_t> packet) {
+    return packet.size() >= 2 && copyDataToRegister(packet);
+}
+
 std::uint64_t AtomicMemAddress(std::span<const std::uint32_t> packet) {
     require(packet.size() == 9 && ((packet[0] >> 8u) & 0xffu) == 0x1eu, "expected ATOMIC_MEM packet");
     return address(packet[2], packet[3]);

@@ -18,7 +18,8 @@ struct DecodeRead {
     std::uint64_t address;
     std::vector<std::byte> bytes;
 };
-ShaderRecompiler::ShaderVertexStageInfo DecodeVertexStageInfo(std::span<const std::byte> header, std::uint64_t headerAddress, std::span<const std::uint32_t> userData, std::vector<DecodeRead>* reads = nullptr, bool staticAbi = false);
+using GuestRead = void (*)(std::uint64_t address, std::span<std::byte> out);
+ShaderRecompiler::ShaderVertexStageInfo DecodeVertexStageInfo(std::span<const std::byte> header, std::uint64_t headerAddress, std::span<const std::uint32_t> userData, std::vector<DecodeRead>* reads = nullptr, bool staticAbi = false, GuestRead read = nullptr);
 
 }
 

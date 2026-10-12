@@ -55,7 +55,8 @@ public:
     // by the driver: the [capture] line charges the waits made inside a capture to it.
     using WaitedMsProvider = double (*)();
     static void SetWaitedMsProvider(WaitedMsProvider provider);
-    explicit ShaderMemory(std::span<const ShaderRecompiler::MemoryRegion> initial, PendingWriteQuery pendingWrite = nullptr, PendingWriteObserver observe = nullptr, HookWaitCounter hookWaits = nullptr);
+    using GuestRead = void (*)(std::uint64_t address, std::span<std::byte> out);
+    explicit ShaderMemory(std::span<const ShaderRecompiler::MemoryRegion> initial, PendingWriteQuery pendingWrite = nullptr, PendingWriteObserver observe = nullptr, HookWaitCounter hookWaits = nullptr, GuestRead guestRead = nullptr);
     // Returns what the capture resolved (plan, snapshot, specialization) for
     // ShaderRecompiler::Recompile(request, capture), which then skips its own materialization. One
     // result per call: the draw path captures several stages on one ShaderMemory. With `handle`
@@ -87,6 +88,7 @@ private:
     static bool read(void* context, std::uint64_t address, std::uint32_t* value);
     static bool accessible(void* context, std::uint64_t address, std::uint64_t bytes);
     Page& page(std::uint64_t base);
+    void fetch(std::uint64_t address, std::span<std::byte> out) const;
 
     // Regions given at construction (the registered shader's code and header), referenced as given:
     // the caller keeps them alive for as long as the capture is used.
@@ -95,6 +97,7 @@ private:
     PendingWriteQuery pendingWrite = nullptr;
     PendingWriteObserver observe = nullptr;
     HookWaitCounter hookWaits = nullptr;
+    GuestRead guestRead = nullptr;
 };
 
 // The positions, among a dispatch-cache variant's stored words, of the pure flat-SRT leaves a

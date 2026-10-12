@@ -90,6 +90,7 @@ inline bool IndirectRegisterOpcode(std::uint32_t opcode) { return opcode == 0x63
 std::vector<std::uint32_t> ReadIndirectRegisters(std::span<const std::uint32_t> packet);
 void ExecuteIndirectRegisters(std::span<const std::uint32_t> packet, std::span<const std::uint32_t> pairs, QueueState& queue);
 bool AccessesMemory(std::uint32_t header);
+bool CopyDataToRegister(std::span<const std::uint32_t> packet);
 std::uint64_t AtomicMemAddress(std::span<const std::uint32_t> packet);
 std::size_t AtomicMemBytes(std::span<const std::uint32_t> packet);
 // Whether an ACQUIRE_MEM packet asks only for GPU cache actions (no CPU-visible memory

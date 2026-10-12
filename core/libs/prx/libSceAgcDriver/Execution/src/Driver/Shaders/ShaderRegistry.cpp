@@ -458,6 +458,24 @@ ShaderRecompiler::PreparedShaderInvocation InvocationFor(const ShaderSnapshot& s
     snapshot.prepared->entries.push_back({codeOffset, std::move(handle)});
     return std::move(*invocation);
 }
+std::optional<ShaderRecompiler::PreparedShaderInvocation> TryInvocationFor(const ShaderSnapshot& snapshot, std::size_t codeOffset, const ShaderRecompiler::RecompileRequest& request) {
+    if (request.shader.stage == ShaderRecompiler::ShaderStage::Compute || codeOffset >= snapshot.code.size()) return std::nullopt;
+    const auto code = std::span(snapshot.code).subspan(codeOffset);
+    if (request.shader.code.data() != code.data() || request.shader.code.size() != code.size()) return std::nullopt;
+    struct PreparedKeyStorage {};
+    auto& key = HostThreadLocal<std::vector<std::uint64_t>, PreparedKeyStorage>();
+    ShaderRecompiler::BuildPreparedShaderKey(request, key);
+    std::unique_lock lock(snapshot.prepared->mutex, std::try_to_lock);
+    if (!lock.owns_lock() || snapshot.prepared->pending || snapshot.prepared->failure != nullptr) return std::nullopt;
+    auto invocationRequest = request;
+    for (const auto& entry : snapshot.prepared->entries) {
+        if (entry.codeOffset != codeOffset) continue;
+        invocationRequest.shader.code = ShaderRecompiler::GetPreparedCode(*entry.handle);
+        if (auto invocation = ShaderRecompiler::PreparedShaderInvocation::TryCreate(invocationRequest, entry.handle, key)) return invocation;
+    }
+    return std::nullopt;
+}
+
 std::optional<ShaderRecompiler::ShaderFloatMode> RegisteredFloatMode(const ShaderSnapshot& snapshot) {
     if (snapshot.registeredState == nullptr) return std::nullopt;
     std::uint32_t rsrc1;

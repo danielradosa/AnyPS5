@@ -171,7 +171,11 @@ ShaderRecompiler::ShaderPixelStageInfo DecodePixelStageInfo(const Registers& con
     };
 }
 
-ShaderRecompiler::ShaderVertexStageInfo DecodeVertexStageInfo(std::span<const std::byte> header, std::uint64_t headerAddress, std::span<const std::uint32_t> userData, std::vector<DecodeRead>* reads, bool staticAbi) {
+ShaderRecompiler::ShaderVertexStageInfo DecodeVertexStageInfo(std::span<const std::byte> header, std::uint64_t headerAddress, std::span<const std::uint32_t> userData, std::vector<DecodeRead>* reads, bool staticAbi, GuestRead read) {
+    const auto guestRead = [&](std::uint64_t address, std::span<std::byte> out) {
+        if (read != nullptr) read(address, out);
+        else AgcDriver::GuestMemory::Read(address, out, 4);
+    };
     if (header.empty()) return {};
     if (header.size() < sizeof(Shader)) throw std::runtime_error("AGC graphics: shader header is smaller than the fixed AGC header");
     Shader shader;
@@ -219,7 +223,7 @@ ShaderRecompiler::ShaderVertexStageInfo DecodeVertexStageInfo(std::span<const st
         }
         std::array<std::byte, 4> attribWordBytes{};
         const auto attribWordAddress = attribTableAddr + static_cast<std::uint64_t>(semantic.semantic) * 4u;
-        AgcDriver::GuestMemory::Read(attribWordAddress, attribWordBytes, 4);
+        guestRead(attribWordAddress, attribWordBytes);
         if (reads != nullptr) reads->push_back({attribWordAddress, {attribWordBytes.begin(), attribWordBytes.end()}});
         std::uint32_t attribWord;
         std::memcpy(&attribWord, attribWordBytes.data(), 4);
@@ -230,7 +234,7 @@ ShaderRecompiler::ShaderVertexStageInfo DecodeVertexStageInfo(std::span<const st
         if (index >= ShaderRecompiler::ShaderVertexStageInfo::MaxResources) throw std::runtime_error("AGC graphics: vertex buffer index exceeds the supported domain");
         std::array<std::byte, 16> sharpBytes{};
         const auto sharpAddress = bufferTableAddr + static_cast<std::uint64_t>(index) * 16u;
-        AgcDriver::GuestMemory::Read(sharpAddress, sharpBytes, 4);
+        guestRead(sharpAddress, sharpBytes);
         if (reads != nullptr) reads->push_back({sharpAddress, {sharpBytes.begin(), sharpBytes.end()}});
         std::array<std::uint32_t, 4> sharp{};
         std::memcpy(sharp.data(), sharpBytes.data(), 16);

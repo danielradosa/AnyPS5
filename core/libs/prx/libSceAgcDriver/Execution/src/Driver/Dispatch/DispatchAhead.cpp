@@ -1,6 +1,7 @@
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Synchronization/DeferredLabels.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Synchronization/RunLabels.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
 #include <algorithm>
@@ -43,12 +44,6 @@ void Driver::clearResolvedAhead() {
 
 namespace {
 
-struct RunLabel {
-    std::uint64_t address;
-    std::size_t size;
-    std::uint64_t value;
-};
-
 bool InCode(const ShaderRecompiler::MemoryRegion& region, const std::shared_ptr<const ShaderSnapshot>& code) {
     if (code == nullptr) return false;
     if (region.guestAddress >= code->codeAddress && region.guestAddress < code->codeAddress + code->code.size() * sizeof(std::uint32_t)) return true;
@@ -63,23 +58,6 @@ bool OverlapsRange(std::span<const ShaderRecompiler::MemoryRegion> regions, cons
         }
     }
     return false;
-}
-
-bool WrittenByRun(std::span<const std::uint32_t> wait, const std::vector<RunLabel>& labels) {
-    const std::uint64_t awaited = wait[2] | (static_cast<std::uint64_t>(wait[3]) << 32u);
-    const auto bytes = Pm4::WaitAwaitedBytes(wait);
-    for (auto it = labels.rbegin(); it != labels.rend(); ++it) {
-        if (it->address != awaited || it->size < bytes) continue;
-        return Pm4::WaitComparesValue(wait, bytes == 8 ? it->value : (it->value & 0xffffffffu));
-    }
-    return false;
-}
-
-void NoteLabel(std::vector<RunLabel>& labels, std::uint64_t address, std::span<const std::byte> bytes) {
-    if (bytes.size() != 4 && bytes.size() != 8) return;
-    std::uint64_t value = 0;
-    std::memcpy(&value, bytes.data(), bytes.size());
-    labels.push_back({address, bytes.size(), value});
 }
 
 bool WritesThroughPointers(const ShaderRecompiler::RecompileResult& compiled) {
