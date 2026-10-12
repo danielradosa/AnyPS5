@@ -22,6 +22,8 @@
 
 namespace AgcDriver::Graphics {
 
+class Buffer;
+
 class ResidentColor;
 class CommandBatch;
 class StorageTexture;
@@ -330,6 +332,11 @@ public:
     bool Refresh();
     static std::uint64_t SinglePassMoves();
     static std::uint64_t RefreshesProved();
+    // Tracked layers Refresh copied from a stored single-layer image on the device (storedLayerSource).
+    static std::uint64_t LayerCopies();
+    // For a writer of the image that does not go through MarkDirty (the depth seed): the content is
+    // no longer what its last store left, so no other image copies it as such.
+    void ForgetLayerSync() { syncedVersion = ~std::uint64_t{0}; }
     std::uint64_t GuestBytes() const;
     VkDeviceSize AllocationBytes() const { return memoryBytes; }
 
@@ -458,6 +465,21 @@ private:
     // still the pending ones and a write-back for the range would store them.
     bool skippedResultsInside(std::uint64_t address, std::size_t bytes) const;
     std::uint64_t borrowUnits(StorageTexture& source, const std::vector<bool>& units);
+    // A live single-layer image whose last write-back stored every byte of it into this image's
+    // tracked layer `layer`, with nothing written over the layer since (its stamps, the recorder's
+    // write notes and queued stores, and no completion-stamped writer recorded since) and its
+    // content unchanged since (its version): Refresh then
+    // copies that image into the layer on the device instead of reading the stored bytes back from
+    // the import. Both images uncompressed, without DCC, of one layout. APS5_NO_LAYER_COPY=1 reads
+    // the layer back as before.
+    std::shared_ptr<StorageTexture> storedLayerSource(std::uint32_t layer) const;
+    void copyLayerFrom(StorageTexture& source, std::uint32_t layer);
+    // Debug aid (APS5_VERIFY_LAYER_COPY=1): the tracked layer's content (every mip, packed) copied
+    // into a host buffer, recorded now and readable once the batch completed.
+    std::shared_ptr<Buffer> readLayerBack(std::uint32_t layer);
+    // The device copy of borrowUnits and copyLayerFrom: `source`'s image into this one, recorded with
+    // barriers over both images' whole subresource ranges.
+    void recordCopyFrom(StorageTexture& source, std::span<const VkImageCopy> regions, std::uint64_t bytes);
     void forgetBorrowed(std::uint32_t first, std::uint32_t count);
     bool clearByKeysFill(DccKeys keys, std::uint8_t key);
     bool overlaps(std::uint64_t address, std::size_t bytes) const;
@@ -520,6 +542,13 @@ private:
     std::weak_ptr<StorageTexture> borrowedFrom;
     std::uint64_t borrowedVersion = 0;
     std::vector<bool> borrowedUnits;
+    // The version the content had when a GPU-direct write-back last stored all of it (one tracked
+    // layer, no block kept for the CPU), and the recorder (its id, 0 for none), write note and
+    // registered completions at that store (storedLayerSource).
+    std::uint64_t syncedVersion = ~std::uint64_t{0};
+    std::uint64_t syncedRecorder = 0;
+    std::uint64_t syncedNote = 0;
+    std::uint64_t syncedCompletions = 0;
     // Units of this image were borrowed since it was last written: the borrower's proofs
     // (the resource cache's serial memo) hold only while this image's version does, so the next
     // write here bumps the pending serial although the image was pending already.

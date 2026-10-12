@@ -637,6 +637,7 @@ void SeedStorageFromDepth(const Context& context, const std::shared_ptr<StorageT
         if (surface.seeded == storage.get() && surface.writerLayer == layer && surface.writer.lock() == storage) continue;
         surface.ApplyFastClear();
         surface.TakeWrites();
+        storage->ForgetLayerSync();
         surface.Transfer(*storage, true, layer);
         surface.writer = storage;
         surface.seeded = storage.get();

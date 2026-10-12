@@ -218,6 +218,11 @@ public:
     // Completes batches that already finished; returns whether nothing is in flight.
     bool Reap();
     std::uint64_t Submissions() const { return submissions; }
+    // Unique among the recorders of a run (a recreated one gets a new id), and the completions
+    // registered over its life (OnComplete): a writer whose guest-memory stores are stamped only by
+    // its completion (BDA tables, copied buffers) registers one when it is recorded.
+    std::uint64_t Id() const { return id; }
+    std::uint64_t CompletionsRegistered() const { return completionsRegistered; }
     // Batches submitted and not yet finished (what a full Sync() waits for); under GuestMemory::GpuMutex.
     std::size_t InFlightBatches() const { return inFlight.size(); }
     // Reaps that retired at least one batch so far (the [recorder] line's 'with work' count).
@@ -785,6 +790,7 @@ private:
     std::uint64_t submissions = 0;
     std::size_t inFlightKeptBytes = 0;
     std::uint64_t writeNoteCount = 0;
+    std::uint64_t completionsRegistered = 0;
     // Command buffers and fences of completed batches, reused by later ones (hundreds of batches per
     // frame would otherwise allocate and free their objects each time).
     std::vector<std::pair<VkCommandBuffer, VkFence>> spare;

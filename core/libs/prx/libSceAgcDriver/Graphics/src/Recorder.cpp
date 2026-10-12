@@ -2566,6 +2566,7 @@ void Recorder::OnComplete(std::function<void()> action) {
     ensureOpen();
     open->completions.push_back(std::move(action));
     ++open->writeBackCompletionCount;
+    ++completionsRegistered;
     writeBackCompletions.fetch_add(1, std::memory_order_acq_rel);
 }
 

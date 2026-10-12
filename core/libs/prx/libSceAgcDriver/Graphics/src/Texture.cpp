@@ -61,7 +61,8 @@ TextureProfile& Profile() {
 }
 
 // APS5_PROFILE_DRAW, every 10 s on the [storage] line: storage image bytes uploaded by path
-// (recorded DCC clear, direct detile from the import, CPU) and written back by the reason of the
+// (recorded DCC clear, direct detile from the import, CPU, an alias's units on the device, a stored
+// image's layer on the device) and written back by the reason of the
 // FlushPending that forced the write-back (the other callers name themselves: "refresh", "cache
 // eviction", "explicit"). `flushReason` is set by the caller around its writeBack calls.
 thread_local const char* flushReason = nullptr;
@@ -89,11 +90,32 @@ std::atomic<std::uint64_t> pretestSkipped{0}, unregisteredDropped{0}, keyFlipKep
 std::atomic<std::uint64_t> flushedAfterSkip{0}, flushedAfterSkipSameSite{0}, staleEvicted{0};
 std::atomic<std::uint64_t> depthCopyTextures{0}, depthCopyRefreshes{0};
 std::atomic<std::uint64_t> refreshesProved{0};
+// Tracked layers Refresh copied from a stored single-layer image (storedLayerSource), and under
+// APS5_VERIFY_LAYER_COPY=1 the copies compared with the upload from memory and those that differed.
+std::atomic<std::uint64_t> layerCopies{0}, layerCopiesVerified{0}, layerCopyMismatches{0};
+
+// Debug aid (APS5_VERIFY_LAYER_COPY=1): compares a layer copied from a stored image with the same
+// layer uploaded from guest memory once both read-backs completed.
+void compareLayerCopy(std::uint64_t address, std::uint32_t layer, std::shared_ptr<Buffer> copied, std::shared_ptr<Buffer> uploaded) {
+    const auto compare = [address, layer, copied = std::move(copied), uploaded = std::move(uploaded)] {
+        const auto a = copied->Bytes();
+        const auto b = uploaded->Bytes();
+        const auto verified = layerCopiesVerified.fetch_add(1, std::memory_order_relaxed) + 1;
+        const auto differs = std::mismatch(a.begin(), a.end(), b.begin(), b.end());
+        if (differs.first == a.end() && differs.second == b.end()) {
+            if (verified % 500 == 0) std::fprintf(stderr, "[layer-copy] verify: %llu copied layers compared with the upload, %llu differed\n", static_cast<unsigned long long>(verified), static_cast<unsigned long long>(layerCopyMismatches.load(std::memory_order_relaxed)));
+            return;
+        }
+        if (layerCopyMismatches.fetch_add(1, std::memory_order_relaxed) < 8) std::fprintf(stderr, "[layer-copy] verify: image 0x%llx layer %u: the copy differs from the upload at byte %zu of %zu\n", static_cast<unsigned long long>(address), layer, static_cast<std::size_t>(differs.first - a.begin()), a.size());
+    };
+    if (auto* recorder = Recorder::Active()) recorder->OnComplete(compare);
+    else compare();
+}
 
 struct StorageTraffic {
     std::mutex mutex;
     std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> writeBacks;
-    std::array<std::pair<std::uint64_t, std::uint64_t>, 4> uploads{};
+    std::array<std::pair<std::uint64_t, std::uint64_t>, 5> uploads{};
     std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> uploadReasons;
     std::uint64_t directWriteBacks = 0;
     std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
@@ -108,10 +130,10 @@ void reportStorageTraffic(StorageTraffic& traffic) {
     const auto now = std::chrono::steady_clock::now();
     if (now - traffic.lastReport < std::chrono::seconds(10)) return;
     traffic.lastReport = now;
-    static constexpr const char* uploadNames[4] = {"clear", "direct", "cpu", "alias"};
+    static constexpr const char* uploadNames[5] = {"clear", "direct", "cpu", "alias", "layer"};
     std::string line;
     char text[96];
-    for (std::size_t i = 0; i < 4; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         std::snprintf(text, sizeof(text), " %s %llu/%.1f", uploadNames[i], static_cast<unsigned long long>(traffic.uploads[i].first), traffic.uploads[i].second / 1048576.0);
         line += text;
         traffic.uploads[i] = {};
@@ -1773,12 +1795,39 @@ bool StorageTexture::Refresh() {
         }
         refreshGeneration();
     }
+    // A changed layer holding exactly what a single-layer image of the same layout just stored there
+    // is copied from that image on the device instead of read back from the import.
+    // Debug aid: APS5_VERIFY_LAYER_COPY=1 still uploads such a layer from memory after the copy and
+    // compares the two contents ([layer-copy] lines).
+    static const bool verifyCopy = std::getenv("APS5_VERIFY_LAYER_COPY") != nullptr;
+    std::vector<std::pair<std::uint32_t, std::shared_ptr<Buffer>>> copiedBack;
+    // Only where an upload would leave the same bookkeeping: `original` not kept (watched memory) and
+    // no generation baseline (see stampLayers in upload).
+    if (direct && !keysChanged && !blockUnits && trackedLayers >= 2 && trackedLayers == arrayLayers && descriptor.dccAddress == 0 && generationBaseline.empty() && GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) {
+        bool copied = false;
+        for (std::uint32_t layer = 0; layer < trackedLayers; ++layer) {
+            if (!changed[layer] || layerPending[layer]) continue;
+            const auto source = storedLayerSource(layer);
+            if (source == nullptr) continue;
+            uploadReason = cpuWrote ? "cpu" : flushed ? "flushed" : "store";
+            copyLayerFrom(*source, layer);
+            if (verifyCopy) {
+                copiedBack.emplace_back(layer, readLayerBack(layer));
+                continue;
+            }
+            changed[layer] = false;
+            layerGeneration[layer] = current;
+            copied = true;
+        }
+        if (copied) refreshGeneration();
+    }
     if (std::any_of(changed.begin(), changed.end(), [](bool selected) { return selected; })) {
         uploadReason = keysChanged ? "keys" : cpuWrote ? "cpu" : generation == 0 ? "untracked" : flushed ? "flushed" : "store";
         upload(&changed);
     } else {
         uploadedKeys = keys;
     }
+    for (auto& [layer, copy] : copiedBack) compareLayerCopy(layerBegin(layer), layer, std::move(copy), readLayerBack(layer));
     return false;
 }
 
@@ -1836,6 +1885,10 @@ void StorageTexture::takeRefreshProof(bool aliased) {
 
 std::uint64_t StorageTexture::RefreshesProved() {
     return refreshesProved.load(std::memory_order_relaxed);
+}
+
+std::uint64_t StorageTexture::LayerCopies() {
+    return layerCopies.load(std::memory_order_relaxed);
 }
 
 bool StorageTexture::ServesKeysAt(std::uint64_t dccAddress) const {
@@ -2808,6 +2861,9 @@ void StorageTexture::markLayersPending(std::uint32_t first, std::uint32_t count)
     CaptureTrace::Log("image-write image=%llx first=%u count=%u generation=%llu", static_cast<unsigned long long>(descriptor.baseAddress), first, count, static_cast<unsigned long long>(generation));
     static const bool eager = std::getenv("APS5_EAGER_WRITEBACK") != nullptr || std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
     for (std::uint32_t layer = first; layer < first + count; ++layer) layerPending[layer] = true;
+    // New results: the content is no longer what the last store left (the eager write-back below
+    // stores before the version moves).
+    syncedVersion = ~std::uint64_t{0};
     // Results of this image now cover the alias's results borrowed into these units: this image
     // stores them, the alias no longer has to (its results, unchanged since the borrow, are in
     // this image's content). An alias written since keeps its own newer results pending.
@@ -3845,6 +3901,22 @@ std::uint64_t StorageTexture::borrowUnits(StorageTexture& source, const std::vec
     }
     std::uint64_t bytes = 0;
     for (const auto& [begin, end] : runs) bytes += end - begin;
+    recordCopyFrom(source, regions, bytes);
+    countStorageUpload(3, bytes);
+    if (borrowedFrom.lock() != source.weak_from_this().lock() || borrowedUnits.size() != trackedLayers) {
+        borrowedUnits.assign(trackedLayers, false);
+        borrowedFrom = source.weak_from_this();
+    }
+    borrowedVersion = source.version;
+    source.lent = true;
+    for (std::uint32_t unit = 0; unit < trackedLayers; ++unit) {
+        if (units[unit]) borrowedUnits[unit] = true;
+    }
+    ++version;
+    return bytes;
+}
+
+void StorageTexture::recordCopyFrom(StorageTexture& source, std::span<const VkImageCopy> regions, std::uint64_t bytes) {
     auto* recorder = Recorder::Active();
     std::unique_ptr<CommandBatch> batch;
     VkCommandBuffer commands = VK_NULL_HANDLE;
@@ -3870,11 +3942,12 @@ std::uint64_t StorageTexture::borrowUnits(StorageTexture& source, const std::vec
         barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, descriptor.mipCount, 0, geometry.imageLayers};
     }
+    barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, source.descriptor.mipCount, 0, source.geometry.imageLayers};
     barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     barriers[0].image = source.image;
+    barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, descriptor.mipCount, 0, geometry.imageLayers};
     barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barriers[1].image = image;
@@ -3886,18 +3959,109 @@ std::uint64_t StorageTexture::borrowUnits(StorageTexture& source, const std::vec
     context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &copied);
     if (batch) batch->SubmitAndWait();
     else recorder->EndGpuTiming(timing, bytes);
-    countStorageUpload(3, bytes);
-    if (borrowedFrom.lock() != source.weak_from_this().lock() || borrowedUnits.size() != trackedLayers) {
-        borrowedUnits.assign(trackedLayers, false);
-        borrowedFrom = source.weak_from_this();
+}
+
+std::shared_ptr<StorageTexture> StorageTexture::storedLayerSource(std::uint32_t layer) const {
+    // The two debug knobs that write images without MarkDirty would leave a stale image proved.
+    static const bool disabled = std::getenv("APS5_NO_LAYER_COPY") != nullptr || std::getenv("APS5_GPU_NO_WRITEBACK") != nullptr || std::getenv("APS5_NO_TARGET_WRITEBACK") != nullptr;
+    if (disabled || !GuestMemory::GpuMutex().HeldByThisThread()) return nullptr;
+    const auto begin = layerBegin(layer);
+    const auto bytes = layerBytes(layer);
+    if (geometry.GuestLayerOffset(layer) != begin - descriptor.baseAddress) return nullptr;
+    std::vector<std::shared_ptr<StorageTexture>> candidates;
+    {
+        auto& live = Live();
+        std::lock_guard lock(live.mutex);
+        for (auto* texture : live.textures) {
+            if (texture == this || texture->released || !texture->Cached() || texture->descriptor.baseAddress != begin || texture->guestBytes != bytes) continue;
+            if (auto alive = texture->weak_from_this().lock()) candidates.push_back(std::move(alive));
+        }
     }
-    borrowedVersion = source.version;
-    source.lent = true;
-    for (std::uint32_t unit = 0; unit < trackedLayers; ++unit) {
-        if (units[unit]) borrowedUnits[unit] = true;
+    const auto sameMip = [](const TileMipLayout& a, const TileMipLayout& b) { return a.tiledOffset == b.tiledOffset && a.tiledSize == b.tiledSize && a.width == b.width && a.height == b.height && a.pitchBytes == b.pitchBytes && a.tail == b.tail && a.tailX == b.tailX && a.tailY == b.tailY; };
+    const auto* recorder = Recorder::Active();
+    for (const auto& candidate : candidates) {
+        const auto& mine = descriptor;
+        const auto& theirs = candidate->descriptor;
+        const auto& source = *candidate;
+        // Linear only: every non-block-unit layered image at an aligned base is linear unless block
+        // tracking is off, and no depth seed or CMASK clear (writers that keep `version`) writes one.
+        const bool sameLayout = source.context.device == context.device && source.storageFormat == storageFormat && mine.tileMode == TextureTileMode::kLinear && ImageTypeFor(mine.dimension) == ImageTypeFor(theirs.dimension) && source.trackedLayers == 1 && source.arrayLayers == 1 && theirs.dccAddress == 0 && mine.width == theirs.width && mine.height == theirs.height && mine.mipCount == theirs.mipCount && mine.tileMode == theirs.tileMode && mine.pipeBankXor == theirs.pipeBankXor && BytesPerElement(mine.format) == BytesPerElement(theirs.format) && BlockWidth(mine.format) == 1 && BlockWidth(theirs.format) == 1 && !geometry.thick && !source.geometry.thick && geometry.imageDepth == 1 && source.geometry.imageDepth == 1 && source.geometry.GuestLayerOffset(0) == 0 && mips.size() == source.mips.size() && std::equal(mips.begin(), mips.end(), source.mips.begin(), sameMip);
+        if (!sameLayout || source.syncedVersion != source.version || source.layerPending[0] || source.layerGeneration[0] == 0 || (recorder != nullptr ? recorder->Id() : 0) != source.syncedRecorder) continue;
+        // A writer stamped only by its completion (a BDA table's stores) recorded since the store is
+        // invisible to the stamps: nothing of the kind may have been recorded since.
+        if (recorder != nullptr && (recorder->CompletionsRegistered() != source.syncedCompletions || recorder->NewestWriteNote(begin, static_cast<std::size_t>(bytes)) > source.syncedNote || (recorder->HasQueuedStores() && recorder->QueuedStoreOverlaps(begin, static_cast<std::size_t>(bytes))))) continue;
+        if (!GuestMemory::UnchangedSince(begin, static_cast<std::size_t>(bytes), source.layerGeneration[0])) continue;
+        return candidate;
     }
+    return nullptr;
+}
+
+void StorageTexture::copyLayerFrom(StorageTexture& source, std::uint32_t layer) {
+    std::vector<VkImageCopy> regions;
+    for (std::uint32_t level = 0; level < descriptor.mipCount; ++level) {
+        VkImageCopy region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, source.geometry.CopyLayer(0), 1};
+        region.srcOffset = {0, 0, source.geometry.CopyDepth(0)};
+        region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, geometry.CopyLayer(layer), 1};
+        region.dstOffset = {0, 0, geometry.CopyDepth(layer)};
+        region.extent = {std::max(descriptor.width >> level, 1u), std::max(descriptor.height >> level, 1u), 1u};
+        regions.push_back(region);
+    }
+    const auto bytes = layerBytes(layer);
+    recordCopyFrom(source, regions, bytes);
+    countStorageUpload(4, bytes);
+    layerCopies.fetch_add(1, std::memory_order_relaxed);
+    // The layer's guest bytes were not read: `original` and the generation baseline no longer
+    // vouch for them.
+    originalValid = false;
+    comparedGuestBytes = {};
+    generationBaseline.clear();
+    forgetBorrowed(layer, 1);
     ++version;
-    return bytes;
+}
+
+std::shared_ptr<Buffer> StorageTexture::readLayerBack(std::uint32_t layer) {
+    std::vector<VkBufferImageCopy> regions;
+    VkDeviceSize bytes = 0;
+    for (std::uint32_t level = 0; level < descriptor.mipCount; ++level) {
+        VkBufferImageCopy region{};
+        region.bufferOffset = bytes;
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, geometry.CopyLayer(layer), 1};
+        region.imageOffset = {0, 0, geometry.CopyDepth(layer)};
+        region.imageExtent = {std::max(descriptor.width >> level, 1u), std::max(descriptor.height >> level, 1u), 1u};
+        regions.push_back(region);
+        bytes += static_cast<VkDeviceSize>(region.imageExtent.width) * region.imageExtent.height * BytesPerElement(descriptor.format);
+    }
+    auto buffer = std::make_shared<Buffer>(context, static_cast<std::size_t>(bytes), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    auto* recorder = Recorder::Active();
+    std::unique_ptr<CommandBatch> batch;
+    VkCommandBuffer commands = VK_NULL_HANDLE;
+    if (recorder != nullptr) {
+        commands = recorder->Commands();
+        recorder->Keep(buffer, buffer->Bytes().size());
+        if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
+    } else {
+        batch = std::make_unique<CommandBatch>(context);
+        commands = batch->Handle();
+    }
+    VkImageMemoryBarrier toRead{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    toRead.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toRead.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toRead.image = image;
+    toRead.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, descriptor.mipCount, 0, geometry.imageLayers};
+    context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toRead);
+    context.Function<PFN_vkCmdCopyImageToBuffer>("vkCmdCopyImageToBuffer")(commands, image, VK_IMAGE_LAYOUT_GENERAL, buffer->Handle(), static_cast<std::uint32_t>(regions.size()), regions.data());
+    VkImageMemoryBarrier read = toRead;
+    read.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    const VkMemoryBarrier toHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+    context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost, 0, nullptr, 1, &read);
+    if (batch) batch->SubmitAndWait();
+    return buffer;
 }
 
 void StorageTexture::writeBack(std::uint64_t address, std::size_t bytes) {
@@ -4108,6 +4272,7 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         auto timing = Recorder::NoTiming;
         std::uint64_t storedBytes = 0;
         for (const auto& [from, to] : keep) storedBytes += to - from;
+        std::uint64_t storeNote = 0;
         if (recorder != nullptr) {
             recorder->FlushKeyStoresOverlapping(firstStored, static_cast<std::size_t>(lastStored - firstStored));
             recorder->FlushStoresOverlapping(firstStored, static_cast<std::size_t>(lastStored - firstStored));
@@ -4181,6 +4346,7 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             recorder->EndGpuTiming(timing, storedBytes);
             recorder->MarkShaderReadsCovered();
             recorder->NotePendingWrite(firstStored, static_cast<std::size_t>(lastStored - firstStored));
+            storeNote = recorder->LastWriteNote(firstStored, static_cast<std::size_t>(lastStored - firstStored));
         }
         countStorageWriteBack(storedBytes, true);
         if (profile) Profile().storageGpu += timer.lap();
@@ -4197,6 +4363,14 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         // newer than this value when its own range is collected. No CPU wrote the pages here
         // (MarkWritten made the only stamps), so the memoized collect is exact.
         settle(true);
+        // Every byte of the one layer stored: the import holds the content once the store runs
+        // (storedLayerSource).
+        if (trackedLayers == 1 && layers[0] && !skippedAny && (recorder == nullptr || storeNote != 0)) {
+            syncedVersion = version;
+            syncedRecorder = recorder != nullptr ? recorder->Id() : 0;
+            syncedNote = storeNote;
+            syncedCompletions = recorder != nullptr ? recorder->CompletionsRegistered() : 0;
+        }
         ++Profile().storageDirectWriteBacks;
         return;
     }
