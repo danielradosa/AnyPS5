@@ -3089,6 +3089,25 @@ bool StorageTexture::AnyPendingOverlaps(std::span<const std::pair<std::uint64_t,
     return false;
 }
 
+bool StorageTexture::AnyPendingUnitInside(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges) {
+    static const bool coarse = std::getenv("APS5_COARSE_PENDING_IMAGES") != nullptr;
+    if (coarse) return AnyPendingOverlaps(ranges);
+    if (ranges.empty()) return false;
+    auto& pending = Pending();
+    std::lock_guard lock(pending.mutex);
+    for (const auto* texture : pending.textures) {
+        for (const auto& [begin, end] : ranges) {
+            if (end > begin && texture->overlaps(begin, static_cast<std::size_t>(end - begin)) && texture->pendingUnitInside(begin, static_cast<std::size_t>(end - begin))) return true;
+        }
+    }
+    for (const auto* texture : pending.flushing) {
+        for (const auto& [begin, end] : ranges) {
+            if (end > begin && texture->overlaps(begin, static_cast<std::size_t>(end - begin))) return true;
+        }
+    }
+    return false;
+}
+
 std::uint64_t StorageTexture::PendingSerial() {
     return pendingSerial.load(std::memory_order_acquire);
 }

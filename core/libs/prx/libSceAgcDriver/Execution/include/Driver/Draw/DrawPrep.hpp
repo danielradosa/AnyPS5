@@ -47,6 +47,14 @@ struct DrawPrepState {
     alignas(64) std::atomic<std::size_t> helperCursor{Never};
     std::atomic<std::size_t> abortReason{0};
     std::array<std::uint64_t, DrawPrepCountCount> counts{};
+    // Where the pending-write aborts come from (helper thread only, APS5_PROFILE_DRAW): reads in the
+    // vertex decode or in the capture, by what overlapped (bit 0 a recorded write, 1 a pending storage
+    // image, 2 a unit shadow); capture policy aborts; and how many draws ahead of the worker.
+    bool capturing = false;
+    std::size_t drawsAhead = 0;
+    std::array<std::array<std::uint64_t, 8>, 2> readAborts{};
+    std::uint64_t policyAborts = 0;
+    std::array<std::uint64_t, 6> abortsAhead{};
     double busyMs = 0, gatedMs = 0, throttledMs = 0;
     std::chrono::steady_clock::time_point reported = std::chrono::steady_clock::now();
 };

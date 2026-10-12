@@ -21,6 +21,11 @@ double MillisecondsSince(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
+bool ProfileDraw() {
+    static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    return profile;
+}
+
 }
 
 bool Driver::drawPrepEnabled() {
@@ -232,6 +237,8 @@ void Driver::walkDrawPrep(const Submission& submission) {
                     ++counts[PrepTooLate];
                     break;
                 }
+                const auto reached = static_cast<std::size_t>(std::upper_bound(draws.begin(), draws.end(), worker) - draws.begin());
+                drawPrep.drawsAhead = index >= reached ? index - reached : 0;
                 prepareDraw(submission, packet);
                 break;
             }
@@ -247,8 +254,14 @@ void Driver::walkDrawPrep(const Submission& submission) {
 void Driver::prepRead(std::uint64_t address, std::span<std::byte> out) {
     const std::pair<std::uint64_t, std::uint64_t> range{address, address + out.size()};
     const auto pending = Graphics::Recorder::PendingWriteSnapshot();
-    if (Graphics::Recorder::SnapshotOverlaps(pending.get(), address, out.size()) || Graphics::StorageTexture::AnyPendingOverlaps(std::span(&range, 1)) || Graphics::AnyShadowedOverlaps(address, out.size())) {
-        Get().drawPrep.abortReason.store(PrepAbortPending, std::memory_order_relaxed);
+    if (Graphics::Recorder::SnapshotOverlaps(pending.get(), address, out.size()) || Graphics::StorageTexture::AnyPendingUnitInside(std::span(&range, 1)) || Graphics::AnyShadowedOverlaps(address, out.size())) {
+        auto& prep = Get().drawPrep;
+        if (ProfileDraw()) {
+            const auto mask = (Graphics::Recorder::SnapshotOverlaps(pending.get(), address, out.size()) ? 1u : 0u) | (Graphics::StorageTexture::AnyPendingUnitInside(std::span(&range, 1)) ? 2u : 0u) | (Graphics::AnyShadowedOverlaps(address, out.size()) ? 4u : 0u);
+            ++prep.readAborts[prep.capturing ? 1 : 0][mask];
+            ++prep.abortsAhead[std::min<std::size_t>(prep.drawsAhead / 8, prep.abortsAhead.size() - 1)];
+        }
+        prep.abortReason.store(PrepAbortPending, std::memory_order_relaxed);
         throw DrawPrepAbort{};
     }
     if (GuestMemory::CopyMapped(address, out) != GuestMemory::Compare::Equal) {
@@ -262,11 +275,16 @@ ShaderMemory::PendingWrite Driver::prepPendingWrite(std::uint64_t address, std::
     const auto policy = queryPendingWrite(address, bytes, known);
     if (known.empty() && bytes > sizeof(std::uint32_t)) {
         const std::pair<std::uint64_t, std::uint64_t> range{address, address + bytes};
-        if (policy == Policy::None && (Graphics::StorageTexture::AnyPendingOverlaps(std::span(&range, 1)) || Graphics::AnyShadowedOverlaps(address, bytes))) return Policy::Sync;
+        if (policy == Policy::None && (Graphics::StorageTexture::AnyPendingUnitInside(std::span(&range, 1)) || Graphics::AnyShadowedOverlaps(address, bytes))) return Policy::Sync;
         return policy;
     }
     if (policy == Policy::None || policy == Policy::Raw || policy == Policy::KnownValue) return policy;
-    Get().drawPrep.abortReason.store(PrepAbortPending, std::memory_order_relaxed);
+    auto& prep = Get().drawPrep;
+    if (ProfileDraw()) {
+        ++prep.policyAborts;
+        ++prep.abortsAhead[std::min<std::size_t>(prep.drawsAhead / 8, prep.abortsAhead.size() - 1)];
+    }
+    prep.abortReason.store(PrepAbortPending, std::memory_order_relaxed);
     throw DrawPrepAbort{};
 }
 
@@ -296,6 +314,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
     const auto& scratch = drawPrep.scratch;
     if (ShaderRecompiler::DebugProbeActive()) return;
     drawPrep.abortReason.store(0, std::memory_order_relaxed);
+    drawPrep.capturing = false;
     try {
         auto drawParameters = Pm4::ResolveDraw(packet, scratch);
         if (drawParameters.indirect) {
@@ -345,6 +364,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             if (program.binary.stage == Stage::Fragment || roles[i] == Role::GeometryBack) continue;
             vertexInfos[i] = Graphics::DecodeVertexStageInfo(program.binary.header, program.binary.headerAddress, program.userData, &decodeReads[i], false, &prepRead);
         }
+        drawPrep.capturing = true;
         ShaderMemory shaderMemory(memory, &prepPendingWrite, nullptr, nullptr, &prepRead);
         std::vector<StageCapture> stageCaptures(programs.size());
         std::uint32_t pushCursor = 0;
@@ -407,6 +427,15 @@ void Driver::reportDrawPrep(bool final) {
                                          count(PrepAbortPending), count(PrepAbortUnmapped), count(PrepFailed), count(PrepRaced), count(PrepUncacheable),
                                          count(PrepStopPredication), count(PrepStopConditional), count(PrepStopRegisterCopy), count(PrepStopReplay), count(PrepStopOther),
                                          count(PrepWaitsGated), drawPrep.gatedMs, count(PrepThrottled), drawPrep.throttledMs, drawPrep.busyMs);
+    const auto sites = [&](std::size_t phase, unsigned mask) { return static_cast<unsigned long long>(drawPrep.readAborts[phase][mask]); };
+    const auto several = [&](std::size_t phase) { return sites(phase, 3) + sites(phase, 5) + sites(phase, 6) + sites(phase, 7); };
+    const auto& ahead = drawPrep.abortsAhead;
+    AgcDriver::ProfilePrint_nid_no_patch("[draw-prep] pending aborts by site (10 s): vertex reads over a recorded write %llu, a storage image %llu, a shadow %llu, several %llu; capture reads %llu, %llu, %llu, %llu; capture policy %llu; draws ahead of the worker 0-7 %llu, 8-15 %llu, 16-23 %llu, 24-31 %llu, 32-39 %llu, 40+ %llu" "\n",
+                                         sites(0, 1), sites(0, 2), sites(0, 4), several(0), sites(1, 1), sites(1, 2), sites(1, 4), several(1), static_cast<unsigned long long>(drawPrep.policyAborts),
+                                         static_cast<unsigned long long>(ahead[0]), static_cast<unsigned long long>(ahead[1]), static_cast<unsigned long long>(ahead[2]), static_cast<unsigned long long>(ahead[3]), static_cast<unsigned long long>(ahead[4]), static_cast<unsigned long long>(ahead[5]));
+    drawPrep.readAborts = {};
+    drawPrep.policyAborts = 0;
+    drawPrep.abortsAhead = {};
     drawPrep.counts = {};
     drawPrep.gatedMs = drawPrep.throttledMs = drawPrep.busyMs = 0;
     drawPrep.reported = now;
