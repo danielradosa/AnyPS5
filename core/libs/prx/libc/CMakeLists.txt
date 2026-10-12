@@ -429,6 +429,7 @@ if(BUILD_TESTING)
         set_tests_properties(guest_last_set_bit PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    endif()
     add_test_executable(mspace_tests ${LIBS_INCLUDE_DIR}/tests/Mspace.cpp)
     target_include_directories(mspace_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(mspace_tests PRIVATE libc)
