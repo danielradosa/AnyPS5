@@ -151,6 +151,10 @@ if(BUILD_TESTING)
     target_link_libraries(guest_vsh_web_app_launcher_tests PRIVATE libc)
     configure_windows_unwind(guest_vsh_web_app_launcher_tests)
     add_test(NAME guest_vsh_web_app_launcher COMMAND guest_vsh_web_app_launcher_tests)
+    if(WIN32)
+        set_tests_properties(guest_vsh_web_app_launcher PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
 
     add_test_executable(guest_posix_scalar_io_tests tests/GuestPosixScalarIo.cpp)
     target_include_directories(guest_posix_scalar_io_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
