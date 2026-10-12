@@ -1697,7 +1697,11 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     if (capture) captureInputs(context, *recorder, commands, resources, drawBindings, record.targets.empty() || record.targets.front() == nullptr ? 0 : record.targets.front()->Descriptor().baseAddress);
     // The draw's [gputime] class range: from its first barrier to the pass's trailing barrier (a
     // continued draw lies inside its pass's range).
-    const auto drawTiming = !continued ? recorder->BeginGpuTiming(CommandClass::Draw) : Recorder::NoTiming;
+    // APS5_GPU_TIME_BY_PASS=1: the range is keyed by the pass's first color target (depth-only: 1), so
+    // [gputime] lists passes by target among its programs instead of the draw class.
+    static const bool byPass = std::getenv("APS5_GPU_TIME_BY_PASS") != nullptr;
+    const auto passTimingKey = byPass ? (record.targets.empty() || record.targets.front() == nullptr ? 1 : record.targets.front()->Descriptor().baseAddress) : Recorder::ClassKey(CommandClass::Draw);
+    const auto drawTiming = !continued ? recorder->BeginGpuTiming(passTimingKey) : Recorder::NoTiming;
     if (!continued && Recorder::BarrierValidate()) {
         auto reads = resources.InPlaceReads();
         reads.insert(reads.end(), inputs.inPlaceReads.begin(), inputs.inPlaceReads.end());
@@ -2165,7 +2169,7 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     if (recorded) recorder->PrepareSampleSlot();
     APS5_LOG_CHARS_OUT_DEBUG("CommandBatch created");
     // The draw's [gputime] class range: from its first barrier to the download barrier.
-    const auto drawTiming = recorded ? recorder->BeginGpuTiming(CommandClass::Draw) : Recorder::NoTiming;
+    const auto drawTiming = recorded ? recorder->BeginGpuTiming(std::getenv("APS5_GPU_TIME_BY_PASS") != nullptr ? 2 : Recorder::ClassKey(CommandClass::Draw)) : Recorder::NoTiming;
     if (recorded && Recorder::BarrierValidate()) {
         auto reads = resources->InPlaceReads();
         reads.insert(reads.end(), inputs.inPlaceReads.begin(), inputs.inPlaceReads.end());
