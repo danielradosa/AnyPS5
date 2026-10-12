@@ -97,6 +97,10 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                     for (std::size_t rank = 0; rank < variants.size(); ++rank) {
                         const auto& variant = variants[rank];
                         if (variant->pushOffset != cursor) continue;
+                        if (variant->userData != programs[i].userData) {
+                            anyLayout = true;
+                            continue;
+                        }
                         auto& regions = matchedRegions[i];
                         regions.clear();
                         appendEntryRegions(*variant, regions);
