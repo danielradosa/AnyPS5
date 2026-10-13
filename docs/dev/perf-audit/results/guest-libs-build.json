@@ -1,0 +1,275 @@
+{
+ "subsystem": "Guest-side CPU libraries (libSceAgc builders, Submit on game threads), libkernel waits, timing, threads, fibers, audio pacing, stubs, and build configuration",
+ "answer": "No. The unfinished functions are not what holds Astro Bot at 8-9 FPS (stubsVerdict: not-a-cause).\n\n**Throwing stubs crash, they do not slow anything down.** Every `NotImplemented_nid_no_patch` stub throws `std::runtime_error` (core/libs/prx/libc/src/General.cpp:314-316). `RunThread` has no catch (core/libs/prx/libkernel/Pthread/src/Thread.cpp:172-184), so a call ends the process. They cannot cost time per frame.\n\n**The silent stubs are not on the frame path either.** They are listed in docs/dev/TechnicalDebt.md:13-37: dialogs, network, HMD, USB, Audio3d pacing on the audio thread, and AudioPropagation, which does less work. The Astro-specific entries add no waits: VideoOut open param (TechnicalDebt.md:69), flexible-memory flag 0x8000 (TechnicalDebt.md:127), and NGS2 (TechnicalDebt.md:163, 201). Two approximations are real but small: the host ignores guest priorities and affinities (Thread.cpp:487-514), and every flip mode waits for vsync on a FIFO swapchain (core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:75; Execution/src/VulkanDevice.cpp:1172).\n\n**The game's own command building is cheap.** The sceAgcDcb* builders do a few checks and write words, with no logging or locks (libSceAgc/DcbDraw/src/DrawIndexed.cpp:12-80; Command/src/Packet.cpp:12-60). The `sceAgcCreateShader` log is commented out (Shader/src/CreateShader.cpp:66), so `APS5_AGC_CREATE_LOG=ON` does nothing.\n\n**What does cost time on the game side:**\n1. **Build type.** Nothing sets `CMAKE_BUILD_TYPE`, and no `-O` flags are added anywhere. A build configured without `-DCMAKE_BUILD_TYPE=Release` (which BUILD.md:35 asks for) is `-O0` (guest-build-type-unset).\n2. **Windows on an Intel CPU without `--to-intel`.** Every SSE4a instruction traps into a vectored exception handler (libc/src/specifics/windows/CrashReport.cpp:225-246, 468-470) (guest-sse4a-trap-emulation).\n3. **Windows fine timed waits busy-spin.** The last 0.5 ms of every sleep or timed wait spins, and a `sceKernelUsleep` under 0.5 ms is a pure spin (Time/TimedWait.cpp:17-18, 282-322) (guest-windows-fine-wait-spin).\n4. **Thread scheduling.** The host sets no thread priority, so nothing ranks the one GPU queue worker above other threads, and the game is told it has 13 CPUs whatever the host has (Thread.cpp:442-444) (guest-no-host-priorities, guest-cpumask-13-vs-host).\n5. **Unconditional logging.** Texture and StorageTexture constructors, uploads and writebacks always print to stdout and `fflush`, from code that runs under `GpuMutex` (Graphics/src/Texture.cpp:246, 462, 688, 1696, 3679) (guest-unconditional-texture-logs).\n6. **Game threads waiting on the GPU path.** `Submit`'s `CheckRange` calls (Submission.cpp:54, 69, 202) and guest unmap/protect pin waits (libc/src/GuestAllocations.cpp:240-283; see buffers-lease-pins-guest-frees) make game threads wait on the serialized GPU path.\n\nThe main limit is still the single-threaded draw path under `GpuMutex` (graphics-draw-1-locked-draw, exec-draw-1). The game threads sit idle waiting for that worker. This matches the reported \"CPU and GPU both under-used\".",
+ "howItWorks": "**Command building on game threads.** Game threads build PM4 through the `sceAgcDcb*`/`Cb*` exports. Each one checks its arguments, reserves space and writes a few dwords (Packet.cpp `Reserve`/`Emit`). `sceAgcCreateShader` patches the program-address registers and calls `AgcDriverRegisterShader`, which copies the code and header into a copy-on-write `ShaderRegistry` under `Driver::mutex` (ShaderRegistry.cpp:164-210).\n\n**Submit, still on the game thread.** `Driver::Submit` does the following, then hands the submission to the queue worker:\n- runs `CheckRange` on the packet and on every IB target;\n- copies the DCB and follows the IBs (Submission.cpp:12-105, 189-233);\n- validates and reads the register lists;\n- waits on a condvar if 16 flips are already queued (VideoOutDriver.cpp:64-72);\n- enqueues under `Driver::mutex`.\n\n**Kernel sync objects.** Guest mutexes take an atomic fast path over a std (timed) mutex (Mutex.cpp:32-73). Condvars, event flags, semaphores, sync-on-address and equeues all use `TimedWait::Condition`:\n- On Linux this is `std::condition_variable_any`, and `nanosleep` handles sleeps.\n- On Windows it is a per-thread event plus a high-resolution waitable timer, with a 0.5 ms `YieldProcessor` spin at the end of each wait. The timer resolution is raised to 0.5 ms at load (Time.cpp:77-95).\n\n**Fibers.** These are user-space stack switches with no syscalls (libSceFiber/Export.cpp:290-319).\n\n**Threads.** Guest threads are plain host threads. Guest priority and affinity are stored and never applied. `sceKernelGetAvailableCpumask` always returns 0x1FFF.\n\n**Audio.** Audio pushes pace against a 48 kHz clock on the title's audio thread.\n\n**Build.** The build has no optimization defaults of its own: optimization comes only from `CMAKE_BUILD_TYPE`. The shader recompiler bakes the build type and flags into its disk-cache key.",
+ "threadingAndLocks": "**Game threads.**\n- The AGC builders take no lock. `RegisterDefaults` takes a global mutex, but only once per version (RegisterDefaults.cpp:44-75).\n- `Submit` takes `Driver::mutex` briefly (Submission.cpp:213-231). It can block on the flip-queue condvar (capacity 16, VideoOutDriver.hpp:61) or in `executeRewindTail`'s 200 us `PollSleep` loop (Submission.cpp:156-169; WaitMemory.cpp:17-29).\n- `RegisterShader` takes `Driver::mutex` and can copy the whole registry map (ShaderRegistry.cpp:196-202).\n\n**Guest sync objects.**\n- A guest mutex is initialized under a global `initializationMutex` once.\n- Guest condvars, semaphores and event flags block properly; none of them poll.\n- On Windows, a timed mutex lock polls every 0.5 ms once less than 40 ms remains (TimedWait.hpp:21-40).\n\n**Memory unmapping.** Guest munmap and mprotect go through the `GuestAllocations` registry. When a range is pinned by GPU work, they drop the registry lock and call the driver's waiter, which waits for the GPU under `GpuMutex` (GuestAllocations.cpp:240-283).\n\n**Scheduling.**\n- No host thread priority is set anywhere, neither guest-requested nor for the driver's queue worker or presenter.\n- Affinity:\n  - Job-worker pinning exists only on Windows and is opt-in (Thread.cpp:198-227).\n  - Queue-worker pinning is on by default only on Linux with a hybrid CPU (WorkerAffinity.cpp:8-20).\n\n**Other threads.** The audio-push yield spin (AudioOut2Context.cpp:341-348) runs outside its lock.",
+ "findings": [
+  {
+   "id": "guest-build-type-unset",
+   "title": "No default CMAKE_BUILD_TYPE: an unconfigured build is unoptimized (-O0) everywhere",
+   "location": "CMakeLists.txt:1-36; core/libs/CMakeLists.txt:1-23; docs/dev/BUILD.md:35,64; core/shader/recompiler/CMakeLists.txt:204-205",
+   "category": "build-config",
+   "mechanism": "No CMakeLists sets CMAKE_BUILD_TYPE or adds -O flags. A grep for CMAKE_BUILD_TYPE, -O[0-3s], INTERPROCEDURAL_OPTIMIZATION and -march over core/ and the top-level file finds only a reader at recompiler/CMakeLists.txt:204 and a forwarder at Decoder/Jpeg/CMakeLists.txt:24. With Ninja or Makefiles and no -DCMAKE_BUILD_TYPE, GCC compiles every library at -O0: the AGC driver, the recompiler, libc/libkernel, glslang, and SPIRV-Tools when enabled. BUILD.md:35 documents -DCMAKE_BUILD_TYPE=Release, but nothing enforces it.",
+   "evidence": "CMakeLists.txt:26-36 sets only options and static link flags. core/libs/CMakeLists.txt:20-23 adds only -fno-asynchronous-unwind-tables on MinGW. BUILD.md:35 is 'cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ...'.",
+   "onDefaultPath": true,
+   "impact": "critical",
+   "whyImpact": "Conditional: this applies only if the user configured without Release. The driver's per-draw path is STL-heavy CPU code (maps, shared_ptr, vectors, hashing, memcmp) running serially on one worker under GpuMutex (graphics-draw-1-locked-draw). -O0 typically makes such code 3-10x slower, which alone could turn a ~30 FPS CPU-bound frame into 8-9 FPS with idle cores and an idle GPU.",
+   "proposal": "Before project(), or right after it, add: if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES) set(CMAKE_BUILD_TYPE Release CACHE STRING \"\" FORCE) endif(). Also print the build type, or the __OPTIMIZE__ state, in the startup log so user reports show it.",
+   "effort": "S",
+   "risk": "None functionally. The shader disk-cache key includes the build type and flags (recompiler/CMakeLists.txt:205), so the first run after switching recompiles every shader.",
+   "howToMeasure": "Run grep CMAKE_BUILD_TYPE build/CMakeCache.txt. If it is empty or Debug, rebuild with Release and compare FPS and APS5_PROFILE_DRAW phase times."
+  },
+  {
+   "id": "guest-sse4a-trap-emulation",
+   "title": "Windows on Intel without --to-intel: each SSE4a instruction is a trapped and emulated exception",
+   "location": "core/libs/prx/libc/src/specifics/windows/CrashReport.cpp:174-246,468-470; docs/dev/TechnicalDebt.md:299; docs/user/USAGE.md:30",
+   "category": "other",
+   "mechanism": "EXTRQ and INSERTQ are AMD-only. On an Intel host, every execution raises STATUS_ILLEGAL_INSTRUCTION. The vectored handler ReportCrash first checks for a write-watch fault, then decodes the instruction with ReadCode (VirtualQuery per page), emulates it on the CONTEXT and resumes. Each executed instruction therefore costs a kernel exception dispatch plus the handler, roughly several microseconds instead of one cycle. Emulation is on by default (g_sse4aEmulation = !APS5_NO_SSE4A_EMULATION). The relinker's --to-intel option converts these instructions statically, but it is opt-in.",
+   "evidence": "CrashReport.cpp:174-178: 'titles use it, so on an Intel host the instruction raises STATUS_ILLEGAL_INSTRUCTION and is emulated'. Lines 225-238 hold HandleSse4a, line 246 is reached on every exception, line 470 is AddVectoredExceptionHandler(1, ReportCrash). TechnicalDebt.md:299 says this path is 'superseded by --to-intel'. USAGE.md:30: 'Add --to-intel for Intel hosts'.",
+   "onDefaultPath": false,
+   "impact": "high",
+   "whyImpact": "Conditional: Windows plus Intel CPU plus a title relinked without --to-intel. If the title runs SSE4a in hot loops (bit-field extraction in decompression, animation or physics), tens of thousands of traps per frame cost tens to hundreds of ms per frame on game threads. On Linux there is no such handler, so an Intel host without --to-intel crashes instead.",
+   "proposal": "On Intel hosts, relink with --to-intel. Have the loader log the g_sse4aEmulated rate every few seconds, and warn when it is non-zero.",
+   "effort": "S",
+   "risk": "TechnicalDebt.md:310 notes that --to-intel lowers VRSQRTPS/VRCPPS to correctly rounded results, which differ in the low bits; this was already handled for PPSA21564's NaN case.",
+   "howToMeasure": "Run with APS5_TRACE_SSE4A=1, which prints each emulated rip once with a running count. Watch whether the count keeps growing in-game."
+  },
+  {
+   "id": "guest-windows-fine-wait-spin",
+   "title": "Windows default 'fine' timed waits busy-spin the last 0.5 ms, and usleep under 0.5 ms is a pure spin",
+   "location": "core/libs/prx/libkernel/Time/TimedWait.cpp:17-18,138-157,244-251,282-322; core/libs/prx/libkernel/Time/Time.cpp:224-227; core/libs/prx/libkernel/Time/include/TimedWait.hpp:21-40",
+   "category": "polling-sleep-latency",
+   "mechanism": "On Windows, Coarse() is false unless APS5_COARSE_TIMED_WAITS is set. In SleepUntil, a deadline closer than LEAD_NANOS=500 us never sleeps: it loops on YieldProcessor() until the deadline. Longer sleeps wait on the timer, then spin the last 0.5 ms. Sleeps under 50 us become SwitchToThread. WaitEventUntil, used by condvar, event-flag and semaphore timed waits, likewise spins the final 0.5 ms before a timeout. sceKernelUsleep(n) calls SleepNanos, so a job worker idling with sceKernelUsleep(100-400) keeps a core at 100%. On Linux, waits are std::condition_variable_any and nanosleep, which sleep with no spin.",
+   "evidence": "TimedWait.cpp:17-18 define YIELD_BELOW_NANOS=50000 and LEAD_NANOS=500000. Lines 285-293 are 'while (now < deadlineNanos) { YieldProcessor(); ...}'. Lines 244-251: Coarse() returns getenv(\"APS5_COARSE_TIMED_WAITS\") on Windows and true elsewhere. Thread.cpp:199 says job workers 'spin at full load on one core each'.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Windows only. The 13 guest job workers plus the driver threads compete for cores. Every spinning sleeper takes CPU time from the single GPU queue worker, which is the frame's critical path (graphics-draw-1-locked-draw), and from the presenter. This matters most on hosts with 16 or fewer logical CPUs. It does not explain idle CPUs, but it can hide the real bottleneck and slow the worker on smaller hosts.",
+   "proposal": "Make the spin tail adaptive: spin at most about 50 us, or only when the deadline is under 100 us. Or default to coarse waits when the scheduler tick was successfully raised to 0.5 ms (Time.cpp:77-95). Keep the fine mode behind an env var for label-handoff-sensitive cases.",
+   "effort": "S",
+   "risk": "Coarser waits add up to about 0.5-1 ms of wake latency to guest timed waits. Time.cpp:72-76 notes that a title hands labels between queues dozens of times per frame, so measure before changing the default.",
+   "howToMeasure": "On Windows, compare FPS and per-thread CPU (Process Explorer) with and without APS5_COARSE_TIMED_WAITS=1. APS5_TRACE_USLEEP=1 and APS5_TRACE_WAITS=1 (Time.cpp:161-222) show which guest sites sleep and time out most."
+  },
+  {
+   "id": "guest-no-host-priorities",
+   "title": "No host thread priorities: guest priorities are dropped and the GPU queue worker gets no boost",
+   "location": "core/libs/prx/libkernel/Pthread/src/Thread.cpp:276-287,487-491,510-514; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/WorkerAffinity.cpp:8-31; docs/dev/TechnicalDebt.md:27",
+   "category": "other",
+   "mechanism": "scePthreadCreate stores the priority and affinity from the attributes. scePthreadSetprio and scePthreadSetaffinity only store values. A grep for SetThreadPriority, pthread_setschedparam, setpriority and sched_setscheduler under core/libs/prx finds no host call. Guest job workers, the game main thread, audio threads, and the driver's PM4 queue worker and presenter all run at the same host priority. Affinity is applied only through opt-in env vars: job workers on Windows, queue workers on Linux hybrid CPUs.",
+   "evidence": "Thread.cpp:489 'thread->affinity.store(mask...)' and :512 'thread->priority.store(prio...)'. The grep for priority APIs returns only the guest-side pthread_setschedparam_nid_postfix (Posix/Thread.cpp:92) and VideoOut constants. TechnicalDebt.md:27: 'guest priorities and affinities do not reach host scheduling'.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Every draw is serialized on one worker thread (exec-draw-2, graphics-draw-1). Any time that thread spends runnable but not running stretches the whole frame. With spinning job workers (Thread.cpp:199) or a busy host, the worker gets a fair share at best, not priority.",
+   "proposal": "Raise the AGC queue workers and presenter to above-normal priority: SetThreadPriority(THREAD_PRIORITY_ABOVE_NORMAL) on Windows, or a negative nice value through setpriority on the TID on Linux, where permitted. Optionally map guest priority bands (256-767) to two or three host levels.",
+   "effort": "S",
+   "risk": "Low. A raised worker that busy-polls (PollSleep loops) could starve game threads, but its polls sleep 200 us (WaitMemory.cpp:17-29).",
+   "howToMeasure": "Linux: perf sched latency or /proc/<pid>/task/<tid>/schedstat for the worker's run-queue wait. Windows: Process Explorer per-thread ready time. Compare FPS after renice or raising the worker thread."
+  },
+  {
+   "id": "guest-cpumask-13-vs-host",
+   "title": "The game is always told it has 13 CPUs (0x1FFF), while sceKernelGetCurrentCpu returns the real host index",
+   "location": "core/libs/prx/libkernel/Pthread/src/Thread.cpp:442-444; core/libs/prx/libkernel/Pthread/include/Pthread.hpp:63; core/libs/prx/libkernel/System/src/Process.cpp:149-165",
+   "category": "other",
+   "mechanism": "sceKernelGetAvailableCpumask returns the constant DEFAULT_THREAD_AFFINITY=0x1FFF, whatever the host core count, so job systems create 13 workers. Per Thread.cpp:199, one title has 'BPE JobWorkerThread CPU0..CPU12' spinning at full load. sceKernelGetCurrentCpu returns the host's CPU index (sched_getcpu, or the processor group index on Windows), which can be 13 or more on large hosts, outside the advertised mask.",
+   "evidence": "Thread.cpp:442-444 'return DEFAULT_THREAD_AFFINITY;'. Pthread.hpp:63 '= 0x1FFF'. Process.cpp:160-163 'const int cpu = ::sched_getcpu(); ... return cpu;'.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "On hosts with fewer than about 16 logical CPUs, 13 workers plus the main, render, audio, queue-worker and presenter threads oversubscribe the cores. That slows the serialized GPU worker, more so if workers spin or yield. On large hosts it has no perf effect, but the out-of-mask CPU index could break per-CPU arrays (a correctness risk).",
+   "proposal": "Add an opt-in env var, for example APS5_GUEST_CPUS=n, to report a smaller mask. Clamp or remap sceKernelGetCurrentCpu into the reported mask.",
+   "effort": "S",
+   "risk": "Some titles may assume exactly 13 or 14 cores or fixed worker indices. Keep the default unchanged until it has been tested.",
+   "howToMeasure": "Compare host logical CPUs against the guest thread count (top -H, or Process Explorer threads named JobWorker). Look for oversubscription with high involuntary context switches (/proc/<pid>/task/*/status nonvoluntary_ctxt_switches)."
+  },
+  {
+   "id": "guest-unconditional-texture-logs",
+   "title": "Unconditional stdout and fflush logging on every Texture/StorageTexture creation, upload and writeback, under GpuMutex",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Texture.cpp:246-248,462,688,1696-1698,3679-3681; core/libs/prx/libc/include/general/LogMacros.hpp:32-43; core/libs/prx/libkernel/File/src/Open.cpp:107",
+   "category": "logging-debug-overhead",
+   "mechanism": "APS5_LOG_OUT and APS5_LOG_CHARS_OUT expand to fprintf(stdout) plus fflush(stdout) with no condition (LogMacros.hpp:32-38). The following log on every call:\n- the Texture constructors (one line, plus one line per mip)\n- the StorageTexture constructor\n- StorageTexture::upload and writeBackLayers, around SubmitAndWait\n\nAll of these run inside the draw or dispatch path while GpuMutex is held. sceKernelOpen also logs every open (Open.cpp:107).",
+   "evidence": "Texture.cpp:246 is APS5_LOG_OUT(\"Texture address=0x%llx ...\") inside Texture::Texture (line 228), and :248 logs one line per mip. :688 is in StorageTexture::StorageTexture (line 680). :1696/:1698 bracket batch.SubmitAndWait() in upload (line 1480). :3679/:3681 do the same in writeBackLayers (line 3363). LogMacros.hpp:33-34 is std::fprintf(...), std::fflush(stream).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "It is cheap if textures are created once. The digest, however, reports that the cache capacities are below the frame working set (graphics-draw-2-cache-capacity, shader-resources-rescache-lru-capacity), so re-creation, and therefore logging, can happen every frame. The I/O and flush run under the global lock. On a Windows console, each fflush'd line can cost tens to hundreds of microseconds.",
+   "proposal": "Gate these behind a cached trace env var, for example APS5_TRACE_TEXTURES, or change them to APS5_LOG_OUT_DEBUG. Drop the per-line fflush.",
+   "effort": "S",
+   "risk": "None. These are diagnostic prints.",
+   "howToMeasure": "Count 'Texture address=' and 'StorageTexture' lines per second in stdout during gameplay. Compare FPS with stdout redirected to a file or NUL against an attached console."
+  },
+  {
+   "id": "guest-submit-checkrange-and-registry-cow",
+   "title": "Game-thread Submit walks every IB with CheckRange, and shader registration can copy the whole registry",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:19-105,189-233; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Shaders/ShaderRegistry.cpp:164-210",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Submit runs on the calling game thread. It CheckRanges the packet and the DCB, copies all words, recursively follows INDIRECT_BUFFER and COND_INDIRECT_BUFFER packets with a CheckRange per target, then validates and reads the register lists. On Linux each CheckRange is a PROCMAP_QUERY ioctl or a /proc/self/maps parse (memory-tracking-linux-no-page-cache). RegisterShader copies the code and header and, when a queued submission still holds the registry's shared_ptr (Submission.cpp:218), clones the entire map under Driver::mutex (ShaderRegistry.cpp:200-202).",
+   "evidence": "Submission.cpp:54 and :69 call GuestMemory::CheckRange(target, ...) for each IB, :192 and :202 for the packet and DCB, and :203 is copyCommands. ShaderRegistry.cpp:201 is 'else if (shaders.use_count() != 1) shaders = std::make_shared<ShaderRegistry>(*shaders);'.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "These costs are per submit and per IB, not per draw. With a few to a few hundred IBs per frame, they add microseconds to low milliseconds on the game's render thread. Registry clones are O(number of shaders), but only when shaders are created between submits (streaming).",
+   "proposal": "Memoize CheckRange results per submit for ranges already proven, or reuse the page-state cache. Make ShaderRegistry a persistent structure, such as a sharded map plus an epoch, instead of copy-on-write.",
+   "effort": "M",
+   "risk": "Low.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, Submit records copyNs and validateNs per queue (Submission.cpp:197-228). Compare these against the frame time."
+  },
+  {
+   "id": "guest-stubs-throw-not-slow",
+   "title": "Throwing stubs terminate the process. The silent stubs and approximations are off the frame path.",
+   "location": "core/libs/prx/libc/src/General.cpp:314-316; core/libs/prx/libkernel/Pthread/src/Thread.cpp:172-184; core/libs/prx/libSceAgc/Unimplemented.cpp:8-30; docs/dev/TechnicalDebt.md:13-37,69,127; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:64-75",
+   "category": "incomplete-implementation",
+   "mechanism": "NotImplemented_nid_no_patch throws std::runtime_error, and guest thread entry has no handler, so an unimplemented call is fatal rather than slow. The silent stubs are dialogs, HTTP, HMD, USB, Bluetooth, NpCommerce, AudioPropagation (no rays, so less work) and Audio3d (paces pushes at 48 kHz on the audio thread). Astro-specific notes are the VideoOut open param word (TechnicalDebt.md:69) and flag 0x8000 ignored in sceKernelMapNamedFlexibleMemoryInternal (TechnicalDebt.md:127); neither adds waits. All flip modes present at the next vsync on a FIFO swapchain, with a 16-entry flip queue (VideoOutDriver.hpp:61), so the game thread rarely blocks in WaitForFlipRoom.",
+   "evidence": "General.cpp:315 is 'throw std::runtime_error(std::string(funcName) + \" not implemented\");'. Thread.cpp:182 is 'finishThread(self, entry(arg));' with no try. VideoOutDriver.cpp:75 is the comment '// All flip modes are presented at the next vsync.'",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "At 8-9 FPS, vsync quantization adds at most one refresh interval per frame. No stub sits on a per-draw path or adds per-frame waits on the render thread.",
+   "proposal": "Nothing for performance. Use tools/import_audit.py to list the title's throwing stubs and absent imports before launch.",
+   "effort": "S",
+   "risk": "None.",
+   "howToMeasure": "Run relinker --registry <eboot.elf> app.elf, then python3 tools/import_audit.py app.registry.json --libs build/core/libs/libs --modules <title>/sce_module (USAGE.md:104-117). Stubs are classified as 'stub'. Silent approximations appear as 'implemented', so cross-check docs/dev/TechnicalDebt.md."
+  },
+  {
+   "id": "guest-agc-builders-cheap",
+   "title": "The sceAgc DCB builders and sceAgcCreateShader are cheap; the APS5_AGC_CREATE_LOG option is dead",
+   "location": "core/libs/prx/libSceAgc/DcbDraw/src/DrawIndexed.cpp:12-88; core/libs/prx/libSceAgc/Command/src/Packet.cpp:12-60; core/libs/prx/libSceAgc/Shader/src/CreateShader.cpp:12-68; core/libs/prx/libSceAgc/CMakeLists.txt:58-62; core/libs/prx/libSceAgc/Cb/src/Sync.cpp:56-57",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Each builder makes a few Require/CheckAddress branches (they only build strings when they throw) and writes 3 to 10 dwords through Reserve and Emit. There is no logging, mutex or map lookup per call. RegisterDefaults takes a mutex but caches after the first call. The APS5_TRACE_LABEL check in Sync.cpp is a function-static. The only use of APS5_AGC_CREATE_LOG is commented out, so the CMake option, which defaults to ON, has no effect.",
+   "evidence": "CreateShader.cpp:66 is '// APS5_LOG_OUT_IF(APS5_AGC_CREATE_LOG, ...)'. A grep of non-test libSceAgc .cpp files finds no fprintf, logging or locks other than RegisterDefaults.cpp:44-52 and the cached getenv in Sync.cpp:56.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "These calls cost nanoseconds to sub-microseconds each, even across thousands of draws per frame, which is negligible.",
+   "proposal": "Remove the dead option, or restore the log behind a runtime env var. No performance work is needed.",
+   "effort": "S",
+   "risk": "None.",
+   "howToMeasure": "Use perf record or VTune on the game render thread. libSceAgc symbols should be well under 1% of samples."
+  }
+ ],
+ "incompleteOrStubbed": [
+  {
+   "location": "core/libs/prx/libc/src/General.cpp:314-316",
+   "what": "NotImplemented_nid_no_patch throws std::runtime_error, and guest threads have no catch (Thread.cpp:172-184).",
+   "perfRelevance": "Calling one crashes the process. It never slows anything down."
+  },
+  {
+   "location": "core/libs/prx/libSceAgc/Unimplemented.cpp:8-30",
+   "what": "The sceAgcAcb marker-span and workload-state exports (PushMarkerSpan, SetMarkerSpan, SetWorkloadComplete, SetWorkloadStreamInactive, SetWorkloadsActive) are throwing stubs.",
+   "perfRelevance": "None. A call would crash the title."
+  },
+  {
+   "location": "core/libs/prx/libkernel/Pthread/src/Thread.cpp:487-491,510-514",
+   "what": "scePthreadSetaffinity and scePthreadSetprio only store their values. Host priority and affinity are never applied.",
+   "perfRelevance": "Medium. Nothing ranks the critical queue worker above other threads, and the game's own scheduling intent is lost."
+  },
+  {
+   "location": "core/libs/prx/libkernel/Pthread/src/Thread.cpp:442-444",
+   "what": "sceKernelGetAvailableCpumask always returns 0x1FFF (13 CPUs), whatever the host has.",
+   "perfRelevance": "Medium on hosts with fewer than about 16 logical CPUs, where the job system oversubscribes the cores."
+  },
+  {
+   "location": "core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:75; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1172,1830",
+   "what": "Every flip mode is presented at the next vsync, and the present mode is always FIFO.",
+   "perfRelevance": "Low at 8-9 FPS. It caps the frame rate at the refresh rate and quantizes frame times."
+  },
+  {
+   "location": "docs/dev/TechnicalDebt.md:27",
+   "what": "sceVideoOutOpen validates but ignores the service thread priority and affinity it is given.",
+   "perfRelevance": "Low."
+  },
+  {
+   "location": "docs/dev/TechnicalDebt.md:127; core/libs/prx/libkernel/DirectMemory/Export.cpp:198-199",
+   "what": "sceKernelMapNamedFlexibleMemoryInternal accepts and ignores flag 0x8000. This is specific to Astro Bot's SDK 9 libc.prx heap.",
+   "perfRelevance": "No direct cost. Astro's own heap maps and unmaps through libkernel, so unmap and protect calls can hit the GPU-lease pin wait (GuestAllocations.cpp:240-283)."
+  },
+  {
+   "location": "docs/dev/TechnicalDebt.md:22,29",
+   "what": "AudioPropagation computes no rays and no paths, and Audio3d produces no sound and only paces pushes at 48 kHz.",
+   "perfRelevance": "None on the render path. Both run on audio threads, and AudioPropagation does less work than the console."
+  },
+  {
+   "location": "core/libs/prx/libSceAgc/Shader/src/CreateShader.cpp:66; core/libs/prx/libSceAgc/CMakeLists.txt:58",
+   "what": "The APS5_AGC_CREATE_LOG option defaults to ON, but its only use is commented out.",
+   "perfRelevance": "None."
+  },
+  {
+   "location": "core/libs/prx/libkernel/System/src/Process.cpp:149-165",
+   "what": "sceKernelGetCurrentCpu returns the real host CPU index, which can fall outside the 0x1FFF mask the game was given.",
+   "perfRelevance": "None for performance. It is a correctness risk for per-CPU arrays on hosts with more than 13 logical CPUs."
+  }
+ ],
+ "quickExperiments": [
+  {
+   "setting": "Check build/CMakeCache.txt for CMAKE_BUILD_TYPE. If it is empty or Debug, reconfigure with -DCMAKE_BUILD_TYPE=Release and rebuild the libs target.",
+   "expectedEffect": "If the current build was unoptimized, expect a several-fold speedup of the serialized driver worker and a large FPS gain.",
+   "risk": "The shader disk cache is invalidated once, so the first run stutters while shaders recompile."
+  },
+  {
+   "setting": "Windows with an Intel CPU: run with APS5_TRACE_SSE4A=1. If it reports emulated instructions in-game, relink the title with --to-intel.",
+   "expectedEffect": "Removes one illegal-instruction exception per SSE4a instruction executed. This could be large if the title uses SSE4a in hot loops.",
+   "risk": "--to-intel guest module trampolines are verified only by synthetic tests (TechnicalDebt.md:309)."
+  },
+  {
+   "setting": "Windows: set APS5_COARSE_TIMED_WAITS=1.",
+   "expectedEffect": "Sleeping and timing-out guest threads stop busy-spinning their final 0.5 ms, which frees cores for the queue worker and presenter on smaller hosts.",
+   "risk": "Adds roughly 0.5-1 ms of wake latency to guest timed waits. Label handoffs between threads could slow."
+  },
+  {
+   "setting": "Redirect stdout to a file or NUL instead of an attached console, for example game.exe > out.log.",
+   "expectedEffect": "Removes the console I/O cost of the unconditional Texture, StorageTexture and sceKernelOpen logging, which runs under GpuMutex.",
+   "risk": "None."
+  },
+  {
+   "setting": "Raise the AGC queue-worker thread's priority. On Linux, renice -n -5 -p <worker tid> found with top -H. On Windows, use Process Explorer.",
+   "expectedEffect": "Less ready-queue delay for the thread that serializes all draws, when the host is busy.",
+   "risk": "Low. Game threads could get slightly less CPU."
+  },
+  {
+   "setting": "Windows on a hybrid Intel CPU: set APS5_WORKER_AFFINITY=1. This is already the default on Linux hybrid CPUs.",
+   "expectedEffect": "Keeps the queue workers and presenter on P-cores.",
+   "risk": "The comment at Thread.cpp:199-202 measured 0 to -9% for pinning job workers. Measure the effect."
+  },
+  {
+   "setting": "Set APS5_TRACE_WAITS=1 and APS5_TRACE_USLEEP=1.",
+   "expectedEffect": "Shows which guest sites block or sleep and for how long, which tells whether the render thread waits on GPU completion (the worker) or on something else.",
+   "risk": "Diagnostic only, with slight overhead."
+  },
+  {
+   "setting": "Set APS5_PROFILE_DRAW=1.",
+   "expectedEffect": "Gives per-queue Submit copy and validate times (Submission.cpp:197-228) alongside the draw phase timings, to confirm the game-side submit cost is small next to the worker.",
+   "risk": "Profiling overhead."
+  }
+ ],
+ "stubsVerdict": "not-a-cause",
+ "buildAdvice": [
+  {
+   "setting": "-DCMAKE_BUILD_TYPE=Release (use RelWithDebInfo when profiling)",
+   "why": "The project sets no default build type and no -O flags, so an unconfigured single-config build is -O0. The CPU-bound, serialized driver is extremely sensitive to this.",
+   "evidence": "A grep finds no CMAKE_BUILD_TYPE default in CMakeLists.txt or core/; docs/dev/BUILD.md:35 uses Release; core/shader/recompiler/CMakeLists.txt:204-205 only reads it for the cache key."
+  },
+  {
+   "setting": "Relink with --to-intel on Intel hosts",
+   "why": "Without it, Windows emulates each SSE4a instruction through an exception and Linux crashes.",
+   "evidence": "core/libs/prx/libc/src/specifics/windows/CrashReport.cpp:174-178,225-246; docs/user/USAGE.md:30; docs/dev/TechnicalDebt.md:299"
+  },
+  {
+   "setting": "APS5_ENABLE_TIMING_LOG=OFF (the default)",
+   "why": "It compiles in APS5_LOG_TIMING stdout prints with fflush.",
+   "evidence": "CMakeLists.txt:27-28; core/libs/prx/libc/include/general/LogMacros.hpp:59-60"
+  },
+  {
+   "setting": "APS5_AGC_CREATE_LOG: either value",
+   "why": "The only use is commented out, so it has no effect. Set it to OFF for clarity.",
+   "evidence": "core/libs/prx/libSceAgc/CMakeLists.txt:58-62; core/libs/prx/libSceAgc/Shader/src/CreateShader.cpp:66"
+  },
+  {
+   "setting": "ANYPS5_ENABLE_SPIRV_TOOLS=OFF for now. Try ON, with APS5_SPIRV_OPT=none or full, only once the frame is GPU-bound.",
+   "why": "When ON, every recompile pays for validation plus an optimization pipeline on the queue worker. That is CPU time on the current bottleneck, which the disk cache only amortizes. The GPU is under-used today, so the shader quality gain would not show.",
+   "evidence": "CMakeLists.txt:26; core/shader/recompiler/Recompiler.cpp:341-343; core/shader/recompiler/SpirvBackend/src/SpirvOptimizer.cpp:89-122; core/shader/recompiler/ShaderDiskCache.cpp:34-58"
+  },
+  {
+   "setting": "Optional local-only build: -DCMAKE_CXX_FLAGS=\"-march=native\" and/or -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+   "why": "The default x86-64 baseline (SSE2) leaves hashing, compares and copies in host code unvectorized beyond what the compiler can do. LTO could inline across the driver's translation units. Expect single-digit to low-double-digit percent gains, far less than the build-type fix.",
+   "evidence": "A grep finds no -march or INTERPROCEDURAL_OPTIMIZATION in any project CMakeLists. Flags are part of the shader-cache key (recompiler/CMakeLists.txt:205), so changing them invalidates the cache once. LTO's interaction with the .prx nid_patcher and objcopy steps (core/libs/CMakeLists.txt:6-34) is unverified."
+  },
+  {
+   "setting": "Windows toolchain: MinGW-w64 GCC 15.2.0 (winlibs x86_64-ucrt-posix-seh)",
+   "why": "This is the required compiler version. -fno-asynchronous-unwind-tables and static libstdc++ affect unwinding and packaging only, not runtime speed.",
+   "evidence": "docs/dev/TechnicalDebt.md (Build section); core/libs/CMakeLists.txt:20-23,37-41"
+  }
+ ]
+}

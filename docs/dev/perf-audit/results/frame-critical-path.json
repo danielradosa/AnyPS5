@@ -1,0 +1,332 @@
+{
+ "subsystem": "End-to-end frame critical path: guest submit -> per-queue PM4 workers -> recorder/vkQueueSubmit -> GPU -> completion reaping (labels/EOP) -> presenter/VideoOut flip and vblank -> game",
+ "answer": "The PS5 has a parallel GPU front end. Here it becomes one serial producer, and that producer takes turns with the GPU instead of running alongside it.\n\n(1) One host thread does nearly all GPU-side work. The queue-0 worker (QueueWorker.cpp:38-109, one thread per guest queue created lazily at Submission.cpp:299) interprets every graphics packet in order (PacketExecution.cpp:107-307). Each draw holds the process-wide GpuMutex for the whole Graphics::Draw (exec-draw-2, graphics-draw-1). Compute workers add almost nothing:\n- A compute submission with no WAIT_REG_MEM (\"waitFree\") is held until queue 0 has executed every older submission (Submission.cpp:253-280, QueueWorker.cpp:92-98; critical-path-1).\n- Their stage B, end-of-submission submits and labels need the same mutex.\n- The presenter (Presentation.cpp:54,86) and every reaper (QueueWorker.cpp:26) also queue on that mutex.\nIn practice about one core does useful driver work.\n\n(2) That thread feeds a single VkQueue (recorder-single-queue-1) in batches of at most 64 work items (DeferredLabels.cpp:83-89). Whenever a packet, draw or dispatch must read memory that a pending batch writes, the thread submits and then blocks until the GPU drains (PacketMemory.cpp:166-211, VulkanDevice.cpp:3005-3031, Recorder.cpp:2902-2915; critical-path-2). The GPU runs out of work during the wait, then sits idle while the worker records again. CPU and GPU alternate (ping-pong).\n\n(3) Completion is polled, not signalled:\n- EOP interrupts are batch completion actions. They reach the game only when some thread takes the lock with a try_lock and reaps (QueueWorker.cpp:25-36,62-84; PacketFlush.cpp:22-24; critical-path-4).\n- WAIT_REG_MEM spins, then sleeps in 200 us steps (WaitMemory.cpp:17-30,265-283; critical-path-5).\nEach hand-off between threads adds latency.\n\n(4) A flip completes only after the presenter waits for the GPU to drain everything queued so far (Presentation.cpp:103-114; critical-path-3). The worker's RenderingWait packet blocks on that flip.\n\nWhat bounds the frame: the queue-0 per-packet CPU time (dominated by the draw path the earlier analysts covered), plus every blocking GPU drain on that same thread, plus hand-off latencies.\n\nWhat does not bound it at 8-9 FPS:\n- Vblank pacing: at ~115 ms per frame the emulated vblank target is already past (VideoOutDriver.cpp:391-398).\n- The flip queue: it holds 16 entries (VideoOutDriver.hpp:61), so it rarely blocks the game's Submit.\n\nThe game's own threads mostly sit waiting for EOP, flip or label progress from the lagging worker. That is why the host CPU looks idle.",
+ "howItWorks": "1. Game threads call sceAgcDriverSubmitDcb or the ACB entry points (Dcb.cpp:43-59) into Driver::Submit (Submission.cpp:189-233). Submit copies the PM4, following indirect buffers. It validates, reserves flips, marks waits already satisfied at submit time, and enqueues onto that queue's worker.\n\n2. Each worker loops (QueueWorker.cpp:52-125) and calls execute (PacketExecution.cpp:41-325). Before every packet, flushBetweenPackets (PacketFlush.cpp) does three things:\n   - records queued labels,\n   - submits the open batch when the 1 ms deadline or the 64-item cap is reached,\n   - every 250 us, reaps finished batches.\n\n3. Packet handling:\n   - **Draws and dispatches** are decoded and recompiled, then recorded into a single global Recorder. Their open batch goes to one VkQueue.\n   - **Label writes** (WRITE_DATA, RELEASE_MEM) are deferred. They become GPU stores into host-imported guest memory (VulkanDevice.cpp:1278-1344).\n   - **EOP interrupts** become completion actions that run when the batch is reaped (PacketMemory.cpp:24-57).\n   - **Unsupported stores** drain the GPU.\n   - **WAIT_REG_MEM** first tries a lock-free table of recorded labels, then spins and polls (WaitMemory.cpp).\n   - **The flip packet** submits and hands a FlipRequest to the VideoOut presenter thread (VideoOutDriver.cpp:149-166).\n\n4. The presenter does the rest of the flip:\n   - It waits for the emulated 59.94 Hz vblank (processFlip).\n   - Driver::Present then retires old presentation slots and acquires a FIFO swapchain image.\n   - Under GpuMutex it submits the open batch and the blit, and queues the present.\n   - It then waits for the blit fence.\n   - Finally it raises the FLIP event, decrements flipPendingNum and releases buffer reuse. That release wakes RenderingWait packets and game threads blocked in equeues.",
+ "threadingAndLocks": "**Threads**\n- One worker per guest queue: queue 0 plus each compute ring used. They are created on first submit (Submission.cpp:299).\n- One VideoOut presenter thread and one vblank thread (VideoOutDriver.cpp:209-210).\n- The game's own threads.\n\n**Driver::mutex** (std::mutex) guards the pending deques and worker bookkeeping. It is taken:\n- by Submit, which also walks every packet in reserveOutputs/noteHeldAtSubmit while holding it,\n- by each worker at dequeue and at completion,\n- at the start of execute (PacketExecution.cpp:67-74).\n\n**GuestMemory::GpuMutex** (recursive, unfair, process-wide) serialises recording, submission, reaping and presentation.\n- Blocking locks: draws (whole Graphics::Draw), dispatch stage B, EOP RELEASE_MEM (PacketMemory.cpp:30), flips (PacketExecution.cpp:194), end-of-submission submits, drains, and the presenter (twice per flip).\n- try_lock only: label recording and flushing between packets, reaps (QueueWorker.cpp:26), and WAIT_REG_MEM poll service (WaitMemory.cpp:195).\n\n**Cross-queue ordering**: waitFree compute submissions wait on orderReleased, which means queue 0 has executed everything received earlier. The wait uses a condvar with a 1 ms timeout on Linux; on Windows it unlocks, sleeps 200 us and re-checks (QueueWorker.cpp:62-71).\n\n**Waits**\n- WAIT_REG_MEM never holds GpuMutex while sleeping.\n- RenderingWait blocks the worker on the VideoOut vblankCond.\n- The presenter waits for fences without GpuMutex.",
+ "findings": [
+  {
+   "id": "critical-path-1",
+   "title": "Compute submissions without waits are held until queue 0 has executed every older submission, so async compute never overlaps graphics interpretation",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:253-280,292-300; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:62-71,92-98,120-122",
+   "category": "global-lock-serialization",
+   "mechanism": "enqueue sets submission.waitFree when a compute submission has no flip, no RenderingWait, no REWIND and no WAIT_REG_MEM (0x3c/0x93).\n\nThe compute worker then loops `while (!released()) poll(released)` until orderReleased(id, received) is true. That requires one of:\n- queue0Before(received) is false, meaning queue 0 is not executing, and has no pending, submission older than this one;\n- queue 0 is blocked on a WAIT_REG_MEM for a dword this queue will write;\n- no worker is running, no completions are pending and the snapshot does not overlap.\n\nThe compute ring's CPU interpretation (decode, recompile lookup, PrepareDispatch stage A, presync) therefore starts only after the graphics worker has finished interpreting everything the game submitted earlier.\n\nOn Windows the poll is unlock, PollSleep(200 us), re-check, with no condvar wake-up. On Linux it is a 1 ms timed condvar wait that is woken by notify_all at queue-0 completion.",
+   "evidence": "- Submission.cpp:253-261: waitFree() returns true for queue!=0 submissions without flips, rendering waits, rewinds or 0x3c/0x93 packets.\n- Submission.cpp:263-280: queue0Before() and orderReleased().\n- Submission.cpp:294: `submission.waitFree = waitFree(submission)`.\n- QueueWorker.cpp:92-98: `if (submission.waitFree) { orderHolders.fetch_add... while (!released()) poll(released); ...}`.\n- QueueWorker.cpp:63-69: on _WIN32 the lock is dropped, then PollSleep(); otherwise `changed.wait_for(lock, 1ms, done)`.\n- QueueWorker.cpp:120-122: notifies only when idleWaiters or orderHolders are set.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "An SDK-9 title spreads culling, lighting and post work across ACB rings. Every compute submission without a wait is gated behind the graphics worker's serial progress. Their CPU work is added to queue 0's critical path instead of overlapping it, and whatever compute does run then contends for GpuMutex. This is a main reason the host shows only about one busy driver core.",
+   "proposal": "Order compute submissions only on real memory dependencies, not on global receive order:\n- Release a waitFree submission at once, and let the recorder's pending-write and snapshot tracking order CPU reads against GPU writes. It already does this for dispatches (presync, flush hook).\n- If ordering against queue-0 label writes is needed for correctness, gate only on the specific addresses the compute submission reads (labels in unfinishedWrites), not on all of queue 0's history.\n- Keep the current behaviour behind an opt-in env var for regression hunting.\n- On Windows, wake orderHolders with the condvar instead of 200 us polling.",
+   "effort": "M",
+   "risk": "Titles that implicitly relied on graphics finishing before an unsynchronised compute submission may read stale data. That race also exists on hardware, but the emulator's CPU-side captures could expose it differently. Needs per-title validation.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: compare per-queue dequeueNs (submissionCosts) for compute queues with queue 0's busy time.\n- Count time spent in the waitFree loop by adding a timer around QueueWorker.cpp:95.\n- APS5_TRACE_GPU=1: the gap between 'submit queue=0x2x' and 'execute ... queue=0x2x' lines."
+  },
+  {
+   "id": "critical-path-2",
+   "title": "Blocking GPU drains on the worker thread make CPU and GPU alternate instead of overlap",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:166-211; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:3005-3031,3085-3090; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2873-2915; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp:153-161,231-238",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "Several sites make the producing worker wait for the GPU.\n\n**Drains.** COND_WRITE 0x45 always drains. So do label or store packets that cannot be put on the GPU, and the occlusion dump. Each one does SubmitAndEpoch under GpuMutex, WaitRecorded(epoch) unlocked, then ReapRecorded.\n\n**Dispatch presync.** Any non-import surface overlapping a pending write triggers SubmitAndEpoch, then WaitRecorded.\n\n**Locked Sync/SyncThrough** in draws and the flush hook (see recorder-locked-waits-1, graphics-draw-6-input-sync, exec-draw-7, memory-tracking-compare-syncs-under-lock).\n\n**WAIT_REG_MEM** on a range written by the open batch submits it, then polls until the GPU executes it.\n\nThere is a single VkQueue and a single timeline (recorder-single-queue-1). Each such wait therefore waits for every batch queued ahead of it, from all rings. While the worker waits, nothing new is recorded, so the GPU goes idle once the queue empties. After the wait, the GPU stays idle until the next 64-item cap, the 1 ms deadline or the next wait submits again.",
+   "evidence": "- PacketMemory.cpp:166-167: drains include `opcode == 0x45` with no GPU path, and any 0x49/0x37/0x40/0x50/0x83 not written on the GPU.\n- PacketMemory.cpp:186-210: `epoch = draining->SubmitAndEpoch(); ... draining->WaitRecorded(epoch); ... draining->ReapRecorded(epoch)`.\n- VulkanDevice.cpp:3011-3028: presync `serial = state->recorder->SubmitAndEpoch(); ... WaitRecorded(serial)`.\n- Recorder.cpp:2902-2913: Sync() is Submit() followed by finish() of every in-flight batch.\n- Recorder.cpp:2873-2884: WaitSerial blocks in vkWaitSemaphoresKHR.\n- WaitMemory.cpp:160,231-233: `if (... OpenWriteOverlaps(...)) localDevice->SubmitRecorded(false)`, then the poll loop.",
+   "onDefaultPath": true,
+   "impact": "critical",
+   "whyImpact": "This is the mechanism that leaves both sides under-used. Each round trip costs:\n- submit latency,\n- the GPU time of everything queued ahead,\n- the wake-up delay,\n- the GPU idle time while the worker records the next batch.\n\nGPU-driven SDK-9 frames read GPU-produced indirect arguments, index data, constants and render targets many times per frame. Tens to hundreds of such waits per frame add up to tens of milliseconds of mutual idling at roughly 115 ms per frame.",
+   "proposal": "Remove CPU readbacks of GPU-produced data from the worker's critical path:\n- Consume indirect arguments and counts with vkCmdDraw*Indirect / vkCmdDispatchIndirect from the host import instead of reading them on the CPU (exec-draw-7).\n- Bind index and vertex data in place from imports (graphics-draw-6).\n- Add a draw presync that waits unlocked, as dispatches already do.\n- Give COND_WRITE a GPU path.\n- When a wait is unavoidable, submit the open batch at the start of the expensive packet so the GPU has work while the CPU prepares the rest.\n- Longer term, give async rings their own VkQueue so a wait covers only the producer's timeline.",
+   "effort": "XL",
+   "risk": "GPU-direct consumption gives up the CPU-side validation and capture that currently protect correctness (recompilation keyed on data). Each conversion needs fallback detection.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 and read these lines:\n- [present] 'per present: GPU busy X ms, idle gaps Y ms' (VulkanDevice.cpp:433-453): idle gaps near the frame time minus busy confirm the ping-pong;\n- [presync] 'pre-syncs waited N ms';\n- [lock] 'locked GPU waits';\n- [hooksync];\n- the drain table from reportSync (PacketMemory.cpp:178-184).\nFor a direct view, capture with GPUView, RGP or nsight and look for queue starvation between batches."
+  },
+  {
+   "id": "critical-path-3",
+   "title": "A flip completes only after the presenter waits for a full GPU drain, including the next frame's batches, despite FlipInFlight=1; RenderingWait ties the worker to it",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp:41,54,75-79,86,103-114; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:2159,2332-2343,2366-2400; core/libs/prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp:165-185; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:43-49,167-169,391-398,441-462; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:186-187",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "FlipInFlight() defaults to 1. In Driver::Present, after QueuePresent, `trailing = !syncFlip` is true and FinishPresent() = RetirePresents(0) runs. That waits for every slot's fence, including the blit just submitted.\n\npresent() calls SubmitRecorded(false) first (VulkanDevice.cpp:2159). That pushes whatever the worker has recorded so far into the queue ahead of the blit, often part of frame N+1. So flip N completes only after the GPU finishes all of that work.\n\nThe presenter is a single thread, and per flip it does these steps one after another:\n1. emulated vblank wait;\n2. GpuMutex lock (blocking, unfair, behind the worker's draw holds);\n3. RetirePresents(1);\n4. FIFO AcquireImage plus a vkWaitForFences on the acquire fence;\n5. GpuMutex again for the blit and QueuePresent;\n6. the trailing fence wait.\n\nOnly then does processFlip decrement flipPendingNum, complete bufferReuse and fire VIDEO_OUT_EVENT_FLIP. The worker's RenderingWait packet (WaitUntilSafeForRendering) blocks on bufferReuse completion. The only producer thread therefore idles for this whole chain whenever the game renders into a buffer whose flip is still pending.\n\nThe header documents FinishPresent as being only for the synchronous paths (APS5_FLIP_INFLIGHT=0, SYNC_FLIP). The code contradicts this, so APS5_FLIP_INFLIGHT=1 or 2 cannot actually leave a presentation trailing.",
+   "evidence": "- Presentation.cpp:103-109: `if (submitted && (syncFlip || inFlight != 0)) { presenting->QueuePresent(); ... trailing = !syncFlip; ...}`.\n- Presentation.cpp:111-113: `if (trailing) { waitedMs += presenting->FinishPresent(); }`.\n- VulkanDevice.cpp:2398-2399: `return RetirePresents(0);`.\n- VulkanDevice.cpp:2379-2387: WaitPresentFence when inFlight > keep.\n- VulkanDevice.hpp:175-176: 'FinishPresent = RetirePresents(0): the render fence wait of the synchronous paths'.\n- VulkanDevice.cpp:2159: SubmitRecorded(false) before the blit.\n- VideoOutDriver.cpp:445-462: flip completion only after Present returns.\n- VideoOutDriver.cpp:43-48: RenderingWait waits on bufferReuse.IsComplete.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "At 8-9 FPS the vblank and acquire waits are short, because the target vblank has already passed. But each flip's completion still includes a full drain of the shared queue plus contended GpuMutex acquisitions.\n\nWhen the game double-buffers (RenderingWait at the start of frame N+2 on buffer N), the graphics worker sleeps through the presenter's drain while it is the only thing that could feed the GPU. This adds a pipeline bubble to the critical path every frame. At higher frame rates it also caps throughput, because the presenter cannot overlap two flips.",
+   "proposal": "- Make flip completion asynchronous: register a completion on the slot's fence and let a completion thread (structural change 3) run processFlip's tail (events, flipPendingNum, bufferReuse).\n- Wait only for the recorder serial captured at the flip packet (FlipBatches' batchesAtFlip) rather than the blit, which sits behind later work.\n- Honour FlipInFlight by dropping the unconditional trailing FinishPresent.\n- Take GpuMutex once per flip, not twice.",
+   "effort": "M",
+   "risk": "Flip-completion semantics (flipPendingNum, buffer reuse) must still mean that the frame's GPU work finished. Completing early would let the game overwrite a buffer that is still being scanned out or read by the blit.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: the [present] line 'inflight_wait p50/p90' includes the trailing wait (Presentation.cpp:112), along with 'batches ahead of the blit' and 'after it'.\n- PerformanceTimer marks 'render_fence_wait' and 'gpu_mutex_wait' in Driver.Present.\n- Worker WorkerProfile::waitMs grows with RenderingWait time (PacketExecution.cpp:187).\n- Experiment: APS5_FLIP_INFLIGHT=2 should change nothing, which confirms the trailing wait."
+  },
+  {
+   "id": "critical-path-4",
+   "title": "EOP interrupts and completion labels reach the game only through a try_lock reap polled at 0.25-1 ms; every EOP takes GpuMutex and splits the batch",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:21-57; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:25-36,73-84; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketFlush.cpp:22-24,47,89-92; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2713-2723; core/libs/prx/libSceAgcDriver/Eq/src/Event.cpp:28-36",
+   "category": "polling-sleep-latency",
+   "mechanism": "A RELEASE_MEM with an interrupt does the following:\n1. takes GpuMutex outright (lock_guard),\n2. records the label on the GPU,\n3. registers AfterRecordedWork(AgcDriverDeliverEopInterrupt),\n4. calls SubmitRecorded when work is open.\n\nThe equeue event (sceKernelWaitEqueue wakes through a condvar) fires only when a thread reaps that batch. Reaps happen in three places, all on GpuMutex.try_lock:\n- an idle worker's loop (`changed.wait_for(1ms)` on Linux, PollSleep 200 us on Windows) then reapCompletionLabels;\n- queue 0 between packets at most every ReapInterval of 250 us;\n- a sleeping WAIT_REG_MEM poll.\n\nWhile any thread holds GpuMutex for a long draw (a pipeline miss, a locked GPU wait), every reap attempt fails and is counted in triesFailed[TryIdle/TryReap]. The game therefore learns that the GPU finished frame N only after the worker's current lock hold ends.\n\nCompute workers stay dormant when only write-back completions are pending (QueueWorker.cpp:74). When queue 0 itself sits in RenderingWait, no thread on queue 0 reaps.",
+   "evidence": "- PacketMemory.cpp:22: `endOfPipeInterrupt = opcode == 0x49 && interruptSelect != 0 && interruptSelect != 3`.\n- PacketMemory.cpp:30: `std::lock_guard gpuLock(GuestMemory::GpuMutex())`.\n- PacketMemory.cpp:51-52: `interruptDeferred = localDevice->AfterRecordedWork(...); if (interruptDeferred && workOpen) localDevice->SubmitRecorded(...)`.\n- QueueWorker.cpp:26-30: try_to_lock reap.\n- QueueWorker.cpp:62-70: 1 ms or 200 us poll.\n- DeferredLabels.hpp:12: ReapInterval{250}.\n- PacketFlush.cpp:69-74: try_lock failure returns.\n- Eq/src/Event.cpp:28-36: EqueueTriggerEvent.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "PS5 titles commonly bound frames in flight by waiting on EOP events or end-of-frame labels.\n\nThe delay between GPU completion and the game seeing it is at least 0.25-1 ms. During long GpuMutex holds it stretches to the length of the hold, which can be milliseconds when pipelines compile under the lock (recorder-pipeline-compile-1).\n\nThe game's frame-building threads idle for that time. That matches the 'host CPU threads under-used' symptom. Each EOP also forces a batch boundary.",
+   "proposal": "- Add a completion thread that blocks in vkWaitSemaphores on the recorder timeline (timeline semaphores already exist: Recorder.cpp:2799-2806). It would deliver lock-free completion actions (EOP equeue triggers, GPU-written label notifications) directly.\n- Run only the actions that need GpuMutex (copied write-backs, BDA CheckFault) under the lock.\n- Mark AfterRecordedWork actions as lock-free when they are pure event triggers.",
+   "effort": "L",
+   "risk": "Completion ordering: EOP events must not overtake the write-backs of the same or earlier batches that the game will read. Lock-free delivery must still respect per-batch action order.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: the [labels] line 'failed tries: ... reap N, idle N'.\n- Add a timestamp at AfterRecordedWork registration and at delivery: the difference to the batch's gpuEndNs (GPU timing) is the reap latency.\n- Game side: the time the guest spends in sceKernelWaitEqueue (Equeue.cpp:314-325 already measures waitStart)."
+  },
+  {
+   "id": "critical-path-5",
+   "title": "WAIT_REG_MEM resolves by memory polling: 1.5 ms pause-spin then 200 us sleeps, a lock try at most every 1 ms, and a silent 1 s give-up",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp:17-30,52-85,128-161,170-183,265-326; core/libs/prx/libSceAgcDriver/Execution/include/Driver/Synchronization/WaitMemory.hpp:16",
+   "category": "polling-sleep-latency",
+   "mechanism": "waitMemory tries these fast paths first: the value in memory, heldAtSubmit, storedSince, and the unlocked recorder label table. The table resolves waits on labels that are already recorded, because the single VkQueue preserves order. This part is good.\n\nOtherwise:\n- If the snapshot overlaps, it try_locks GpuMutex and submits the open batch when that batch writes the range.\n- Queue 0 then busy-spins with _mm_pause for up to 1.5 ms (compute queues for 100 us).\n- After that it calls PollSleep() each iteration: sleep_for(200 us) on Linux, a high-resolution waitable timer of -2000 x 100 ns on Windows.\n- pollService rechecks the table when WriteGeneration changes. Otherwise it try_locks at most every PollTryInterval of 1 ms to submit due labels or reap.\n\nNo thread is woken when another queue's worker records the producing label. Each cross-queue hand-off therefore costs up to one sleep quantum plus the producer's CPU progress.\n\nIf nothing progresses for APS5_GPU_WAIT_TIMEOUT_MS (default 1000), the wait returns as if satisfied (line 324).",
+   "evidence": "- WaitMemory.cpp:23-29: PollSleep for Win32 and Linux.\n- WaitMemory.cpp:266: `spinLimit = queue == 0 ? 1500us : 100us`.\n- WaitMemory.cpp:273-281: _mm_pause, then PollSleep or yield.\n- WaitMemory.cpp:180-183: PollTryInterval gate.\n- WaitMemory.hpp:16: PollTryInterval{1000}.\n- WaitMemory.cpp:289-324: on timeout it warns, then `if (warned) return;`.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Cross-queue graphics/compute handshakes happen many times per AAA frame. Each one that misses the label table adds about 0.2-1 ms of latency to the serial chain. The 1.5 ms spin occupies a core that the game's threads could use on hosts with few cores. The 1 s give-up turns real ordering bugs into 1 s hitches and data races instead of visible errors.",
+   "proposal": "- Wake waiters on events instead of polling: keep a per-address waiter list. Notify it from noteLabelStore and recordDeferredLabels (CPU or recorded label), from the completion thread (GPU-written labels), and from the CPU write path for game-thread stores. Use futex or WaitOnAddress, or a condvar.\n- For labels the recorder knows a GPU batch writes (DescribePendingWrite), wait on that batch's timeline value instead of polling memory.\n- Shorten the spin.\n- Make the timeout fail loudly, or at least count it in the profile.",
+   "effort": "M",
+   "risk": "Lost-wakeup races between the memory check and waiter registration must be handled (re-check after registering). CPU stores by game threads into label memory are not hooked, so a residual slow poll must remain as a fallback.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: waitOutcomes (atEntry, fromRecorder, polled, timedOut, pollSubmits, pollReaps) and WorkerProfile waitMs per worker.\n- stderr '[gpu] N GPU waits have timed out'.\n- APS5_TRACE_GPU=1: 'wait on 0x... done after X ms'."
+  },
+  {
+   "id": "critical-path-6",
+   "title": "Batch cadence: labels and work wait for a 64-item cap or a 1 ms deadline that is checked only between packets; queue 0 skips the end-of-submission submit",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/DeferredLabels.cpp:26-29,59-65,83-89; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketFlush.cpp:11,41-74; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:309-323; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1338-1343",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "LabelBatchSubmit is on by default, so packetFlush is false. A recorded label (WriteLabelOnGpu reason 0) stays in the open batch until one of these happens:\n- the 1000 us deadline passes, checked only in flushBetweenPackets (that is, before the next packet), in labelFlushDue during a wait, or under try_lock when not overdue;\n- RecordedWorkSinceSubmit reaches batchCap 64;\n- a flip, an EOP or a wait on its range;\n- the end of a submission, but queue 0 skips this when more submissions are queued (endSkipped).\n\nIf the packet after an end-of-frame label is expensive (a pipeline compile, a locked GPU wait), the batch carrying that label and the preceding draws stays unsubmitted for the whole packet. The GPU starves, and CPU waiters on that label (game threads, other queues) wait for it too.",
+   "evidence": "- DeferredLabels.cpp:62: `std::atoi(text) : (LabelBatchSubmit() ? 1000 : 250)`.\n- DeferredLabels.cpp:86: default 64.\n- PacketFlush.cpp:11: `packetFlush = !LabelBatchSubmit() && ...`.\n- PacketFlush.cpp:43: deadline submit.\n- PacketFlush.cpp:59-63: outright lock only at 4x the deadline or 2x the cap.\n- PacketExecution.cpp:312-314: `if (... submission.queue == 0 && workerQueued()->load() != 0) { ++costs.endSkipped; return; }`.\n- VulkanDevice.cpp:1338-1342: no submit per label.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "Mostly adds latency, not throughput loss: about 50+ submits per frame keep the GPU fed while the worker keeps moving. It matters around expensive packets and end-of-frame labels, where it lengthens GPU idle gaps and the game's view of GPU progress.",
+   "proposal": "- Submit the open batch before starting any packet that is known to be expensive: a draw or dispatch whose cache lookup missed, or one about to compile a pipeline.\n- Let a timer or completion thread request a submit through an atomic flag honoured at the next GpuMutex release.\n- Always submit at the end of a queue-0 submission that contains an EOP or label the game may wait on.",
+   "effort": "S",
+   "risk": "More vkQueueSubmit calls, each costing tens of microseconds. Splitting batches also adds batch-boundary barriers (recorder-barriers-1).",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: the [labels] line 'N at the next packet, N by deadline, N by size cap', submissionCosts endSkipped and endSubmits, and the [present] line 'per flip: N batches recorded' and 'after the flip packet: last submit X ms'.\n- Try APS5_BATCH_CAP=16 and APS5_LABEL_FLUSH_US=250."
+  },
+  {
+   "id": "critical-path-7",
+   "title": "Submit-side work on the game thread under Driver::mutex: a whole-buffer copy and validate plus a per-packet walk with guest-memory syscalls",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:19-104,133-154,189-233,302-328; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:67-74",
+   "category": "allocation-copy",
+   "mechanism": "Driver::Submit runs on the game's submit thread and does the following:\n- copies every DWORD of the DCB, following each INDIRECT_BUFFER, with a GuestMemory::CheckRange per IB;\n- runs Pm4::Validate per packet and readRegisterLists;\n- scans for flips (waitForFlipRoom);\n- with Driver::mutex held, runs reserveOutputs, which walks every packet again and calls noteHeldAtSubmit.\n\nFor each WAIT_REG_MEM, noteHeldAtSubmit calls GuestMemory::Accessible and does volatile guest reads. On Linux this is a PROCMAP_QUERY or /proc/self/maps lookup (memory-tracking-linux-no-page-cache).\n\nWorkers need the same mutex to dequeue, to complete (QueueWorker.cpp:56,114) and at the start of every execute.",
+   "evidence": "- Submission.cpp:200-208: copyCommands, validate, readRegisterLists, waitForFlipRoom.\n- Submission.cpp:212-231: lock_guard(mutex), reserveOutputs, enqueue.\n- Submission.cpp:133-153: reserveOutputs calls noteHeldAtSubmit for every packet.\n- Submission.cpp:318: `GuestMemory::Accessible(...)`.\n- Submission.cpp:54,69: CheckRange per IB.\n- PacketExecution.cpp:67-74: execute takes the mutex.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "An AAA frame submits a few 10k-100k DWORD buffers. The copy and validation are probably at the tens-of-microseconds-to-1-ms level per frame on the game thread. The mutex hold briefly stalls worker dequeue and completion. This is not the bound, but it is pure serial overhead on the game's critical thread.",
+   "proposal": "- Move the reserveOutputs packet walk out of the mutex: collect flip, rendering-wait and wait offsets during copySegment, which already visits every packet.\n- Take the mutex only to reserve and enqueue.\n- Cache Accessible results per page, or reuse the Windows page-state cache on Linux.\n- Fold validate into the copy loop.",
+   "effort": "S",
+   "risk": "Low. Flip reservations must stay ordered with serial assignment, so keep Reserve under the mutex.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1: submissionCosts copyNs and validateNs (Submission.cpp:222-227) per queue, and queue-0 dequeueNs."
+  }
+ ],
+ "incompleteOrStubbed": [
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp:289-324",
+   "what": "A WAIT_REG_MEM that sees no progress for APS5_GPU_WAIT_TIMEOUT_MS (default 1000 ms) prints a diagnostic and returns as if the condition were met.",
+   "perfRelevance": "Missing producers show up as 1 s hitches and possibly wrong results instead of errors. Check stderr for '[gpu] N GPU waits have timed out' before profiling steady-state FPS."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:166-167",
+   "what": "COND_WRITE (0x45), RELEASE_MEM with data_sel 0 or >=4 that is not a no-op, and stores ResolveStore cannot express have no GPU path. They always drain the device: submit, then wait.",
+   "perfRelevance": "Each one is a full CPU-GPU round trip on the worker (critical-path-2)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp:103-114 vs core/libs/prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp:175-184",
+   "what": "FlipInFlight (default 1, max 2) is documented as allowing a presentation to trail on the GPU, but the default path always runs the trailing FinishPresent (RetirePresents(0)).",
+   "perfRelevance": "APS5_FLIP_INFLIGHT has no effect, and every flip drains the queue on the presenter (critical-path-3)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Pm4.cpp:541",
+   "what": "RELEASE_MEM timestamps (data_sel 3) store the host CPU time at interpretation, not the GPU completion time.",
+   "perfRelevance": "If Astro Bot drives dynamic resolution or frame pacing from GPU timestamps, it measures worker CPU time (about 100 ms per frame). That may push it to minimum resolution, which cannot help, or confuse its pacing."
+  },
+  {
+   "location": "core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:75,391-398",
+   "what": "All flip modes are presented at the next emulated vsync. The emulated 59.94 Hz vblank clock (vblankLoop, lines 539-552) runs independently of the host's FIFO swapchain vsync.",
+   "perfRelevance": "Two unsynchronised vsync waits per flip can add up to about one host refresh of presenter latency. This is not the bound at 8-9 FPS."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:49-50,56,68,71,74,77",
+   "what": "These throw (the submission is rejected): COND_INDIRECT_BUFFER with a comparison, predicated COND_INDIRECT_BUFFER, REWIND inside conditional ranges, predicated chains, and flips or rendering waits inside predicated IBs.",
+   "perfRelevance": "None on the steady path. A rejected submission fails the driver."
+  }
+ ],
+ "quickExperiments": [
+  {
+   "setting": "APS5_PROFILE_DRAW=1 (measurement only)",
+   "expectedEffect": "Prints [present] (GPU busy vs idle gaps per present, batches per flip, inflight_wait p50/p90), [labels], [presync], [lock] locked GPU waits, and the worker dispatch/draw/wait split. The 'idle gaps' value is the direct number behind the 'GPU under-used' symptom.",
+   "risk": "Adds timing overhead, so absolute FPS will drop slightly."
+  },
+  {
+   "setting": "APS5_FLIP_INFLIGHT=2",
+   "expectedEffect": "Expected to change nothing: the trailing FinishPresent still waits. This confirms critical-path-3.",
+   "risk": "None."
+  },
+  {
+   "setting": "APS5_BATCH_CAP=16",
+   "expectedEffect": "The GPU gets work sooner and in smaller batches, which should shrink idle gaps before CPU waits and around expensive packets. It means 4x more vkQueueSubmit calls.",
+   "risk": "Low: submit overhead plus extra batch-boundary barriers."
+  },
+  {
+   "setting": "APS5_LABEL_FLUSH_US=250",
+   "expectedEffect": "Labels and EOPs reach the GPU, and therefore the game, up to about 0.75 ms sooner. It can shorten the game's waits on frame-progress labels.",
+   "risk": "Low: more submits."
+  },
+  {
+   "setting": "APS5_REAP_EACH_PACKET=1 and/or APS5_POLL_REAP=1",
+   "expectedEffect": "Queue 0 tries to reap on every packet, and compute waiters reap while polling. This lowers EOP and completion-label delivery latency to the game.",
+   "risk": "Low: one extra try_lock and fence-status check per packet."
+  },
+  {
+   "setting": "APS5_NO_PAUSE_SPIN=1",
+   "expectedEffect": "Drops the 1.5 ms _mm_pause spin per unsatisfied queue-0 wait, which frees a core for game threads on 4-8 core hosts. Wake latency rises slightly.",
+   "risk": "Low."
+  }
+ ],
+ "timeline": [
+  {
+   "thread": "game render thread",
+   "step": "Builds the DCB/ACB and calls sceAgcDriverSubmitDcb or the ACB submit. Driver::Submit copies the PM4 through IBs (CheckRange per IB), validates it, reads the register lists, and calls waitForFlipRoom.",
+   "blocksOn": "The flip queue, only when 16 or more flips are pending (rare). Linux page-query syscalls in CheckRange.",
+   "location": "core/libs/prx/libSceAgcDriver/Submit/src/Dcb.cpp:43-46; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:189-211; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:64-72"
+  },
+  {
+   "thread": "game render thread",
+   "step": "Under Driver::mutex: reserveOutputs (flip Reserve, rendering-wait capture, a noteHeldAtSubmit walk), serial assignment, enqueue (sets waitFree, lazily starts the worker), notify_all.",
+   "blocksOn": "Driver::mutex, which workers also hold at dequeue and completion.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:212-232,292-300"
+  },
+  {
+   "thread": "queue-0 worker",
+   "step": "Wakes, pops the submission and starts execute().",
+   "blocksOn": "The condvar. If completions are pending it instead polls every 1 ms on Linux or 200 us on Windows and tries to reap with try_lock.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:55-101"
+  },
+  {
+   "thread": "compute worker (0x20+)",
+   "step": "Pops an ACB submission. If it is waitFree, it waits until queue 0 has executed every older submission.",
+   "blocksOn": "Queue 0's interpretation progress: a 1 ms condvar poll on Linux, 200 us PollSleep on Windows.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:92-98; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:274-280"
+  },
+  {
+   "thread": "queue-0 worker",
+   "step": "Per packet: flushBetweenPackets records queued labels and submits on the 1 ms deadline or the 64-item cap. It reaps every 250 us.",
+   "blocksOn": "Nothing normally (try_lock). Blocks on GpuMutex only when a label is more than 4x overdue or work exceeds 2x the cap.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketFlush.cpp:10-92"
+  },
+  {
+   "thread": "queue-0 worker",
+   "step": "Draw packets: unlocked decode, lookup and capture, then lockForDraw holds GpuMutex for the whole Graphics::Draw (resources, pipeline, recording, nested flush-hook syncs). This repeats thousands of times per frame.",
+   "blocksOn": "GpuMutex (against compute stage B, the presenter, EOP and flip handling). GPU fences in locked Sync/SyncThrough (recorder-locked-waits-1, graphics-draw-6).",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:235-287; Execution/src/Driver/Draw/Draw.cpp:260-276 (per digest exec-draw-2)"
+  },
+  {
+   "thread": "queue-0 or compute worker",
+   "step": "Dispatch: PrepareDispatch unlocked (key, Find, stage A, presync), then stage B under GpuMutex.",
+   "blocksOn": "Presync: SubmitAndEpoch, then an unlocked timeline wait for the GPU whenever a non-import surface has pending writes. GpuMutex for stage B.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:3005-3031,3040-3092; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:211-218"
+  },
+  {
+   "thread": "any worker",
+   "step": "WRITE_DATA or RELEASE_MEM labels without an interrupt are deferred to a thread-local list. They are recorded later as a GPU store into the host-imported guest page, which the CPU sees when the GPU executes the batch.",
+   "blocksOn": "Nothing (recorded under try_lock or inside the next draw's lock).",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:59-71; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/DeferredLabels.cpp:91-125; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1278-1344"
+  },
+  {
+   "thread": "any worker",
+   "step": "RELEASE_MEM with an EOP interrupt: records the label, registers the delivery as a completion action of the batch, and forces SubmitRecorded.",
+   "blocksOn": "GpuMutex (blocking lock).",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:24-57"
+  },
+  {
+   "thread": "any worker",
+   "step": "Non-GPU stores, COND_WRITE and similar packets drain: SubmitAndEpoch, then WaitRecorded, then ReapRecorded.",
+   "blocksOn": "The GPU finishing every batch on the single queue.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:166-211"
+  },
+  {
+   "thread": "any worker",
+   "step": "WAIT_REG_MEM: memory, heldAtSubmit and storedSince checks, then the lock-free label table, then a possible try_lock plus a submit of the open batch, then a pause-spin (1.5 ms on queue 0) and 200 us PollSleep loop.",
+   "blocksOn": "GPU execution of the producing batch, or another worker's interpretation progress. Detected by polling only.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp:52-327"
+  },
+  {
+   "thread": "queue-0 worker",
+   "step": "Flip packet: records labels, SubmitRecorded, then GpuReady pushes the FlipRequest to the presenter queue. The worker continues without waiting.",
+   "blocksOn": "GpuMutex (blocking).",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:188-210; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:149-173"
+  },
+  {
+   "thread": "any worker",
+   "step": "End of submission: records deferred labels and SubmitRecorded. Queue 0 skips this when another submission is already queued.",
+   "blocksOn": "GpuMutex (blocking).",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:309-323"
+  },
+  {
+   "thread": "GPU",
+   "step": "One VkQueue executes the recorder batches of all rings in order, separated by full barriers, followed by the presenter's blit.",
+   "blocksOn": "Starves whenever the worker is in CPU work or a CPU wait and no batch is queued.",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2764-2827; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:922,1110 (recorder-single-queue-1)"
+  },
+  {
+   "thread": "idle worker or queue 0 between packets",
+   "step": "Reap: finished batches run their completion actions. AgcDriverDeliverEopInterrupt triggers the equeue, and game threads in sceKernelWaitEqueue wake.",
+   "blocksOn": "GpuMutex try_lock, which fails during long draw holds. Poll cadence is 250 us to 1 ms.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:25-36,73-84; core/libs/prx/libSceAgcDriver/Eq/src/Event.cpp:28-36"
+  },
+  {
+   "thread": "VideoOut presenter",
+   "step": "presentLoop dequeues the flip (10 ms poll). processFlip waits for the emulated vblank, lastFlipVblank + flipRate + 1, from a 59.94 Hz vblank thread.",
+   "blocksOn": "The emulated vblank, which has usually already passed at 8-9 FPS.",
+   "location": "core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:466-501,383-399,539-552"
+  },
+  {
+   "thread": "VideoOut presenter",
+   "step": "Driver::Present: GpuMutex for device setup and resize, RetirePresents(1), AcquireImage (FIFO acquire plus a vkWaitForFences), then GpuMutex again for PresentDisplayBuffer (resident check, SubmitRecorded(false), blit submit) and QueuePresent.",
+   "blocksOn": "GpuMutex twice, held for long periods by the worker's draws. The host vsync or presentation engine.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp:50-110; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:2086-2120,2123-2159"
+  },
+  {
+   "thread": "VideoOut presenter",
+   "step": "Trailing FinishPresent waits for the blit fence. Then processFlip fires the FLIP event, decrements flipPendingNum and completes bufferReuse.",
+   "blocksOn": "A full GPU drain of everything queued before the blit, including the next frame's batches.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp:111-114; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:441-463"
+  },
+  {
+   "thread": "queue-0 worker",
+   "step": "The next frame's RenderingWait packet (WaitUntilSafeForRendering) waits until the target display buffer's flip completes.",
+   "blocksOn": "The presenter's flip completion: vblank, acquire and GPU drain.",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:186-187; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:43-49"
+  },
+  {
+   "thread": "game threads",
+   "step": "Observe frame progress through GPU-written labels (visible once the GPU runs the batch), EOP equeue events (after a reap) or FLIP events and flip status, then build the next frame.",
+   "blocksOn": "The lagging worker, reached through those three channels.",
+   "location": "core/libs/prx/libkernel/Equeue/Equeue.cpp:118-175,314-325; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:447-462"
+  }
+ ],
+ "roundTripsPerFrame": "Submits that do not block, per frame:\n- (draws + dispatches) / 64, from the batch cap (DeferredLabels.cpp:83-89);\n- 1 per EOP interrupt (PacketMemory.cpp:51-52);\n- 1 at the flip (PacketExecution.cpp:197) plus 1 by the presenter (VulkanDevice.cpp:2159);\n- 1 per compute submission end (PacketExecution.cpp:309-323);\n- 1 per 1 ms deadline flush.\nWith about 3000 draws and 300 dispatches that is roughly 55-90 vkQueueSubmit calls per frame.\n\nReal round trips are CPU waits for the GPU. Each one waits for everything queued ahead on the single VkQueue.\n- Presenter, 2 per flip: the acquire fence and the trailing FinishPresent, which is a full drain.\n- Worker, 1 each per:\n  - dispatch presync hit (non-import surface with pending writes);\n  - locked Sync/SyncThrough in draw validation, capture, input copies or the flush hook;\n  - CPU-indirect draw or dispatch argument read;\n  - COND_WRITE or unresolvable store drain;\n  - occlusion dump;\n  - WAIT_REG_MEM that the label table cannot resolve and that waits on GPU execution.\n- Game threads: WaitForLeases on free or mprotect.\n\nThese counts depend on content and are not measured here. For a GPU-driven SDK-9 frame I estimate tens to a few hundred blocking round trips. At about 0.3-1 ms each (submit, drain of queued work, wake-up, then GPU idle while recording resumes), that is enough to explain a large share of the ~115 ms frame and the low GPU utilisation.\n\nTo measure, set APS5_PROFILE_DRAW=1 and read:\n- [present] 'per flip: N batches recorded', GPU busy and idle gaps;\n- [presync] 'pre-syncs waited';\n- [lock] 'locked GPU waits';\n- [hooksync];\n- the reportSync drain table.",
+ "structuralChanges": [
+  {
+   "change": "Shrink GpuMutex to recording and submission only. Give draws the unlocked prepare stage dispatches already have (key, Find, resource build, capture, pipeline creation outside the lock), and keep only command recording under the lock. Then several workers, and parallel prepare tasks within queue 0, can use more cores.",
+   "files": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp; core/libs/prx/libSceAgcDriver/Execution/include/GuestMemory.hpp",
+   "unlocks": "CPU parallelism: today the chain runs on about one core (graphics-draw-1, exec-draw-2). Shorter holds also make reaps and presenter steps succeed promptly.",
+   "effort": "XL"
+  },
+  {
+   "change": "Take GPU-produced data off the worker's synchronous path:\n- consume indirect arguments, counts and index data GPU-direct from host imports;\n- add an unlocked draw presync;\n- give COND_WRITE and other store packets GPU paths;\n- when a wait is unavoidable, submit before starting expensive packets.",
+   "files": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/IndirectDraw.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp (presync); core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp",
+   "unlocks": "Ends the CPU/GPU ping-pong (critical-path-2), so the GPU stays fed while the worker records ahead.",
+   "effort": "XL"
+  },
+  {
+   "change": "Add a dedicated completion thread that blocks on the recorder timeline (vkWaitSemaphores). It would retire batches, deliver EOP equeue events and lock-free completion actions, wake WAIT_REG_MEM waiters through a per-address futex or condvar, and complete flips from the blit fence. It replaces try_lock polling at 0.25-1 ms or 200 us.",
+   "files": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp (Reap/finish/AfterRecordedWork); core/libs/prx/libSceAgcDriver/Eq/src/Event.cpp",
+   "unlocks": "Gives the game and other queues low, lock-independent latency in learning that the GPU finished (critical-path-4, critical-path-5), so game threads stop idling behind worker lock holds.",
+   "effort": "L"
+  },
+  {
+   "change": "Replace global receive-order gating of compute rings (waitFree/orderReleased) with explicit memory-dependency ordering. Give async rings their own VkQueue and recorder, with cross-queue timeline-semaphore waits for WAIT_REG_MEM on labels a GPU batch writes.",
+   "files": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp (queue creation 919-926,1110); core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp",
+   "unlocks": "Async-compute CPU interpretation can overlap graphics interpretation (critical-path-1), and async GPU work can overlap graphics GPU work (recorder-single-queue-1). A wait then covers only its producer's timeline.",
+   "effort": "XL"
+  },
+  {
+   "change": "Make flip completion asynchronous and bounded to the frame's own work:\n- drop the unconditional trailing FinishPresent;\n- complete the flip (FLIP event, flipPendingNum, bufferReuse) when the batches up to the flip packet's serial and the blit have finished, signalled by the completion thread;\n- take GpuMutex once per present.",
+   "files": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp (present, RetirePresents, FinishPresent); core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp (processFlip, FlipRequest::GpuReady)",
+   "unlocks": "RenderingWait and game flip throttling stop waiting on a full-queue drain that includes the next frame's batches (critical-path-3). The presenter can pipeline flips, and APS5_FLIP_INFLIGHT starts working.",
+   "effort": "M"
+  }
+ ]
+}

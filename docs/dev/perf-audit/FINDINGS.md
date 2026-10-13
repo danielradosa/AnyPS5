@@ -1,15 +1,729 @@
 # Performance audit: raw findings (unverified)
 
-Generated from the six subsystem deep-dives that finished before the audit was stopped. Each finding is one analyst's reading of the code. **None of them has been through the adversarial verification step yet**, so treat impact levels as claims to check. The JSON for each subsystem is in [results/](results/).
+Generated from the 8 subsystem analyses that have finished. Each finding is one analyst's reading of the code. **None of them has been through the adversarial verification step yet**, so treat impact levels as claims to check. The JSON for each subsystem is in [results/](results/).
 
 ## Contents
 
+- [End-to-end frame critical path: guest submit -> per-queue PM4 workers -> recorder/vkQueueSubmit -> GPU -> completion reaping (labels/EOP) -> presenter/VideoOut flip and vblank -> game](#frame-critical-path) (7 findings)
+- [Guest-side CPU libraries (libSceAgc builders, Submit on game threads), libkernel waits, timing, threads, fibers, audio pacing, stubs, and build configuration](#guest-libs-build) (9 findings)
 - [Execution-side draw path (Execution/src/Driver/Draw/*)](#exec-draw) (13 findings)
 - [Graphics-side draw recording (core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp and its helpers: Pipeline, Recorder render-pass handling, DCC/CMASK, storage-target residency, draw snapshots, DepthSurface, ColorTarget transfer)](#graphics-draw) (13 findings)
 - [Command recording, submission and pipelines (Recorder, Pipeline, PipelineCache)](#recorder) (15 findings)
 - [Guest memory tracking, GpuMutex, captures and write evidence (GuestMemory.cpp/.hpp, WriteWatchCoverage, MemoryAccessScope, ShaderMemory, Driver/Memory/{WriteEvidence,WrittenBuffers,CaptureValidation,CaptureDiagnostics}, DeviceAccess) plus the libc write-watch backends they call (GuestWriteWatch.cpp on Linux, WindowsMappings.hpp on Windows)](#memory-tracking) (13 findings)
 - [Guest buffers, uploads, host imports, write-backs, copy/fill HLE (GuestBufferMemory, BufferPool, BdaResources, Resources, BufferCopy/BufferFill)](#buffers) (14 findings)
 - [Shader resource binding: descriptors, samplers, validation (ShaderResources, DescriptorCache, ResourceCache, texture/sampler caches, ShaderValidation memo, bindless tables)](#shader-resources) (14 findings)
+
+<a id="frame-critical-path"></a>
+## End-to-end frame critical path: guest submit -> per-queue PM4 workers -> recorder/vkQueueSubmit -> GPU -> completion reaping (labels/EOP) -> presenter/VideoOut flip and vblank -> game
+
+### Answer
+
+The PS5 has a parallel GPU front end. Here it becomes one serial producer, and that producer takes turns with the GPU instead of running alongside it.
+
+(1) One host thread does nearly all GPU-side work. The queue-0 worker (QueueWorker.cpp:38-109, one thread per guest queue created lazily at Submission.cpp:299) interprets every graphics packet in order (PacketExecution.cpp:107-307). Each draw holds the process-wide GpuMutex for the whole Graphics::Draw (exec-draw-2, graphics-draw-1). Compute workers add almost nothing:
+- A compute submission with no WAIT_REG_MEM ("waitFree") is held until queue 0 has executed every older submission (Submission.cpp:253-280, QueueWorker.cpp:92-98; critical-path-1).
+- Their stage B, end-of-submission submits and labels need the same mutex.
+- The presenter (Presentation.cpp:54,86) and every reaper (QueueWorker.cpp:26) also queue on that mutex.
+In practice about one core does useful driver work.
+
+(2) That thread feeds a single VkQueue (recorder-single-queue-1) in batches of at most 64 work items (DeferredLabels.cpp:83-89). Whenever a packet, draw or dispatch must read memory that a pending batch writes, the thread submits and then blocks until the GPU drains (PacketMemory.cpp:166-211, VulkanDevice.cpp:3005-3031, Recorder.cpp:2902-2915; critical-path-2). The GPU runs out of work during the wait, then sits idle while the worker records again. CPU and GPU alternate (ping-pong).
+
+(3) Completion is polled, not signalled:
+- EOP interrupts are batch completion actions. They reach the game only when some thread takes the lock with a try_lock and reaps (QueueWorker.cpp:25-36,62-84; PacketFlush.cpp:22-24; critical-path-4).
+- WAIT_REG_MEM spins, then sleeps in 200 us steps (WaitMemory.cpp:17-30,265-283; critical-path-5).
+Each hand-off between threads adds latency.
+
+(4) A flip completes only after the presenter waits for the GPU to drain everything queued so far (Presentation.cpp:103-114; critical-path-3). The worker's RenderingWait packet blocks on that flip.
+
+What bounds the frame: the queue-0 per-packet CPU time (dominated by the draw path the earlier analysts covered), plus every blocking GPU drain on that same thread, plus hand-off latencies.
+
+What does not bound it at 8-9 FPS:
+- Vblank pacing: at ~115 ms per frame the emulated vblank target is already past (VideoOutDriver.cpp:391-398).
+- The flip queue: it holds 16 entries (VideoOutDriver.hpp:61), so it rarely blocks the game's Submit.
+
+The game's own threads mostly sit waiting for EOP, flip or label progress from the lagging worker. That is why the host CPU looks idle.
+
+### How it works
+
+1. Game threads call sceAgcDriverSubmitDcb or the ACB entry points (Dcb.cpp:43-59) into Driver::Submit (Submission.cpp:189-233). Submit copies the PM4, following indirect buffers. It validates, reserves flips, marks waits already satisfied at submit time, and enqueues onto that queue's worker.
+
+2. Each worker loops (QueueWorker.cpp:52-125) and calls execute (PacketExecution.cpp:41-325). Before every packet, flushBetweenPackets (PacketFlush.cpp) does three things:
+   - records queued labels,
+   - submits the open batch when the 1 ms deadline or the 64-item cap is reached,
+   - every 250 us, reaps finished batches.
+
+3. Packet handling:
+   - **Draws and dispatches** are decoded and recompiled, then recorded into a single global Recorder. Their open batch goes to one VkQueue.
+   - **Label writes** (WRITE_DATA, RELEASE_MEM) are deferred. They become GPU stores into host-imported guest memory (VulkanDevice.cpp:1278-1344).
+   - **EOP interrupts** become completion actions that run when the batch is reaped (PacketMemory.cpp:24-57).
+   - **Unsupported stores** drain the GPU.
+   - **WAIT_REG_MEM** first tries a lock-free table of recorded labels, then spins and polls (WaitMemory.cpp).
+   - **The flip packet** submits and hands a FlipRequest to the VideoOut presenter thread (VideoOutDriver.cpp:149-166).
+
+4. The presenter does the rest of the flip:
+   - It waits for the emulated 59.94 Hz vblank (processFlip).
+   - Driver::Present then retires old presentation slots and acquires a FIFO swapchain image.
+   - Under GpuMutex it submits the open batch and the blit, and queues the present.
+   - It then waits for the blit fence.
+   - Finally it raises the FLIP event, decrements flipPendingNum and releases buffer reuse. That release wakes RenderingWait packets and game threads blocked in equeues.
+
+### Threads and locks
+
+**Threads**
+- One worker per guest queue: queue 0 plus each compute ring used. They are created on first submit (Submission.cpp:299).
+- One VideoOut presenter thread and one vblank thread (VideoOutDriver.cpp:209-210).
+- The game's own threads.
+
+**Driver::mutex** (std::mutex) guards the pending deques and worker bookkeeping. It is taken:
+- by Submit, which also walks every packet in reserveOutputs/noteHeldAtSubmit while holding it,
+- by each worker at dequeue and at completion,
+- at the start of execute (PacketExecution.cpp:67-74).
+
+**GuestMemory::GpuMutex** (recursive, unfair, process-wide) serialises recording, submission, reaping and presentation.
+- Blocking locks: draws (whole Graphics::Draw), dispatch stage B, EOP RELEASE_MEM (PacketMemory.cpp:30), flips (PacketExecution.cpp:194), end-of-submission submits, drains, and the presenter (twice per flip).
+- try_lock only: label recording and flushing between packets, reaps (QueueWorker.cpp:26), and WAIT_REG_MEM poll service (WaitMemory.cpp:195).
+
+**Cross-queue ordering**: waitFree compute submissions wait on orderReleased, which means queue 0 has executed everything received earlier. The wait uses a condvar with a 1 ms timeout on Linux; on Windows it unlocks, sleeps 200 us and re-checks (QueueWorker.cpp:62-71).
+
+**Waits**
+- WAIT_REG_MEM never holds GpuMutex while sleeping.
+- RenderingWait blocks the worker on the VideoOut vblankCond.
+- The presenter waits for fences without GpuMutex.
+
+### One frame, step by step
+
+| # | Thread | Step | Blocks on | Location |
+|---|---|---|---|---|
+| 1 | game render thread | Builds the DCB/ACB and calls sceAgcDriverSubmitDcb or the ACB submit. Driver::Submit copies the PM4 through IBs (CheckRange per IB), validates it, reads the register lists, and calls waitForFlipRoom. | The flip queue, only when 16 or more flips are pending (rare). Linux page-query syscalls in CheckRange. | `core/libs/prx/libSceAgcDriver/Submit/src/Dcb.cpp:43-46; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:189-211; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:64-72` |
+| 2 | game render thread | Under Driver::mutex: reserveOutputs (flip Reserve, rendering-wait capture, a noteHeldAtSubmit walk), serial assignment, enqueue (sets waitFree, lazily starts the worker), notify_all. | Driver::mutex, which workers also hold at dequeue and completion. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:212-232,292-300` |
+| 3 | queue-0 worker | Wakes, pops the submission and starts execute(). | The condvar. If completions are pending it instead polls every 1 ms on Linux or 200 us on Windows and tries to reap with try_lock. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:55-101` |
+| 4 | compute worker (0x20+) | Pops an ACB submission. If it is waitFree, it waits until queue 0 has executed every older submission. | Queue 0's interpretation progress: a 1 ms condvar poll on Linux, 200 us PollSleep on Windows. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:92-98; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:274-280` |
+| 5 | queue-0 worker | Per packet: flushBetweenPackets records queued labels and submits on the 1 ms deadline or the 64-item cap. It reaps every 250 us. | Nothing normally (try_lock). Blocks on GpuMutex only when a label is more than 4x overdue or work exceeds 2x the cap. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketFlush.cpp:10-92` |
+| 6 | queue-0 worker | Draw packets: unlocked decode, lookup and capture, then lockForDraw holds GpuMutex for the whole Graphics::Draw (resources, pipeline, recording, nested flush-hook syncs). This repeats thousands of times per frame. | GpuMutex (against compute stage B, the presenter, EOP and flip handling). GPU fences in locked Sync/SyncThrough (recorder-locked-waits-1, graphics-draw-6). | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:235-287; Execution/src/Driver/Draw/Draw.cpp:260-276 (per digest exec-draw-2)` |
+| 7 | queue-0 or compute worker | Dispatch: PrepareDispatch unlocked (key, Find, stage A, presync), then stage B under GpuMutex. | Presync: SubmitAndEpoch, then an unlocked timeline wait for the GPU whenever a non-import surface has pending writes. GpuMutex for stage B. | `core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:3005-3031,3040-3092; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:211-218` |
+| 8 | any worker | WRITE_DATA or RELEASE_MEM labels without an interrupt are deferred to a thread-local list. They are recorded later as a GPU store into the host-imported guest page, which the CPU sees when the GPU executes the batch. | Nothing (recorded under try_lock or inside the next draw's lock). | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:59-71; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/DeferredLabels.cpp:91-125; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1278-1344` |
+| 9 | any worker | RELEASE_MEM with an EOP interrupt: records the label, registers the delivery as a completion action of the batch, and forces SubmitRecorded. | GpuMutex (blocking lock). | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:24-57` |
+| 10 | any worker | Non-GPU stores, COND_WRITE and similar packets drain: SubmitAndEpoch, then WaitRecorded, then ReapRecorded. | The GPU finishing every batch on the single queue. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:166-211` |
+| 11 | any worker | WAIT_REG_MEM: memory, heldAtSubmit and storedSince checks, then the lock-free label table, then a possible try_lock plus a submit of the open batch, then a pause-spin (1.5 ms on queue 0) and 200 us PollSleep loop. | GPU execution of the producing batch, or another worker's interpretation progress. Detected by polling only. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp:52-327` |
+| 12 | queue-0 worker | Flip packet: records labels, SubmitRecorded, then GpuReady pushes the FlipRequest to the presenter queue. The worker continues without waiting. | GpuMutex (blocking). | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:188-210; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:149-173` |
+| 13 | any worker | End of submission: records deferred labels and SubmitRecorded. Queue 0 skips this when another submission is already queued. | GpuMutex (blocking). | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:309-323` |
+| 14 | GPU | One VkQueue executes the recorder batches of all rings in order, separated by full barriers, followed by the presenter's blit. | Starves whenever the worker is in CPU work or a CPU wait and no batch is queued. | `core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2764-2827; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:922,1110 (recorder-single-queue-1)` |
+| 15 | idle worker or queue 0 between packets | Reap: finished batches run their completion actions. AgcDriverDeliverEopInterrupt triggers the equeue, and game threads in sceKernelWaitEqueue wake. | GpuMutex try_lock, which fails during long draw holds. Poll cadence is 250 us to 1 ms. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:25-36,73-84; core/libs/prx/libSceAgcDriver/Eq/src/Event.cpp:28-36` |
+| 16 | VideoOut presenter | presentLoop dequeues the flip (10 ms poll). processFlip waits for the emulated vblank, lastFlipVblank + flipRate + 1, from a 59.94 Hz vblank thread. | The emulated vblank, which has usually already passed at 8-9 FPS. | `core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:466-501,383-399,539-552` |
+| 17 | VideoOut presenter | Driver::Present: GpuMutex for device setup and resize, RetirePresents(1), AcquireImage (FIFO acquire plus a vkWaitForFences), then GpuMutex again for PresentDisplayBuffer (resident check, SubmitRecorded(false), blit submit) and QueuePresent. | GpuMutex twice, held for long periods by the worker's draws. The host vsync or presentation engine. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp:50-110; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:2086-2120,2123-2159` |
+| 18 | VideoOut presenter | Trailing FinishPresent waits for the blit fence. Then processFlip fires the FLIP event, decrements flipPendingNum and completes bufferReuse. | A full GPU drain of everything queued before the blit, including the next frame's batches. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp:111-114; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:441-463` |
+| 19 | queue-0 worker | The next frame's RenderingWait packet (WaitUntilSafeForRendering) waits until the target display buffer's flip completes. | The presenter's flip completion: vblank, acquire and GPU drain. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:186-187; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:43-49` |
+| 20 | game threads | Observe frame progress through GPU-written labels (visible once the GPU runs the batch), EOP equeue events (after a reap) or FLIP events and flip status, then build the next frame. | The lagging worker, reached through those three channels. | `core/libs/prx/libkernel/Equeue/Equeue.cpp:118-175,314-325; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:447-462` |
+
+### CPU-GPU round trips per frame
+
+Submits that do not block, per frame:
+- (draws + dispatches) / 64, from the batch cap (DeferredLabels.cpp:83-89);
+- 1 per EOP interrupt (PacketMemory.cpp:51-52);
+- 1 at the flip (PacketExecution.cpp:197) plus 1 by the presenter (VulkanDevice.cpp:2159);
+- 1 per compute submission end (PacketExecution.cpp:309-323);
+- 1 per 1 ms deadline flush.
+With about 3000 draws and 300 dispatches that is roughly 55-90 vkQueueSubmit calls per frame.
+
+Real round trips are CPU waits for the GPU. Each one waits for everything queued ahead on the single VkQueue.
+- Presenter, 2 per flip: the acquire fence and the trailing FinishPresent, which is a full drain.
+- Worker, 1 each per:
+  - dispatch presync hit (non-import surface with pending writes);
+  - locked Sync/SyncThrough in draw validation, capture, input copies or the flush hook;
+  - CPU-indirect draw or dispatch argument read;
+  - COND_WRITE or unresolvable store drain;
+  - occlusion dump;
+  - WAIT_REG_MEM that the label table cannot resolve and that waits on GPU execution.
+- Game threads: WaitForLeases on free or mprotect.
+
+These counts depend on content and are not measured here. For a GPU-driven SDK-9 frame I estimate tens to a few hundred blocking round trips. At about 0.3-1 ms each (submit, drain of queued work, wake-up, then GPU idle while recording resumes), that is enough to explain a large share of the ~115 ms frame and the low GPU utilisation.
+
+To measure, set APS5_PROFILE_DRAW=1 and read:
+- [present] 'per flip: N batches recorded', GPU busy and idle gaps;
+- [presync] 'pre-syncs waited';
+- [lock] 'locked GPU waits';
+- [hooksync];
+- the reportSync drain table.
+
+### Structural changes that would break the critical path
+
+| Change | Files | What it unlocks | Effort |
+|---|---|---|---|
+| Shrink GpuMutex to recording and submission only. Give draws the unlocked prepare stage dispatches already have (key, Find, resource build, capture, pipeline creation outside the lock), and keep only command recording under the lock. Then several workers, and parallel prepare tasks within queue 0, can use more cores. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp; core/libs/prx/libSceAgcDriver/Execution/include/GuestMemory.hpp` | CPU parallelism: today the chain runs on about one core (graphics-draw-1, exec-draw-2). Shorter holds also make reaps and presenter steps succeed promptly. | XL |
+| Take GPU-produced data off the worker's synchronous path: - consume indirect arguments, counts and index data GPU-direct from host imports; - add an unlocked draw presync; - give COND_WRITE and other store packets GPU paths; - when a wait is unavoidable, submit before starting expensive packets. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/IndirectDraw.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp (presync); core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp` | Ends the CPU/GPU ping-pong (critical-path-2), so the GPU stays fed while the worker records ahead. | XL |
+| Add a dedicated completion thread that blocks on the recorder timeline (vkWaitSemaphores). It would retire batches, deliver EOP equeue events and lock-free completion actions, wake WAIT_REG_MEM waiters through a per-address futex or condvar, and complete flips from the blit fence. It replaces try_lock polling at 0.25-1 ms or 200 us. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp (Reap/finish/AfterRecordedWork); core/libs/prx/libSceAgcDriver/Eq/src/Event.cpp` | Gives the game and other queues low, lock-independent latency in learning that the GPU finished (critical-path-4, critical-path-5), so game threads stop idling behind worker lock holds. | L |
+| Replace global receive-order gating of compute rings (waitFree/orderReleased) with explicit memory-dependency ordering. Give async rings their own VkQueue and recorder, with cross-queue timeline-semaphore waits for WAIT_REG_MEM on labels a GPU batch writes. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp (queue creation 919-926,1110); core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp` | Async-compute CPU interpretation can overlap graphics interpretation (critical-path-1), and async GPU work can overlap graphics GPU work (recorder-single-queue-1). A wait then covers only its producer's timeline. | XL |
+| Make flip completion asynchronous and bounded to the frame's own work: - drop the unconditional trailing FinishPresent; - complete the flip (FLIP event, flipPendingNum, bufferReuse) when the batches up to the flip packet's serial and the blit have finished, signalled by the completion thread; - take GpuMutex once per present. | `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp (present, RetirePresents, FinishPresent); core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp (processFlip, FlipRequest::GpuReady)` | RenderingWait and game flip throttling stop waiting on a full-queue drain that includes the next frame's batches (critical-path-3). The presenter can pipeline flips, and APS5_FLIP_INFLIGHT starts working. | M |
+
+### Findings
+
+#### critical-path-2: Blocking GPU drains on the worker thread make CPU and GPU alternate instead of overlap
+
+- **Impact (claimed):** critical · **Effort:** XL · **Category:** cpu-gpu-sync-stall · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:166-211; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:3005-3031,3085-3090; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2873-2915; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp:153-161,231-238`
+
+**Mechanism.** Several sites make the producing worker wait for the GPU.
+
+**Drains.** COND_WRITE 0x45 always drains. So do label or store packets that cannot be put on the GPU, and the occlusion dump. Each one does SubmitAndEpoch under GpuMutex, WaitRecorded(epoch) unlocked, then ReapRecorded.
+
+**Dispatch presync.** Any non-import surface overlapping a pending write triggers SubmitAndEpoch, then WaitRecorded.
+
+**Locked Sync/SyncThrough** in draws and the flush hook (see recorder-locked-waits-1, graphics-draw-6-input-sync, exec-draw-7, memory-tracking-compare-syncs-under-lock).
+
+**WAIT_REG_MEM** on a range written by the open batch submits it, then polls until the GPU executes it.
+
+There is a single VkQueue and a single timeline (recorder-single-queue-1). Each such wait therefore waits for every batch queued ahead of it, from all rings. While the worker waits, nothing new is recorded, so the GPU goes idle once the queue empties. After the wait, the GPU stays idle until the next 64-item cap, the 1 ms deadline or the next wait submits again.
+
+**Evidence.** - PacketMemory.cpp:166-167: drains include `opcode == 0x45` with no GPU path, and any 0x49/0x37/0x40/0x50/0x83 not written on the GPU.
+- PacketMemory.cpp:186-210: `epoch = draining->SubmitAndEpoch(); ... draining->WaitRecorded(epoch); ... draining->ReapRecorded(epoch)`.
+- VulkanDevice.cpp:3011-3028: presync `serial = state->recorder->SubmitAndEpoch(); ... WaitRecorded(serial)`.
+- Recorder.cpp:2902-2913: Sync() is Submit() followed by finish() of every in-flight batch.
+- Recorder.cpp:2873-2884: WaitSerial blocks in vkWaitSemaphoresKHR.
+- WaitMemory.cpp:160,231-233: `if (... OpenWriteOverlaps(...)) localDevice->SubmitRecorded(false)`, then the poll loop.
+
+**Why this impact.** This is the mechanism that leaves both sides under-used. Each round trip costs:
+- submit latency,
+- the GPU time of everything queued ahead,
+- the wake-up delay,
+- the GPU idle time while the worker records the next batch.
+
+GPU-driven SDK-9 frames read GPU-produced indirect arguments, index data, constants and render targets many times per frame. Tens to hundreds of such waits per frame add up to tens of milliseconds of mutual idling at roughly 115 ms per frame.
+
+**Proposal.** Remove CPU readbacks of GPU-produced data from the worker's critical path:
+- Consume indirect arguments and counts with vkCmdDraw*Indirect / vkCmdDispatchIndirect from the host import instead of reading them on the CPU (exec-draw-7).
+- Bind index and vertex data in place from imports (graphics-draw-6).
+- Add a draw presync that waits unlocked, as dispatches already do.
+- Give COND_WRITE a GPU path.
+- When a wait is unavoidable, submit the open batch at the start of the expensive packet so the GPU has work while the CPU prepares the rest.
+- Longer term, give async rings their own VkQueue so a wait covers only the producer's timeline.
+
+**Risk.** GPU-direct consumption gives up the CPU-side validation and capture that currently protect correctness (recompilation keyed on data). Each conversion needs fallback detection.
+
+**How to measure.** APS5_PROFILE_DRAW=1 and read these lines:
+- [present] 'per present: GPU busy X ms, idle gaps Y ms' (VulkanDevice.cpp:433-453): idle gaps near the frame time minus busy confirm the ping-pong;
+- [presync] 'pre-syncs waited N ms';
+- [lock] 'locked GPU waits';
+- [hooksync];
+- the drain table from reportSync (PacketMemory.cpp:178-184).
+For a direct view, capture with GPUView, RGP or nsight and look for queue starvation between batches.
+
+#### critical-path-1: Compute submissions without waits are held until queue 0 has executed every older submission, so async compute never overlaps graphics interpretation
+
+- **Impact (claimed):** high · **Effort:** M · **Category:** global-lock-serialization · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:253-280,292-300; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:62-71,92-98,120-122`
+
+**Mechanism.** enqueue sets submission.waitFree when a compute submission has no flip, no RenderingWait, no REWIND and no WAIT_REG_MEM (0x3c/0x93).
+
+The compute worker then loops `while (!released()) poll(released)` until orderReleased(id, received) is true. That requires one of:
+- queue0Before(received) is false, meaning queue 0 is not executing, and has no pending, submission older than this one;
+- queue 0 is blocked on a WAIT_REG_MEM for a dword this queue will write;
+- no worker is running, no completions are pending and the snapshot does not overlap.
+
+The compute ring's CPU interpretation (decode, recompile lookup, PrepareDispatch stage A, presync) therefore starts only after the graphics worker has finished interpreting everything the game submitted earlier.
+
+On Windows the poll is unlock, PollSleep(200 us), re-check, with no condvar wake-up. On Linux it is a 1 ms timed condvar wait that is woken by notify_all at queue-0 completion.
+
+**Evidence.** - Submission.cpp:253-261: waitFree() returns true for queue!=0 submissions without flips, rendering waits, rewinds or 0x3c/0x93 packets.
+- Submission.cpp:263-280: queue0Before() and orderReleased().
+- Submission.cpp:294: `submission.waitFree = waitFree(submission)`.
+- QueueWorker.cpp:92-98: `if (submission.waitFree) { orderHolders.fetch_add... while (!released()) poll(released); ...}`.
+- QueueWorker.cpp:63-69: on _WIN32 the lock is dropped, then PollSleep(); otherwise `changed.wait_for(lock, 1ms, done)`.
+- QueueWorker.cpp:120-122: notifies only when idleWaiters or orderHolders are set.
+
+**Why this impact.** An SDK-9 title spreads culling, lighting and post work across ACB rings. Every compute submission without a wait is gated behind the graphics worker's serial progress. Their CPU work is added to queue 0's critical path instead of overlapping it, and whatever compute does run then contends for GpuMutex. This is a main reason the host shows only about one busy driver core.
+
+**Proposal.** Order compute submissions only on real memory dependencies, not on global receive order:
+- Release a waitFree submission at once, and let the recorder's pending-write and snapshot tracking order CPU reads against GPU writes. It already does this for dispatches (presync, flush hook).
+- If ordering against queue-0 label writes is needed for correctness, gate only on the specific addresses the compute submission reads (labels in unfinishedWrites), not on all of queue 0's history.
+- Keep the current behaviour behind an opt-in env var for regression hunting.
+- On Windows, wake orderHolders with the condvar instead of 200 us polling.
+
+**Risk.** Titles that implicitly relied on graphics finishing before an unsynchronised compute submission may read stale data. That race also exists on hardware, but the emulator's CPU-side captures could expose it differently. Needs per-title validation.
+
+**How to measure.** - APS5_PROFILE_DRAW=1: compare per-queue dequeueNs (submissionCosts) for compute queues with queue 0's busy time.
+- Count time spent in the waitFree loop by adding a timer around QueueWorker.cpp:95.
+- APS5_TRACE_GPU=1: the gap between 'submit queue=0x2x' and 'execute ... queue=0x2x' lines.
+
+#### critical-path-3: A flip completes only after the presenter waits for a full GPU drain, including the next frame's batches, despite FlipInFlight=1; RenderingWait ties the worker to it
+
+- **Impact (claimed):** medium · **Effort:** M · **Category:** cpu-gpu-sync-stall · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp:41,54,75-79,86,103-114; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:2159,2332-2343,2366-2400; core/libs/prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp:165-185; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:43-49,167-169,391-398,441-462; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:186-187`
+
+**Mechanism.** FlipInFlight() defaults to 1. In Driver::Present, after QueuePresent, `trailing = !syncFlip` is true and FinishPresent() = RetirePresents(0) runs. That waits for every slot's fence, including the blit just submitted.
+
+present() calls SubmitRecorded(false) first (VulkanDevice.cpp:2159). That pushes whatever the worker has recorded so far into the queue ahead of the blit, often part of frame N+1. So flip N completes only after the GPU finishes all of that work.
+
+The presenter is a single thread, and per flip it does these steps one after another:
+1. emulated vblank wait;
+2. GpuMutex lock (blocking, unfair, behind the worker's draw holds);
+3. RetirePresents(1);
+4. FIFO AcquireImage plus a vkWaitForFences on the acquire fence;
+5. GpuMutex again for the blit and QueuePresent;
+6. the trailing fence wait.
+
+Only then does processFlip decrement flipPendingNum, complete bufferReuse and fire VIDEO_OUT_EVENT_FLIP. The worker's RenderingWait packet (WaitUntilSafeForRendering) blocks on bufferReuse completion. The only producer thread therefore idles for this whole chain whenever the game renders into a buffer whose flip is still pending.
+
+The header documents FinishPresent as being only for the synchronous paths (APS5_FLIP_INFLIGHT=0, SYNC_FLIP). The code contradicts this, so APS5_FLIP_INFLIGHT=1 or 2 cannot actually leave a presentation trailing.
+
+**Evidence.** - Presentation.cpp:103-109: `if (submitted && (syncFlip || inFlight != 0)) { presenting->QueuePresent(); ... trailing = !syncFlip; ...}`.
+- Presentation.cpp:111-113: `if (trailing) { waitedMs += presenting->FinishPresent(); }`.
+- VulkanDevice.cpp:2398-2399: `return RetirePresents(0);`.
+- VulkanDevice.cpp:2379-2387: WaitPresentFence when inFlight > keep.
+- VulkanDevice.hpp:175-176: 'FinishPresent = RetirePresents(0): the render fence wait of the synchronous paths'.
+- VulkanDevice.cpp:2159: SubmitRecorded(false) before the blit.
+- VideoOutDriver.cpp:445-462: flip completion only after Present returns.
+- VideoOutDriver.cpp:43-48: RenderingWait waits on bufferReuse.IsComplete.
+
+**Why this impact.** At 8-9 FPS the vblank and acquire waits are short, because the target vblank has already passed. But each flip's completion still includes a full drain of the shared queue plus contended GpuMutex acquisitions.
+
+When the game double-buffers (RenderingWait at the start of frame N+2 on buffer N), the graphics worker sleeps through the presenter's drain while it is the only thing that could feed the GPU. This adds a pipeline bubble to the critical path every frame. At higher frame rates it also caps throughput, because the presenter cannot overlap two flips.
+
+**Proposal.** - Make flip completion asynchronous: register a completion on the slot's fence and let a completion thread (structural change 3) run processFlip's tail (events, flipPendingNum, bufferReuse).
+- Wait only for the recorder serial captured at the flip packet (FlipBatches' batchesAtFlip) rather than the blit, which sits behind later work.
+- Honour FlipInFlight by dropping the unconditional trailing FinishPresent.
+- Take GpuMutex once per flip, not twice.
+
+**Risk.** Flip-completion semantics (flipPendingNum, buffer reuse) must still mean that the frame's GPU work finished. Completing early would let the game overwrite a buffer that is still being scanned out or read by the blit.
+
+**How to measure.** - APS5_PROFILE_DRAW=1: the [present] line 'inflight_wait p50/p90' includes the trailing wait (Presentation.cpp:112), along with 'batches ahead of the blit' and 'after it'.
+- PerformanceTimer marks 'render_fence_wait' and 'gpu_mutex_wait' in Driver.Present.
+- Worker WorkerProfile::waitMs grows with RenderingWait time (PacketExecution.cpp:187).
+- Experiment: APS5_FLIP_INFLIGHT=2 should change nothing, which confirms the trailing wait.
+
+#### critical-path-4: EOP interrupts and completion labels reach the game only through a try_lock reap polled at 0.25-1 ms; every EOP takes GpuMutex and splits the batch
+
+- **Impact (claimed):** medium · **Effort:** L · **Category:** polling-sleep-latency · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:21-57; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp:25-36,73-84; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketFlush.cpp:22-24,47,89-92; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2713-2723; core/libs/prx/libSceAgcDriver/Eq/src/Event.cpp:28-36`
+
+**Mechanism.** A RELEASE_MEM with an interrupt does the following:
+1. takes GpuMutex outright (lock_guard),
+2. records the label on the GPU,
+3. registers AfterRecordedWork(AgcDriverDeliverEopInterrupt),
+4. calls SubmitRecorded when work is open.
+
+The equeue event (sceKernelWaitEqueue wakes through a condvar) fires only when a thread reaps that batch. Reaps happen in three places, all on GpuMutex.try_lock:
+- an idle worker's loop (`changed.wait_for(1ms)` on Linux, PollSleep 200 us on Windows) then reapCompletionLabels;
+- queue 0 between packets at most every ReapInterval of 250 us;
+- a sleeping WAIT_REG_MEM poll.
+
+While any thread holds GpuMutex for a long draw (a pipeline miss, a locked GPU wait), every reap attempt fails and is counted in triesFailed[TryIdle/TryReap]. The game therefore learns that the GPU finished frame N only after the worker's current lock hold ends.
+
+Compute workers stay dormant when only write-back completions are pending (QueueWorker.cpp:74). When queue 0 itself sits in RenderingWait, no thread on queue 0 reaps.
+
+**Evidence.** - PacketMemory.cpp:22: `endOfPipeInterrupt = opcode == 0x49 && interruptSelect != 0 && interruptSelect != 3`.
+- PacketMemory.cpp:30: `std::lock_guard gpuLock(GuestMemory::GpuMutex())`.
+- PacketMemory.cpp:51-52: `interruptDeferred = localDevice->AfterRecordedWork(...); if (interruptDeferred && workOpen) localDevice->SubmitRecorded(...)`.
+- QueueWorker.cpp:26-30: try_to_lock reap.
+- QueueWorker.cpp:62-70: 1 ms or 200 us poll.
+- DeferredLabels.hpp:12: ReapInterval{250}.
+- PacketFlush.cpp:69-74: try_lock failure returns.
+- Eq/src/Event.cpp:28-36: EqueueTriggerEvent.
+
+**Why this impact.** PS5 titles commonly bound frames in flight by waiting on EOP events or end-of-frame labels.
+
+The delay between GPU completion and the game seeing it is at least 0.25-1 ms. During long GpuMutex holds it stretches to the length of the hold, which can be milliseconds when pipelines compile under the lock (recorder-pipeline-compile-1).
+
+The game's frame-building threads idle for that time. That matches the 'host CPU threads under-used' symptom. Each EOP also forces a batch boundary.
+
+**Proposal.** - Add a completion thread that blocks in vkWaitSemaphores on the recorder timeline (timeline semaphores already exist: Recorder.cpp:2799-2806). It would deliver lock-free completion actions (EOP equeue triggers, GPU-written label notifications) directly.
+- Run only the actions that need GpuMutex (copied write-backs, BDA CheckFault) under the lock.
+- Mark AfterRecordedWork actions as lock-free when they are pure event triggers.
+
+**Risk.** Completion ordering: EOP events must not overtake the write-backs of the same or earlier batches that the game will read. Lock-free delivery must still respect per-batch action order.
+
+**How to measure.** - APS5_PROFILE_DRAW=1: the [labels] line 'failed tries: ... reap N, idle N'.
+- Add a timestamp at AfterRecordedWork registration and at delivery: the difference to the batch's gpuEndNs (GPU timing) is the reap latency.
+- Game side: the time the guest spends in sceKernelWaitEqueue (Equeue.cpp:314-325 already measures waitStart).
+
+#### critical-path-5: WAIT_REG_MEM resolves by memory polling: 1.5 ms pause-spin then 200 us sleeps, a lock try at most every 1 ms, and a silent 1 s give-up
+
+- **Impact (claimed):** medium · **Effort:** M · **Category:** polling-sleep-latency · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp:17-30,52-85,128-161,170-183,265-326; core/libs/prx/libSceAgcDriver/Execution/include/Driver/Synchronization/WaitMemory.hpp:16`
+
+**Mechanism.** waitMemory tries these fast paths first: the value in memory, heldAtSubmit, storedSince, and the unlocked recorder label table. The table resolves waits on labels that are already recorded, because the single VkQueue preserves order. This part is good.
+
+Otherwise:
+- If the snapshot overlaps, it try_locks GpuMutex and submits the open batch when that batch writes the range.
+- Queue 0 then busy-spins with _mm_pause for up to 1.5 ms (compute queues for 100 us).
+- After that it calls PollSleep() each iteration: sleep_for(200 us) on Linux, a high-resolution waitable timer of -2000 x 100 ns on Windows.
+- pollService rechecks the table when WriteGeneration changes. Otherwise it try_locks at most every PollTryInterval of 1 ms to submit due labels or reap.
+
+No thread is woken when another queue's worker records the producing label. Each cross-queue hand-off therefore costs up to one sleep quantum plus the producer's CPU progress.
+
+If nothing progresses for APS5_GPU_WAIT_TIMEOUT_MS (default 1000), the wait returns as if satisfied (line 324).
+
+**Evidence.** - WaitMemory.cpp:23-29: PollSleep for Win32 and Linux.
+- WaitMemory.cpp:266: `spinLimit = queue == 0 ? 1500us : 100us`.
+- WaitMemory.cpp:273-281: _mm_pause, then PollSleep or yield.
+- WaitMemory.cpp:180-183: PollTryInterval gate.
+- WaitMemory.hpp:16: PollTryInterval{1000}.
+- WaitMemory.cpp:289-324: on timeout it warns, then `if (warned) return;`.
+
+**Why this impact.** Cross-queue graphics/compute handshakes happen many times per AAA frame. Each one that misses the label table adds about 0.2-1 ms of latency to the serial chain. The 1.5 ms spin occupies a core that the game's threads could use on hosts with few cores. The 1 s give-up turns real ordering bugs into 1 s hitches and data races instead of visible errors.
+
+**Proposal.** - Wake waiters on events instead of polling: keep a per-address waiter list. Notify it from noteLabelStore and recordDeferredLabels (CPU or recorded label), from the completion thread (GPU-written labels), and from the CPU write path for game-thread stores. Use futex or WaitOnAddress, or a condvar.
+- For labels the recorder knows a GPU batch writes (DescribePendingWrite), wait on that batch's timeline value instead of polling memory.
+- Shorten the spin.
+- Make the timeout fail loudly, or at least count it in the profile.
+
+**Risk.** Lost-wakeup races between the memory check and waiter registration must be handled (re-check after registering). CPU stores by game threads into label memory are not hooked, so a residual slow poll must remain as a fallback.
+
+**How to measure.** - APS5_PROFILE_DRAW=1: waitOutcomes (atEntry, fromRecorder, polled, timedOut, pollSubmits, pollReaps) and WorkerProfile waitMs per worker.
+- stderr '[gpu] N GPU waits have timed out'.
+- APS5_TRACE_GPU=1: 'wait on 0x... done after X ms'.
+
+#### critical-path-6: Batch cadence: labels and work wait for a 64-item cap or a 1 ms deadline that is checked only between packets; queue 0 skips the end-of-submission submit
+
+- **Impact (claimed):** low · **Effort:** S · **Category:** cpu-gpu-sync-stall · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/DeferredLabels.cpp:26-29,59-65,83-89; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketFlush.cpp:11,41-74; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:309-323; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1338-1343`
+
+**Mechanism.** LabelBatchSubmit is on by default, so packetFlush is false. A recorded label (WriteLabelOnGpu reason 0) stays in the open batch until one of these happens:
+- the 1000 us deadline passes, checked only in flushBetweenPackets (that is, before the next packet), in labelFlushDue during a wait, or under try_lock when not overdue;
+- RecordedWorkSinceSubmit reaches batchCap 64;
+- a flip, an EOP or a wait on its range;
+- the end of a submission, but queue 0 skips this when more submissions are queued (endSkipped).
+
+If the packet after an end-of-frame label is expensive (a pipeline compile, a locked GPU wait), the batch carrying that label and the preceding draws stays unsubmitted for the whole packet. The GPU starves, and CPU waiters on that label (game threads, other queues) wait for it too.
+
+**Evidence.** - DeferredLabels.cpp:62: `std::atoi(text) : (LabelBatchSubmit() ? 1000 : 250)`.
+- DeferredLabels.cpp:86: default 64.
+- PacketFlush.cpp:11: `packetFlush = !LabelBatchSubmit() && ...`.
+- PacketFlush.cpp:43: deadline submit.
+- PacketFlush.cpp:59-63: outright lock only at 4x the deadline or 2x the cap.
+- PacketExecution.cpp:312-314: `if (... submission.queue == 0 && workerQueued()->load() != 0) { ++costs.endSkipped; return; }`.
+- VulkanDevice.cpp:1338-1342: no submit per label.
+
+**Why this impact.** Mostly adds latency, not throughput loss: about 50+ submits per frame keep the GPU fed while the worker keeps moving. It matters around expensive packets and end-of-frame labels, where it lengthens GPU idle gaps and the game's view of GPU progress.
+
+**Proposal.** - Submit the open batch before starting any packet that is known to be expensive: a draw or dispatch whose cache lookup missed, or one about to compile a pipeline.
+- Let a timer or completion thread request a submit through an atomic flag honoured at the next GpuMutex release.
+- Always submit at the end of a queue-0 submission that contains an EOP or label the game may wait on.
+
+**Risk.** More vkQueueSubmit calls, each costing tens of microseconds. Splitting batches also adds batch-boundary barriers (recorder-barriers-1).
+
+**How to measure.** - APS5_PROFILE_DRAW=1: the [labels] line 'N at the next packet, N by deadline, N by size cap', submissionCosts endSkipped and endSubmits, and the [present] line 'per flip: N batches recorded' and 'after the flip packet: last submit X ms'.
+- Try APS5_BATCH_CAP=16 and APS5_LABEL_FLUSH_US=250.
+
+#### critical-path-7: Submit-side work on the game thread under Driver::mutex: a whole-buffer copy and validate plus a per-packet walk with guest-memory syscalls
+
+- **Impact (claimed):** low · **Effort:** S · **Category:** allocation-copy · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:19-104,133-154,189-233,302-328; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:67-74`
+
+**Mechanism.** Driver::Submit runs on the game's submit thread and does the following:
+- copies every DWORD of the DCB, following each INDIRECT_BUFFER, with a GuestMemory::CheckRange per IB;
+- runs Pm4::Validate per packet and readRegisterLists;
+- scans for flips (waitForFlipRoom);
+- with Driver::mutex held, runs reserveOutputs, which walks every packet again and calls noteHeldAtSubmit.
+
+For each WAIT_REG_MEM, noteHeldAtSubmit calls GuestMemory::Accessible and does volatile guest reads. On Linux this is a PROCMAP_QUERY or /proc/self/maps lookup (memory-tracking-linux-no-page-cache).
+
+Workers need the same mutex to dequeue, to complete (QueueWorker.cpp:56,114) and at the start of every execute.
+
+**Evidence.** - Submission.cpp:200-208: copyCommands, validate, readRegisterLists, waitForFlipRoom.
+- Submission.cpp:212-231: lock_guard(mutex), reserveOutputs, enqueue.
+- Submission.cpp:133-153: reserveOutputs calls noteHeldAtSubmit for every packet.
+- Submission.cpp:318: `GuestMemory::Accessible(...)`.
+- Submission.cpp:54,69: CheckRange per IB.
+- PacketExecution.cpp:67-74: execute takes the mutex.
+
+**Why this impact.** An AAA frame submits a few 10k-100k DWORD buffers. The copy and validation are probably at the tens-of-microseconds-to-1-ms level per frame on the game thread. The mutex hold briefly stalls worker dequeue and completion. This is not the bound, but it is pure serial overhead on the game's critical thread.
+
+**Proposal.** - Move the reserveOutputs packet walk out of the mutex: collect flip, rendering-wait and wait offsets during copySegment, which already visits every packet.
+- Take the mutex only to reserve and enqueue.
+- Cache Accessible results per page, or reuse the Windows page-state cache on Linux.
+- Fold validate into the copy loop.
+
+**Risk.** Low. Flip reservations must stay ordered with serial assignment, so keep Reserve under the mutex.
+
+**How to measure.** APS5_PROFILE_DRAW=1: submissionCosts copyNs and validateNs (Submission.cpp:222-227) per queue, and queue-0 dequeueNs.
+
+### Incomplete or stubbed code noticed
+
+- `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/WaitMemory.cpp:289-324`: A WAIT_REG_MEM that sees no progress for APS5_GPU_WAIT_TIMEOUT_MS (default 1000 ms) prints a diagnostic and returns as if the condition were met. *Performance relevance:* Missing producers show up as 1 s hitches and possibly wrong results instead of errors. Check stderr for '[gpu] N GPU waits have timed out' before profiling steady-state FPS.
+- `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketMemory.cpp:166-167`: COND_WRITE (0x45), RELEASE_MEM with data_sel 0 or >=4 that is not a no-op, and stores ResolveStore cannot express have no GPU path. They always drain the device: submit, then wait. *Performance relevance:* Each one is a full CPU-GPU round trip on the worker (critical-path-2).
+- `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Presentation.cpp:103-114 vs core/libs/prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp:175-184`: FlipInFlight (default 1, max 2) is documented as allowing a presentation to trail on the GPU, but the default path always runs the trailing FinishPresent (RetirePresents(0)). *Performance relevance:* APS5_FLIP_INFLIGHT has no effect, and every flip drains the queue on the presenter (critical-path-3).
+- `core/libs/prx/libSceAgcDriver/Execution/src/Pm4.cpp:541`: RELEASE_MEM timestamps (data_sel 3) store the host CPU time at interpretation, not the GPU completion time. *Performance relevance:* If Astro Bot drives dynamic resolution or frame pacing from GPU timestamps, it measures worker CPU time (about 100 ms per frame). That may push it to minimum resolution, which cannot help, or confuse its pacing.
+- `core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:75,391-398`: All flip modes are presented at the next emulated vsync. The emulated 59.94 Hz vblank clock (vblankLoop, lines 539-552) runs independently of the host's FIFO swapchain vsync. *Performance relevance:* Two unsynchronised vsync waits per flip can add up to about one host refresh of presenter latency. This is not the bound at 8-9 FPS.
+- `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:49-50,56,68,71,74,77`: These throw (the submission is rejected): COND_INDIRECT_BUFFER with a comparison, predicated COND_INDIRECT_BUFFER, REWIND inside conditional ranges, predicated chains, and flips or rendering waits inside predicated IBs. *Performance relevance:* None on the steady path. A rejected submission fails the driver.
+
+### Settings to try without code changes
+
+| Setting | Expected effect | Risk |
+|---|---|---|
+| `APS5_PROFILE_DRAW=1 (measurement only)` | Prints [present] (GPU busy vs idle gaps per present, batches per flip, inflight_wait p50/p90), [labels], [presync], [lock] locked GPU waits, and the worker dispatch/draw/wait split. The 'idle gaps' value is the direct number behind the 'GPU under-used' symptom. | Adds timing overhead, so absolute FPS will drop slightly. |
+| `APS5_FLIP_INFLIGHT=2` | Expected to change nothing: the trailing FinishPresent still waits. This confirms critical-path-3. | None. |
+| `APS5_BATCH_CAP=16` | The GPU gets work sooner and in smaller batches, which should shrink idle gaps before CPU waits and around expensive packets. It means 4x more vkQueueSubmit calls. | Low: submit overhead plus extra batch-boundary barriers. |
+| `APS5_LABEL_FLUSH_US=250` | Labels and EOPs reach the GPU, and therefore the game, up to about 0.75 ms sooner. It can shorten the game's waits on frame-progress labels. | Low: more submits. |
+| `APS5_REAP_EACH_PACKET=1 and/or APS5_POLL_REAP=1` | Queue 0 tries to reap on every packet, and compute waiters reap while polling. This lowers EOP and completion-label delivery latency to the game. | Low: one extra try_lock and fence-status check per packet. |
+| `APS5_NO_PAUSE_SPIN=1` | Drops the 1.5 ms _mm_pause spin per unsatisfied queue-0 wait, which frees a core for game threads on 4-8 core hosts. Wake latency rises slightly. | Low. |
+
+<a id="guest-libs-build"></a>
+## Guest-side CPU libraries (libSceAgc builders, Submit on game threads), libkernel waits, timing, threads, fibers, audio pacing, stubs, and build configuration
+
+### Answer
+
+No. The unfinished functions are not what holds Astro Bot at 8-9 FPS (stubsVerdict: not-a-cause).
+
+**Throwing stubs crash, they do not slow anything down.** Every `NotImplemented_nid_no_patch` stub throws `std::runtime_error` (core/libs/prx/libc/src/General.cpp:314-316). `RunThread` has no catch (core/libs/prx/libkernel/Pthread/src/Thread.cpp:172-184), so a call ends the process. They cannot cost time per frame.
+
+**The silent stubs are not on the frame path either.** They are listed in docs/dev/TechnicalDebt.md:13-37: dialogs, network, HMD, USB, Audio3d pacing on the audio thread, and AudioPropagation, which does less work. The Astro-specific entries add no waits: VideoOut open param (TechnicalDebt.md:69), flexible-memory flag 0x8000 (TechnicalDebt.md:127), and NGS2 (TechnicalDebt.md:163, 201). Two approximations are real but small: the host ignores guest priorities and affinities (Thread.cpp:487-514), and every flip mode waits for vsync on a FIFO swapchain (core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:75; Execution/src/VulkanDevice.cpp:1172).
+
+**The game's own command building is cheap.** The sceAgcDcb* builders do a few checks and write words, with no logging or locks (libSceAgc/DcbDraw/src/DrawIndexed.cpp:12-80; Command/src/Packet.cpp:12-60). The `sceAgcCreateShader` log is commented out (Shader/src/CreateShader.cpp:66), so `APS5_AGC_CREATE_LOG=ON` does nothing.
+
+**What does cost time on the game side:**
+1. **Build type.** Nothing sets `CMAKE_BUILD_TYPE`, and no `-O` flags are added anywhere. A build configured without `-DCMAKE_BUILD_TYPE=Release` (which BUILD.md:35 asks for) is `-O0` (guest-build-type-unset).
+2. **Windows on an Intel CPU without `--to-intel`.** Every SSE4a instruction traps into a vectored exception handler (libc/src/specifics/windows/CrashReport.cpp:225-246, 468-470) (guest-sse4a-trap-emulation).
+3. **Windows fine timed waits busy-spin.** The last 0.5 ms of every sleep or timed wait spins, and a `sceKernelUsleep` under 0.5 ms is a pure spin (Time/TimedWait.cpp:17-18, 282-322) (guest-windows-fine-wait-spin).
+4. **Thread scheduling.** The host sets no thread priority, so nothing ranks the one GPU queue worker above other threads, and the game is told it has 13 CPUs whatever the host has (Thread.cpp:442-444) (guest-no-host-priorities, guest-cpumask-13-vs-host).
+5. **Unconditional logging.** Texture and StorageTexture constructors, uploads and writebacks always print to stdout and `fflush`, from code that runs under `GpuMutex` (Graphics/src/Texture.cpp:246, 462, 688, 1696, 3679) (guest-unconditional-texture-logs).
+6. **Game threads waiting on the GPU path.** `Submit`'s `CheckRange` calls (Submission.cpp:54, 69, 202) and guest unmap/protect pin waits (libc/src/GuestAllocations.cpp:240-283; see buffers-lease-pins-guest-frees) make game threads wait on the serialized GPU path.
+
+The main limit is still the single-threaded draw path under `GpuMutex` (graphics-draw-1-locked-draw, exec-draw-1). The game threads sit idle waiting for that worker. This matches the reported "CPU and GPU both under-used".
+
+**Verdict on unfinished functions:** `not-a-cause`
+
+### How it works
+
+**Command building on game threads.** Game threads build PM4 through the `sceAgcDcb*`/`Cb*` exports. Each one checks its arguments, reserves space and writes a few dwords (Packet.cpp `Reserve`/`Emit`). `sceAgcCreateShader` patches the program-address registers and calls `AgcDriverRegisterShader`, which copies the code and header into a copy-on-write `ShaderRegistry` under `Driver::mutex` (ShaderRegistry.cpp:164-210).
+
+**Submit, still on the game thread.** `Driver::Submit` does the following, then hands the submission to the queue worker:
+- runs `CheckRange` on the packet and on every IB target;
+- copies the DCB and follows the IBs (Submission.cpp:12-105, 189-233);
+- validates and reads the register lists;
+- waits on a condvar if 16 flips are already queued (VideoOutDriver.cpp:64-72);
+- enqueues under `Driver::mutex`.
+
+**Kernel sync objects.** Guest mutexes take an atomic fast path over a std (timed) mutex (Mutex.cpp:32-73). Condvars, event flags, semaphores, sync-on-address and equeues all use `TimedWait::Condition`:
+- On Linux this is `std::condition_variable_any`, and `nanosleep` handles sleeps.
+- On Windows it is a per-thread event plus a high-resolution waitable timer, with a 0.5 ms `YieldProcessor` spin at the end of each wait. The timer resolution is raised to 0.5 ms at load (Time.cpp:77-95).
+
+**Fibers.** These are user-space stack switches with no syscalls (libSceFiber/Export.cpp:290-319).
+
+**Threads.** Guest threads are plain host threads. Guest priority and affinity are stored and never applied. `sceKernelGetAvailableCpumask` always returns 0x1FFF.
+
+**Audio.** Audio pushes pace against a 48 kHz clock on the title's audio thread.
+
+**Build.** The build has no optimization defaults of its own: optimization comes only from `CMAKE_BUILD_TYPE`. The shader recompiler bakes the build type and flags into its disk-cache key.
+
+### Threads and locks
+
+**Game threads.**
+- The AGC builders take no lock. `RegisterDefaults` takes a global mutex, but only once per version (RegisterDefaults.cpp:44-75).
+- `Submit` takes `Driver::mutex` briefly (Submission.cpp:213-231). It can block on the flip-queue condvar (capacity 16, VideoOutDriver.hpp:61) or in `executeRewindTail`'s 200 us `PollSleep` loop (Submission.cpp:156-169; WaitMemory.cpp:17-29).
+- `RegisterShader` takes `Driver::mutex` and can copy the whole registry map (ShaderRegistry.cpp:196-202).
+
+**Guest sync objects.**
+- A guest mutex is initialized under a global `initializationMutex` once.
+- Guest condvars, semaphores and event flags block properly; none of them poll.
+- On Windows, a timed mutex lock polls every 0.5 ms once less than 40 ms remains (TimedWait.hpp:21-40).
+
+**Memory unmapping.** Guest munmap and mprotect go through the `GuestAllocations` registry. When a range is pinned by GPU work, they drop the registry lock and call the driver's waiter, which waits for the GPU under `GpuMutex` (GuestAllocations.cpp:240-283).
+
+**Scheduling.**
+- No host thread priority is set anywhere, neither guest-requested nor for the driver's queue worker or presenter.
+- Affinity:
+  - Job-worker pinning exists only on Windows and is opt-in (Thread.cpp:198-227).
+  - Queue-worker pinning is on by default only on Linux with a hybrid CPU (WorkerAffinity.cpp:8-20).
+
+**Other threads.** The audio-push yield spin (AudioOut2Context.cpp:341-348) runs outside its lock.
+
+### Build settings
+
+| Setting | Why | Evidence |
+|---|---|---|
+| `-DCMAKE_BUILD_TYPE=Release (use RelWithDebInfo when profiling)` | The project sets no default build type and no -O flags, so an unconfigured single-config build is -O0. The CPU-bound, serialized driver is extremely sensitive to this. | A grep finds no CMAKE_BUILD_TYPE default in CMakeLists.txt or core/; docs/dev/BUILD.md:35 uses Release; core/shader/recompiler/CMakeLists.txt:204-205 only reads it for the cache key. |
+| `Relink with --to-intel on Intel hosts` | Without it, Windows emulates each SSE4a instruction through an exception and Linux crashes. | core/libs/prx/libc/src/specifics/windows/CrashReport.cpp:174-178,225-246; docs/user/USAGE.md:30; docs/dev/TechnicalDebt.md:299 |
+| `APS5_ENABLE_TIMING_LOG=OFF (the default)` | It compiles in APS5_LOG_TIMING stdout prints with fflush. | CMakeLists.txt:27-28; core/libs/prx/libc/include/general/LogMacros.hpp:59-60 |
+| `APS5_AGC_CREATE_LOG: either value` | The only use is commented out, so it has no effect. Set it to OFF for clarity. | core/libs/prx/libSceAgc/CMakeLists.txt:58-62; core/libs/prx/libSceAgc/Shader/src/CreateShader.cpp:66 |
+| `ANYPS5_ENABLE_SPIRV_TOOLS=OFF for now. Try ON, with APS5_SPIRV_OPT=none or full, only once the frame is GPU-bound.` | When ON, every recompile pays for validation plus an optimization pipeline on the queue worker. That is CPU time on the current bottleneck, which the disk cache only amortizes. The GPU is under-used today, so the shader quality gain would not show. | CMakeLists.txt:26; core/shader/recompiler/Recompiler.cpp:341-343; core/shader/recompiler/SpirvBackend/src/SpirvOptimizer.cpp:89-122; core/shader/recompiler/ShaderDiskCache.cpp:34-58 |
+| `Optional local-only build: -DCMAKE_CXX_FLAGS="-march=native" and/or -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | The default x86-64 baseline (SSE2) leaves hashing, compares and copies in host code unvectorized beyond what the compiler can do. LTO could inline across the driver's translation units. Expect single-digit to low-double-digit percent gains, far less than the build-type fix. | A grep finds no -march or INTERPROCEDURAL_OPTIMIZATION in any project CMakeLists. Flags are part of the shader-cache key (recompiler/CMakeLists.txt:205), so changing them invalidates the cache once. LTO's interaction with the .prx nid_patcher and objcopy steps (core/libs/CMakeLists.txt:6-34) is unverified. |
+| `Windows toolchain: MinGW-w64 GCC 15.2.0 (winlibs x86_64-ucrt-posix-seh)` | This is the required compiler version. -fno-asynchronous-unwind-tables and static libstdc++ affect unwinding and packaging only, not runtime speed. | docs/dev/TechnicalDebt.md (Build section); core/libs/CMakeLists.txt:20-23,37-41 |
+
+### Findings
+
+#### guest-build-type-unset: No default CMAKE_BUILD_TYPE: an unconfigured build is unoptimized (-O0) everywhere
+
+- **Impact (claimed):** critical · **Effort:** S · **Category:** build-config · **Default path:** yes
+- **Location:** `CMakeLists.txt:1-36; core/libs/CMakeLists.txt:1-23; docs/dev/BUILD.md:35,64; core/shader/recompiler/CMakeLists.txt:204-205`
+
+**Mechanism.** No CMakeLists sets CMAKE_BUILD_TYPE or adds -O flags. A grep for CMAKE_BUILD_TYPE, -O[0-3s], INTERPROCEDURAL_OPTIMIZATION and -march over core/ and the top-level file finds only a reader at recompiler/CMakeLists.txt:204 and a forwarder at Decoder/Jpeg/CMakeLists.txt:24. With Ninja or Makefiles and no -DCMAKE_BUILD_TYPE, GCC compiles every library at -O0: the AGC driver, the recompiler, libc/libkernel, glslang, and SPIRV-Tools when enabled. BUILD.md:35 documents -DCMAKE_BUILD_TYPE=Release, but nothing enforces it.
+
+**Evidence.** CMakeLists.txt:26-36 sets only options and static link flags. core/libs/CMakeLists.txt:20-23 adds only -fno-asynchronous-unwind-tables on MinGW. BUILD.md:35 is 'cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ...'.
+
+**Why this impact.** Conditional: this applies only if the user configured without Release. The driver's per-draw path is STL-heavy CPU code (maps, shared_ptr, vectors, hashing, memcmp) running serially on one worker under GpuMutex (graphics-draw-1-locked-draw). -O0 typically makes such code 3-10x slower, which alone could turn a ~30 FPS CPU-bound frame into 8-9 FPS with idle cores and an idle GPU.
+
+**Proposal.** Before project(), or right after it, add: if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES) set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE) endif(). Also print the build type, or the __OPTIMIZE__ state, in the startup log so user reports show it.
+
+**Risk.** None functionally. The shader disk-cache key includes the build type and flags (recompiler/CMakeLists.txt:205), so the first run after switching recompiles every shader.
+
+**How to measure.** Run grep CMAKE_BUILD_TYPE build/CMakeCache.txt. If it is empty or Debug, rebuild with Release and compare FPS and APS5_PROFILE_DRAW phase times.
+
+#### guest-sse4a-trap-emulation: Windows on Intel without --to-intel: each SSE4a instruction is a trapped and emulated exception
+
+- **Impact (claimed):** high · **Effort:** S · **Category:** other · **Default path:** no (opt-in)
+- **Location:** `core/libs/prx/libc/src/specifics/windows/CrashReport.cpp:174-246,468-470; docs/dev/TechnicalDebt.md:299; docs/user/USAGE.md:30`
+
+**Mechanism.** EXTRQ and INSERTQ are AMD-only. On an Intel host, every execution raises STATUS_ILLEGAL_INSTRUCTION. The vectored handler ReportCrash first checks for a write-watch fault, then decodes the instruction with ReadCode (VirtualQuery per page), emulates it on the CONTEXT and resumes. Each executed instruction therefore costs a kernel exception dispatch plus the handler, roughly several microseconds instead of one cycle. Emulation is on by default (g_sse4aEmulation = !APS5_NO_SSE4A_EMULATION). The relinker's --to-intel option converts these instructions statically, but it is opt-in.
+
+**Evidence.** CrashReport.cpp:174-178: 'titles use it, so on an Intel host the instruction raises STATUS_ILLEGAL_INSTRUCTION and is emulated'. Lines 225-238 hold HandleSse4a, line 246 is reached on every exception, line 470 is AddVectoredExceptionHandler(1, ReportCrash). TechnicalDebt.md:299 says this path is 'superseded by --to-intel'. USAGE.md:30: 'Add --to-intel for Intel hosts'.
+
+**Why this impact.** Conditional: Windows plus Intel CPU plus a title relinked without --to-intel. If the title runs SSE4a in hot loops (bit-field extraction in decompression, animation or physics), tens of thousands of traps per frame cost tens to hundreds of ms per frame on game threads. On Linux there is no such handler, so an Intel host without --to-intel crashes instead.
+
+**Proposal.** On Intel hosts, relink with --to-intel. Have the loader log the g_sse4aEmulated rate every few seconds, and warn when it is non-zero.
+
+**Risk.** TechnicalDebt.md:310 notes that --to-intel lowers VRSQRTPS/VRCPPS to correctly rounded results, which differ in the low bits; this was already handled for PPSA21564's NaN case.
+
+**How to measure.** Run with APS5_TRACE_SSE4A=1, which prints each emulated rip once with a running count. Watch whether the count keeps growing in-game.
+
+#### guest-windows-fine-wait-spin: Windows default 'fine' timed waits busy-spin the last 0.5 ms, and usleep under 0.5 ms is a pure spin
+
+- **Impact (claimed):** medium · **Effort:** S · **Category:** polling-sleep-latency · **Default path:** yes
+- **Location:** `core/libs/prx/libkernel/Time/TimedWait.cpp:17-18,138-157,244-251,282-322; core/libs/prx/libkernel/Time/Time.cpp:224-227; core/libs/prx/libkernel/Time/include/TimedWait.hpp:21-40`
+
+**Mechanism.** On Windows, Coarse() is false unless APS5_COARSE_TIMED_WAITS is set. In SleepUntil, a deadline closer than LEAD_NANOS=500 us never sleeps: it loops on YieldProcessor() until the deadline. Longer sleeps wait on the timer, then spin the last 0.5 ms. Sleeps under 50 us become SwitchToThread. WaitEventUntil, used by condvar, event-flag and semaphore timed waits, likewise spins the final 0.5 ms before a timeout. sceKernelUsleep(n) calls SleepNanos, so a job worker idling with sceKernelUsleep(100-400) keeps a core at 100%. On Linux, waits are std::condition_variable_any and nanosleep, which sleep with no spin.
+
+**Evidence.** TimedWait.cpp:17-18 define YIELD_BELOW_NANOS=50000 and LEAD_NANOS=500000. Lines 285-293 are 'while (now < deadlineNanos) { YieldProcessor(); ...}'. Lines 244-251: Coarse() returns getenv("APS5_COARSE_TIMED_WAITS") on Windows and true elsewhere. Thread.cpp:199 says job workers 'spin at full load on one core each'.
+
+**Why this impact.** Windows only. The 13 guest job workers plus the driver threads compete for cores. Every spinning sleeper takes CPU time from the single GPU queue worker, which is the frame's critical path (graphics-draw-1-locked-draw), and from the presenter. This matters most on hosts with 16 or fewer logical CPUs. It does not explain idle CPUs, but it can hide the real bottleneck and slow the worker on smaller hosts.
+
+**Proposal.** Make the spin tail adaptive: spin at most about 50 us, or only when the deadline is under 100 us. Or default to coarse waits when the scheduler tick was successfully raised to 0.5 ms (Time.cpp:77-95). Keep the fine mode behind an env var for label-handoff-sensitive cases.
+
+**Risk.** Coarser waits add up to about 0.5-1 ms of wake latency to guest timed waits. Time.cpp:72-76 notes that a title hands labels between queues dozens of times per frame, so measure before changing the default.
+
+**How to measure.** On Windows, compare FPS and per-thread CPU (Process Explorer) with and without APS5_COARSE_TIMED_WAITS=1. APS5_TRACE_USLEEP=1 and APS5_TRACE_WAITS=1 (Time.cpp:161-222) show which guest sites sleep and time out most.
+
+#### guest-no-host-priorities: No host thread priorities: guest priorities are dropped and the GPU queue worker gets no boost
+
+- **Impact (claimed):** medium · **Effort:** S · **Category:** other · **Default path:** yes
+- **Location:** `core/libs/prx/libkernel/Pthread/src/Thread.cpp:276-287,487-491,510-514; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/WorkerAffinity.cpp:8-31; docs/dev/TechnicalDebt.md:27`
+
+**Mechanism.** scePthreadCreate stores the priority and affinity from the attributes. scePthreadSetprio and scePthreadSetaffinity only store values. A grep for SetThreadPriority, pthread_setschedparam, setpriority and sched_setscheduler under core/libs/prx finds no host call. Guest job workers, the game main thread, audio threads, and the driver's PM4 queue worker and presenter all run at the same host priority. Affinity is applied only through opt-in env vars: job workers on Windows, queue workers on Linux hybrid CPUs.
+
+**Evidence.** Thread.cpp:489 'thread->affinity.store(mask...)' and :512 'thread->priority.store(prio...)'. The grep for priority APIs returns only the guest-side pthread_setschedparam_nid_postfix (Posix/Thread.cpp:92) and VideoOut constants. TechnicalDebt.md:27: 'guest priorities and affinities do not reach host scheduling'.
+
+**Why this impact.** Every draw is serialized on one worker thread (exec-draw-2, graphics-draw-1). Any time that thread spends runnable but not running stretches the whole frame. With spinning job workers (Thread.cpp:199) or a busy host, the worker gets a fair share at best, not priority.
+
+**Proposal.** Raise the AGC queue workers and presenter to above-normal priority: SetThreadPriority(THREAD_PRIORITY_ABOVE_NORMAL) on Windows, or a negative nice value through setpriority on the TID on Linux, where permitted. Optionally map guest priority bands (256-767) to two or three host levels.
+
+**Risk.** Low. A raised worker that busy-polls (PollSleep loops) could starve game threads, but its polls sleep 200 us (WaitMemory.cpp:17-29).
+
+**How to measure.** Linux: perf sched latency or /proc/<pid>/task/<tid>/schedstat for the worker's run-queue wait. Windows: Process Explorer per-thread ready time. Compare FPS after renice or raising the worker thread.
+
+#### guest-cpumask-13-vs-host: The game is always told it has 13 CPUs (0x1FFF), while sceKernelGetCurrentCpu returns the real host index
+
+- **Impact (claimed):** medium · **Effort:** S · **Category:** other · **Default path:** yes
+- **Location:** `core/libs/prx/libkernel/Pthread/src/Thread.cpp:442-444; core/libs/prx/libkernel/Pthread/include/Pthread.hpp:63; core/libs/prx/libkernel/System/src/Process.cpp:149-165`
+
+**Mechanism.** sceKernelGetAvailableCpumask returns the constant DEFAULT_THREAD_AFFINITY=0x1FFF, whatever the host core count, so job systems create 13 workers. Per Thread.cpp:199, one title has 'BPE JobWorkerThread CPU0..CPU12' spinning at full load. sceKernelGetCurrentCpu returns the host's CPU index (sched_getcpu, or the processor group index on Windows), which can be 13 or more on large hosts, outside the advertised mask.
+
+**Evidence.** Thread.cpp:442-444 'return DEFAULT_THREAD_AFFINITY;'. Pthread.hpp:63 '= 0x1FFF'. Process.cpp:160-163 'const int cpu = ::sched_getcpu(); ... return cpu;'.
+
+**Why this impact.** On hosts with fewer than about 16 logical CPUs, 13 workers plus the main, render, audio, queue-worker and presenter threads oversubscribe the cores. That slows the serialized GPU worker, more so if workers spin or yield. On large hosts it has no perf effect, but the out-of-mask CPU index could break per-CPU arrays (a correctness risk).
+
+**Proposal.** Add an opt-in env var, for example APS5_GUEST_CPUS=n, to report a smaller mask. Clamp or remap sceKernelGetCurrentCpu into the reported mask.
+
+**Risk.** Some titles may assume exactly 13 or 14 cores or fixed worker indices. Keep the default unchanged until it has been tested.
+
+**How to measure.** Compare host logical CPUs against the guest thread count (top -H, or Process Explorer threads named JobWorker). Look for oversubscription with high involuntary context switches (/proc/<pid>/task/*/status nonvoluntary_ctxt_switches).
+
+#### guest-unconditional-texture-logs: Unconditional stdout and fflush logging on every Texture/StorageTexture creation, upload and writeback, under GpuMutex
+
+- **Impact (claimed):** low · **Effort:** S · **Category:** logging-debug-overhead · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Graphics/src/Texture.cpp:246-248,462,688,1696-1698,3679-3681; core/libs/prx/libc/include/general/LogMacros.hpp:32-43; core/libs/prx/libkernel/File/src/Open.cpp:107`
+
+**Mechanism.** APS5_LOG_OUT and APS5_LOG_CHARS_OUT expand to fprintf(stdout) plus fflush(stdout) with no condition (LogMacros.hpp:32-38). The following log on every call:
+- the Texture constructors (one line, plus one line per mip)
+- the StorageTexture constructor
+- StorageTexture::upload and writeBackLayers, around SubmitAndWait
+
+All of these run inside the draw or dispatch path while GpuMutex is held. sceKernelOpen also logs every open (Open.cpp:107).
+
+**Evidence.** Texture.cpp:246 is APS5_LOG_OUT("Texture address=0x%llx ...") inside Texture::Texture (line 228), and :248 logs one line per mip. :688 is in StorageTexture::StorageTexture (line 680). :1696/:1698 bracket batch.SubmitAndWait() in upload (line 1480). :3679/:3681 do the same in writeBackLayers (line 3363). LogMacros.hpp:33-34 is std::fprintf(...), std::fflush(stream).
+
+**Why this impact.** It is cheap if textures are created once. The digest, however, reports that the cache capacities are below the frame working set (graphics-draw-2-cache-capacity, shader-resources-rescache-lru-capacity), so re-creation, and therefore logging, can happen every frame. The I/O and flush run under the global lock. On a Windows console, each fflush'd line can cost tens to hundreds of microseconds.
+
+**Proposal.** Gate these behind a cached trace env var, for example APS5_TRACE_TEXTURES, or change them to APS5_LOG_OUT_DEBUG. Drop the per-line fflush.
+
+**Risk.** None. These are diagnostic prints.
+
+**How to measure.** Count 'Texture address=' and 'StorageTexture' lines per second in stdout during gameplay. Compare FPS with stdout redirected to a file or NUL against an attached console.
+
+#### guest-submit-checkrange-and-registry-cow: Game-thread Submit walks every IB with CheckRange, and shader registration can copy the whole registry
+
+- **Impact (claimed):** low · **Effort:** M · **Category:** per-draw-cpu-cost · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:19-105,189-233; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Shaders/ShaderRegistry.cpp:164-210`
+
+**Mechanism.** Submit runs on the calling game thread. It CheckRanges the packet and the DCB, copies all words, recursively follows INDIRECT_BUFFER and COND_INDIRECT_BUFFER packets with a CheckRange per target, then validates and reads the register lists. On Linux each CheckRange is a PROCMAP_QUERY ioctl or a /proc/self/maps parse (memory-tracking-linux-no-page-cache). RegisterShader copies the code and header and, when a queued submission still holds the registry's shared_ptr (Submission.cpp:218), clones the entire map under Driver::mutex (ShaderRegistry.cpp:200-202).
+
+**Evidence.** Submission.cpp:54 and :69 call GuestMemory::CheckRange(target, ...) for each IB, :192 and :202 for the packet and DCB, and :203 is copyCommands. ShaderRegistry.cpp:201 is 'else if (shaders.use_count() != 1) shaders = std::make_shared<ShaderRegistry>(*shaders);'.
+
+**Why this impact.** These costs are per submit and per IB, not per draw. With a few to a few hundred IBs per frame, they add microseconds to low milliseconds on the game's render thread. Registry clones are O(number of shaders), but only when shaders are created between submits (streaming).
+
+**Proposal.** Memoize CheckRange results per submit for ranges already proven, or reuse the page-state cache. Make ShaderRegistry a persistent structure, such as a sharded map plus an epoch, instead of copy-on-write.
+
+**Risk.** Low.
+
+**How to measure.** With APS5_PROFILE_DRAW=1, Submit records copyNs and validateNs per queue (Submission.cpp:197-228). Compare these against the frame time.
+
+#### guest-stubs-throw-not-slow: Throwing stubs terminate the process. The silent stubs and approximations are off the frame path.
+
+- **Impact (claimed):** low · **Effort:** S · **Category:** incomplete-implementation · **Default path:** yes
+- **Location:** `core/libs/prx/libc/src/General.cpp:314-316; core/libs/prx/libkernel/Pthread/src/Thread.cpp:172-184; core/libs/prx/libSceAgc/Unimplemented.cpp:8-30; docs/dev/TechnicalDebt.md:13-37,69,127; core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:64-75`
+
+**Mechanism.** NotImplemented_nid_no_patch throws std::runtime_error, and guest thread entry has no handler, so an unimplemented call is fatal rather than slow. The silent stubs are dialogs, HTTP, HMD, USB, Bluetooth, NpCommerce, AudioPropagation (no rays, so less work) and Audio3d (paces pushes at 48 kHz on the audio thread). Astro-specific notes are the VideoOut open param word (TechnicalDebt.md:69) and flag 0x8000 ignored in sceKernelMapNamedFlexibleMemoryInternal (TechnicalDebt.md:127); neither adds waits. All flip modes present at the next vsync on a FIFO swapchain, with a 16-entry flip queue (VideoOutDriver.hpp:61), so the game thread rarely blocks in WaitForFlipRoom.
+
+**Evidence.** General.cpp:315 is 'throw std::runtime_error(std::string(funcName) + " not implemented");'. Thread.cpp:182 is 'finishThread(self, entry(arg));' with no try. VideoOutDriver.cpp:75 is the comment '// All flip modes are presented at the next vsync.'
+
+**Why this impact.** At 8-9 FPS, vsync quantization adds at most one refresh interval per frame. No stub sits on a per-draw path or adds per-frame waits on the render thread.
+
+**Proposal.** Nothing for performance. Use tools/import_audit.py to list the title's throwing stubs and absent imports before launch.
+
+**Risk.** None.
+
+**How to measure.** Run relinker --registry <eboot.elf> app.elf, then python3 tools/import_audit.py app.registry.json --libs build/core/libs/libs --modules <title>/sce_module (USAGE.md:104-117). Stubs are classified as 'stub'. Silent approximations appear as 'implemented', so cross-check docs/dev/TechnicalDebt.md.
+
+#### guest-agc-builders-cheap: The sceAgc DCB builders and sceAgcCreateShader are cheap; the APS5_AGC_CREATE_LOG option is dead
+
+- **Impact (claimed):** low · **Effort:** S · **Category:** per-draw-cpu-cost · **Default path:** yes
+- **Location:** `core/libs/prx/libSceAgc/DcbDraw/src/DrawIndexed.cpp:12-88; core/libs/prx/libSceAgc/Command/src/Packet.cpp:12-60; core/libs/prx/libSceAgc/Shader/src/CreateShader.cpp:12-68; core/libs/prx/libSceAgc/CMakeLists.txt:58-62; core/libs/prx/libSceAgc/Cb/src/Sync.cpp:56-57`
+
+**Mechanism.** Each builder makes a few Require/CheckAddress branches (they only build strings when they throw) and writes 3 to 10 dwords through Reserve and Emit. There is no logging, mutex or map lookup per call. RegisterDefaults takes a mutex but caches after the first call. The APS5_TRACE_LABEL check in Sync.cpp is a function-static. The only use of APS5_AGC_CREATE_LOG is commented out, so the CMake option, which defaults to ON, has no effect.
+
+**Evidence.** CreateShader.cpp:66 is '// APS5_LOG_OUT_IF(APS5_AGC_CREATE_LOG, ...)'. A grep of non-test libSceAgc .cpp files finds no fprintf, logging or locks other than RegisterDefaults.cpp:44-52 and the cached getenv in Sync.cpp:56.
+
+**Why this impact.** These calls cost nanoseconds to sub-microseconds each, even across thousands of draws per frame, which is negligible.
+
+**Proposal.** Remove the dead option, or restore the log behind a runtime env var. No performance work is needed.
+
+**Risk.** None.
+
+**How to measure.** Use perf record or VTune on the game render thread. libSceAgc symbols should be well under 1% of samples.
+
+### Incomplete or stubbed code noticed
+
+- `core/libs/prx/libc/src/General.cpp:314-316`: NotImplemented_nid_no_patch throws std::runtime_error, and guest threads have no catch (Thread.cpp:172-184). *Performance relevance:* Calling one crashes the process. It never slows anything down.
+- `core/libs/prx/libSceAgc/Unimplemented.cpp:8-30`: The sceAgcAcb marker-span and workload-state exports (PushMarkerSpan, SetMarkerSpan, SetWorkloadComplete, SetWorkloadStreamInactive, SetWorkloadsActive) are throwing stubs. *Performance relevance:* None. A call would crash the title.
+- `core/libs/prx/libkernel/Pthread/src/Thread.cpp:487-491,510-514`: scePthreadSetaffinity and scePthreadSetprio only store their values. Host priority and affinity are never applied. *Performance relevance:* Medium. Nothing ranks the critical queue worker above other threads, and the game's own scheduling intent is lost.
+- `core/libs/prx/libkernel/Pthread/src/Thread.cpp:442-444`: sceKernelGetAvailableCpumask always returns 0x1FFF (13 CPUs), whatever the host has. *Performance relevance:* Medium on hosts with fewer than about 16 logical CPUs, where the job system oversubscribes the cores.
+- `core/libs/prx/libSceVideoOut/src/VideoOutDriver.cpp:75; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1172,1830`: Every flip mode is presented at the next vsync, and the present mode is always FIFO. *Performance relevance:* Low at 8-9 FPS. It caps the frame rate at the refresh rate and quantizes frame times.
+- `docs/dev/TechnicalDebt.md:27`: sceVideoOutOpen validates but ignores the service thread priority and affinity it is given. *Performance relevance:* Low.
+- `docs/dev/TechnicalDebt.md:127; core/libs/prx/libkernel/DirectMemory/Export.cpp:198-199`: sceKernelMapNamedFlexibleMemoryInternal accepts and ignores flag 0x8000. This is specific to Astro Bot's SDK 9 libc.prx heap. *Performance relevance:* No direct cost. Astro's own heap maps and unmaps through libkernel, so unmap and protect calls can hit the GPU-lease pin wait (GuestAllocations.cpp:240-283).
+- `docs/dev/TechnicalDebt.md:22,29`: AudioPropagation computes no rays and no paths, and Audio3d produces no sound and only paces pushes at 48 kHz. *Performance relevance:* None on the render path. Both run on audio threads, and AudioPropagation does less work than the console.
+- `core/libs/prx/libSceAgc/Shader/src/CreateShader.cpp:66; core/libs/prx/libSceAgc/CMakeLists.txt:58`: The APS5_AGC_CREATE_LOG option defaults to ON, but its only use is commented out. *Performance relevance:* None.
+- `core/libs/prx/libkernel/System/src/Process.cpp:149-165`: sceKernelGetCurrentCpu returns the real host CPU index, which can fall outside the 0x1FFF mask the game was given. *Performance relevance:* None for performance. It is a correctness risk for per-CPU arrays on hosts with more than 13 logical CPUs.
+
+### Settings to try without code changes
+
+| Setting | Expected effect | Risk |
+|---|---|---|
+| `Check build/CMakeCache.txt for CMAKE_BUILD_TYPE. If it is empty or Debug, reconfigure with -DCMAKE_BUILD_TYPE=Release and rebuild the libs target.` | If the current build was unoptimized, expect a several-fold speedup of the serialized driver worker and a large FPS gain. | The shader disk cache is invalidated once, so the first run stutters while shaders recompile. |
+| `Windows with an Intel CPU: run with APS5_TRACE_SSE4A=1. If it reports emulated instructions in-game, relink the title with --to-intel.` | Removes one illegal-instruction exception per SSE4a instruction executed. This could be large if the title uses SSE4a in hot loops. | --to-intel guest module trampolines are verified only by synthetic tests (TechnicalDebt.md:309). |
+| `Windows: set APS5_COARSE_TIMED_WAITS=1.` | Sleeping and timing-out guest threads stop busy-spinning their final 0.5 ms, which frees cores for the queue worker and presenter on smaller hosts. | Adds roughly 0.5-1 ms of wake latency to guest timed waits. Label handoffs between threads could slow. |
+| `Redirect stdout to a file or NUL instead of an attached console, for example game.exe > out.log.` | Removes the console I/O cost of the unconditional Texture, StorageTexture and sceKernelOpen logging, which runs under GpuMutex. | None. |
+| `Raise the AGC queue-worker thread's priority. On Linux, renice -n -5 -p <worker tid> found with top -H. On Windows, use Process Explorer.` | Less ready-queue delay for the thread that serializes all draws, when the host is busy. | Low. Game threads could get slightly less CPU. |
+| `Windows on a hybrid Intel CPU: set APS5_WORKER_AFFINITY=1. This is already the default on Linux hybrid CPUs.` | Keeps the queue workers and presenter on P-cores. | The comment at Thread.cpp:199-202 measured 0 to -9% for pinning job workers. Measure the effect. |
+| `Set APS5_TRACE_WAITS=1 and APS5_TRACE_USLEEP=1.` | Shows which guest sites block or sleep and for how long, which tells whether the render thread waits on GPU completion (the worker) or on something else. | Diagnostic only, with slight overhead. |
+| `Set APS5_PROFILE_DRAW=1.` | Gives per-queue Submit copy and validate times (Submission.cpp:197-228) alongside the draw phase timings, to confirm the game-side submit cost is small next to the worker. | Profiling overhead. |
 
 <a id="exec-draw"></a>
 ## Execution-side draw path (Execution/src/Driver/Draw/*)
