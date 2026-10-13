@@ -45,6 +45,22 @@ static_assert(sizeof(Value) == 8 && sizeof(String) == 8 && sizeof(Array) == 8 &&
 static_assert(sizeof(ArrayIterator) == 8 && sizeof(ObjectIterator) == 8);
 static_assert(offsetof(Pair, value) == 0x10);
 
+using NullAccessCallback = const Value& (APS5_VABI*)(ValueType, const Value*, void*);
+using TypeMismatchHandler = const Value* (APS5_VABI*)(ValueType, const Value*, const Value*, void*);
+using ElementAccessFailureHandler = void (APS5_VABI*)(int, const String*, const std::uint64_t*, const Value*, const Value*, void*);
+using SpecialFloatHandler = Value* (APS5_VABI*)(Value*, std::int32_t, double, const Value*, void*, bool*);
+
+struct Handlers {
+    NullAccessCallback nullAccess = nullptr;
+    void* nullAccessContext = nullptr;
+    TypeMismatchHandler typeMismatch = nullptr;
+    void* typeMismatchContext = nullptr;
+    ElementAccessFailureHandler elementAccessFailure = nullptr;
+    void* elementAccessFailureContext = nullptr;
+    SpecialFloatHandler specialFloat = nullptr;
+    void* specialFloatContext = nullptr;
+};
+
 struct Node {
     ValueType type = TypeNull;
     bool boolean = false;
@@ -54,9 +70,8 @@ struct Node {
     String string{};
     Array array{};
     Object object{};
+    Handlers handlers{};
 };
-
-using NullAccessCallback = const Value& (APS5_VABI*)(ValueType, const Value*, void*);
 
 struct Globals {
     std::mutex mutex;
@@ -96,7 +111,9 @@ void Clear(Node& n) {
     if (n.type == TypeString) Destroy(n.string);
     if (n.type == TypeArray) Destroy(n.array);
     if (n.type == TypeObject) Destroy(n.object);
+    const Handlers handlers = n.handlers;
     n = Node{};
+    n.handlers = handlers;
 }
 
 void Destroy(Value& v) {
@@ -142,6 +159,7 @@ void AssignNode(Node& destination, const Node& source) {
     if (source.type == TypeString) Construct(copy.string, *source.string.text);
     if (source.type == TypeArray) CopyArray(copy.array, source.array);
     if (source.type == TypeObject) CopyObject(copy.object, source.object);
+    copy.handlers = destination.handlers;
     Clear(destination);
     destination = copy;
 }
@@ -173,10 +191,11 @@ const Value& Defaults(ValueType type) {
 }
 
 const Value& NullAccess(ValueType requested, const Value* parent) {
-    auto& state = State();
-    NullAccessCallback callback;
-    void* context;
-    {
+    const Handlers& own = NodeOf(*parent).handlers;
+    NullAccessCallback callback = own.nullAccess;
+    void* context = own.nullAccessContext;
+    if (!callback) {
+        auto& state = State();
         std::lock_guard lock(state.mutex);
         callback = state.callback;
         context = state.context;
@@ -188,10 +207,24 @@ const Value& NullAccess(ValueType requested, const Value* parent) {
     return Defaults(requested);
 }
 
+const Value& TypeMismatch(ValueType requested, const Value* self) {
+    const Handlers& handlers = NodeOf(*self).handlers;
+    const Value* result = handlers.typeMismatch(requested, self, self, handlers.typeMismatchContext);
+    if (result && result->node && result->node->type == requested) return *result;
+    return Defaults(requested);
+}
+
 const Node& Typed(const Value* self, ValueType requested) {
     const Node& n = NodeOf(*self);
     if (n.type == requested) return n;
+    if (n.type != TypeNull && n.handlers.typeMismatch) return NodeOf(TypeMismatch(requested, self));
     return NodeOf(NullAccess(requested, self));
+}
+
+const Value& MissingElement(const Value* self, const char* function) {
+    if (NodeOf(*self).handlers.elementAccessFailure)
+        throw std::runtime_error(std::string(function) + ": an element access failure handler is installed, and the error code and values the console passes it are unknown");
+    return NullAccess(TypeNull, self);
 }
 
 void AppendEscaped(std::string& out, const std::string& text) {
@@ -216,20 +249,22 @@ void AppendEscaped(std::string& out, const std::string& text) {
     out += '"';
 }
 
-std::string RealText(double value) {
+std::string RealText(double value, bool handled) {
+    if (!std::isfinite(value) && handled) throw std::runtime_error("sce::Json: cannot serialize a non-finite number: a special float handler is installed, and the FunctionType values the console passes it are unknown");
     if (!std::isfinite(value)) throw std::runtime_error("sce::Json: cannot serialize a non-finite number");
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "%.17g", value);
     return buffer;
 }
 
-void Serialize(std::string& out, const Node& n) {
+void Serialize(std::string& out, const Node& n, bool handled) {
+    handled = handled || n.handlers.specialFloat != nullptr;
     switch (n.type) {
         case TypeNull: out += "null"; return;
         case TypeBoolean: out += n.boolean ? "true" : "false"; return;
         case TypeInteger: out += std::to_string(n.integer); return;
         case TypeUInteger: out += std::to_string(n.uinteger); return;
-        case TypeReal: out += RealText(n.real); return;
+        case TypeReal: out += RealText(n.real, handled); return;
         case TypeString: AppendEscaped(out, *n.string.text); return;
         case TypeArray: {
             out += '[';
@@ -237,7 +272,7 @@ void Serialize(std::string& out, const Node& n) {
             for (const auto& item : *n.array.items) {
                 if (!first) out += ',';
                 first = false;
-                Serialize(out, NodeOf(item));
+                Serialize(out, NodeOf(item), handled);
             }
             out += ']';
             return;
@@ -250,7 +285,7 @@ void Serialize(std::string& out, const Node& n) {
                 first = false;
                 AppendEscaped(out, *pair.key.text);
                 out += ':';
-                Serialize(out, NodeOf(pair.value));
+                Serialize(out, NodeOf(pair.value), handled);
             }
             out += '}';
             return;
@@ -722,7 +757,7 @@ const Value* APS5_VABI _ZNK3sce4Json5ValueixEPKc(const Value* self, const char* 
     if (key != nullptr && n.type == TypeObject)
         for (const auto& pair : *n.object.items)
             if (*pair.key.text == key) return &pair.value;
-    return &NullAccess(TypeNull, self);
+    return &MissingElement(self, "sce::Json::Value::operator[]");
 }
 const Value* APS5_VABI _ZNK3sce4Json5ValueixEm(const Value* self, std::size_t index) {
     const Node& n = NodeOf(*self);
@@ -731,7 +766,7 @@ const Value* APS5_VABI _ZNK3sce4Json5ValueixEm(const Value* self, std::size_t in
         std::advance(it, static_cast<std::ptrdiff_t>(index));
         return &*it;
     }
-    return &NullAccess(TypeNull, self);
+    return &MissingElement(self, "sce::Json::Value::operator[]");
 }
 void APS5_VABI _ZN3sce4Json5ValueC1ENS0_9ValueTypeE(Value* self, ValueType type) {
     Construct(*self);
@@ -743,7 +778,7 @@ const Value* APS5_VABI _ZNK3sce4Json5Value8getValueERKNS0_6StringE(const Value* 
     if (key != nullptr && n.type == TypeObject)
         for (const auto& pair : *n.object.items)
             if (*pair.key.text == *key->text) return &pair.value;
-    return &NullAccess(TypeNull, self);
+    return &MissingElement(self, "sce::Json::Value::getValue");
 }
 Value* APS5_VABI _ZN3sce4Json5Value10referValueEm(Value* self, std::size_t index) {
     Node& n = NodeOf(*self);
@@ -773,7 +808,7 @@ Object* APS5_VABI _ZN3sce4Json5Value11referObjectEv(Value* self) {
 }
 int APS5_VABI _ZN3sce4Json5Value9serializeERNS0_6StringE(Value* self, String* out) {
     std::string text;
-    Serialize(text, NodeOf(*self));
+    Serialize(text, NodeOf(*self), false);
     *out->text = std::move(text);
     return 0;
 }
@@ -784,7 +819,7 @@ int APS5_VABI _ZNK3sce4Json5Value8toStringERNS0_6StringE(const Value* self, Stri
         return 0;
     }
     std::string text;
-    Serialize(text, n);
+    Serialize(text, n, false);
     *out->text = std::move(text);
     return 0;
 }
@@ -816,8 +851,10 @@ int APS5_VABI _ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(Value* out, const char*
         Clear(parsed);
         return JsonErrorParse;
     }
-    Clear(NodeOf(*out));
-    *out->node = parsed;
+    Node& target = NodeOf(*out);
+    parsed.handlers = target.handlers;
+    Clear(target);
+    target = parsed;
     return 0;
 }
 
@@ -892,33 +929,48 @@ void APS5_VABI _ZN3sce4Json12MemAllocator11notifyErrorEimPv(void* self, int erro
     std::printf("sce::Json::MemAllocator::notifyError: error %d, requested %zu bytes\n", errorCode, size);
 }
 
-int APS5_VABI _ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI _ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_(Value* self, NullAccessCallback callback, void* context) {
+    Handlers& handlers = NodeOf(*self).handlers;
+    handlers.nullAccess = callback;
+    handlers.nullAccessContext = context;
     return 0;
 }
 
-int APS5_VABI _ZN3sce4Json5Value30setElementAccessFailureHandlerEPFviPKNS0_6StringEPKmPKS1_S8_PvES9_(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI _ZN3sce4Json5Value30setElementAccessFailureHandlerEPFviPKNS0_6StringEPKmPKS1_S8_PvES9_(Value* self, ElementAccessFailureHandler handler, void* context) {
+    Handlers& handlers = NodeOf(*self).handlers;
+    handlers.elementAccessFailure = handler;
+    handlers.elementAccessFailureContext = context;
     return 0;
 }
 
-int APS5_VABI _ZN3sce4Json5Value22setSpecialFloatHandlerEPFKS1_NS0_12FunctionTypeEdPS2_PvPbES5_(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI _ZN3sce4Json5Value22setSpecialFloatHandlerEPFKS1_NS0_12FunctionTypeEdPS2_PvPbES5_(Value* self, SpecialFloatHandler handler, void* context) {
+    Handlers& handlers = NodeOf(*self).handlers;
+    handlers.specialFloat = handler;
+    handlers.specialFloatContext = context;
     return 0;
 }
 
-int APS5_VABI _ZN3sce4Json5Value22setTypeMismatchHandlerEPFRKS1_NS0_9ValueTypeEPS2_S5_PvES6_(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI _ZN3sce4Json5Value22setTypeMismatchHandlerEPFRKS1_NS0_9ValueTypeEPS2_S5_PvES6_(Value* self, TypeMismatchHandler handler, void* context) {
+    Handlers& handlers = NodeOf(*self).handlers;
+    handlers.typeMismatch = handler;
+    handlers.typeMismatchContext = context;
     return 0;
 }
 
-int APS5_VABI _ZNK3sce4Json5ValuecvbEv(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+bool APS5_VABI _ZNK3sce4Json5ValuecvbEv(const Value* self) {
+    return NodeOf(*self).type != TypeNull;
 }
 
-int APS5_VABI _ZN3sce4Json6Object6insertERKNS1_4PairE() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+ObjectIterator* APS5_VABI _ZN3sce4Json6Object6insertERKNS1_4PairE(ObjectIterator* result, Object* self, const Pair* pair) {
+    if (pair == nullptr) throw std::invalid_argument("sce::Json::Object::insert: null pair");
+    auto found = std::find_if(self->items->begin(), self->items->end(), [&](const Pair& item) { return *item.key.text == *pair->key.text; });
+    if (found == self->items->end()) {
+        Pair copy{};
+        CopyInto(copy.value, pair->value);
+        Construct(copy.key, *pair->key.text);
+        found = self->items->insert(self->items->end(), copy);
+    }
+    result->it = found;
+    return result;
 }
 }

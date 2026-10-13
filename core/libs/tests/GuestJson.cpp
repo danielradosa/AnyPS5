@@ -27,6 +27,9 @@ struct Pair {
 };
 using NullAccessCallback = const Value& (APS5_VABI*)(std::int32_t, const Value*, void*);
 using SetNullAccessCallback = int (APS5_VABI*)(void*, NullAccessCallback, void*);
+using TypeMismatchHandler = const Value& (APS5_VABI*)(std::int32_t, const Value*, const Value*, void*);
+using ElementAccessFailureHandler = void (APS5_VABI*)(int, const String*, const std::uint64_t*, const Value*, const Value*, void*);
+using SpecialFloatHandler = Value* (APS5_VABI*)(Value*, std::int32_t, double, const Value*, void*, bool*);
 
 extern "C" {
 int APS5_VABI _ZN3sce4Json11InitializerC1Ev(void*);
@@ -112,6 +115,15 @@ void APS5_VABI _ZN3sce4Json18InitParameterRtti216setAllocatorRttiEPNS0_14AllocPa
 int APS5_VABI _ZN3sce4Json11Initializer10initializeEPKNS0_14InitParameter2E(void*, const void*);
 void APS5_VABI _ZN3sce4Json17InitParameterRttiC1EPNS0_14AllocParamRttiEPvm(void*, void*, void*, std::size_t);
 void APS5_VABI _ZN3sce4Json12MemAllocator11notifyErrorEimPv(void*, int, std::size_t, void*);
+int APS5_VABI _ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_(Value*, NullAccessCallback, void*);
+int APS5_VABI _ZN3sce4Json5Value22setTypeMismatchHandlerEPFRKS1_NS0_9ValueTypeEPS2_S5_PvES6_(Value*, TypeMismatchHandler, void*);
+int APS5_VABI _ZN3sce4Json5Value30setElementAccessFailureHandlerEPFviPKNS0_6StringEPKmPKS1_S8_PvES9_(Value*, ElementAccessFailureHandler, void*);
+int APS5_VABI _ZN3sce4Json5Value22setSpecialFloatHandlerEPFKS1_NS0_12FunctionTypeEdPS2_PvPbES5_(Value*, SpecialFloatHandler, void*);
+bool APS5_VABI _ZNK3sce4Json5ValuecvbEv(const Value*);
+Iterator* APS5_VABI _ZN3sce4Json6Object6insertERKNS1_4PairE(Iterator*, Object*, const Pair*);
+int APS5_VABI _ZN3sce4Json5Value3setEd(Value*, double);
+Value* APS5_VABI _ZN3sce4Json5ValueaSERKS1_(Value*, const Value*);
+void APS5_VABI _ZN3sce4Json5ValueC1ERKS1_(Value*, const Value*);
 }
 
 static void Check(bool value, int line) {
@@ -462,6 +474,242 @@ static void NullAccess(SetNullAccessCallback setCallback) {
     Require(_ZN3sce4Json11InitializerD1Ev(initializer) == 0);
 }
 
+static Value mismatchFallback{};
+static int mismatchCalls = 0;
+static std::int32_t mismatchRequested = -1;
+static const Value* mismatchFirst = nullptr;
+static const Value* mismatchSecond = nullptr;
+static void* mismatchContext = nullptr;
+static int globalCalls = 0;
+
+static const Value& APS5_VABI OnTypeMismatch(std::int32_t requested, const Value* first, const Value* second, void* context) {
+    ++mismatchCalls;
+    mismatchRequested = requested;
+    mismatchFirst = first;
+    mismatchSecond = second;
+    mismatchContext = context;
+    return mismatchFallback;
+}
+
+static const Value& APS5_VABI OnGlobalNullAccess(std::int32_t, const Value*, void*) {
+    ++globalCalls;
+    return fallback;
+}
+
+static void APS5_VABI OnElementAccessFailure(int, const String*, const std::uint64_t*, const Value*, const Value*, void*) {
+    std::abort();
+}
+
+static Value* APS5_VABI OnSpecialFloat(Value*, std::int32_t, double, const Value*, void*, bool*) {
+    std::abort();
+}
+
+template<typename TAction>
+static std::string RuntimeFailure(TAction action) {
+    try {
+        action();
+    } catch (const std::runtime_error& error) {
+        return error.what();
+    }
+    return {};
+}
+
+static void ValueNullAccessCallback() {
+    callbackCalls = 0;
+    lastRequested = -1;
+    lastParent = nullptr;
+    lastContext = nullptr;
+    _ZN3sce4Json5ValueC1Ev(&fallback);
+    Require(_ZN3sce4Json5Value3setEl(&fallback, 99) == 0);
+    Value root{}, other{};
+    _ZN3sce4Json5ValueC1Ev(&root);
+    _ZN3sce4Json5ValueC1Ev(&other);
+    const char text[] = "{\"present\":\"text\",\"list\":[1]}";
+    Require(_ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(&root, text, sizeof(text) - 1) == 0);
+    int context = 0;
+    Require(_ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_(&root, OnNullAccess, &context) == 0);
+    Require(&Member(root, "missing") == &fallback);
+    Require(callbackCalls == 1 && lastRequested == TypeNull && lastParent == &root && lastContext == &context);
+    Require(_ZNK3sce4Json5ValueixEm(&root, 5) == &fallback && callbackCalls == 2);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&Member(other, "missing")) == TypeNull && callbackCalls == 2);
+
+    Value copy{};
+    _ZN3sce4Json5ValueC1ERKS1_(&copy, &root);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&Member(copy, "missing")) == TypeNull && callbackCalls == 2);
+    _ZN3sce4Json5ValueD1Ev(&copy);
+
+    const char replaced[] = "[1,2]";
+    Require(_ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(&root, replaced, sizeof(replaced) - 1) == 0);
+    Require(_ZNK3sce4Json5ValueixEm(&root, 7) == &fallback && callbackCalls == 3);
+    Require(_ZN3sce4Json5ValueaSERKS1_(&root, &other) == &root);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&root) == TypeNull);
+    Require(&Member(root, "missing") == &fallback && callbackCalls == 4);
+    _ZN3sce4Json5Value5clearEv(&root);
+    Require(_ZN3sce4Json5Value3setEl(&root, 5) == 0);
+    Require(&Member(root, "missing") == &fallback && callbackCalls == 5);
+
+    alignas(16) std::uint8_t initializer[16]{};
+    alignas(16) std::uint8_t parameter[64]{};
+    Require(_ZN3sce4Json11InitializerC1Ev(initializer) == 0);
+    Require(_ZN3sce4Json11Initializer10initializeEPKNS0_13InitParameterE(initializer, parameter) == 0);
+    Require(_ZN3sce4Json11Initializer27setGlobalNullAccessCallBackEPFRKNS0_5ValueENS0_9ValueTypeEPS3_PvES7_(initializer, OnGlobalNullAccess, nullptr) == 0);
+    globalCalls = 0;
+    Require(&Member(root, "missing") == &fallback && callbackCalls == 6 && globalCalls == 0);
+    Require(&Member(other, "missing") == &fallback && globalCalls == 1);
+    Require(_ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_(&root, nullptr, nullptr) == 0);
+    Require(&Member(root, "missing") == &fallback && callbackCalls == 6 && globalCalls == 2);
+    Require(_ZN3sce4Json11Initializer9terminateEv(initializer) == 0);
+    Require(_ZN3sce4Json11InitializerD1Ev(initializer) == 0);
+    _ZN3sce4Json5ValueD1Ev(&root);
+    _ZN3sce4Json5ValueD1Ev(&other);
+    _ZN3sce4Json5ValueD1Ev(&fallback);
+}
+
+static void ValueTypeMismatchHandler() {
+    callbackCalls = 0;
+    mismatchCalls = 0;
+    _ZN3sce4Json5ValueC1Ev(&mismatchFallback);
+    Require(_ZN3sce4Json5Value3setEl(&mismatchFallback, 42) == 0);
+    Value typed{};
+    _ZN3sce4Json5ValueC1Ev(&typed);
+    Require(_ZN3sce4Json5Value3setEPKc(&typed, "text") == 0);
+    int context = 0;
+    Require(_ZN3sce4Json5Value22setTypeMismatchHandlerEPFRKS1_NS0_9ValueTypeEPS2_S5_PvES6_(&typed, OnTypeMismatch, &context) == 0);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&typed) == 42);
+    Require(mismatchCalls == 1 && mismatchRequested == TypeInteger && mismatchFirst == &typed && mismatchSecond == &typed && mismatchContext == &context);
+    Require(!*_ZNK3sce4Json5Value10getBooleanEv(&typed));
+    Require(mismatchCalls == 2 && mismatchRequested == TypeBoolean);
+    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(_ZNK3sce4Json5Value9getStringEv(&typed)), "text") == 0 && mismatchCalls == 2);
+    Require(callbackCalls == 0);
+
+    _ZN3sce4Json5Value5clearEv(&typed);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&typed) == 0 && mismatchCalls == 2);
+    Require(_ZN3sce4Json5Value3setEd(&typed, 2.5) == 0);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&typed) == 42 && mismatchCalls == 3);
+    Require(_ZN3sce4Json5Value22setTypeMismatchHandlerEPFRKS1_NS0_9ValueTypeEPS2_S5_PvES6_(&typed, nullptr, nullptr) == 0);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&typed) == 0 && mismatchCalls == 3);
+    _ZN3sce4Json5ValueD1Ev(&typed);
+    _ZN3sce4Json5ValueD1Ev(&mismatchFallback);
+}
+
+static void ValueElementAccessFailureHandler() {
+    Value container{};
+    _ZN3sce4Json5ValueC1Ev(&container);
+    const char text[] = "{\"present\":1}";
+    Require(_ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(&container, text, sizeof(text) - 1) == 0);
+    Require(_ZN3sce4Json5Value30setElementAccessFailureHandlerEPFviPKNS0_6StringEPKmPKS1_S8_PvES9_(&container, OnElementAccessFailure, nullptr) == 0);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&Member(container, "present")) == 1);
+    const std::string handler = "element access failure handler";
+    Require(RuntimeFailure([&] { static_cast<void>(Member(container, "missing")); }).find(handler) != std::string::npos);
+    Require(RuntimeFailure([&] { static_cast<void>(_ZNK3sce4Json5ValueixEm(&container, 0)); }).find(handler) != std::string::npos);
+    String missing{};
+    _ZN3sce4Json6StringC1EPKc(&missing, "missing");
+    Require(RuntimeFailure([&] { static_cast<void>(_ZNK3sce4Json5Value8getValueERKNS0_6StringE(&container, &missing)); }).find(handler) != std::string::npos);
+    Require(_ZN3sce4Json5Value30setElementAccessFailureHandlerEPFviPKNS0_6StringEPKmPKS1_S8_PvES9_(&container, nullptr, nullptr) == 0);
+    Require(_ZNK3sce4Json5Value7getTypeEv(_ZNK3sce4Json5Value8getValueERKNS0_6StringE(&container, &missing)) == TypeNull);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&Member(container, "missing")) == TypeNull);
+    _ZN3sce4Json6StringD1Ev(&missing);
+    _ZN3sce4Json5ValueD1Ev(&container);
+}
+
+static void ValueSpecialFloatHandler() {
+    Value real{};
+    _ZN3sce4Json5ValueC1Ed(&real, std::numeric_limits<double>::infinity());
+    const std::string handler = "special float handler";
+    const std::string unhandled = RuntimeFailure([&] { Serialize(real); });
+    Require(!unhandled.empty() && unhandled.find(handler) == std::string::npos);
+    Require(_ZN3sce4Json5Value22setSpecialFloatHandlerEPFKS1_NS0_12FunctionTypeEdPS2_PvPbES5_(&real, OnSpecialFloat, nullptr) == 0);
+    Require(RuntimeFailure([&] { Serialize(real); }).find(handler) != std::string::npos);
+    Require(_ZN3sce4Json5Value3setEd(&real, 1.5) == 0);
+    Require(Serialize(real) == "1.5");
+    Require(_ZN3sce4Json5Value3setEd(&real, std::numeric_limits<double>::quiet_NaN()) == 0);
+    Require(RuntimeFailure([&] { Serialize(real); }).find(handler) != std::string::npos);
+    Require(_ZN3sce4Json5Value22setSpecialFloatHandlerEPFKS1_NS0_12FunctionTypeEdPS2_PvPbES5_(&real, nullptr, nullptr) == 0);
+    Require(RuntimeFailure([&] { Serialize(real); }) == unhandled);
+    _ZN3sce4Json5ValueD1Ev(&real);
+}
+
+static void ObjectInsert() {
+    Object object{};
+    _ZN3sce4Json6ObjectC1Ev(&object);
+    String key{}, other{};
+    _ZN3sce4Json6StringC1EPKc(&key, "key");
+    _ZN3sce4Json6StringC1EPKc(&other, "other");
+    Value first{}, second{};
+    _ZN3sce4Json5ValueC1El(&first, 1);
+    _ZN3sce4Json5ValueC1El(&second, 2);
+    Pair pair{}, replacement{}, added{};
+    _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(&pair, &key, &first);
+    _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(&replacement, &key, &second);
+    _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(&added, &other, &second);
+
+    Iterator inserted{}, existing{}, appended{}, end{};
+    Require(_ZN3sce4Json6Object6insertERKNS1_4PairE(&inserted, &object, &pair) == &inserted);
+    Require(_ZNK3sce4Json6Object4sizeEv(&object) == 1);
+    const Pair* stored = _ZNK3sce4Json6Object8iteratordeEv(&inserted);
+    Require(stored != &pair && stored->key.text != pair.key.text && stored->value.node != pair.value.node);
+    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(&stored->key), "key") == 0);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&stored->value) == 1);
+    Require(_ZN3sce4Json6ObjectixERKNS0_6StringE(&object, &key) == &stored->value);
+    Require(_ZN3sce4Json5Value3setEl(&pair.value, 9) == 0);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&stored->value) == 1);
+
+    Require(_ZN3sce4Json6Object6insertERKNS1_4PairE(&existing, &object, &replacement) == &existing);
+    Require(_ZNK3sce4Json6Object4sizeEv(&object) == 1);
+    Require(_ZNK3sce4Json6Object8iteratordeEv(&existing) == stored);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&stored->value) == 1);
+
+    Require(_ZN3sce4Json6Object6insertERKNS1_4PairE(&appended, &object, &added) == &appended);
+    Require(_ZNK3sce4Json6Object4sizeEv(&object) == 2);
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(&_ZNK3sce4Json6Object8iteratorptEv(&appended)->value) == 2);
+    _ZNK3sce4Json6Object3endEv(&end, &object);
+    _ZN3sce4Json6Object8iteratorppEv(&appended);
+    Require(!_ZNK3sce4Json6Object8iteratorneERKS2_(&appended, &end));
+
+    Value wrapped{};
+    _ZN3sce4Json5ValueC1ERKNS0_6ObjectE(&wrapped, &object);
+    Require(Serialize(wrapped) == "{\"key\":1,\"other\":2}");
+    bool threw = false;
+    try {
+        _ZN3sce4Json6Object6insertERKNS1_4PairE(&inserted, &object, nullptr);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    Require(threw && _ZNK3sce4Json6Object4sizeEv(&object) == 2);
+
+    _ZN3sce4Json5ValueD1Ev(&wrapped);
+    for (Iterator* iterator : {&inserted, &existing, &appended, &end}) _ZN3sce4Json6Object8iteratorD1Ev(iterator);
+    for (Pair* destroyed : {&pair, &replacement, &added}) _ZN3sce4Json6Object4PairD1Ev(destroyed);
+    _ZN3sce4Json5ValueD1Ev(&first);
+    _ZN3sce4Json5ValueD1Ev(&second);
+    _ZN3sce4Json6StringD1Ev(&key);
+    _ZN3sce4Json6StringD1Ev(&other);
+    _ZN3sce4Json6ObjectD1Ev(&object);
+}
+
+static void BoolConversion() {
+    Value value{};
+    _ZN3sce4Json5ValueC1Ev(&value);
+    Require(!_ZNK3sce4Json5ValuecvbEv(&value));
+    _ZN3sce4Json5ValueD1Ev(&value);
+    _ZN3sce4Json5ValueC1Eb(&value, false);
+    Require(_ZNK3sce4Json5ValuecvbEv(&value));
+    Require(_ZN3sce4Json5Value3setEl(&value, 0) == 0);
+    Require(_ZNK3sce4Json5ValuecvbEv(&value));
+    Require(_ZN3sce4Json5Value3setEPKc(&value, "") == 0);
+    Require(_ZNK3sce4Json5ValuecvbEv(&value));
+    _ZN3sce4Json5Value5clearEv(&value);
+    Require(!_ZNK3sce4Json5ValuecvbEv(&value));
+    const char text[] = "{\"none\":null,\"no\":false,\"list\":[]}";
+    Require(_ZN3sce4Json6Parser5parseERNS0_5ValueEPKcm(&value, text, sizeof(text) - 1) == 0);
+    Require(_ZNK3sce4Json5ValuecvbEv(&value));
+    Require(!_ZNK3sce4Json5ValuecvbEv(&Member(value, "none")));
+    Require(_ZNK3sce4Json5ValuecvbEv(&Member(value, "no")));
+    Require(_ZNK3sce4Json5ValuecvbEv(&Member(value, "list")));
+    Require(!_ZNK3sce4Json5ValuecvbEv(&Member(value, "missing")));
+    _ZN3sce4Json5ValueD1Ev(&value);
+}
+
 static void ValueAccess() {
     for (std::int32_t type = TypeNull; type <= TypeObject; ++type) {
         Value typed{};
@@ -775,6 +1023,12 @@ int main() {
     ObjectFind();
     NullAccess(_ZN3sce4Json11Initializer27setGlobalNullAccessCallBackEPFRKNS0_5ValueENS0_9ValueTypeEPS3_PvES7_);
     NullAccess(_ZN3sce4Json11Initializer27setGlobalNullAccessCallbackEPFRKNS0_5ValueENS0_9ValueTypeEPS3_PvES7_);
+    ValueNullAccessCallback();
+    ValueTypeMismatchHandler();
+    ValueElementAccessFailureHandler();
+    ValueSpecialFloatHandler();
+    ObjectInsert();
+    BoolConversion();
     ValueAccess();
     InitParameter2BaseConstructor();
     InitParameters();
