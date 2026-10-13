@@ -23,11 +23,20 @@ std::optional<DrawVerdict> Driver::precheckDraw(const QueueState& queue, const S
         localDevice->ColorMetadataPass(*pass);
         return DrawVerdict::Drawn;
     }
-    rejected = Graphics::DepthMaintenanceRejection(queue);
-    if (!rejected.empty()) return DrawVerdict::Rejected;
     static const bool traceIndirectEnabled = std::getenv("APS5_TRACE_INDIRECT_DRAWS") != nullptr;
     traceIndirect = traceIndirectEnabled;
     if (traceIndirect && drawParameters.indirect) std::fprintf(stderr, "[draw] indirect packet %s args 0x%llx count %u reached\n", Pm4::Name(packet[0]).c_str(), static_cast<unsigned long long>(drawParameters.indirect->arguments), drawParameters.indirect->count);
+    const auto listRestart = [&] {
+        const auto restartDevice = device.Load();
+        return restartDevice != nullptr && restartDevice->PrimitiveListRestart();
+    };
+    return precheckRegisters(queue, drawParameters, listRestart, rejected);
+}
+
+std::optional<DrawVerdict> Driver::precheckRegisters(const QueueState& queue, const Pm4::DrawParameters& drawParameters, const std::function<bool()>& listRestart, std::string& rejected) {
+    if (Graphics::DepthResummarizeDrawsNothing(queue)) return DrawVerdict::Nothing;
+    rejected = Graphics::DepthMaintenanceRejection(queue);
+    if (!rejected.empty()) return DrawVerdict::Rejected;
     {
         const auto targetMask = queue.context.find(0x8e);
         const auto shaderMask = queue.context.find(0x8f);
@@ -35,8 +44,6 @@ std::optional<DrawVerdict> Driver::precheckDraw(const QueueState& queue, const S
         if (!colorWrites && !queue.shader.contains(0x8)) {
             const auto word = [&](std::uint32_t offset) { const auto it = queue.context.find(offset); return it == queue.context.end() ? 0u : it->second; };
             if ((word(0x200) & 3u) == 0 || ((word(0x010) & 3u) == 0 && (word(0x011) & 1u) == 0)) return DrawVerdict::Nothing;
-            rejected = "AGC graphics: depth/stencil-only draws without a pixel shader are not implemented";
-            return DrawVerdict::Rejected;
         }
     }
     if (drawParameters.indexed) {
@@ -48,8 +55,7 @@ std::optional<DrawVerdict> Driver::precheckDraw(const QueueState& queue, const S
             const auto type = primitive == queue.userConfig.end() ? 0u : primitive->second & 0x3fu;
             const bool strip = type == 3 || type == 5 || type == 6;
             const bool list = type == 1 || type == 2 || type == 4;
-            const auto restartDevice = device.Load();
-            if (!strip && !(list && restartDevice != nullptr && restartDevice->PrimitiveListRestart())) {
+            if (!strip && !(list && listRestart())) {
                 rejected = "AGC graphics: primitive restart is only supported for strips, and for lists with VK_EXT_primitive_topology_list_restart";
                 return DrawVerdict::Rejected;
             }

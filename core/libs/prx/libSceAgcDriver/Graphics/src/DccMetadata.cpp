@@ -51,8 +51,21 @@ DccKeys ByteKeys(std::uint8_t key) {
         case 0x80: return DccKeys::Clear1110;
         case 0xc0: return DccKeys::Clear1111;
         case 0x20: return DccKeys::ClearRegister;
+        case 0x10: return DccKeys::ClearSingle;
         case 0xff: return DccKeys::Uncompressed;
         default: return DccKeys::Mixed;
+    }
+}
+
+bool SingleKeysReadable(const GuestTextureResource& resource) {
+    return KeyBytes % BytesPerElement(resource.format) == 0;
+}
+
+void ExpandSingleBlocks(std::span<std::byte> bytes, std::size_t elementBytes) {
+    for (std::size_t block = 0; block < bytes.size(); block += KeyBytes) {
+        const auto blockBytes = std::min<std::size_t>(KeyBytes, bytes.size() - block);
+        auto* first = bytes.data() + block;
+        for (auto filled = std::min(elementBytes, blockBytes); filled < blockBytes; filled *= 2) std::memcpy(first + filled, first, std::min(filled, blockBytes - filled));
     }
 }
 
@@ -82,6 +95,8 @@ struct ProofCounters {
     std::atomic<std::uint64_t> proved{0};
     std::atomic<std::uint64_t> scanned{0};
     std::atomic<std::uint64_t> unstable{0};
+    std::atomic<std::uint64_t> rangeProved{0};
+    std::atomic<std::uint64_t> rangeScanned{0};
 };
 
 ProofCounters& Proofs() {
@@ -246,7 +261,18 @@ bool StoreUncompressedOnGpu(const Context& context, Recorder& recorder, std::uin
         auto& memo = Memo();
         std::lock_guard lock(memo.mutex);
         const auto end = begin + count;
-        std::erase_if(memo.entries, [&](const GpuKeyStore& store) { return begin < store.end && store.begin < end; });
+        // An overlapped entry keeps describing its pending work outside the store (a title fill over
+        // several surfaces' keys, stored over for one of them before it lands).
+        std::vector<GpuKeyStore> kept;
+        for (const auto& store : memo.entries) {
+            if (!(begin < store.end && store.begin < end)) {
+                kept.push_back(store);
+                continue;
+            }
+            if (store.begin < begin) kept.push_back({store.begin, begin, store.keys, store.note});
+            if (end < store.end) kept.push_back({end, store.end, store.keys, store.note});
+        }
+        memo.entries = std::move(kept);
         if (MemoRecorder(memo) == &recorder) memo.entries.push_back({begin, end, DccKeys::Uncompressed, recorder.LastWriteNote(begin, count)});
     }
     CountStore(Scans().gpuStores);
@@ -341,6 +367,7 @@ bool LayoutFor(VkFormat format, Layout& layout) {
         case VK_FORMAT_R16G16_UINT: layout = {2, {16, 16}, Kind::Uint}; return true;
         case VK_FORMAT_R16G16_SINT: layout = {2, {16, 16}, Kind::Sint}; return true;
         case VK_FORMAT_R16G16_SFLOAT: layout = {2, {16, 16}, Kind::Float}; return true;
+        case VK_FORMAT_B10G11R11_UFLOAT_PACK32: layout = {3, {11, 11, 10}, Kind::Float}; return true;
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_A2R10G10B10_UNORM_PACK32: layout = {4, {10, 10, 10, 2}, Kind::Unorm}; return true;
         case VK_FORMAT_A2B10G10R10_UINT_PACK32: layout = {4, {10, 10, 10, 2}, Kind::Uint}; return true;
         case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB: layout = {4, {8, 8, 8, 8}, Kind::Unorm}; return true;
@@ -367,7 +394,14 @@ std::uint64_t One(Kind kind, std::uint32_t bits) {
     switch (kind) {
         case Kind::Unorm: case Kind::Uint: return bits >= 64 ? ~0ull : (1ull << bits) - 1u;
         case Kind::Snorm: case Kind::Sint: return (1ull << (bits - 1u)) - 1u;
-        case Kind::Float: return bits == 16 ? 0x3c00u : 0x3f800000u;
+        case Kind::Float:
+            switch (bits) {
+                case 10: return 0x1e0u;
+                case 11: return 0x3c0u;
+                case 16: return 0x3c00u;
+                case 32: return 0x3f800000u;
+                default: throw std::runtime_error("AGC graphics: DCC clear of a " + std::to_string(bits) + "-bit float channel is not implemented");
+            }
     }
     return 0;
 }
@@ -382,6 +416,7 @@ const char* DccKeysName(DccKeys keys) {
         case DccKeys::Clear1110: return "1110";
         case DccKeys::Clear1111: return "1111";
         case DccKeys::ClearRegister: return "register";
+        case DccKeys::ClearSingle: return "single";
         case DccKeys::Mixed: return "mixed";
         case DccKeys::Unreadable: return "unreadable";
     }
@@ -445,7 +480,7 @@ DccKeys textureClearKeys(const GuestTextureResource& resource, std::uint64_t gue
     memoized = false;
     if (resource.dccAddress == 0) return DccKeys::Uncompressed;
     const auto keys = readDccKeys(resource.dccAddress, DccKeyBytes(guestBytes), memoized);
-    if (keys == DccKeys::Uncompressed) return keys;
+    if (keys == DccKeys::Uncompressed || (keys == DccKeys::ClearSingle && SingleKeysReadable(resource))) return keys;
     if (IsConvertedTextureFormat(resource.format) && (keys == DccKeys::Clear0001 || keys == DccKeys::Clear1110)) throw std::runtime_error(std::string("AGC graphics: DCC clear code ") + DccKeysName(keys) + " of converted texture format " + std::to_string(resource.format) + " is not implemented");
     std::byte probe[16]{};
     if (!IsDccClear(keys) || !FillDccClear(ResolveTextureFormat(resource.format), keys, resource.dccAlphaOnMsb, std::span(probe, std::min<std::size_t>(sizeof(probe), BytesPerElement(resource.format))))) {
@@ -458,15 +493,18 @@ DccKeys textureClearKeys(const GuestTextureResource& resource, std::uint64_t gue
     return keys;
 }
 
-DccKeys currentDccKeys(std::uint64_t metaAddress, std::size_t count) {
+DccKeys currentDccKeys(std::uint64_t metaAddress, std::size_t count, bool& memoized) {
+    memoized = false;
     if (metaAddress != 0 && count != 0 && GuestMemory::GpuMutex().HeldByThisThread()) {
         if (auto* recorder = Recorder::Active(); recorder != nullptr && recorder->PendingWriteOverlaps(metaAddress, count)) {
-            if (const auto keys = PendingStoreKeys(*recorder, metaAddress, count)) return *keys;
+            if (const auto keys = PendingStoreKeys(*recorder, metaAddress, count)) {
+                memoized = true;
+                return *keys;
+            }
             Recorder::CountSync(2);
             recorder->SyncThrough(metaAddress, count);
         }
     }
-    bool memoized = false;
     return readDccKeys(metaAddress, count, memoized);
 }
 
@@ -489,12 +527,20 @@ DccKeys ReadDccKeys(std::uint64_t metaAddress, std::uint64_t surfaceBytes) {
 }
 
 DccKeys CurrentDccKeys(std::uint64_t metaAddress, std::uint64_t surfaceBytes) {
-    return currentDccKeys(metaAddress, DccKeyBytes(surfaceBytes));
+    bool memoized = false;
+    return currentDccKeys(metaAddress, DccKeyBytes(surfaceBytes), memoized);
+}
+
+std::optional<DccKeys> PendingKeysFill(std::uint64_t metaAddress, std::size_t count) {
+    auto* recorder = Recorder::Active();
+    if (metaAddress == 0 || count == 0 || recorder == nullptr || !GuestMemory::GpuMutex().HeldByThisThread()) return std::nullopt;
+    return PendingStoreKeys(*recorder, metaAddress, count);
 }
 
 DccKeys CurrentDccKeys(std::uint64_t metaAddress, std::uint64_t surfaceBytes, std::size_t keyCount) {
     Require(keyCount >= DccKeyBytes(surfaceBytes), "a DCC key range covers fewer keys than one per 256 surface bytes");
-    return currentDccKeys(metaAddress, keyCount);
+    bool memoized = false;
+    return currentDccKeys(metaAddress, keyCount, memoized);
 }
 
 bool IsDccClear(DccKeys keys) {
@@ -529,8 +575,9 @@ void MarkDccUncompressed(const Context& context, std::uint64_t metaAddress, std:
     // code, and the range is stored without looking (the fill lands after the kernel). That includes
     // a pending GPU store of the driver's own (the memo): a title kernel recorded into the same batch
     // after it may write clear keys, and nothing orders inside a batch, so a fresh fill is recorded
-    // (idempotent, no wait) rather than trusting the earlier one.
-    const bool pending = recorder != nullptr && recorder->PendingWriteOverlaps(metaAddress, count);
+    // (idempotent, no wait) rather than trusting the earlier one. Without the recorder (CPU keys only,
+    // or no device lock) the lock-free snapshot answers, as in the overload above.
+    const bool pending = recorder != nullptr ? recorder->PendingWriteOverlaps(metaAddress, count) : Recorder::SnapshotWriteOverlaps(metaAddress, count);
     if (!pending && AlreadyUncompressed(metaAddress, count)) return;
     if (recorder != nullptr && StoreUncompressedOnGpu(context, *recorder, metaAddress, count)) return;
     StoreUncompressedOnCpu(metaAddress, count);
@@ -618,19 +665,44 @@ DccKeys ProvedClearKeys(const GuestTextureResource& resource, std::uint64_t gues
 
 DccKeyProofCounts KeyProofCounts() {
     const auto& counters = Proofs();
-    return {counters.proved.load(std::memory_order_relaxed), counters.scanned.load(std::memory_order_relaxed), counters.unstable.load(std::memory_order_relaxed)};
+    return {counters.proved.load(std::memory_order_relaxed), counters.scanned.load(std::memory_order_relaxed), counters.unstable.load(std::memory_order_relaxed), counters.rangeProved.load(std::memory_order_relaxed), counters.rangeScanned.load(std::memory_order_relaxed)};
+}
+
+DccKeys ProvedCurrentDccKeys(std::uint64_t metaAddress, std::uint64_t surfaceBytes, DccRangeProof& proof) {
+    const auto count = DccKeyBytes(surfaceBytes);
+    if (metaAddress == 0 || count == 0 || !KeyFastPath() || !GuestMemory::GpuMutex().HeldByThisThread()) return CurrentDccKeys(metaAddress, surfaceBytes);
+    auto& counters = Proofs();
+    const auto collected = GuestMemory::CollectWrites(metaAddress, count);
+    if (proof.generation != 0 && proof.address == metaAddress && proof.count == count && collected != 0 && GuestMemory::UnchangedSince(metaAddress, count, proof.generation)) {
+        counters.rangeProved.fetch_add(1, std::memory_order_relaxed);
+        return proof.keys;
+    }
+    bool memoized = false;
+    const auto keys = currentDccKeys(metaAddress, count, memoized);
+    bool stable = collected != 0 && !memoized;
+    if (stable) {
+        if (auto* recorder = Recorder::Active(); recorder != nullptr) {
+            const auto info = recorder->DescribePendingWrite(metaAddress, count);
+            stable = !info.has_value() || info->signaled;
+        }
+    }
+    proof = stable ? DccRangeProof{metaAddress, count, keys, collected} : DccRangeProof{};
+    counters.rangeScanned.fetch_add(1, std::memory_order_relaxed);
+    return keys;
 }
 
 void ReadTextureSurface(const GuestTextureResource& resource, DccKeys keys, std::span<std::byte> bytes) {
     // Named for the [hooksync] attribution: the read goes through the flush hook.
     const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::TextureRead);
-    if (keys == DccKeys::Uncompressed) GuestMemory::ReadCommitted(resource.baseAddress, bytes);
+    if (keys == DccKeys::Uncompressed || keys == DccKeys::ClearSingle) GuestMemory::ReadCommitted(resource.baseAddress, bytes);
     else FillDccClear(ResolveTextureFormat(resource.format), keys, resource.dccAlphaOnMsb, bytes);
+    if (keys == DccKeys::ClearSingle) ExpandSingleBlocks(bytes, BytesPerElement(resource.format));
 }
 
 namespace {
 
 DccKeys EncodedKeys(const GuestTextureResource& resource, DccKeys keys) {
+    if (keys == DccKeys::ClearSingle && SingleKeysReadable(resource)) return keys;
     std::byte probe[16]{};
     if (!IsDccClear(keys) || !FillDccClear(ResolveTextureFormat(resource.format), keys, resource.dccAlphaOnMsb, std::span(probe, std::min<std::size_t>(sizeof(probe), BytesPerElement(resource.format))))) return DccKeys::Uncompressed;
     return keys;

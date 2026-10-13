@@ -78,7 +78,7 @@ EntryOutcome Driver::validateVariant(std::uint64_t program, std::uint32_t queue,
     auto pendingSerial = Graphics::StorageTexture::PendingSerial();
     auto forget = GuestMemory::ForgetSerial();
 
-    if (Graphics::StorageTexture::AnyPendingOverlaps(variant.runs) || Graphics::AnyShadowedOverlaps(variant.runs)) {
+    if (Graphics::StorageTexture::AnyPendingUnitInside(variant.runs) || Graphics::AnyShadowedOverlaps(variant.runs)) {
         for (const auto& region : regions) {
             if (Graphics::StorageTexture::FlushPending(region.guestAddress, region.bytes.size(), nullptr, "dispatch-cache entry")) ++imagesFlushed;
         }
@@ -87,7 +87,7 @@ EntryOutcome Driver::validateVariant(std::uint64_t program, std::uint32_t queue,
         publish = Graphics::Recorder::PublishGeneration();
         pendingSerial = Graphics::StorageTexture::PendingSerial();
         forget = GuestMemory::ForgetSerial();
-        if (Graphics::StorageTexture::AnyPendingOverlaps(variant.runs) || Graphics::AnyShadowedOverlaps(variant.runs)) return EntryOutcome::FlushingImage;
+        if (Graphics::StorageTexture::AnyPendingUnitInside(variant.runs) || Graphics::AnyShadowedOverlaps(variant.runs)) return EntryOutcome::FlushingImage;
     }
     if ((forget & 1) != 0) return EntryOutcome::ForgetMoved;
     for (const auto& label : deferredLabels().labels) {

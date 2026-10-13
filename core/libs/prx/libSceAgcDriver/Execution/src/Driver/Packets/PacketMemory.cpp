@@ -5,6 +5,11 @@
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
 #include "prx/libSceAgcDriver/Eq/include/Event.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
+#include "prx/libSceAgcDriver/Resource/include/Registration.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -18,14 +23,18 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
 
     bool orderedAlready = false;
 
-    const auto interruptSelect = (packet[2] >> 24u) & 7u;
-    endOfPipeInterrupt = opcode == 0x49 && interruptSelect != 0 && interruptSelect != 3;
+    const auto interruptSelect = opcode == 0x49 ? (packet[2] >> 24u) & 7u : 0u;
+    endOfPipeInterrupt = interruptSelect != 0 && interruptSelect != 3;
     interruptDeferred = false;
     if (!drainAll && endOfPipeInterrupt) {
         const auto label = Pm4::DecodeLabelWrite(packet);
         const bool storesNothing = (packet[2] >> 29u) == 0 || (packet[3] | (static_cast<std::uint64_t>(packet[4]) << 32u)) == 0;
         if (label.has_value() || storesNothing) {
-            bumpEpoch(&EpochBumps::drains);
+            // A GPU label write orders nothing the CPU wrote into this queue (later waits and
+            // submissions bump); keeping the epoch lets the draws until then reuse their page
+            // walks. Debug aid: APS5_LABEL_EPOCH=1 bumps here as before.
+            static const bool labelEpoch = std::getenv("APS5_LABEL_EPOCH") != nullptr;
+            if (labelEpoch) bumpEpoch(&EpochBumps::drains);
             GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
             std::lock_guard gpuLock(GuestMemory::GpuMutex());
             const auto localDevice = device.Load();
@@ -37,8 +46,8 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
                 const auto stamp = ++eventSerial;
                 reason = localDevice != nullptr ? localDevice->WriteLabelOnGpu(label->address, bytes, stamp, submission.queue) : 4;
                 if (reason == 1) GuestMemory::Write(label->address, bytes, 4);
-                if (reason == 0 || reason == 1 || reason == 5 || reason == 6) {
-                    noteLabelStore(label->address, bytes, stamp);
+                if (reason == 0 || reason == 1 || reason == 5) {
+                    noteLabelStore(label->address, bytes, stamp, submission.queue);
                     Graphics::Recorder::CloseLabelGroup(GuestMemory::TrackerGeneration());
                 }
                 countLabelOutcome(reason);
@@ -46,7 +55,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
             } else {
                 ++noOpLabels;
             }
-            if (reason == 0 || reason == 5 || reason == 6) {
+            if (reason == 0 || reason == 5) {
                 const auto queueId = submission.queue;
                 interruptDeferred = localDevice->AfterRecordedWork([queueId] { AgcDriverDeliverEopInterrupt(queueId); }, submission.queue == 0);
                 if (interruptDeferred && workOpen) localDevice->SubmitRecorded(submission.queue == 0);
@@ -54,6 +63,14 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
             } else if (reason == 1) {
                 wroteOnGpu = true;
             }
+        }
+    }
+    if (opcode == 0x50 && packet.size() >= 7) {
+        if (Pm4::DmaSource(packet) == 0 || Pm4::DmaSource(packet) == 3) Graphics::RequireNoMultisampleTarget(packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u), packet[6] & 0x3ffffffu, "a DMA copy");
+        if (Pm4::DmaSource(packet) == 2 && Pm4::DmaDestination(packet) != 1) {
+            const auto address = packet[4] | (static_cast<std::uint64_t>(packet[5]) << 32u);
+            Graphics::NoteDepthMetadataFill(address, packet[6] & 0x3ffffffu, packet[2]);
+            Graphics::NoteColorMetadataFill(address, packet[6] & 0x3ffffffu, packet[2]);
         }
     }
     if (!drainAll && !endOfPipeInterrupt && (opcode == 0x49 || opcode == 0x37)) {
@@ -77,18 +94,18 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
                 recordDeferredLabels(localDevice.get(), submission.queue);
                 const auto stamp = ++eventSerial;
                 const auto reason = localDevice != nullptr ? localDevice->WriteLabelOnGpu(label->address, bytes, stamp, submission.queue) : 4;
-                wroteOnGpu = reason == 0 || reason == 5 || reason == 6;
+                wroteOnGpu = reason == 0 || reason == 5;
                 if (reason == 1) {
 
                     GuestMemory::Write(label->address, bytes, 4);
                     wroteOnGpu = true;
                 }
-                if (wroteOnGpu) noteLabelStore(label->address, bytes, stamp);
+                if (wroteOnGpu) noteLabelStore(label->address, bytes, stamp, submission.queue);
                 Graphics::Recorder::CloseLabelGroup(GuestMemory::TrackerGeneration());
                 countLabelOutcome(reason);
                 ++immediateLabels;
             }
-        } else if (opcode == 0x49 ? ((packet[2] >> 29u) == 0 || (packet[3] | (static_cast<std::uint64_t>(packet[4]) << 32u)) == 0) : (packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u)) == 0) {
+        } else if (opcode == 0x49 ? ((packet[2] >> 29u) == 0 || (packet[3] | (static_cast<std::uint64_t>(packet[4]) << 32u)) == 0) : ((packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u)) == 0 || Pm4::IsTagMarker(packet))) {
             orderedAlready = true;
             ++noOpLabels;
         } else {
@@ -96,10 +113,23 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         }
     }
 
+    // Profile only: a DMA_DATA whose memory or GDS source has recorded GPU writes pending (its CPU read below or in
+    // Execute waits for them), by destination (memory, GDS, nowhere) and source (memory, GDS).
+    if (profile && opcode == 0x50 && Pm4::DmaSource(packet) != 2) {
+        const bool fromGds = Pm4::DmaSource(packet) == Pm4::DmaSelectGds;
+        const auto source = fromGds ? Pm4::GdsAddress() + packet[2] : packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u);
+        const auto pending = Graphics::Recorder::PendingWriteSnapshot();
+        if (Graphics::Recorder::SnapshotOverlaps(pending.get(), source, std::max<std::size_t>(packet[6] & 0x3ffffffu, 1))) {
+            const auto destination = Pm4::DmaDestination(packet);
+            ++pendingSourceDmas[(destination == Pm4::DmaSelectGds ? 2 : destination == 2 ? 4 : 0) + (fromGds ? 1 : 0)];
+        }
+    }
+
     static const bool cpuStores = std::getenv("APS5_CPU_STORES") != nullptr;
     if (!drainAll && !cpuStores && (opcode == 0x40 || opcode == 0x50 || opcode == 0x83)) {
         constexpr std::size_t gpuStoreLimit = 65536;
         bool drained = true;
+        int storeReason = -1;
         if (const auto store = Pm4::ResolveStore(packet, queue, gpuStoreLimit)) {
             const auto bytes = store->Bytes();
             if (bytes.empty()) {
@@ -117,8 +147,9 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
                 recordDeferredLabels(localDevice.get(), submission.queue);
                 const auto stamp = ++eventSerial;
                 const auto reason = localDevice != nullptr ? localDevice->WriteLabelOnGpu(store->address, bytes, stamp, submission.queue) : 4;
-                if (reason == 0 || reason == 1 || reason == 5 || reason == 6) noteLabelStore(store->address, bytes, stamp);
-                if (reason == 0 || reason == 5 || reason == 6) {
+                storeReason = reason;
+                if (reason == 0 || reason == 1 || reason == 5) noteLabelStore(store->address, bytes, stamp, submission.queue);
+                if (reason == 0 || reason == 5) {
                     if (reason == 0) ++storesOnGpu;
                     else ++storesBehindCompletions;
                     wroteOnGpu = true;
@@ -143,11 +174,34 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
                     if (outcome.path == 1 || outcome.path == 3) {
                         wroteOnGpu = true;
                         drained = false;
+                    } else if (outcome.path == 2 && !Graphics::RegisteredReadableCovers(copy->destination, copy->bytes) && !localDevice->StoresPendingOver(copy->destination, copy->bytes)) {
+                        Graphics::StorageTexture::FlushPending(copy->source, copy->bytes, nullptr, "buffer copy source", Graphics::PublishScope::Whole);
+                        if (auto* recorder = Graphics::Recorder::Active()) recorder->SyncThrough(copy->source, copy->bytes);
+                        ++copiesToHostMemory;
+                        orderedAlready = true;
+                        drained = false;
                     }
                 }
             }
         }
-        if (drained) ++storesDrained;
+        // A DMA_DATA into the emulated GDS: Pm4::Execute stores it on the CPU through GuestMemory::Write,
+        // whose flush hook waits for the recorded GPU work noted over the GDS. Every GDS binding notes
+        // the whole GDS as written (ShaderResources: AddWritable), readers included, so that work is
+        // every recorded GDS user of any queue: its copy-backs land before the store and its copy-ins
+        // read before it. Nothing else reaches the GDS (its address is the driver's own), so the device
+        // drain that waited for every queue's newest batch orders nothing more. Debug aid:
+        // APS5_GDS_DRAIN=1 drains as before.
+        static const bool gdsDrain = std::getenv("APS5_GDS_DRAIN") != nullptr;
+        const bool toGds = opcode == 0x50 && Pm4::DmaDestination(packet) == Pm4::DmaSelectGds;
+        if (drained && toGds && !gdsDrain) {
+            orderedAlready = true;
+            drained = false;
+            ++gdsStoresOrdered;
+        }
+        if (drained) {
+            ++storesDrained;
+            ++storeDrainReasons[toGds ? 0 : storeReason == 3 ? 1 : storeReason >= 0 ? 2 : 3];
+        }
     }
 
     static const bool drawDrain = std::getenv("APS5_DRAW_DRAIN") != nullptr;
@@ -164,7 +218,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
 
     static const bool syncFlip = std::getenv("APS5_SYNC_FLIP") != nullptr;
     const bool drains = drainAll ? ((Pm4::AccessesMemory(header) && opcode != 0x16) || opcode == 0x42 || opcode == 0x46 || opcode == 0x58 || header == FlipPacketHeader)
-                                 : (!wroteOnGpu && !orderedAlready && (opcode == 0x49 || opcode == 0x37 || opcode == 0x40 || opcode == 0x45 || opcode == 0x50 || opcode == 0x83 || sampleDump || (drawPacket && drawDrain) || (header == FlipPacketHeader && syncFlip)));
+                                 : (!wroteOnGpu && !orderedAlready && (opcode == 0x49 || opcode == 0x37 || opcode == 0x40 || opcode == 0x45 || opcode == 0x50 || opcode == 0x83 || (opcode == 0x1e && !WorkloadSlotTableCovers(Pm4::AtomicMemAddress(packet), Pm4::AtomicMemBytes(packet))) || sampleDump || (drawPacket && drawDrain) || (header == FlipPacketHeader && syncFlip)));
     if (drains) {
 
         static const bool unlockedDrain = std::getenv("APS5_NO_UNLOCKED_DRAIN") == nullptr && !drainAll;

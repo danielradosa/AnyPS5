@@ -1,12 +1,14 @@
 #include <climits>
+#include <clocale>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
 #include <cwchar>
-#include <cwctype>
+#include <cerrno>
 #include <ios>
 #include <locale>
 #include <mutex>
+#include <new>
 #include <atomic>
 #include <cstring>
 #include <vector>
@@ -17,6 +19,7 @@
 #include <string>
 
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/SonyCrt.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/GuestLocale.hpp"
 #include "SceTypes.hpp"
@@ -31,6 +34,7 @@ namespace {
 std::mutex g_localeInitMutex;
 bool g_localeInitialized = false;
 std::vector<GuestLocale::Facet*> g_registeredFacets;
+std::array<signed char, GuestLocale::StandardStreamCount + 2> g_standardStreamOpens{};
 
 void APS5_VABI DestroyClassicLocale(GuestLocale::Facet*) {
     throw std::runtime_error("Cannot destroy the classic locale");
@@ -79,10 +83,23 @@ GuestLocale::Facet* g_classicFacets[1]{};
 GuestLocale::Implementation g_classicLocale{{&g_localeVtable, 1, 0}, g_classicFacets, 1, 0, false, "C"};
 
 constexpr std::size_t GuestStringInlineCapacity = 15;
+constexpr std::size_t GuestStringCapacityMask = 15;
+constexpr std::size_t GuestWideStringInlineCapacity = 7;
 constexpr std::size_t GuestStringLargeAllocation = 0x1000;
+constexpr std::size_t GuestLargeAllocationPadding = 0x27;
+constexpr std::uintptr_t GuestLargeAllocationAlignment = 0x20;
 
 void ValidateCharacterRange(const char* first, const char* last, const char* function) {
     if ((first == nullptr) != (last == nullptr) || last < first) throw std::invalid_argument(std::string(function) + ": invalid character range");
+}
+
+void* AllocateStringStorage(std::size_t bytes) {
+    if (bytes < GuestStringLargeAllocation) return _Znwm_nid_postfix(bytes);
+    if (bytes > std::numeric_limits<std::size_t>::max() - GuestLargeAllocationPadding) throw std::bad_alloc();
+    auto* raw = static_cast<unsigned char*>(_Znwm_nid_postfix(bytes + GuestLargeAllocationPadding));
+    const auto aligned = (reinterpret_cast<std::uintptr_t>(raw) + GuestLargeAllocationPadding) & ~(GuestLargeAllocationAlignment - 1);
+    reinterpret_cast<void**>(aligned)[-1] = raw;
+    return reinterpret_cast<void*>(aligned);
 }
 
 void APS5_VABI DestroyCollate(GuestLocale::Facet*) {}
@@ -119,12 +136,11 @@ GuestLocale::String* APS5_VABI CollateTransform(GuestLocale::String* result, con
     ValidateCharacterRange(first, last, "collate::do_transform");
     const auto length = static_cast<std::size_t>(last - first);
     if (length != 0 && std::memchr(first, 0, length) != nullptr) throw std::runtime_error("collate::do_transform: embedded null characters are not supported");
-    if (length + 1 >= GuestStringLargeAllocation) throw std::runtime_error("collate::do_transform: results of 4095 characters or more are not supported");
     char* data = result->buffer;
     std::size_t capacity = GuestStringInlineCapacity;
     if (length > GuestStringInlineCapacity) {
-        capacity = length;
-        data = static_cast<char*>(_Znwm_nid_postfix(capacity + 1));
+        capacity = length | GuestStringCapacityMask;
+        data = static_cast<char*>(AllocateStringStorage(capacity + 1));
     }
     if (length != 0) std::memcpy(data, first, length);
     data[length] = 0;
@@ -142,6 +158,62 @@ std::int64_t APS5_VABI CollateHash(const GuestLocale::CollateFacet*, const char*
 }
 
 const GuestLocale::CollateVtable g_collateVtable{{DestroyCollate, DeleteCollate, RetainFacet, ReleaseFacet}, CollateCompare, CollateTransform, CollateHash};
+
+void ValidateWideRange(const std::uint16_t* first, const std::uint16_t* last, const char* function) {
+    if ((first == nullptr) != (last == nullptr) || last < first) throw std::invalid_argument(std::string(function) + ": invalid character range");
+}
+
+int APS5_VABI WideCollateCompare(const GuestLocale::CollateFacet*, const std::uint16_t* first1, const std::uint16_t* last1, const std::uint16_t* first2, const std::uint16_t* last2) {
+    ValidateWideRange(first1, last1, "collate<wchar_t>::do_compare");
+    ValidateWideRange(first2, last2, "collate<wchar_t>::do_compare");
+    for (; first1 != last1 && first2 != last2; ++first1, ++first2) {
+        if (*first1 != *first2) return *first1 < *first2 ? -1 : 1;
+    }
+    if (first1 == last1 && first2 == last2) return 0;
+    return first1 == last1 ? -1 : 1;
+}
+
+GuestLocale::WideString* APS5_VABI WideCollateTransform(GuestLocale::WideString* result, const GuestLocale::CollateFacet*, const std::uint16_t* first, const std::uint16_t* last) {
+    if (result == nullptr) throw std::invalid_argument("collate<wchar_t>::do_transform: null result");
+    ValidateWideRange(first, last, "collate<wchar_t>::do_transform");
+    const auto length = static_cast<std::size_t>(last - first);
+    if (std::find(first, last, std::uint16_t{0}) != last) throw std::runtime_error("collate<wchar_t>::do_transform: embedded null characters are not supported");
+    if ((length + 1) * sizeof(std::uint16_t) >= GuestStringLargeAllocation) throw std::runtime_error("collate<wchar_t>::do_transform: results of 2047 characters or more are not supported");
+    std::uint16_t* data = result->buffer;
+    std::size_t capacity = GuestWideStringInlineCapacity;
+    if (length > GuestWideStringInlineCapacity) {
+        capacity = length;
+        data = static_cast<std::uint16_t*>(_Znwm_nid_postfix((capacity + 1) * sizeof(std::uint16_t)));
+    }
+    if (length != 0) std::memcpy(data, first, length * sizeof(std::uint16_t));
+    data[length] = 0;
+    if (data != result->buffer) result->pointer = data;
+    result->size = length;
+    result->capacity = capacity;
+    return result;
+}
+
+std::int64_t APS5_VABI WideCollateHash(const GuestLocale::CollateFacet*, const std::uint16_t* first, const std::uint16_t* last) {
+    ValidateWideRange(first, last, "collate<wchar_t>::do_hash");
+    std::uint64_t hash = 0xcbf29ce484222325;
+    for (; first != last; ++first) {
+        hash = (hash ^ (*first & 0xff)) * 0x100000001b3;
+        hash = (hash ^ (*first >> 8)) * 0x100000001b3;
+    }
+    return static_cast<std::int64_t>(hash);
+}
+
+const GuestLocale::WideCollateVtable g_wideCollateVtable{{DestroyCollate, DeleteCollate, RetainFacet, ReleaseFacet}, WideCollateCompare, WideCollateTransform, WideCollateHash};
+
+std::size_t GetCollateCategory(GuestLocale::Facet** facet, const GuestLocale::Implementation* const* locale, const GuestLocale::FacetVtable* vtable) {
+    if (facet != nullptr && *facet == nullptr) {
+        if (locale == nullptr || *locale == nullptr || (*locale)->name == nullptr || std::strcmp((*locale)->name, "C") != 0) throw std::invalid_argument("collate::_Getcat: only the C locale is supported");
+        auto* collate = static_cast<GuestLocale::CollateFacet*>(_Znwm_nid_postfix(sizeof(GuestLocale::CollateFacet)));
+        *collate = {{vtable, 0, 0}, nullptr, nullptr};
+        *facet = &collate->base;
+    }
+    return 1;
+}
 
 constexpr std::array<short, 257> MakeClassificationTable() {
     std::array<short, 257> table{};
@@ -230,7 +302,11 @@ GuestLocale::Implementation* _ZSt21_sceLibcClassicLocale_nid_postfix = &g_classi
 
 void APS5_VABI _ZNSt8ios_baseD2Ev_nid_postfix(GuestLocale::IosBase* self) {
     if (self == nullptr) throw std::invalid_argument("ios_base destructor: null object");
-    if (self->standardStream != 0 || self->storage != nullptr || self->callbacks != nullptr) throw std::runtime_error("ios_base destructor: unsupported stream storage or callbacks");
+    if (self->standardStream != 0) {
+        if (static_cast<std::uint64_t>(self->standardStream) >= g_standardStreamOpens.size()) throw std::out_of_range("ios_base destructor: standard stream index out of range");
+        if (--std::atomic_ref<signed char>(g_standardStreamOpens[self->standardStream]) > 0) return;
+    }
+    if (self->storage != nullptr || self->callbacks != nullptr) throw std::runtime_error("ios_base destructor: unsupported stream storage or callbacks");
     if (self->locale != &_ZSt21_sceLibcClassicLocale_nid_postfix) throw std::runtime_error("ios_base destructor: unsupported locale ownership");
     self->locale = nullptr;
 }
@@ -257,18 +333,12 @@ GuestLocale::Implementation* APS5_VABI _ZNSt6locale16_GetgloballocaleEv_nid_post
     return &g_classicLocale;
 }
 
-void APS5_VABI _ZNSt7collateIwE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(GuestLocale::Facet**, const GuestLocale::Implementation*) {
-    NotImplemented_nid_no_patch(__func__);
+std::size_t APS5_VABI _ZNSt7collateIwE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(GuestLocale::Facet** facet, const GuestLocale::Implementation* const* locale) {
+    return GetCollateCategory(facet, locale, &g_wideCollateVtable.facet);
 }
 
 std::size_t APS5_VABI _ZNSt7collateIcE7_GetcatEPPKNSt6locale5facetEPKS1__nid_postfix(GuestLocale::Facet** facet, const GuestLocale::Implementation* const* locale) {
-    if (facet != nullptr && *facet == nullptr) {
-        if (locale == nullptr || *locale == nullptr || (*locale)->name == nullptr || std::strcmp((*locale)->name, "C") != 0) throw std::invalid_argument("collate::_Getcat: only the C locale is supported");
-        auto* collate = static_cast<GuestLocale::CollateFacet*>(_Znwm_nid_postfix(sizeof(GuestLocale::CollateFacet)));
-        *collate = {{&g_collateVtable.facet, 0, 0}, nullptr, nullptr};
-        *facet = &collate->base;
-    }
-    return 1;
+    return GetCollateCategory(facet, locale, &g_collateVtable.facet);
 }
 
 void APS5_VABI _ZNSt8_LocinfoC1EPKc_nid_postfix(GuestLocale::LocinfoStorage* self, const char* localeName) {
@@ -321,8 +391,15 @@ mbstate_t* APS5_VABI _Getpwcstate_nid_postfix() {
     return &state;
 }
 
-wint_t APS5_VABI _Towctrans_nid_postfix(wint_t c, wctrans_t desc) {
-    return std::towctrans(c, desc);
+std::uint32_t APS5_VABI _Towctrans_nid_postfix(std::uint32_t c, std::uint64_t desc) {
+    constexpr std::uint64_t ToLower = 1;
+    constexpr std::uint64_t ToUpper = 2;
+    if (desc != ToLower && desc != ToUpper) {
+        errno = 22;
+        return c;
+    }
+    if (c > UCHAR_MAX) return c;
+    return static_cast<std::uint32_t>((desc == ToLower ? g_lowerTable : g_upperTable)[c + 1]);
 }
 
 // Locale ids and stream objects the title imports besides the ones above; the streams are zeroed
@@ -378,6 +455,10 @@ void APS5_VABI _init_env_nid_postfix() {
 void APS5_VABI init_env_nid_postfix(const InitEnvParams* params) {
     (void)params;
     _init_env_nid_postfix();
+}
+
+SonyLconv* APS5_VABI localeconv_nid_postfix(void) {
+    return SonyLocaleconv();
 }
 
 }

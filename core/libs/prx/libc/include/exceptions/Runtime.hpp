@@ -49,6 +49,16 @@ const char* Kind(const std::type_info*);
 bool Match(const std::type_info* caught, const std::type_info* thrown, void*& object);
 void Release(void*);
 [[noreturn]] void Terminate();
+struct ShimTypeInfoVtable {
+    std::ptrdiff_t offset;
+    const std::type_info* type;
+    void (APS5_VABI *destroy)(std::type_info*);
+    void (APS5_VABI *deleteObject)(std::type_info*);
+    void (APS5_VABI *noop1)(const std::type_info*);
+    void (APS5_VABI *noop2)(const std::type_info*);
+    bool (APS5_VABI *canCatch)(const std::type_info*, const std::type_info*, void**);
+};
+static_assert(sizeof(ShimTypeInfoVtable) == 7 * sizeof(void*));
 }
 
 extern "C" {
@@ -58,6 +68,7 @@ void APS5_VABI __cxa_free_exception_nid_postfix(void*);
 [[noreturn]] void APS5_VABI __cxa_rethrow_nid_postfix();
 void* APS5_VABI __cxa_begin_catch_nid_postfix(void*);
 void APS5_VABI __cxa_end_catch_nid_postfix();
+bool APS5_VABI PointerTypeInfoCatch_nid_no_patch(const std::type_info* self, const std::type_info* thrown, void** adjusted);
 }
 
 #endif

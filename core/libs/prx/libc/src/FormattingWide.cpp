@@ -21,6 +21,8 @@
 #define APS5_VA_END() va_end(args)
 #endif
 
+extern "C" std::size_t APS5_VABI wcrtomb_nid_postfix(char* destination, std::uint16_t value, void* state);
+
 namespace {
 
 bool In(char16_t character, const char* set) {
@@ -91,22 +93,38 @@ void AppendPadded(std::u16string& out, const std::u16string& text, bool left, in
 std::u16string FormatWide(const char16_t* format, VaList* source, bool secure = false) {
     if (format == nullptr || source == nullptr) throw std::invalid_argument("Null formatting argument");
     LibcDetail::FormatArguments args(source);
+    const char16_t* const start = format;
+    std::string ascii;
+    for (const char16_t* unit = format; *unit != 0; ++unit) ascii.push_back(*unit < 0x80 ? static_cast<char>(*unit) : '?');
+    args.Number(LibcDetail::NumberedArgumentClasses(ascii.c_str()));
+    const auto position = [&] {
+        const char* cursor = ascii.c_str() + (format - start);
+        const std::size_t found = LibcDetail::ArgumentPosition(cursor);
+        format = start + (cursor - ascii.c_str());
+        return found;
+    };
+    const auto star = [&] {
+        const std::size_t found = position();
+        return found ? args.At<int>(found) : args.Next<int>();
+    };
     std::u16string out;
     while (*format) {
         if (*format != u'%') { out.push_back(*format++); continue; }
         ++format;
         if (*format == u'%') { out.push_back(*format++); continue; }
+        if (const std::size_t found = position()) args.Seek(found);
         std::string spec = "%";
         bool left = false;
         int width = 0;
         int precision = -1;
-        while (In(*format, "-+ #0")) {
+        while (In(*format, "-+ #0'")) {
             if (*format == u'-') left = true;
-            spec += static_cast<char>(*format++);
+            if (*format != u'\'') spec += static_cast<char>(*format);
+            ++format;
         }
         if (*format == u'*') {
             ++format;
-            width = args.Next<int>();
+            width = star();
             if (width < 0) { left = true; spec += '-'; width = -width; }
             spec += std::to_string(width);
         } else {
@@ -117,7 +135,7 @@ std::u16string FormatWide(const char16_t* format, VaList* source, bool secure = 
             precision = 0;
             if (*format == u'*') {
                 ++format;
-                precision = args.Next<int>();
+                precision = star();
                 if (precision >= 0) spec += "." + std::to_string(precision);
             } else {
                 spec += '.';
@@ -159,7 +177,8 @@ std::u16string FormatWide(const char16_t* format, VaList* source, bool secure = 
                 AppendNumber(out, spec + static_cast<char>(conversion), args.Next<double>());
             }
         } else if (conversion == u'p' && length.empty()) {
-            AppendNumber(out, spec + 'p', args.Next<void*>());
+            const std::string text = LibcDetail::FormatPointer(spec, args.Next<void*>());
+            out.append(text.begin(), text.end());
         } else if (conversion == u'c' || conversion == u'C') {
             const int value = args.Next<int>();
             std::u16string text;
@@ -195,6 +214,166 @@ std::u16string FormatWide(const char16_t* format, VaList* source, bool secure = 
     return out;
 }
 
+bool IsScanSpace(char16_t character) {
+    return In(character, " \t\n\v\f\r");
+}
+
+struct ScanSet {
+    const char16_t* first = nullptr;
+    const char16_t* last = nullptr;
+    bool negated = false;
+};
+
+ScanSet ParseScanSet(const char16_t*& format) {
+    ScanSet set;
+    set.negated = *format == u'^';
+    if (set.negated) ++format;
+    set.first = format;
+    if (*format == u']') ++format;
+    while (*format != 0 && *format != u']') ++format;
+    if (*format != u']') throw std::invalid_argument("Unterminated scan set");
+    set.last = format++;
+    return set;
+}
+
+bool InScanSet(const ScanSet& set, char16_t character) {
+    for (const char16_t* item = set.first; item < set.last; ++item) {
+        if (item + 2 < set.last && item[1] == u'-' && item[0] <= item[2]) {
+            if (character >= item[0] && character <= item[2]) return !set.negated;
+            item += 2;
+        } else if (character == *item) {
+            return !set.negated;
+        }
+    }
+    return set.negated;
+}
+
+bool ValidScanLength(const std::string& length, char16_t conversion) {
+    if (In(conversion, "diouxXn"))
+        return length.empty() || length == "hh" || length == "h" || length == "l" || length == "ll" || length == "j" ||
+            length == "z" || length == "t";
+    if (In(conversion, "aAeEfFgG")) return length.empty() || length == "l" || length == "L";
+    if (In(conversion, "cs[")) return length.empty() || length == "l";
+    return conversion == u'p' && length.empty();
+}
+
+std::string HostScanLength(const std::string& length, char16_t conversion) {
+    if (In(conversion, "diouxX") && (length == "l" || length == "ll" || length == "j" || length == "z" || length == "t")) return "ll";
+    return length;
+}
+
+void StoreScanCount(void* target, const std::string& length, std::ptrdiff_t count) {
+    if (length == "hh") *static_cast<signed char*>(target) = static_cast<signed char>(count);
+    else if (length == "h") *static_cast<short*>(target) = static_cast<short>(count);
+    else if (length.empty()) *static_cast<int*>(target) = static_cast<int>(count);
+    else {
+        const std::int64_t value = count;
+        std::memcpy(target, &value, sizeof(value));
+    }
+}
+
+template<class TNextPointer, class TNextCapacity>
+int ScanWide(const char16_t* buffer, const char16_t* format, TNextPointer nextPointer, TNextCapacity nextCapacity) {
+    if (buffer == nullptr || format == nullptr) return EOF;
+    const char16_t* input = buffer;
+    int assigned = 0;
+    bool converted = false;
+    while (*format != 0) {
+        if (IsScanSpace(*format)) {
+            while (IsScanSpace(*format)) ++format;
+            while (IsScanSpace(*input)) ++input;
+            continue;
+        }
+        if (*format != u'%' || format[1] == u'%') {
+            const bool percent = *format == u'%';
+            const char16_t expected = *format;
+            format += percent ? 2 : 1;
+            if (percent) while (IsScanSpace(*input)) ++input;
+            if (*input == 0) return converted ? assigned : EOF;
+            if (*input != expected) return assigned;
+            ++input;
+            continue;
+        }
+        ++format;
+        const bool suppress = *format == u'*';
+        if (suppress) ++format;
+        std::size_t width = 0;
+        while (*format >= u'0' && *format <= u'9') {
+            if (width > (SIZE_MAX - 9) / 10) throw std::invalid_argument("Scan field width too large");
+            width = width * 10 + static_cast<std::size_t>(*format++ - u'0');
+        }
+        std::string length;
+        while (In(*format, "hljztL")) length += static_cast<char>(*format++);
+        const char16_t conversion = *format;
+        if (conversion == 0) throw std::invalid_argument("Incomplete scan conversion");
+        ++format;
+        if (!ValidScanLength(length, conversion)) throw std::invalid_argument("Unsupported scan conversion");
+        const ScanSet set = conversion == u'[' ? ParseScanSet(format) : ScanSet{};
+        if (conversion == u'n') {
+            if (!suppress) {
+                void* target = nextPointer();
+                if (target == nullptr) return EOF;
+                StoreScanCount(target, length, input - buffer);
+            }
+            continue;
+        }
+        if (conversion != u'c' && conversion != u'[') while (IsScanSpace(*input)) ++input;
+        if (*input == 0) return converted ? assigned : EOF;
+        void* target = suppress ? nullptr : nextPointer();
+        if (!suppress && target == nullptr) return EOF;
+        if (In(conversion, "cs[")) {
+            const std::size_t capacity = suppress ? 0 : static_cast<std::size_t>(nextCapacity());
+            const std::size_t limit = width != 0 ? width : conversion == u'c' ? 1 : SIZE_MAX;
+            std::size_t count = 0;
+            while (count < limit && input[count] != 0 && (conversion == u'c' ||
+                (conversion == u's' ? !IsScanSpace(input[count]) : InScanSet(set, input[count])))) ++count;
+            if (count == 0 || (conversion == u'c' && count < limit)) return assigned;
+            if (!suppress) {
+                const std::size_t terminator = conversion == u'c' ? 0 : 1;
+                if (length == "l") {
+                    if (count + terminator > capacity) {
+                        if (capacity != 0) static_cast<char16_t*>(target)[0] = 0;
+                        return assigned;
+                    }
+                    std::memcpy(target, input, count * sizeof(char16_t));
+                    if (terminator != 0) static_cast<char16_t*>(target)[count] = 0;
+                } else {
+                    std::string bytes;
+                    char unit[MB_LEN_MAX];
+                    for (std::size_t index = 0; index < count; ++index) {
+                        const std::size_t size = wcrtomb_nid_postfix(unit, input[index], nullptr);
+                        if (size == static_cast<std::size_t>(-1)) return converted ? assigned : EOF;
+                        bytes.append(unit, size);
+                    }
+                    if (bytes.size() + terminator > capacity) {
+                        if (capacity != 0) static_cast<char*>(target)[0] = '\0';
+                        return assigned;
+                    }
+                    std::memcpy(target, bytes.data(), bytes.size());
+                    if (terminator != 0) static_cast<char*>(target)[bytes.size()] = '\0';
+                }
+            }
+            input += count;
+        } else {
+            std::string field;
+            for (const char16_t* cursor = input; *cursor != 0 && *cursor < 0x80 && !IsScanSpace(*cursor) &&
+                (width == 0 || field.size() < width); ++cursor) field.push_back(static_cast<char>(*cursor));
+            std::string directive = suppress ? "%*" : "%";
+            directive += HostScanLength(length, conversion);
+            directive += static_cast<char>(conversion);
+            directive += "%n";
+            int consumed = -1;
+            const int matched = suppress ? std::sscanf(field.c_str(), directive.c_str(), &consumed) :
+                std::sscanf(field.c_str(), directive.c_str(), target, &consumed);
+            if (consumed < 0 || (!suppress && matched != 1)) return assigned;
+            input += consumed;
+        }
+        converted = true;
+        if (!suppress) ++assigned;
+    }
+    return assigned;
+}
+
 }  // namespace
 
 extern "C" {
@@ -212,6 +391,13 @@ int APS5_VABI vswprintf_nid_postfix(char16_t* buffer, std::size_t size, const ch
         errno = 22;
         return -1;
     }
+}
+
+int APS5_VABI swprintf_nid_postfix(char16_t* buffer, std::size_t size, const char16_t* format, ...) {
+    APS5_VA_BEGIN(format);
+    const int result = vswprintf_nid_postfix(buffer, size, format, reinterpret_cast<VaList*>(args));
+    APS5_VA_END();
+    return result;
 }
 
 int APS5_VABI snwprintf_s_nid_postfix(char16_t* buffer, std::size_t size, const char16_t* format, ...) {
@@ -232,6 +418,35 @@ int APS5_VABI snwprintf_s_nid_postfix(char16_t* buffer, std::size_t size, const 
         APS5_VA_END();
     }
     if (result < 0 && buffer != nullptr && size != 0 && size < RsizeMax) buffer[0] = 0;
+    return result;
+}
+
+int APS5_VABI swscanf_s_nid_postfix(const char16_t* buffer, const char16_t* format, ...) {
+    APS5_VA_BEGIN(format);
+#ifdef _WIN32
+    const int result = ScanWide(buffer, format, [&] { return __builtin_va_arg(args, void*); },
+        [&] { return __builtin_va_arg(args, unsigned int); });
+#else
+    const int result = ScanWide(buffer, format, [&] { return va_arg(args, void*); }, [&] { return va_arg(args, unsigned int); });
+#endif
+    APS5_VA_END();
+    return result;
+}
+
+int APS5_VABI swscanf_nid_postfix(const char16_t* buffer, const char16_t* format, ...) {
+    if (buffer == nullptr || format == nullptr) throw std::invalid_argument("swscanf: null buffer or format");
+    APS5_VA_BEGIN(format);
+    const auto nextPointer = [&] {
+#ifdef _WIN32
+        void* const target = __builtin_va_arg(args, void*);
+#else
+        void* const target = va_arg(args, void*);
+#endif
+        if (target == nullptr) throw std::invalid_argument("swscanf: null receiving pointer");
+        return target;
+    };
+    const int result = ScanWide(buffer, format, nextPointer, [] { return std::size_t{SIZE_MAX}; });
+    APS5_VA_END();
     return result;
 }
 

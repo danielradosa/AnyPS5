@@ -32,6 +32,18 @@ struct DrawDecode {
     std::vector<ShaderRecompiler::ProgramRole> roles;
 };
 
+void DecodeGraphicsPrograms(DrawDecode& decoded, const QueueState& queue, const ShaderRegistry& registry, bool staticAbi, bool includeFragment);
+
+struct PreparedGraphicsStage {
+    std::shared_ptr<const ShaderSnapshot> snapshot;
+    PreparedShaders::Entry entry;
+    ShaderRecompiler::ShaderStage stage = ShaderRecompiler::ShaderStage::Vertex;
+    std::uint32_t pushOffset = 0;
+    std::shared_ptr<const ShaderRecompiler::RecompileResult> registration;
+};
+
+std::vector<PreparedGraphicsStage> PrepareGraphicsStages(const DrawDecode& decoded, const ShaderRecompiler::SpirvTarget& target);
+
 struct DrawRecipeRecord {
     std::vector<std::weak_ptr<const DispatchVariant>> stages;
     std::shared_ptr<const DrawRecipe> recipe;
@@ -48,6 +60,7 @@ struct DrawEntry {
     std::atomic<std::shared_ptr<const std::vector<DrawRecipeRecord>>> recipes;
     std::uint64_t touched = 0;
     std::list<std::uint64_t>::iterator order;
+    bool prepared = false;
 };
 
 enum class DrawMiss : std::size_t { FrontDiffering, FragmentDiffering, OtherDiffering, Layout, Gate, Stages, Count };
@@ -60,6 +73,7 @@ struct DrawEntryCounters {
 
     std::uint64_t registerKeyLookups = 0, registerKeyHits = 0, decodeSkipped = 0, decodePartial = 0, facadeMismatches = 0, verifyDecodes = 0, verifyDecodeMismatches = 0;
     double keyUs = 0;
+    std::uint64_t preparedLookups = 0, preparedHits = 0;
     std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
 };
 
@@ -71,6 +85,8 @@ struct StageCapture {
     std::uint64_t forgetSerial = 0;
     std::uint32_t pushOffset = 0;
 };
+
+bool DecodeProgramsCurrent(const DrawDecode& decode, const ShaderRegistry& registry);
 
 }
 

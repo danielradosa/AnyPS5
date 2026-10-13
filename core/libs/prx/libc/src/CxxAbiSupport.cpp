@@ -1,3 +1,4 @@
+#include <thread>
 #include "prx/libc/include/exceptions/Runtime.hpp"
 #include <cstddef>
 #ifndef _UNWIND_H
@@ -24,6 +25,10 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 
 extern "C" {
+unsigned int APS5_VABI _ZNSt8__sce_v226_Thrd_hardware_concurrencyEv_nid_postfix() noexcept {
+    return std::thread::hardware_concurrency();
+}
+
 
 void* APS5_VABI __cxa_demangle_nid_postfix(const char* mangled, char* buf, std::size_t* len, int* status) {
     if (mangled == nullptr || (buf != nullptr && len == nullptr)) {
@@ -62,6 +67,9 @@ void* APS5_VABI __cxa_demangle_nid_postfix(const char* mangled, char* buf, std::
 }
 
 int APS5_VABI __cxa_thread_atexit_impl_nid_postfix(void (APS5_VABI *func)(void*), void* arg, void* dso) {
+#ifdef _WIN32
+    dso = nullptr;
+#endif
     struct ThreadAtexitContext {
         void (APS5_VABI *destructor)(void*);
         void* object;
@@ -83,13 +91,12 @@ int APS5_VABI __cxa_thread_atexit_impl_nid_postfix(void (APS5_VABI *func)(void*)
     return result;
 }
 
+int APS5_VABI __cxa_thread_atexit_nid_postfix(void (APS5_VABI *func)(void*), void* arg, void* dso) {
+    return __cxa_thread_atexit_impl_nid_postfix(func, arg, dso);
+}
+
 int APS5_VABI LibcInternalExtCxaThreadAtexit_nid_postfix(void (APS5_VABI *destructor)(void*), void* object, void* module_id) {
-#ifdef _WIN32
-    (void)module_id;
-    return __cxa_thread_atexit_impl_nid_postfix(destructor, object, nullptr);
-#else
     return __cxa_thread_atexit_impl_nid_postfix(destructor, object, module_id);
-#endif
 }
 
 const std::error_category* _ZSt17iostream_categoryv_nid_postfix() { return &std::iostream_category(); }

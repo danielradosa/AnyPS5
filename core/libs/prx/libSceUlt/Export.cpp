@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "SceTypes.hpp"
-#include "prx/libc/include/General.hpp"
 #include "SceUltTypes.hpp"
 
 extern "C" int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg, const char* name);
@@ -108,7 +107,9 @@ void ReleaseQueue(UltQueueState& state) {
 
 void* APS5_VABI ulthreadRunner(void* arg) {
     auto* state = static_cast<UltUlthreadState*>(arg);
-    return reinterpret_cast<void*>(static_cast<std::intptr_t>(state->_entry(state->_arg)));
+    const auto result = state->_entry(state->_arg);
+    state->_exited.store(true, std::memory_order_release);
+    return reinterpret_cast<void*>(static_cast<std::intptr_t>(result));
 }
 
 }
@@ -123,6 +124,9 @@ int APS5_VABI sceUltFinalize() {
     std::vector<std::shared_ptr<UltSemaphoreState>> semaphores;
     {
         std::lock_guard<std::mutex> lock(gMutex);
+        if (!gUlthreads.empty()) {
+            return ULT_ERROR_BUSY;
+        }
         semaphores.reserve(gSemaphores.size());
         for (auto& entry : gSemaphores) {
             auto& state = entry.second;
@@ -143,7 +147,6 @@ int APS5_VABI sceUltFinalize() {
         gQueues.clear();
         gQueueDataPools.clear();
         gRuntimes.clear();
-        gUlthreads.clear();
     }
     for (const auto& state : semaphores) {
         state->_available.notify_all();
@@ -235,6 +238,7 @@ std::uint64_t APS5_VABI sceUltQueueDataResourcePoolGetWorkAreaSize(std::uint32_t
 
 int APS5_VABI sceUltQueueDataResourcePoolCreate(void* pool, const char* name, std::uint32_t numData, std::uint64_t dataSize, std::uint32_t numQueueObject, void* waitingQueueResourcePool, void* workArea, const void* optParam, std::uint32_t buildVersion) {
     (void)name;
+    (void)optParam;
     (void)buildVersion;
     if (pool == nullptr) {
         return ULT_ERROR_NULL;
@@ -242,7 +246,6 @@ int APS5_VABI sceUltQueueDataResourcePoolCreate(void* pool, const char* name, st
     if ((reinterpret_cast<std::uintptr_t>(pool) & 7u) != 0) return ULT_ERROR_ALIGNMENT;
     if (numData == 0 || numQueueObject == 0 || dataSize == 0 ||
         dataSize > std::numeric_limits<std::size_t>::max() / numData) return ULT_ERROR_RANGE;
-    if (optParam != nullptr) NotImplemented_nid_no_patch("sceUltQueueDataResourcePoolCreate: optParam");
     std::lock_guard<std::mutex> lock(gMutex);
     if (waitingQueueResourcePool != nullptr && gResourcePools.find(waitingQueueResourcePool) == gResourcePools.end()) {
         return ULT_ERROR_INVALID;
@@ -279,13 +282,13 @@ int APS5_VABI sceUltQueueDataResourcePoolDestroy(void* pool) {
 
 int APS5_VABI sceUltQueueCreate(void* queue, const char* name, std::uint64_t dataSize, void* waitingQueueResourcePool, void* queueDataResourcePool, const void* optParam, std::uint32_t buildVersion) {
     (void)name;
+    (void)optParam;
     (void)buildVersion;
     if (queue == nullptr) {
         return ULT_ERROR_NULL;
     }
     if ((reinterpret_cast<std::uintptr_t>(queue) & 7u) != 0) return ULT_ERROR_ALIGNMENT;
     if (dataSize == 0) return ULT_ERROR_RANGE;
-    if (optParam != nullptr) NotImplemented_nid_no_patch("sceUltQueueCreate: optParam");
     auto state = std::make_shared<UltQueueState>();
     state->_dataSize = dataSize;
     std::lock_guard<std::mutex> lock(gMutex);
@@ -487,6 +490,7 @@ int APS5_VABI sceUltUlthreadCreate(void* ulthread, const char* name, UltUlthread
     auto state = std::make_shared<UltUlthreadState>();
     state->_entry = entry;
     state->_arg = arg;
+    state->_runtime = runtime;
     {
         std::lock_guard<std::mutex> lock(gMutex);
         if (gRuntimes.find(runtime) == gRuntimes.end()) {
@@ -530,6 +534,77 @@ int APS5_VABI sceUltUlthreadJoin(void* ulthread, std::int32_t* status) {
     std::lock_guard<std::mutex> lock(gMutex);
     gUlthreads.erase(ulthread);
     return ULT_OK;
+}
+
+int APS5_VABI sceUltUlthreadTryJoin(void* ulthread, std::int32_t* status) {
+    if (ulthread == nullptr) {
+        return ULT_ERROR_NULL;
+    }
+    {
+        std::lock_guard<std::mutex> lock(gMutex);
+        auto it = gUlthreads.find(ulthread);
+        if (it == gUlthreads.end()) {
+            return ULT_ERROR_STATE;
+        }
+        if (!it->second->_exited.load(std::memory_order_acquire)) {
+            return ULT_ERROR_BUSY;
+        }
+    }
+    return sceUltUlthreadJoin(ulthread, status);
+}
+
+int APS5_VABI sceUltUlthreadRuntimeDestroy(void* runtime) {
+    if (runtime == nullptr) {
+        return ULT_ERROR_NULL;
+    }
+    std::lock_guard<std::mutex> lock(gMutex);
+    auto it = gRuntimes.find(runtime);
+    if (it == gRuntimes.end()) {
+        return ULT_ERROR_STATE;
+    }
+    for (const auto& entry : gUlthreads) {
+        if (entry.second->_runtime == runtime) {
+            return ULT_ERROR_BUSY;
+        }
+    }
+    gRuntimes.erase(it);
+    return ULT_OK;
+}
+
+int APS5_VABI _sceUltUlthreadRuntimeOptParamInitialize(UltUlthreadRuntimeOptParam* optParam, std::uint32_t buildVersion) {
+    return sceUltUlthreadRuntimeOptParamInitialize(optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltUlthreadRuntimeCreate(void* runtime, const char* name, std::uint32_t maxNumUlthread, std::uint32_t numWorkerThread, void* workArea, const void* optParam, std::uint32_t buildVersion) {
+    return sceUltUlthreadRuntimeCreate(runtime, name, maxNumUlthread, numWorkerThread, workArea, optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltUlthreadCreate(void* ulthread, const char* name, UltUlthreadEntry entry, std::uint64_t arg, void* context, std::uint64_t sizeContext, void* runtime, const void* optParam, std::uint32_t buildVersion) {
+    return sceUltUlthreadCreate(ulthread, name, entry, arg, context, sizeContext, runtime, optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltMutexOptParamInitialize(UltMutexOptParam* optParam, std::uint32_t buildVersion) {
+    return sceUltMutexOptParamInitialize(optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltMutexCreate(void* mutex, const char* name, void* waitingQueueResourcePool, const UltMutexOptParam* optParam, std::uint32_t buildVersion) {
+    return sceUltMutexCreate(mutex, name, waitingQueueResourcePool, optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltWaitingQueueResourcePoolCreate(void* pool, const char* name, std::uint32_t numThreads, std::uint32_t numSyncObjects, void* workArea, const void* optParam, std::uint32_t buildVersion) {
+    return sceUltWaitingQueueResourcePoolCreate(pool, name, numThreads, numSyncObjects, workArea, optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltQueueDataResourcePoolCreate(void* pool, const char* name, std::uint32_t numData, std::uint64_t dataSize, std::uint32_t numQueueObject, void* waitingQueueResourcePool, void* workArea, const void* optParam, std::uint32_t buildVersion) {
+    return sceUltQueueDataResourcePoolCreate(pool, name, numData, dataSize, numQueueObject, waitingQueueResourcePool, workArea, optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltQueueCreate(void* queue, const char* name, std::uint64_t dataSize, void* waitingQueueResourcePool, void* queueDataResourcePool, const void* optParam, std::uint32_t buildVersion) {
+    return sceUltQueueCreate(queue, name, dataSize, waitingQueueResourcePool, queueDataResourcePool, optParam, buildVersion);
+}
+
+int APS5_VABI _sceUltSemaphoreCreate(void* semaphore, const char* name, std::int32_t numInitialResource, void* waitingQueueResourcePool, const void* optParam, std::uint32_t buildVersion) {
+    return sceUltSemaphoreCreate(semaphore, name, numInitialResource, waitingQueueResourcePool, optParam, buildVersion);
 }
 
 }

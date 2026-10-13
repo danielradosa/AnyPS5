@@ -47,6 +47,13 @@ void APS5_VABI sceVideoOutSetBufferAttribute2(VideoOutBufferAttribute2* attribut
     attribute->dcc_control = dccControl;
 }
 
+void APS5_VABI sceVideoOutAddBufferAttributeOption(VideoOutBufferAttribute2* attribute, uint64_t option) {
+    if (attribute == nullptr) {
+        throw std::runtime_error("sceVideoOutAddBufferAttributeOption: null attribute");
+    }
+    attribute->option |= option;
+}
+
 int APS5_VABI sceVideoOutRegisterBuffers2(int handle, int setIndex, int bufferIndexStart, const VideoOutBuffers* buffers, int bufferNum, const VideoOutBufferAttribute2* attribute, int category, void* option) try {
     auto cfg = VideoOutDriver::Get().GetConfig(handle);
     if (cfg == nullptr) {
@@ -93,6 +100,7 @@ int APS5_VABI sceVideoOutRegisterBuffers2(int handle, int setIndex, int bufferIn
         AgcDriverCheckGuestMemory_nid_postfix(buffers[i].data, AgcDriverDisplayBufferSize_nid_postfix(display), 65536);
     }
     cfg->groups[setIndex] = group;
+    std::fprintf(stderr, "[videoout] %d display buffers registered at %ux%u (set %d)\n", bufferNum, attribute->width, attribute->height, setIndex);
     cfg->width = attribute->width;
     cfg->height = attribute->height;
     for (int i = 0; i < bufferNum; i++) {
@@ -127,7 +135,6 @@ int APS5_VABI sceVideoOutSubmitChangeBufferAttribute2(int handle, int setIndex, 
     group.attribute = *attribute;
     for (int i = 0; i < VIDEO_OUT_BUFFER_NUM_MAX; ++i) {
         if (cfg->buffers[i].groupIndex != setIndex) continue;
-        if (cfg->bufferPending[i] != 0) throw std::runtime_error("VideoOut: buffer attributes are in use by a pending flip");
         const auto display = DescribeVideoOutBuffer(cfg->buffers[i], group);
         AgcDriverCheckGuestMemory_nid_postfix(reinterpret_cast<const void*>(display.address), AgcDriverDisplayBufferSize_nid_postfix(display), 65536);
     }
@@ -183,6 +190,9 @@ int APS5_VABI sceVideoOutSubmitFlip(int handle, int index, int flipMode, int64_t
     cfg->Check();
     if (cfg->closing) {
         throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_HANDLE");
+    }
+    if (cfg->flipMaster != 0 || cfg->flipSlaves != 0) {
+        throw std::runtime_error(std::string(__func__) + ": flips on a port tied by sceVideoOutSetFlipMaster are not modelled");
     }
     const bool special = (index == VIDEO_OUT_BUFFER_INDEX_BLANK || index == VIDEO_OUT_BUFFER_INDEX_BLACK);
     if (!special && !cfg->buffers[index].Occupied()) {

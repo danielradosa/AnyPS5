@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "prx/libc/include/PreciseWait.hpp"
 #include "prx/libSceFont/include/FontInternal.hpp"
 
 namespace {
@@ -56,7 +57,7 @@ Font::FontState::~FontState() {
 }
 
 void Font::Backoff() {
-    std::this_thread::sleep_for(std::chrono::microseconds(30));
+    PreciseSleepUs(30);
 }
 
 std::uint32_t Font::AcquireWordLock(std::uint32_t& word) {
@@ -272,9 +273,9 @@ bool Font::ForgetGeneratedGlyph(FontGlyph glyph) {
 }
 
 Font::GeneratedGlyph* Font::TryGetGeneratedGlyph(FontGlyph glyph) {
-    if (!glyph || glyph->magic != GLYPH_MAGIC) return nullptr;
+    if (!glyph) return nullptr;
     std::lock_guard lock(glyphMutex);
-    if (!generatedGlyphs.contains(glyph)) return nullptr;
+    if (!generatedGlyphs.contains(glyph) || glyph->magic != GLYPH_MAGIC) return nullptr;
     return reinterpret_cast<GeneratedGlyph*>(glyph);
 }
 

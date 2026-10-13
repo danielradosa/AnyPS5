@@ -17,6 +17,7 @@ static constexpr int SCE_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT = static_cast<int>(0
 
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_SAMPLER = 0x1000;
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_SUBMIXER = 0x2000;
+static constexpr std::uint32_t SCE_NGS2_RACK_ID_REVERB = 0x2001;
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_MASTERING = 0x3000;
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER = 0x4002;
 
@@ -35,6 +36,7 @@ static constexpr std::uint32_t SCE_NGS2_VOICE_STATE_FLAG_INUSE = 1;
 static constexpr std::uint32_t SCE_NGS2_VOICE_STATE_FLAG_PLAYING = 2;
 static constexpr std::uint32_t SCE_NGS2_VOICE_STATE_FLAG_PAUSED = 4;
 static constexpr std::uint32_t SCE_NGS2_VOICE_STATE_FLAG_STOPPED = 8;
+static constexpr std::uint32_t SCE_NGS2_VOICE_STATE_FLAG_EMPTY = 0x20;
 
 static constexpr std::uint32_t SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS = 0x0001;
 static constexpr std::uint32_t SCE_NGS2_VOICE_PARAM_PORT_VOLUME = 0x0002;
@@ -50,6 +52,8 @@ static constexpr std::uint32_t SCE_NGS2_SAMPLER_VOICE_PARAM_PITCH = 0x10000005;
 static constexpr std::uint32_t SCE_NGS2_SAMPLER_VOICE_PARAM_FILTER = 0x1000000a;
 static constexpr std::uint32_t SCE_NGS2_SUBMIXER_VOICE_PARAM_SETUP = 0x20000000;
 static constexpr std::uint32_t SCE_NGS2_SUBMIXER_VOICE_PARAM_USER_FX = 0x20000004;
+static constexpr std::uint32_t SCE_NGS2_REVERB_VOICE_PARAM_SETUP = 0x20010000;
+static constexpr std::uint32_t SCE_NGS2_REVERB_VOICE_PARAM_I3DL2 = 0x20010001;
 static constexpr std::uint32_t SCE_NGS2_MASTERING_VOICE_PARAM_SETUP = 0x30000000;
 static constexpr std::uint32_t SCE_NGS2_MASTERING_VOICE_PARAM_GAIN = 0x30000004;
 static constexpr std::uint32_t SCE_NGS2_MASTERING_VOICE_PARAM_OUTPUT = 0x30000005;
@@ -63,6 +67,7 @@ static constexpr std::uint32_t SCE_NGS2_CUSTOM_MODULE_ID_USER_FX2 = 0x1f;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_CONTINUE = 1;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_APPEND = 2;
 static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_RESET = 4;
+static constexpr std::uint32_t SCE_NGS2_WAVEFORM_BLOCKS_FLAG_SILENCE = 0x10;
 
 static constexpr std::uint32_t SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_END = 1;
 static constexpr std::uint32_t SCE_NGS2_VOICE_CALLBACK_FLAG_BLOCK_REPEAT = 2;
@@ -157,6 +162,12 @@ struct Ngs2MasteringRackOption {
     Ngs2RackOption rack_option;
     std::uint32_t max_channels;
     std::uint32_t num_peak_meter_blocks;
+};
+
+struct Ngs2ReverbRackOption {
+    Ngs2RackOption rack_option;
+    std::uint32_t max_channels;
+    std::uint32_t reverb_size;
 };
 
 struct Ngs2CustomModuleOption {
@@ -421,6 +432,40 @@ struct Ngs2SubmixerVoiceSetupParam {
 };
 static_assert(sizeof(Ngs2SubmixerVoiceSetupParam) == 16);
 
+struct Ngs2ReverbVoiceSetupParam {
+    Ngs2VoiceParamHeader header;
+    std::uint32_t num_input_channels;
+    std::uint32_t num_output_channels;
+    std::uint32_t flags;
+    std::uint32_t reserved;
+};
+static_assert(sizeof(Ngs2ReverbVoiceSetupParam) == 24);
+
+struct Ngs2ReverbI3DL2Param {
+    float wet;
+    float dry;
+    std::int32_t room;
+    std::int32_t room_hf;
+    std::uint32_t reflection_pattern;
+    float decay_time;
+    float decay_hf_ratio;
+    std::int32_t reflections;
+    float reflections_delay;
+    std::int32_t reverb;
+    float reverb_delay;
+    float diffusion;
+    float density;
+    float hf_reference;
+    std::uint32_t reserved[8];
+};
+static_assert(sizeof(Ngs2ReverbI3DL2Param) == 88);
+
+struct Ngs2ReverbVoiceI3DL2Param {
+    Ngs2VoiceParamHeader header;
+    Ngs2ReverbI3DL2Param i3dl2;
+};
+static_assert(sizeof(Ngs2ReverbVoiceI3DL2Param) == 96);
+
 struct Ngs2SubmixerVoiceUserFxParam {
     Ngs2VoiceParamHeader header;
     Ngs2UserFxProcessHandler handler;
@@ -548,27 +593,115 @@ struct Ngs2WaveformInfo {
 static_assert(sizeof(Ngs2WaveformInfo) == 232);
 
 struct Ngs2PanParam {
-    std::uint32_t reserved[16];
+    float angle;
+    float distance;
+    float fbw_level;
+    float lfe_level;
 };
+static_assert(sizeof(Ngs2PanParam) == 16);
 
 struct Ngs2PanWork {
-    std::uint32_t reserved[64];
+    float speaker_angles[8];
+    float unit_angle;
+    std::uint32_t num_speakers;
 };
+static_assert(sizeof(Ngs2PanWork) == 40);
+
+struct Ngs2GeomVector {
+    float x;
+    float y;
+    float z;
+};
+static_assert(sizeof(Ngs2GeomVector) == 12);
+
+struct Ngs2GeomCone {
+    float inner_level;
+    float inner_angle;
+    float outer_level;
+    float outer_angle;
+};
+static_assert(sizeof(Ngs2GeomCone) == 16);
+
+struct Ngs2GeomRolloff {
+    std::uint32_t model;
+    float max_distance;
+    float rolloff_factor;
+    float reference_distance;
+};
+static_assert(sizeof(Ngs2GeomRolloff) == 16);
 
 struct Ngs2GeomListenerParam {
-    std::uint32_t reserved[32];
+    Ngs2GeomVector position;
+    Ngs2GeomVector orient_front;
+    Ngs2GeomVector orient_up;
+    Ngs2GeomVector velocity;
+    float sound_speed;
+    std::uint32_t reserved[2];
 };
+static_assert(sizeof(Ngs2GeomListenerParam) == 60);
 
 struct Ngs2GeomListenerWork {
-    std::uint32_t reserved[64];
+    float matrix[4][4];
+    Ngs2GeomVector velocity;
+    float sound_speed;
+    std::uint32_t coordinate;
+    std::uint32_t reserved[3];
 };
+static_assert(sizeof(Ngs2GeomListenerWork) == 96);
 
 struct Ngs2GeomSourceParam {
-    std::uint32_t reserved[32];
+    Ngs2GeomVector position;
+    Ngs2GeomVector velocity;
+    Ngs2GeomVector direction;
+    Ngs2GeomCone cone;
+    Ngs2GeomRolloff rolloff;
+    float doppler_factor;
+    float fbw_level;
+    float lfe_level;
+    float max_level;
+    float min_level;
+    float radius;
+    std::uint32_t num_speakers;
+    std::uint32_t matrix_format;
+    std::uint32_t reserved[2];
 };
+static_assert(sizeof(Ngs2GeomSourceParam) == 108);
+
+struct Ngs2GeomA3dAttribute {
+    Ngs2GeomVector position;
+    float volume;
+    std::uint32_t reserved[4];
+};
+static_assert(sizeof(Ngs2GeomA3dAttribute) == 32);
 
 struct Ngs2GeomAttribute {
-    std::uint32_t reserved[32];
+    float pitch_ratio;
+    float level[64];
+    Ngs2GeomA3dAttribute a3d_attrib;
+    std::uint32_t reserved[4];
 };
+static_assert(sizeof(Ngs2GeomAttribute) == 308);
+
+static constexpr std::uint32_t SCE_NGS2_REPORT_TYPE_CPU_LOAD = 5;
+static constexpr std::uint32_t SCE_NGS2_REPORT_TYPE_COUNT = 10;
+
+struct Ngs2ReportDataHeader {
+    std::size_t size;
+    Ngs2Handle handle;
+    std::uint32_t type;
+    std::int32_t result;
+};
+static_assert(sizeof(Ngs2ReportDataHeader) == 24);
+
+struct Ngs2ReportCpuLoadData {
+    Ngs2ReportDataHeader header;
+    float total_ratio;
+    float flush_ratio;
+    float process_ratio;
+    float feedback_ratio;
+};
+static_assert(sizeof(Ngs2ReportCpuLoadData) == 40);
+
+using Ngs2ReportHandler = void (APS5_VABI *)(const Ngs2ReportDataHeader*, std::uintptr_t);
 
 #endif

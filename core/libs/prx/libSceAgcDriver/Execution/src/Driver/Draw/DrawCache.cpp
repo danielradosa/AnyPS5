@@ -1,5 +1,6 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawCache.hpp"
+#include <algorithm>
 #include <cstdlib>
 
 namespace AgcDriver::DriverDetail {
@@ -55,11 +56,13 @@ void Driver::accountDrawVariant(const DispatchVariant& variant, bool added) {
     }
 }
 
-void Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::shared_ptr<const DrawDecode> decode) {
+bool Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::shared_ptr<const DrawDecode> decode, bool prepared, bool onlyIfAbsent) {
     std::lock_guard cacheLock(drawCacheMutex);
-    auto& counters = drawEntryCounters;
-    ++counters.inserts;
+    DrawEntryCounters ignored;
+    auto& counters = prepared ? ignored : drawEntryCounters;
     const auto found = drawCache.find(key);
+    if (onlyIfAbsent && found != drawCache.end()) return false;
+    ++counters.inserts;
     auto replacement = std::make_shared<DrawEntry>();
     replacement->stages.resize(fresh.size());
     replacement->decode = std::move(decode);
@@ -71,7 +74,7 @@ void Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<Disp
     for (std::size_t i = 0; i < fresh.size(); ++i) {
         if (fresh[i] == nullptr) continue;
         auto& variants = replacement->stages[i];
-        const auto present = std::find_if(variants.begin(), variants.end(), [&](const std::shared_ptr<DispatchVariant>& kept) { return kept->pushOffset == fresh[i]->pushOffset && kept->runs == fresh[i]->runs && kept->words == fresh[i]->words; });
+        const auto present = std::find_if(variants.begin(), variants.end(), [&](const std::shared_ptr<DispatchVariant>& kept) { return kept->pushOffset == fresh[i]->pushOffset && kept->userData == fresh[i]->userData && kept->runs == fresh[i]->runs && kept->words == fresh[i]->words; });
         if (present != variants.end()) {
             ++counters.present;
             fresh[i] = *present;
@@ -87,6 +90,7 @@ void Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<Disp
         }
     }
     replacement->touched = drawCacheHits;
+    replacement->prepared = prepared;
     if (found == drawCache.end()) {
         drawOrder.push_front(key);
         replacement->order = drawOrder.begin();
@@ -105,6 +109,23 @@ void Driver::insertDrawEntry(std::uint64_t key, std::vector<std::shared_ptr<Disp
         drawCache.erase(last);
         ++drawCacheEvictions;
     }
+    return true;
+}
+
+void Driver::eraseDrawEntry(std::uint64_t key, const std::shared_ptr<DrawEntry>& expected) {
+    const auto found = drawCache.find(key);
+    if (found == drawCache.end() || found->second != expected) return;
+    for (const auto& variants : found->second->stages) {
+        for (const auto& variant : variants) accountDrawVariant(*variant, false);
+    }
+    drawOrder.erase(found->second->order);
+    drawCache.erase(found);
+}
+
+bool DecodeProgramsCurrent(const DrawDecode& decode, const ShaderRegistry&) {
+    return std::all_of(decode.programs.begin(), decode.programs.end(), [&](const DrawProgram& program) {
+        return !program.snapshot->header.empty() || ReadRawShader(program.snapshot->codeAddress + program.codeOffset * sizeof(std::uint32_t)) == program.snapshot;
+    });
 }
 
 std::shared_ptr<const DrawRecipe> Driver::findDrawRecipe(std::uint64_t key, const std::vector<std::shared_ptr<DispatchVariant>>& stages) {

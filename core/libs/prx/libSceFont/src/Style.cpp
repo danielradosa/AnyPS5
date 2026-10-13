@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 #include "prx/libSceFont/include/FontInternal.hpp"
 
@@ -51,6 +53,30 @@ int ReadFontStyle(FontHandle fontHandle, bool checkMagic, Getter&& getter) {
     return rc;
 }
 
+template<typename Access>
+int AccessFontSettings(FontHandle fontHandle, Access&& access) {
+    return ReadFontStyle(fontHandle, true, [&](FontHandleNative*) {
+        FontState* state = TryGetState(fontHandle);
+        return state ? access(*state) : SCE_FONT_ERROR_INVALID_FONT_HANDLE;
+    });
+}
+
+int SetFontSetting(FontHandle fontHandle, std::map<int, int> FontState::*table, int key, int value) {
+    return AccessFontSettings(fontHandle, [&](FontState& state) {
+        (state.*table)[key] = value;
+        return SCE_FONT_OK;
+    });
+}
+
+int GetFontSetting(FontHandle fontHandle, std::map<int, int> FontState::*table, int key, int* value) {
+    if (!value) return SCE_FONT_ERROR_INVALID_PARAMETER;
+    return AccessFontSettings(fontHandle, [&](FontState& state) {
+        const auto found = (state.*table).find(key);
+        *value = found == (state.*table).end() ? 0 : found->second;
+        return SCE_FONT_OK;
+    });
+}
+
 void ResetScaleOutputs(float* w, float* h) {
     if (w) *w = 0.0f;
     if (h) *h = 0.0f;
@@ -76,6 +102,44 @@ float ClampWeightDelta(float scale) {
 #pragma GCC visibility push(default)
 
 extern "C" {
+
+int APS5_VABI sceFontDefineAttribute(FontHandle fontHandle, int attribute, int* oldAttribute) {
+    if (oldAttribute) *oldAttribute = 0;
+    if (attribute != 0x40 && attribute != 0x41) return SCE_FONT_ERROR_NO_SUPPORT_FUNCTION;
+    return UpdateFontStyle(fontHandle, [&](FontHandleNative* font) {
+        const int previous = 0x40 | ((font->flags >> 15) & 1);
+        if (oldAttribute) *oldAttribute = previous;
+        font->flags = static_cast<std::uint16_t>((font->flags & 0x7FFFu) | ((attribute & 1) << 15));
+        if (previous != attribute) CachedStyleSetCacheFlags(font->cached_style, 0);
+        return previous != attribute;
+    });
+}
+
+int APS5_VABI sceFontGetAttribute(FontHandle fontHandle, int attribute, int* nowAttribute) {
+    if (!nowAttribute) return SCE_FONT_ERROR_INVALID_PARAMETER;
+    *nowAttribute = 0;
+    if (attribute != 0x40 && attribute != 0x41) return SCE_FONT_ERROR_NO_SUPPORT_FUNCTION;
+    return ReadFontStyle(fontHandle, true, [&](FontHandleNative* font) {
+        *nowAttribute = 0x40 | ((font->flags >> 15) & 1);
+        return SCE_FONT_OK;
+    });
+}
+
+int APS5_VABI sceFontSetScriptLanguage(FontHandle fontHandle, int fontScript, int fontLanguage) {
+    return SetFontSetting(fontHandle, &FontState::scriptLanguages, fontScript, fontLanguage);
+}
+
+int APS5_VABI sceFontGetScriptLanguage(FontHandle fontHandle, int fontScript, int* fontLanguage) {
+    return GetFontSetting(fontHandle, &FontState::scriptLanguages, fontScript, fontLanguage);
+}
+
+int APS5_VABI sceFontSetTypographicDesign(FontHandle fontHandle, int typographic, int feature) {
+    return SetFontSetting(fontHandle, &FontState::typographicFeatures, typographic, feature);
+}
+
+int APS5_VABI sceFontGetTypographicDesign(FontHandle fontHandle, int typographic, int* feature) {
+    return GetFontSetting(fontHandle, &FontState::typographicFeatures, typographic, feature);
+}
 
 int APS5_VABI sceFontSetScalePixel(FontHandle fontHandle, float w, float h) {
     return UpdateFontStyle(fontHandle, [&](FontHandleNative* font) {

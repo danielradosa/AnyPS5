@@ -4,6 +4,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Queues/WorkerAffinity.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
+#include "prx/libSceAgcDriver/Execution/include/TracyZone.hpp"
 #include <cstdlib>
 
 namespace AgcDriver::DriverDetail {
@@ -23,8 +24,21 @@ void Driver::UnregisterVideoOutput(std::uint32_t handle, const std::shared_ptr<I
     outputs.erase(it);
 }
 
-void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buffer, bool opaque, void (*gpuReady)(void*), void* context) {
+void Driver::AttachWindow(const PresentationWindow& window) {
+    CheckFailure();
+    std::unique_lock replacing(deviceReplacement);
+    GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Present);
+    std::lock_guard lock(GuestMemory::GpuMutex());
+    if (device) {
+        require(device->Window() == nullptr, "a window is already attached to the device");
+        device->PrepareForReplacement();
+        replacedDevices.push_back(device);
+    }
+    device = std::make_shared<VulkanDevice>(&window);
+}
 
+void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buffer, bool opaque, void (*gpuReady)(void*), void* context) {
+    if (PerformanceTrace::Configured()) PerformanceTrace::Present(window.width, window.height, device.Load().get());
     PerformanceContext timingContext(window.timing.get());
     PerformanceTimer timing("Driver.Present");
     static thread_local bool pinned = false;
@@ -48,19 +62,10 @@ void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buff
         bool trailing = false;
         double waitedMs = 0;
         {
-            std::unique_lock replacing(deviceReplacement, std::defer_lock);
-            if (const auto current = device.Load(); current == nullptr || current->Window() == nullptr) replacing.lock();
             GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Present);
             std::lock_guard lock(GuestMemory::GpuMutex());
             timing.Mark("gpu_mutex_wait");
-            if (device == nullptr || device->Window() == nullptr) {
-                if (device) {
-                    device->PrepareForReplacement();
-                    replacedDevices.push_back(device);
-                }
-                device = std::make_shared<VulkanDevice>(&window);
-            }
-            require(device->Window() == window.context, "presentation window does not match device surface");
+            require(device != nullptr && device->Window() == window.context, "presentation window is not attached to the device");
             presenting = device;
             timing.Mark("device_setup");
             std::uint32_t drawableWidth = 0;
@@ -123,6 +128,7 @@ void Driver::Present(const PresentationWindow& window, const DisplayBuffer* buff
         }
         gpuReady(context);
         timing.Mark("release_and_callback");
+        TracyZone::MarkFrame();
         if (profile) reportPresents(waitedMs, inFlight);
         CheckFailure();
     } catch (const ProcessShutdown&) {

@@ -1,19 +1,39 @@
 #include <cstdint>
 #include <cstddef>
+#include <ctime>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/GuestLocale.hpp"
+#include "prx/libc/include/SonyCrt.hpp"
+#include "prx/libc/include/exceptions/Runtime.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
+#include "prx/libkernel/Pthread/include/Cond.hpp"
+#include "prx/libkernel/Pthread/include/Mutex.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstring>
+#include <limits>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 
 static constexpr int SCE_AMPR_ERROR_BUFFER_FULL = 0x8002001C;
 static constexpr int SCE_KERNEL_ERROR_EINVAL = 0x80020016;
 static constexpr int SCE_KERNEL_ERROR_EPERM = 0x80020001;
 static constexpr int SCE_KERNEL_ERROR_ESRCH = 0x80020003;
 static constexpr int SCE_KERNEL_ERROR_EBUSY = 0x80020010;
+static constexpr int SCE_KERNEL_ERROR_ENOMEM = 0x8002000C;
+static constexpr int SCE_KERNEL_ERROR_EDEADLK = 0x8002000B;
+
+static std::uint32_t RemainingCommandBytes(const Apr::CommandBufferObject& buffer) {
+    if (buffer.offset > buffer.size) throw std::invalid_argument("AMPR: command buffer offset exceeds bound memory");
+    return buffer.size - buffer.offset;
+}
 
 static int Append(Apr::CommandBufferObject* buffer, const void* command, uint32_t bytes) {
-    if (!buffer->base || bytes > buffer->size - buffer->offset) return SCE_AMPR_ERROR_BUFFER_FULL;
+    if (!buffer->base || bytes > RemainingCommandBytes(*buffer)) return SCE_AMPR_ERROR_BUFFER_FULL;
     std::memcpy(buffer->base + buffer->offset, command, bytes);
     buffer->offset += bytes;
     ++buffer->numCommands;
@@ -79,7 +99,7 @@ static std::uint64_t NopBytes(std::uint32_t dwords) {
 static int AppendNop(Apr::CommandBufferObject* buffer, std::uint32_t dwords, const std::uint32_t* data) {
     if (!buffer) return SCE_KERNEL_ERROR_EINVAL;
     const std::uint64_t bytes = NopBytes(dwords);
-    if (!buffer->base || bytes > buffer->size - buffer->offset) return SCE_AMPR_ERROR_BUFFER_FULL;
+    if (!buffer->base || bytes > RemainingCommandBytes(*buffer)) return SCE_AMPR_ERROR_BUFFER_FULL;
     const Apr::CommandHeader header{Apr::Opcode::Nop, static_cast<std::uint32_t>(bytes)};
     std::uint8_t* destination = buffer->base + buffer->offset;
     std::memset(destination, 0, bytes);
@@ -102,7 +122,7 @@ static std::uint64_t MeasureMarker(const char* text) {
 static int AppendMarker(Apr::CommandBufferObject* buffer, Apr::Opcode opcode, const char* text) {
     if (!buffer || !text) return SCE_KERNEL_ERROR_EINVAL;
     const std::uint64_t bytes = MarkerBytes(text);
-    if (!buffer->base || bytes > buffer->size - buffer->offset) return SCE_AMPR_ERROR_BUFFER_FULL;
+    if (!buffer->base || bytes > RemainingCommandBytes(*buffer)) return SCE_AMPR_ERROR_BUFFER_FULL;
     const Apr::MarkerCommand command{{opcode, static_cast<std::uint32_t>(bytes)}};
     std::uint8_t* destination = buffer->base + buffer->offset;
     std::memset(destination, 0, bytes);
@@ -129,7 +149,7 @@ static bool ValidMap(std::uint64_t address, std::uint64_t directOffset, std::uin
 static constexpr std::int64_t AmmMeasureInvalid = SCE_KERNEL_ERROR_EINVAL;
 
 static int AppendAmm(Apr::CommandBufferObject* buffer, const void* command, std::uint32_t bytes) {
-    if (bytes > buffer->size - buffer->offset) return SCE_KERNEL_ERROR_EBUSY;
+    if (bytes > RemainingCommandBytes(*buffer)) return SCE_KERNEL_ERROR_EBUSY;
     return Append(buffer, command, bytes);
 }
 
@@ -173,7 +193,7 @@ static constexpr std::int32_t PrtAllocationMask = 1019;
 
 static int RecordPrt(Apr::CommandBufferObject* buffer, const void* command, std::uint32_t bytes) {
     if (!buffer) return SCE_KERNEL_ERROR_EINVAL;
-    if (bytes > buffer->size - buffer->offset) return SCE_KERNEL_ERROR_EBUSY;
+    if (bytes > RemainingCommandBytes(*buffer)) return SCE_KERNEL_ERROR_EBUSY;
     if (!buffer->base) return SCE_KERNEL_ERROR_EPERM;
     return Append(buffer, command, bytes);
 }
@@ -209,6 +229,129 @@ static int RecordWriteAddressFromCounterPair(Apr::CommandBufferObject* buffer, v
     if (completion && InMap(buffer)) return SCE_KERNEL_ERROR_EPERM;
     return AppendCommand(buffer, Apr::Opcode::WriteAddressFromCounterPair, Apr::WriteAddressFromCounterCommand{{}, reinterpret_cast<std::uint64_t>(address), counter, counter + 1u});
 }
+
+struct Xtime {
+    std::int64_t sec;
+    std::int64_t nsec;
+};
+
+static constexpr int ThrdSuccess = 0;
+static constexpr int ThrdError = 4;
+static constexpr int ThrdNomem = 1;
+static constexpr int ThrdBusy = 3;
+static constexpr int GuestClockRealtime = 0;
+static constexpr std::int64_t NanosPerSecond = 1000000000;
+static constexpr std::int64_t LongestSleepSeconds = 86400;
+
+static std::atomic_flag sharedPtrSpinLock;
+
+struct AmmUsageStatsData {
+    std::uint64_t sizeInBytes;
+    std::uint16_t numPageTablePoolEntries;
+    std::uint16_t allocatedPageTablePoolEntries;
+    std::uint16_t highWatermarkAllocatedEntries;
+    std::uint16_t reserved;
+    std::uint32_t ringIdleFlags;
+};
+static_assert(sizeof(AmmUsageStatsData) == 0x18);
+static constexpr std::uint16_t AmmPageTablePoolEntries = 512;
+static constexpr std::uint32_t AmmRingIdleFlags = 0x7;
+
+extern "C" {
+int APS5_VABI pthread_join_nid_postfix(Pthread thread, void** value);
+Pthread APS5_VABI scePthreadSelf();
+void APS5_VABI sceKernelDebugRaiseException(int code, int argument);
+int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg, const char* name);
+[[noreturn]] void APS5_VABI _ZSt14_Throw_C_errori_nid_postfix(int code);
+[[noreturn]] void APS5_VABI __cxa_pure_virtual_nid_postfix();
+int APS5_VABI wcsrtombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t** source, std::size_t limit, void* state);
+int APS5_VABI _Cnd_init_nid_postfix(void** handle);
+int SignalCondition_nid_no_patch(void** handle);
+[[noreturn]] void ThrowCppError_nid_no_patch(int code);
+}
+
+static KernelTimespec XtimeDeadline(const Xtime& time) {
+    constexpr auto largest = std::numeric_limits<std::int64_t>::max();
+    constexpr auto smallest = std::numeric_limits<std::int64_t>::min();
+    const auto carry = time.nsec / NanosPerSecond;
+    auto nanos = time.nsec % NanosPerSecond;
+    auto seconds = time.sec;
+    if ((carry > 0 && seconds > largest - carry) || (carry < 0 && seconds < smallest - carry)) throw std::overflow_error("_Thrd_sleep: xtime seconds overflow");
+    seconds += carry;
+    if (nanos < 0) {
+        if (seconds == smallest) throw std::overflow_error("_Thrd_sleep: xtime seconds overflow");
+        nanos += NanosPerSecond;
+        --seconds;
+    }
+    return {seconds, nanos};
+}
+
+static int ThrdInitResult(int result) {
+    return result == 0 ? ThrdSuccess : result == SCE_KERNEL_ERROR_ENOMEM ? ThrdNomem : ThrdError;
+}
+
+static constexpr int DefaultUnexpectedException = static_cast<int>(0xA0020009);
+
+static void APS5_VABI DestroyTypeInfo_nid_no_patch(std::type_info*) {}
+
+static void APS5_VABI DeleteTypeInfo_nid_no_patch(std::type_info*) {
+    throw std::runtime_error("deleting guest RTTI is not supported");
+}
+
+static void APS5_VABI NoopTypeInfo_nid_no_patch(const std::type_info*) {}
+
+static bool APS5_VABI FunctionTypeInfoCatch_nid_no_patch(const std::type_info*, const std::type_info*, void**) {
+    return false;
+}
+
+struct GuestPad {
+    const void* vtable;
+    PthreadCond cond;
+    PthreadMutex mutex;
+    bool started;
+};
+
+static_assert(offsetof(GuestPad, cond) == 0x8 && offsetof(GuestPad, mutex) == 0x10 && offsetof(GuestPad, started) == 0x18 && sizeof(GuestPad) == 0x20);
+
+static constexpr char PadName[] = "SceLibc_Thr";
+static const __cxxabiv1::__class_type_info PadTypeInfo{"St4_Pad"};
+static const void* const PadVtable[] {nullptr, &PadTypeInfo, reinterpret_cast<const void*>(__cxa_pure_virtual_nid_postfix)};
+
+static int PadMutexInit(PthreadMutex* mutex) {
+    *mutex = nullptr;
+    PthreadMutexattr attributes = nullptr;
+    if (const int result = scePthreadMutexattrInit(&attributes)) return ThrdInitResult(result);
+    const int result = scePthreadMutexInit(mutex, &attributes, PadName);
+    const int destroyed = scePthreadMutexattrDestroy(&attributes);
+    if (result != 0) return ThrdInitResult(result);
+    if (destroyed != 0) {
+        scePthreadMutexDestroy(mutex);
+        return ThrdError;
+    }
+    return ThrdSuccess;
+}
+
+static int PadCondInit(PthreadCond* cond) {
+    *cond = nullptr;
+    return ThrdInitResult(scePthreadCondInit(cond, nullptr, PadName));
+}
+
+static int PadLock(PthreadMutex* mutex) {
+    const int result = scePthreadMutexLock(mutex);
+    return result == 0 ? ThrdSuccess : result == SCE_KERNEL_ERROR_EDEADLK ? ThrdBusy : ThrdError;
+}
+
+static void* APS5_VABI PadCall_nid_no_patch(void* argument) {
+    auto* pad = static_cast<GuestPad*>(argument);
+    void (APS5_VABI *go)(GuestPad*);
+    std::memcpy(&go, pad->vtable, sizeof(go));
+    go(pad);
+    return nullptr;
+}
+
+static std::mutex standardStreamLock;
+static std::array<GuestLocale::IosBase*, GuestLocale::StandardStreamCount + 2> standardStreams{};
+static std::array<signed char, GuestLocale::StandardStreamCount + 2> standardStreamOpens{};
 
 extern "C" {
 
@@ -297,7 +440,11 @@ int APS5_VABI sceAmprAprCommandBufferReadFileGather(Apr::CommandBufferObject* bu
     (void)mapState;
     (void)scatterGatherState;
     if (!ValidReadLength(size) || !ValidReadOffset(offset)) return SCE_KERNEL_ERROR_EINVAL;
-    return AppendRead(buffer, Apr::Opcode::ReadFileGather, 0, nullptr, size, offset);
+    if (!buffer || (buffer->recording & Apr::ScatterGatherValid) == 0u) return SCE_KERNEL_ERROR_EINVAL;
+    const Apr::CompactReadFileGatherCommand command{
+        static_cast<std::uint32_t>(Apr::Opcode::CompactReadFileGather) | static_cast<std::uint32_t>(offset >> 32u) << 8u,
+        static_cast<std::uint32_t>(size - 1u), static_cast<std::uint32_t>(offset)};
+    return Append(buffer, &command, sizeof(command));
 }
 
 int APS5_VABI sceAmprAprCommandBufferReadFileGatherScatter(Apr::CommandBufferObject* buffer, std::uint64_t* mapState, std::uint64_t* scatterGatherState, void* destination, std::uint64_t size, std::uint64_t offset) {
@@ -320,12 +467,13 @@ int APS5_VABI sceAmprAprCommandBufferResetGatherScatterState(Apr::CommandBufferO
     return result;
 }
 
-int APS5_VABI sceAmprCommandBufferClearBuffer(Apr::CommandBufferObject* buffer) {
+void* APS5_VABI sceAmprCommandBufferClearBuffer(Apr::CommandBufferObject* buffer) {
+    void* memory = buffer->base;
     buffer->base = nullptr;
     buffer->size = 0;
     buffer->offset = 0;
     buffer->numCommands = 0;
-    return 0;
+    return memory;
 }
 
 int APS5_VABI sceAmprCommandBufferConstructMarker(Apr::CommandBufferObject* buffer, std::uint32_t type, const char* text, const std::uint32_t* color) {
@@ -357,7 +505,7 @@ int APS5_VABI sceAmprCommandBufferConstructNop(Apr::CommandBufferObject* buffer,
 }
 
 int APS5_VABI sceAmprCommandBufferConstructor(Apr::CommandBufferObject* buffer) {
-    *buffer = {nullptr, 0, 0, 0, Apr::BufferType::Generic};
+    *buffer = {Apr::BufferType::Generic, 0, 0, 0, 0, nullptr};
     return 0;
 }
 
@@ -520,7 +668,7 @@ uint32_t APS5_VABI sceAmprMeasureCommandSizeReadFile(void) {
 
 std::uint64_t APS5_VABI sceAmprMeasureCommandSizeReadFileGather(std::uint64_t size, std::uint64_t offset) {
     if (!ValidReadLength(size) || !ValidReadOffset(offset)) return MeasureInvalid;
-    return sizeof(Apr::ReadFileCommand);
+    return sizeof(Apr::CompactReadFileGatherCommand);
 }
 
 std::uint64_t APS5_VABI sceAmprMeasureCommandSizeReadFileGatherScatter(void* destination, std::uint64_t size, std::uint64_t offset) {
@@ -773,6 +921,11 @@ int APS5_VABI sceAmprAmmGetVirtualAddressRanges(std::uint64_t* start, std::uint6
     return 0;
 }
 
+int APS5_VABI sceAmprAmmSetPageTablePoolOccupancyNotificationThreshold(int threshold) {
+    if (threshold <= 0) throw std::runtime_error("sceAmprAmmSetPageTablePoolOccupancyNotificationThreshold: a threshold the empty page table pool already reaches is not supported, as the console's notification for it is unknown");
+    return 0;
+}
+
 int APS5_VABI sceAmprAmmSubmitCommandBuffer(void* base, std::uint32_t offset, std::uint32_t priority) {
     if (priority > 2u) return SCE_KERNEL_ERROR_EINVAL;
     if (!base) return SCE_KERNEL_ERROR_EPERM;
@@ -801,4 +954,209 @@ int APS5_VABI sceAmprAmmWaitCommandBufferCompletion(std::uint32_t id) {
     return AmmSubmitted_nid_no_patch(id) ? 0 : SCE_KERNEL_ERROR_ESRCH;
 }
 
+void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* stream) {
+    if (!stream) throw std::invalid_argument("ios_base::_Addstd: null stream");
+    std::lock_guard lock(standardStreamLock);
+    std::size_t index = 1;
+    while (index < GuestLocale::StandardStreamCount && standardStreams[index] && standardStreams[index] != stream) ++index;
+    stream->standardStream = static_cast<std::int64_t>(index);
+    standardStreams[index] = stream;
+    ++standardStreamOpens[index];
+}
+
+[[noreturn]] void APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(int code) {
+    ThrowCppError_nid_no_patch(code);
+}
+
+int APS5_VABI _Thrd_join_nid_postfix(Pthread thread, int* code) {
+    void* result = nullptr;
+    if (pthread_join_nid_postfix(thread, &result) != 0) return ThrdError;
+    if (code) *code = static_cast<int>(reinterpret_cast<std::intptr_t>(result));
+    return ThrdSuccess;
+}
+
+void APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(GuestPad* self) {
+    if (!self) throw std::invalid_argument("_Pad::_Release: null pad");
+    if (const int result = PadLock(&self->mutex)) _ZSt14_Throw_C_errori_nid_postfix(result);
+    self->started = true;
+    scePthreadCondSignal(&self->cond);
+    scePthreadMutexUnlock(&self->mutex);
+}
+
+void APS5_VABI _ZNSt4_PadC2Ev_nid_postfix(GuestPad* self) {
+    if (!self) throw std::invalid_argument("_Pad constructor: null pad");
+    self->vtable = &PadVtable[2];
+    if (const int result = PadCondInit(&self->cond)) _ZSt14_Throw_C_errori_nid_postfix(result);
+    if (const int result = PadMutexInit(&self->mutex)) {
+        scePthreadCondDestroy(&self->cond);
+        _ZSt14_Throw_C_errori_nid_postfix(result);
+    }
+    self->started = false;
+    if (const int result = PadLock(&self->mutex)) {
+        scePthreadMutexDestroy(&self->mutex);
+        scePthreadCondDestroy(&self->cond);
+        _ZSt14_Throw_C_errori_nid_postfix(result);
+    }
+}
+
+void APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(GuestPad* self) {
+    if (!self) throw std::invalid_argument("_Pad destructor: null pad");
+    self->vtable = &PadVtable[2];
+    scePthreadMutexUnlock(&self->mutex);
+    scePthreadMutexDestroy(&self->mutex);
+    scePthreadCondDestroy(&self->cond);
+}
+
+Pthread APS5_VABI _Thrd_id_nid_postfix(void) {
+    return scePthreadSelf();
+}
+
+void APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(GuestPad* self, Pthread* thread) {
+    if (!self) throw std::invalid_argument("_Pad::_Launch: null pad");
+    if (scePthreadCreate(thread, nullptr, PadCall_nid_no_patch, self, PadName) != 0) _ZSt14_Throw_C_errori_nid_postfix(ThrdNomem);
+    while (!self->started) scePthreadCondWait(&self->cond, &self->mutex);
+}
+
+std::uint64_t _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;
+
+int APS5_VABI _Cnd_signal_nid_postfix(void** handle) {
+    return SignalCondition_nid_no_patch(handle);
+}
+
+void APS5_VABI _Unlock_shared_ptr_spin_lock_nid_postfix(void) {
+    sharedPtrSpinLock.clear(std::memory_order_release);
+}
+
+int APS5_VABI _Cnd_init_with_name_nid_postfix(void** handle, const char*) {
+    return _Cnd_init_nid_postfix(handle);
+}
+
+LibcException::ShimTypeInfoVtable _ZTVN10__cxxabiv120__function_type_infoE_nid_postfix {0, &typeid(__cxxabiv1::__function_type_info),
+    DestroyTypeInfo_nid_no_patch, DeleteTypeInfo_nid_no_patch, NoopTypeInfo_nid_no_patch, NoopTypeInfo_nid_no_patch, FunctionTypeInfoCatch_nid_no_patch};
+
+int APS5_VABI _ZTVSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE_nid_postfix(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZNKSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE3getES3_S3_RSt8ios_baseRNSt5_IosbIiE8_IostateEP2tmPKcSE__nid_postfix(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+std::uint64_t _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;
+
+LibcException::ShimTypeInfoVtable _ZTVN10__cxxabiv119__pointer_type_infoE_nid_postfix {0, &typeid(__cxxabiv1::__pointer_type_info),
+    DestroyTypeInfo_nid_no_patch, DeleteTypeInfo_nid_no_patch, NoopTypeInfo_nid_no_patch, NoopTypeInfo_nid_no_patch, PointerTypeInfoCatch_nid_no_patch};
+
+int APS5_VABI _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+void APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix(void) {
+    while (sharedPtrSpinLock.test_and_set(std::memory_order_acquire)) std::this_thread::yield();
+}
+
+int APS5_VABI _Thrd_sleep_nid_postfix(const Xtime* target, Xtime*) {
+    if (!target) APS5_INVALID_ARG_EX;
+    const auto deadline = XtimeDeadline(*target);
+    for (;;) {
+        KernelTimespec now{};
+        if (clock_gettime_nid_postfix(GuestClockRealtime, &now) != 0) throw std::runtime_error("_Thrd_sleep: reading the realtime clock failed");
+        if (now.tv_sec > deadline.tv_sec || (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) return 0;
+        KernelTimespec remaining{deadline.tv_sec - now.tv_sec, deadline.tv_nsec - now.tv_nsec};
+        if (remaining.tv_nsec < 0) {
+            remaining.tv_nsec += NanosPerSecond;
+            --remaining.tv_sec;
+        }
+        remaining.tv_sec = std::min(remaining.tv_sec, LongestSleepSeconds);
+        if (nanosleep_nid_postfix(&remaining, nullptr) != 0) throw std::runtime_error("_Thrd_sleep: nanosleep failed");
+    }
+}
+
+int APS5_VABI wcstombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t* source, std::size_t limit) {
+    std::array<std::uint64_t, 16> state{};
+    return wcsrtombs_s_nid_postfix(result, destination, capacity, &source, limit, state.data());
+}
+
+[[noreturn]] void APS5_VABI __cxa_call_unexpected_nid_postfix(void* exception) {
+    __cxa_begin_catch_nid_postfix(exception);
+    auto* unwind = static_cast<_Unwind_Exception*>(exception);
+    if (LibcException::Native(unwind->exception_class) && LibcException::FromUnwind(unwind)->unexpected)
+        throw std::runtime_error("__cxa_call_unexpected: an installed unexpected handler is not supported");
+    sceKernelDebugRaiseException(DefaultUnexpectedException, 0);
+    sceKernelDebugRaiseException(DefaultUnexpectedException, 0);
+    __builtin_trap();
+}
+
+APS5_EXPORT("0hlfW1O4Aa4", sceAmprLocaleconv);
+SonyLconv* APS5_VABI sceAmprLocaleconv(void) {
+    return SonyLocaleconv();
+}
+
+APS5_EXPORT("802pFCwC9w0", sceAmprUdivti3);
+unsigned __int128 APS5_VABI sceAmprUdivti3(unsigned __int128 dividend, unsigned __int128 divisor) {
+    return SonyUdivti3(dividend, divisor);
+}
+
+APS5_EXPORT("MU25eqxSDTw", sceAmprSinh);
+double APS5_VABI sceAmprSinh(double x, double y) {
+    return SonySinh(x, y);
+}
+
+APS5_EXPORT("-vXEQdRADLI", sceAmprStrtokS);
+char* APS5_VABI sceAmprStrtokS(char* str, const char* delim, char** context) {
+    return SonyStrtokS(str, delim, context);
+}
+
+APS5_EXPORT("2UFh+YKfuzk", sceAmprCtimeS);
+int APS5_VABI sceAmprCtimeS(char* buffer, std::size_t size, const std::int64_t* time) {
+    return SonyCtimeS(buffer, size, time);
+}
+
+APS5_EXPORT("6f5f-qx4ucA", sceAmprWcscpyS);
+int APS5_VABI sceAmprWcscpyS(std::uint16_t* dest, std::size_t size, const std::uint16_t* src) {
+    return SonyWcscpyS(dest, size, src);
+}
+
+APS5_EXPORT("ENLfKJEZTjE", sceAmprSetConstraintHandlerS);
+void* APS5_VABI sceAmprSetConstraintHandlerS(void* handler) {
+    return SonySetConstraintHandlerS(handler);
+}
+
+APS5_EXPORT("Jo9ON-AX9eU", sceAmprFltrounds);
+int APS5_VABI sceAmprFltrounds(void) {
+    return SonyFltrounds();
+}
+
+APS5_EXPORT("ODGONXcSmz4", sceAmprIgnoreHandlerS);
+void APS5_VABI sceAmprIgnoreHandlerS(const char* message, void* pointer, int error) {
+    SonyIgnoreHandlerS(message, pointer, error);
+}
+
+APS5_EXPORT("VUzjXknPPBs", sceAmprMbstowcs);
+std::size_t APS5_VABI sceAmprMbstowcs(std::uint16_t* dest, const char* src, std::size_t size) {
+    return SonyMbstowcs(dest, src, size);
+}
+
+APS5_EXPORT("qPe7-h5Jnuc", sceAmprAsctimeS);
+int APS5_VABI sceAmprAsctimeS(char* buffer, std::size_t size, const GuestTm* time) {
+    return SonyAsctimeS(buffer, size, time);
+}
+
+APS5_EXPORT("qlWiRfOJx1A", sceAmprFpclassifyd);
+int APS5_VABI sceAmprFpclassifyd(double value) {
+    return SonyFpclassifyd(value);
+}
+
+int APS5_VABI sceAmprAmmGetUsageStatsData(AmmUsageStatsData* stats) {
+    if (!stats || stats->sizeInBytes > sizeof(AmmUsageStatsData)) return SCE_KERNEL_ERROR_EINVAL;
+    AmmUsageStatsData out{};
+    out.sizeInBytes = stats->sizeInBytes;
+    out.numPageTablePoolEntries = AmmPageTablePoolEntries;
+    out.ringIdleFlags = AmmRingIdleFlags;
+    std::memcpy(stats, &out, static_cast<std::size_t>(stats->sizeInBytes));
+    return 0;
+}
 }

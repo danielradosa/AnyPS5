@@ -1,0 +1,9 @@
+# libSceWebBrowserDialog technical debt
+
+### Unknown function info
+
+- [sceWebBrowserDialogSetCookie, sceWebBrowserDialogResetCookie, sceWebBrowserDialogOpenForPredeterminedContent](../../../core/libs/prx/libSceWebBrowserDialog/Export.cpp) (libSceWebBrowserDialog) - the signatures follow [SharpProspero](https://github.com/SvenGDK/SharpProspero/blob/main/src/SharpProspero/Interop/Dialog/WebBrowserDialog.cs) and the PS4 prototypes in [orbital](https://github.com/AlexAltea/orbital/blob/master/tools/ida/db_types.json), which agree. The 280-byte cookie param (size, url, cookie, 256 reserved bytes) and the 2048- and 4096-byte url and cookie buffers also appear in the [ps5debug headers](https://github.com/someguythatmods/PS5Debug-CleanELF/blob/master/Vanilla/include/imports.h); the 264-byte reset param (size, 256 reserved bytes) is SharpProspero's only. No reference gives the error codes: before `sceWebBrowserDialogInitialize` the calls return `NOT_INITIALIZED` and a null param returns `ARG_NULL`, as the other calls do, which is not confirmed for the cookie calls; a param whose size does not match, a null url or cookie and a string that does not end within its buffer throw
+
+### Functional
+
+- [Web browser dialog](../../../core/libs/prx/libSceWebBrowserDialog/Export.cpp) (libSceWebBrowserDialog) shows nothing: `sceWebBrowserDialogOpen` and `sceWebBrowserDialogOpenForPredeterminedContent` finish at once and the result reports that the user canceled; the domains the predetermined content allows are not read. Cookies set with `sceWebBrowserDialogSetCookie` are kept until `sceWebBrowserDialogResetCookie`, but no page is loaded, so they are never sent

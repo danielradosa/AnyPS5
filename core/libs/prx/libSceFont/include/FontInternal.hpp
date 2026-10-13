@@ -4,15 +4,19 @@
 #ifndef CORE_LIBS_PRX_LIBSCEFONT_INCLUDE_FONTINTERNAL_HPP
 #define CORE_LIBS_PRX_LIBSCEFONT_INCLUDE_FONTINTERNAL_HPP
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_GLYPH_H
 
 #include "prx/libSceFont/include/FontDriver.hpp"
 
@@ -28,11 +32,17 @@ struct FontState {
     FT_Face face = nullptr;
     float scaleW = 16.0f;
     float scaleH = 16.0f;
+    std::map<int, int> scriptLanguages;
+    std::map<int, int> typographicFeatures;
 
     FontState() = default;
     FontState(const FontState&) = delete;
     FontState& operator=(const FontState&) = delete;
     ~FontState();
+};
+
+struct GlyphImageDeleter {
+    void operator()(FT_Glyph image) const { FT_Done_Glyph(image); }
 };
 
 struct GeneratedGlyph {
@@ -47,6 +57,13 @@ struct GeneratedGlyph {
     std::vector<FontGlyphOutlinePoint> outlinePoints;
     std::vector<std::uint8_t> outlineTags;
     std::vector<std::uint16_t> outlineContours;
+    std::unique_ptr<FT_GlyphRec_, GlyphImageDeleter> image;
+    FT_Glyph_Metrics imageMetrics{};
+    float horizontalBaseline = 0.0f;
+    float verticalBaseline = 0.0f;
+    std::atomic<bool> defaultVertical{false};
+    bool hasVerticalMetrics = false;
+    bool hasUnsupportedEffects = false;
     bool metricsInitialized = false;
     bool outlineInitialized = false;
 };
@@ -91,6 +108,8 @@ std::vector<SystemFontFile> SystemFontCandidates(std::uint32_t fontSetType);
 std::filesystem::path SystemFontDirectory();
 std::optional<SystemFontFile> FindSystemFontFile(std::uint32_t fontSetType);
 
+int CaptureGeneratedGlyph(GeneratedGlyph& glyph, FontHandle handle, const FontState& state);
+int RenderGeneratedGlyph(FontGlyph glyph, const FontStyleFrame* frame, FontRenderer renderer, FontRenderSurface* surface, float x, float y, FontGlyphMetrics* metrics, FontRenderOutput* output, int direction);
 void TrackGeneratedGlyph(FontGlyph glyph);
 bool ForgetGeneratedGlyph(FontGlyph glyph);
 GeneratedGlyph* TryGetGeneratedGlyph(FontGlyph glyph);

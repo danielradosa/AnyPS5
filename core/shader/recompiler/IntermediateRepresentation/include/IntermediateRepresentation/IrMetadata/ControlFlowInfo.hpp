@@ -50,10 +50,19 @@ struct SrtRead {
     bool operator==(const SrtRead& other) const = default;
 };
 
+struct SrtReadPoison {
+    std::uint32_t slot = 0;
+    std::uint32_t pc = 0;
+    std::uint64_t address = 0;
+
+    bool operator==(const SrtReadPoison& other) const = default;
+};
+
 struct ResourceBlock {
     IrValue* condition = nullptr;
     std::vector<std::uint32_t> successors;
     std::vector<std::uint32_t> sources;
+    std::vector<std::uint32_t> images;
 };
 
 }

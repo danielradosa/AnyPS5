@@ -1,4 +1,5 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -6,17 +7,32 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 extern "C" {
+int APS5_VABI sceAudioInInit();
 int APS5_VABI sceAudioInOpen(int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
+int APS5_VABI sceAudioInHqOpen(int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
+int APS5_VABI sceAudioInAsyncOpen(int, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
 int APS5_VABI sceAudioInInput(int, void*);
 int APS5_VABI sceAudioInGetSilentState(int);
 int APS5_VABI sceAudioInClose(int);
+int APS5_VABI sceAudioInIsPadEmbeddedMic(int);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
+
+template <typename TCall>
+static bool ReportsNotImplemented(const char* name, TCall call) {
+    try {
+        call();
+    } catch (const std::runtime_error& error) {
+        return std::string(error.what()) == std::string(name) + " not implemented";
+    }
+    return false;
+}
 
 static void SetEnvironment(const char* name, const std::string& value) {
 #ifdef _WIN32
@@ -41,6 +57,22 @@ void TestValidation() {
     Require(sceAudioInOpen(user, 0, 0, 256, 44100, 2) == invalidFreq);
     Require(sceAudioInOpen(user, 0, 0, 256, 48000, 3) == invalidParam);
     Require(sceAudioInOpen(user, 0, 0, 256, 48000, 0) == invalidParam);
+    Require(sceAudioInHqOpen(user, 2, 0, 128, 48000, 2) == invalidType);
+    Require(sceAudioInHqOpen(user, 0, 1, 128, 48000, 2) == invalidParam);
+    Require(sceAudioInHqOpen(user, 0, 0, 512, 48000, 2) == invalidSize);
+    Require(sceAudioInHqOpen(user, 0, 0, 128, 44100, 2) == invalidFreq);
+    Require(sceAudioInHqOpen(user, 0, 0, 128, 48000, 3) == invalidParam);
+    Require(sceAudioInHqOpen(user, 0, 0, 256, 48000, 0) == invalidParam);
+    Require(sceAudioInAsyncOpen(user, 2, 0, 128, 48000, 2) == invalidType);
+    Require(sceAudioInAsyncOpen(user, 0, 1, 128, 48000, 2) == invalidParam);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 385, 48000, 2) == invalidSize);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 512, 48000, 2) == invalidSize);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 256, 44100, 2) == invalidFreq);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 256, 48000, 3) == invalidParam);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 256, 48000, 0) == invalidParam);
+    Require(ReportsNotImplemented("sceAudioInOpen", [] { sceAudioInOpen(user, 0, 0, 256, 48000, 0x10); }));
+    Require(ReportsNotImplemented("sceAudioInOpen", [] { sceAudioInHqOpen(user, 0, 0, 128, 48000, 0x10); }));
+    Require(ReportsNotImplemented("sceAudioInOpen", [] { sceAudioInAsyncOpen(user, 0, 0, 128, 48000, 0x10); }));
 }
 
 void TestCapture() {
@@ -54,6 +86,7 @@ void TestCapture() {
     TestValidation();
     const int handle = sceAudioInOpen(user, 0, 0, 256, 48000, 2);
     Require(handle > 0 && sceAudioInGetSilentState(handle) == 0);
+    Require(sceAudioInIsPadEmbeddedMic(handle) == 0);
     std::vector<std::int16_t> block(256 * 2 + 1, 0x5555);
     std::vector<std::int16_t> captured;
     for (int i = 0; i < 4; ++i) {
@@ -65,6 +98,11 @@ void TestCapture() {
     Require(sceAudioInInput(handle, block.data()) == 256);
     for (std::size_t i = 0; i < 256 * 2; ++i) Require(block[i] == 0);
     Require(sceAudioInClose(handle) == 0);
+    const int async = sceAudioInAsyncOpen(user, 0, 0, 256, 48000, 2);
+    Require(async == handle && sceAudioInGetSilentState(async) == 0);
+    Require(sceAudioInInput(async, block.data()) == 256);
+    Require(std::equal(block.begin(), block.end() - 1, recorded.begin()) && block.back() == 0x5555);
+    Require(sceAudioInClose(async) == 0);
     std::filesystem::remove(path);
 }
 
@@ -78,6 +116,10 @@ void TestNoDevice() {
     Require(handle > 0 && sceAudioInGetSilentState(handle) == 1);
     Require(sceAudioInGetSilentState(handle + 1) == invalidHandle);
     Require(sceAudioInInput(handle + 1, nullptr) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(handle) == 0);
+    Require(sceAudioInIsPadEmbeddedMic(handle + 1) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(0) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(-1) == invalidHandle);
     std::vector<std::uint8_t> buffer(256 * 8 + 1, 0xCC);
     const auto start = std::chrono::steady_clock::now();
     for (int block = 0; block < 5; ++block) Require(sceAudioInInput(handle, buffer.data()) == 256);
@@ -86,18 +128,52 @@ void TestNoDevice() {
     for (std::size_t i = 0; i < 256 * 8; ++i) Require(buffer[i] == 0);
     Require(buffer[256 * 8] == 0xCC);
     Require(sceAudioInInput(handle, nullptr) == 0);
-    for (int port = 1; port < 8; ++port) Require(sceAudioInOpen(user, 1, 0, 128, 48000, 1) > 0);
+    const int hq = sceAudioInHqOpen(user, 0, 0, 128, 48000, 2);
+    const int async = sceAudioInAsyncOpen(user, 1, 0, 256, 16000, 0x11);
+    Require(hq > 0 && async > 0 && hq != handle && async != handle && hq != async);
+    Require(sceAudioInGetSilentState(hq) == 1 && sceAudioInGetSilentState(async) == 1);
+    std::fill(buffer.begin(), buffer.end(), 0xCC);
+    Require(sceAudioInInput(hq, buffer.data()) == 128);
+    for (std::size_t i = 0; i < 128 * 4; ++i) Require(buffer[i] == 0);
+    Require(buffer[128 * 4] == 0xCC);
+    std::fill(buffer.begin(), buffer.end(), 0xCC);
+    Require(sceAudioInInput(async, buffer.data()) == 256);
+    for (std::size_t i = 0; i < 256 * 4; ++i) Require(buffer[i] == 0);
+    Require(buffer[256 * 4] == 0xCC);
+    Require(sceAudioInInput(async, nullptr) == 0);
+    for (int port = 3; port < 8; ++port) Require(sceAudioInOpen(user, 1, 0, 128, 48000, 1) > 0);
     Require(sceAudioInOpen(user, 1, 0, 128, 48000, 1) == portFull);
+    Require(sceAudioInHqOpen(user, 1, 0, 128, 48000, 1) == portFull);
+    Require(sceAudioInAsyncOpen(user, 1, 0, 128, 48000, 1) == portFull);
+    Require(sceAudioInIsPadEmbeddedMic(hq) == 0 && sceAudioInIsPadEmbeddedMic(async) == 0);
+    Require(sceAudioInClose(hq) == 0);
+    Require(sceAudioInClose(hq) == invalidHandle);
+    Require(sceAudioInGetSilentState(hq) == invalidHandle);
+    Require(sceAudioInIsPadEmbeddedMic(hq) == invalidHandle);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 128, 48000, 2) == hq);
+    Require(sceAudioInClose(async) == 0);
+    Require(sceAudioInInput(async, buffer.data()) == invalidHandle);
+    Require(sceAudioInHqOpen(user, 1, 0, 128, 48000, 0x12) == async);
     Require(sceAudioInClose(handle) == 0);
     Require(sceAudioInClose(handle) == invalidHandle);
     Require(sceAudioInInput(handle, buffer.data()) == invalidHandle);
+    Require(sceAudioInHqOpen(user, 1, 0, 128, 48000, 0x11) == handle);
+    Require(sceAudioInClose(handle) == 0);
+    Require(sceAudioInAsyncOpen(user, 1, 0, 128, 48000, 0x11) == handle);
+    Require(sceAudioInClose(handle) == 0);
     Require(sceAudioInOpen(user, 1, 0, 128, 48000, 0x11) == handle);
+    Require(sceAudioInClose(handle) == 0);
+    Require(sceAudioInHqOpen(user, 0, 0, 512, 48000, 2) == static_cast<int>(0x80260102));
+    Require(sceAudioInHqOpen(user, 0, 0, 256, 48000, 2) == handle);
+    Require(sceAudioInGetSilentState(handle) == 1);
+    Require(sceAudioInClose(handle) == 0);
 }
 
 }
 
 int main(int argc, char** argv) {
     Require(argc == 2);
+    Require(sceAudioInInit() == 0);
     if (std::strcmp(argv[1], "capture") == 0) TestCapture();
     else TestNoDevice();
 }

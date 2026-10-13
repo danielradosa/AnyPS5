@@ -22,6 +22,9 @@ int APS5_VABI sceUltQueuePush(void*, const void*);
 int APS5_VABI sceUltQueueTryPush(void*, const void*);
 int APS5_VABI sceUltQueuePop(void*, void*);
 int APS5_VABI sceUltQueueTryPop(void*, void*);
+int APS5_VABI sceUltWaitingQueueResourcePoolCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*, std::uint32_t);
+int APS5_VABI _sceUltQueueDataResourcePoolCreate(void*, const char*, std::uint32_t, std::uint64_t, std::uint32_t, void*, void*, const void*, std::uint32_t);
+int APS5_VABI _sceUltQueueCreate(void*, const char*, std::uint64_t, void*, void*, const void*, std::uint32_t);
 }
 
 static constexpr int Null = -2139029503;
@@ -31,6 +34,7 @@ static constexpr int Invalid = -2139029500;
 static constexpr int State = -2139029498;
 static constexpr int Busy = -2139029497;
 static constexpr int Again = -2139029496;
+static constexpr std::uint32_t BuildVersion = 0x12000000;
 
 static void Require(bool value, int line) {
     if (!value) {
@@ -98,14 +102,7 @@ static void Validation() {
     try { sceUltQueueDataResourcePoolGetWorkAreaSize(1, UINT64_MAX, 1); }
     catch (const std::out_of_range&) { overflow = true; }
     CHECK(overflow);
-    bool rejected = false;
-    try { sceUltQueueCreate(&extra, nullptr, 8, nullptr, &fixture.pool, &extra, 0); }
-    catch (const std::runtime_error&) { rejected = true; }
-    CHECK(rejected);
-    rejected = false;
-    try { sceUltQueueDataResourcePoolCreate(&extra, nullptr, 1, 8, 1, nullptr, nullptr, &extra, 0); }
-    catch (const std::runtime_error&) { rejected = true; }
-    CHECK(rejected);
+    CHECK(sceUltQueueTryPop(&extra, &value) == State);
     overflow = false;
     try { sceUltQueueDataResourcePoolGetWorkAreaSize(UINT32_MAX, UINT64_MAX / 2, 1); }
     catch (const std::out_of_range&) { overflow = true; }
@@ -115,6 +112,14 @@ static void Validation() {
     CHECK(sceUltQueueDestroy(&fixture.first) == State);
     CHECK(sceUltQueueDataResourcePoolDestroy(&fixture.pool) == State);
     fixture.Create(1);
+    fixture.Destroy();
+    std::array<std::uint8_t, 128> optParam{};
+    optParam.fill(0x5A);
+    CHECK(sceUltQueueDataResourcePoolCreate(&fixture.pool, "pool", 1, 8, 1, nullptr, nullptr, optParam.data(), 0) == 0);
+    CHECK(sceUltQueueCreate(&fixture.first, "first", 8, nullptr, &fixture.pool, optParam.data(), 0) == 0);
+    std::uint64_t output = 0;
+    CHECK(sceUltQueuePush(&fixture.first, &value) == 0);
+    CHECK(sceUltQueuePop(&fixture.first, &output) == 0 && output == value);
     fixture.Destroy();
 }
 
@@ -241,6 +246,42 @@ static void Stress() {
     fixture.Destroy();
 }
 
+static void Versioned() {
+    Object waiting, pool, queue, other;
+    CHECK(sceUltWaitingQueueResourcePoolCreate(&waiting, "waiting", 2, 2, nullptr, nullptr, BuildVersion) == 0);
+    CHECK(_sceUltQueueDataResourcePoolCreate(nullptr, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == Null);
+    CHECK(_sceUltQueueDataResourcePoolCreate(pool.bytes.data() + 4, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == Alignment);
+    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 0, 1, &waiting, nullptr, nullptr, BuildVersion) == Range);
+    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &other, nullptr, nullptr, BuildVersion) == Invalid);
+    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == 0);
+    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == State);
+    CHECK(_sceUltQueueCreate(nullptr, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == Null);
+    CHECK(_sceUltQueueCreate(queue.bytes.data() + 4, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == Alignment);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 0, &waiting, &pool, nullptr, BuildVersion) == Range);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 9, &waiting, &pool, nullptr, BuildVersion) == Invalid);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &other, nullptr, BuildVersion) == Invalid);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, nullptr, &pool, nullptr, BuildVersion) == Invalid);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == 0);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == State);
+    CHECK(_sceUltQueueCreate(&other, "other", 4, &waiting, &pool, nullptr, BuildVersion) == Again);
+    const std::array<std::uint32_t, 3> values{0xA1B2C3D4u, 0x01020304u, 0xDEADBEEFu};
+    std::array<std::uint32_t, 2> output{UINT32_MAX, UINT32_MAX};
+    CHECK(sceUltQueueTryPush(&queue, &values[0]) == 0);
+    CHECK(sceUltQueuePush(&queue, &values[1]) == 0);
+    CHECK(sceUltQueueTryPush(&queue, &values[2]) == Again);
+    CHECK(sceUltQueuePop(&queue, output.data()) == 0 && output[0] == values[0] && output[1] == UINT32_MAX);
+    CHECK(sceUltQueueTryPush(&queue, &values[2]) == 0);
+    CHECK(sceUltQueueTryPop(&queue, output.data()) == 0 && output[0] == values[1] && output[1] == UINT32_MAX);
+    CHECK(sceUltQueueTryPop(&queue, output.data()) == 0 && output[0] == values[2] && output[1] == UINT32_MAX);
+    CHECK(sceUltQueueTryPop(&queue, output.data()) == Again);
+    CHECK(sceUltQueueDataResourcePoolDestroy(&pool) == Busy);
+    CHECK(sceUltQueueDestroy(&queue) == 0);
+    CHECK(_sceUltQueueCreate(&other, "other", 8, &waiting, &pool, nullptr, BuildVersion) == 0);
+    CHECK(sceUltQueueDestroy(&other) == 0);
+    CHECK(sceUltQueueDataResourcePoolDestroy(&pool) == 0);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == Invalid);
+}
+
 int main(int argc, char** argv) {
     CHECK(argc == 2);
     CHECK(sceUltInitialize() == 0);
@@ -250,6 +291,7 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[1], "shared-pool") == 0) SharedPool();
     else if (std::strcmp(argv[1], "finalize") == 0) Finalize();
     else if (std::strcmp(argv[1], "stress") == 0) Stress();
+    else if (std::strcmp(argv[1], "versioned") == 0) Versioned();
     else CHECK(false);
     CHECK(sceUltFinalize() == 0);
 }

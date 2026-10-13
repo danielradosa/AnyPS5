@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include "prx/libc/include/GuestArena.hpp"
+#include "prx/libc/include/GuestBacktrace.hpp"
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -10,8 +11,10 @@
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <mutex>
+#include <vector>
 #include "Sse4aEmulation.hpp"
 
 namespace {
@@ -31,6 +34,7 @@ void Report(const char* format, ...) {
 }
 
 void ReportAllThreads();
+void ReportStackCandidates(std::uint64_t rsp, int limit, std::uint64_t span);
 
 void DescribeAddress(std::uint64_t address, char* buffer, std::size_t size) {
     HMODULE module = nullptr;
@@ -296,16 +300,7 @@ LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
         if (next <= frame) break;
         frame = next;
     }
-    Report("  stack return address candidates:\n");
-    int printed = 0;
-    for (std::uint64_t slot = context->Rsp; printed < 16 && slot < context->Rsp + 0x2000; slot += 8) {
-        if (!IsReadable(slot)) break;
-        const auto value = *reinterpret_cast<const std::uint64_t*>(slot);
-        if (!IsExecutable(value)) continue;
-        DescribeAddress(value, line, sizeof(line));
-        Report("    [rsp+0x%llx] %s\n", static_cast<unsigned long long>(slot - context->Rsp), line);
-        ++printed;
-    }
+    ReportStackCandidates(context->Rsp, 16, 0x2000);
     if (context->Rip == 0 || !IsExecutable(context->Rip)) {
         // A jump into nothing usually follows a return through a clobbered frame; the frames that just
         // returned are still below rsp.
@@ -339,9 +334,8 @@ LONG WINAPI ReportCrash(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-std::size_t CaptureFrames(const CONTEXT* context, std::uint64_t* frames, std::size_t capacity) {
+std::size_t CaptureFrames(std::uint64_t frame, std::uint64_t* frames, std::size_t capacity) {
     std::size_t count = 0;
-    std::uint64_t frame = context->Rbp;
     while (count < capacity && frame != 0 && (frame & 7) == 0 && IsReadable(frame) && IsReadable(frame + 8)) {
         const auto returnAddress = reinterpret_cast<const std::uint64_t*>(frame)[1];
         if (!IsExecutable(returnAddress)) break;
@@ -398,7 +392,7 @@ void ReportAllThreads() {
             context.ContextFlags = CONTEXT_FULL;
             const BOOL haveContext = GetThreadContext(thread, &context);
             std::uint64_t frames[12] = {};
-            const std::size_t frameCount = haveContext ? CaptureFrames(&context, frames, sizeof(frames) / sizeof(frames[0])) : 0;
+            const std::size_t frameCount = haveContext ? CaptureFrames(context.Rbp, frames, sizeof(frames) / sizeof(frames[0])) : 0;
             ResumeThread(thread);
             char name[128] = "";
             PWSTR description = nullptr;
@@ -433,6 +427,20 @@ DWORD WINAPI HangWatchdog(LPVOID param) {
     return 0;
 }
 
+void ReportStackCandidates(std::uint64_t rsp, int limit, std::uint64_t span) {
+    char line[256];
+    Report("  stack return address candidates:\n");
+    int printed = 0;
+    for (std::uint64_t slot = rsp; printed < limit && slot < rsp + span; slot += 8) {
+        if (!IsReadable(slot)) break;
+        const auto value = *reinterpret_cast<const std::uint64_t*>(slot);
+        if (!IsExecutable(value)) continue;
+        DescribeAddress(value, line, sizeof(line));
+        Report("    [rsp+0x%llx] %s\n", static_cast<unsigned long long>(slot - rsp), line);
+        ++printed;
+    }
+}
+
 // abort() and the UCRT's invalid-parameter path end the process with a silent fast fail
 // (0xc0000409); both are reported with the calling thread's stack first.
 void ReportBacktrace(const char* what, bool reportThreads) {
@@ -444,6 +452,7 @@ void ReportBacktrace(const char* what, bool reportThreads) {
         DescribeAddress(reinterpret_cast<std::uint64_t>(frames[i]), line, sizeof(line));
         Report("    #%u %s\n", static_cast<unsigned>(i), line);
     }
+    ReportStackCandidates(reinterpret_cast<std::uint64_t>(__builtin_frame_address(0)), 32, 0x4000);
     if (reportThreads) ReportAllThreads();
     std::fflush(stderr);
 }
@@ -482,6 +491,22 @@ const bool g_crashReportInstalled = [] {
     }
     return true;
 }();
+
+}
+
+namespace GuestBacktrace {
+
+extern "C" std::vector<std::string> GuestBacktrace_nid_no_patch(const void* frame) {
+    std::uint64_t frames[GuestBacktraceDepth];
+    const auto count = CaptureFrames(reinterpret_cast<std::uint64_t>(frame), frames, GuestBacktraceDepth);
+    std::vector<std::string> described;
+    char line[MAX_PATH + 64];
+    for (std::size_t index = 0; index < count; ++index) {
+        DescribeAddress(frames[index], line, sizeof(line));
+        described.emplace_back(line);
+    }
+    return described;
+}
 
 }
 #endif

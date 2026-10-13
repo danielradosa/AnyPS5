@@ -13,12 +13,17 @@
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 namespace AgcDriver::Graphics {
+
+class Buffer;
 
 class ResidentColor;
 class CommandBatch;
@@ -31,9 +36,10 @@ struct HostImport;
 VkFormat StorageFormatForGuest(const Context& context, std::uint32_t guestFormat);
 // Whether StorageFormatForGuest would succeed, without throwing (unknown guest formats included).
 bool StorageFormatAvailable(const Context& context, std::uint32_t guestFormat);
-// Whether a storage image of the guest format takes DCC clear `keys` as a GPU clear (see
-// StorageTexture::upload); false for integer formats and non-clear keys.
 bool StorageClearAvailable(const Context& context, std::uint32_t guestFormat, DccKeys keys);
+std::uint64_t SampledTextureMemory();
+bool ClearKeepsDenormals(const Context& context, VkFormat format);
+bool ClearColorForTexel(VkFormat format, std::uint32_t elementBytes, std::span<const std::uint32_t, 4> pattern, VkClearColorValue& clear);
 
 // A sampled texture's own VkImage with its memory, shared with the recorder while a recorded upload
 // still writes it (see the snapshot constructor), so the texture may go before the batch completes.
@@ -58,7 +64,18 @@ public:
     // compute pass writing it and the next pass sampling it share one image and copy nothing.
     // CanCopyFrom says whether the two descriptors address the same surface compatibly.
     Texture(const Context& context, const std::shared_ptr<StorageTexture>& source, const GuestTextureResource& descriptor, VkComponentMapping components);
-    Texture(const Context& context, VkImage depthImage, VkFormat depthFormat, VkImageAspectFlags aspect, VkComponentMapping components);
+    Texture(const Context& context, VkImage depthImage, VkFormat depthFormat, VkImageAspectFlags aspect, VkComponentMapping components, VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D);
+    struct DepthCopyTag {};
+    Texture(const Context& context, const std::shared_ptr<StorageTexture>& source, const GuestTextureResource& descriptor, VkComponentMapping components, DepthCopyTag);
+    static VkFormat DepthCopyFormat(VkFormat colorFormat);
+    static bool CanDepthCopyFrom(const StorageTexture& source, const GuestTextureResource& descriptor);
+    bool IsDepthCopy() const { return perUseCopy == PerUseCopy::RefreshedOnReuse; }
+    bool RefreshDepthCopy();
+    struct DepthCopyCounts {
+        std::uint64_t textures;
+        std::uint64_t refreshes;
+    };
+    static DepthCopyCounts TakeDepthCopyCounts();
     static bool CanCopyFrom(const StorageTexture& source, const GuestTextureResource& descriptor);
     ~Texture();
     Texture(const Texture&) = delete;
@@ -66,6 +83,7 @@ public:
 
     VkImageView View() const;
     VkImageView FirstLayerView() const { return firstLayerView; }
+    VkImageView BaseLevelView() const;
     struct ViewRange {
         VkImageViewType type;
         std::uint32_t levels;
@@ -84,10 +102,15 @@ public:
     // the source image's own (snapshots, views over other metadata); one per cache entry, so every
     // object binding the texture shares it. Under GuestMemory::GpuMutex only.
     DccKeyProof& KeyProof() const { return keyProof; }
+    enum class PerUseCopy : std::uint8_t { None, RefreshedOnReuse, RemadePerUse };
+    PerUseCopy CopyKind() const { return perUseCopy; }
+    bool RefreshedPerUse() const { return perUseCopy == PerUseCopy::RemadePerUse; }
+    void MarkRefreshedPerUse() { perUseCopy = PerUseCopy::RemadePerUse; }
 
 private:
     void release() noexcept;
     void createFirstLayerView(const GuestTextureResource& descriptor, VkImageViewCreateInfo viewInfo);
+    void prepareBaseLevelView(const GuestTextureResource& descriptor, VkImageViewCreateInfo viewInfo);
 
     // Held by value: cached textures outlive the Context of the draw that created them.
     Context context;
@@ -99,12 +122,21 @@ private:
     VkImageView firstLayerView = VK_NULL_HANDLE;
     ViewRange viewRange{};
     ViewRange firstLayerRange{};
+    std::optional<VkImageViewCreateInfo> baseLevelInfo;
+    mutable std::mutex baseLevelMutex;
+    mutable VkImageView baseLevelView = VK_NULL_HANDLE;
     VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkDeviceSize allocationBytes = 0;
+    VkDeviceSize countedBytes = 0;
     VkFormat viewFormat = VK_FORMAT_UNDEFINED;
     std::shared_ptr<ResidentColor> source;
     std::shared_ptr<StorageTexture> storageSource;
     std::unique_ptr<CommandBatch> upload;
+    PerUseCopy perUseCopy = PerUseCopy::None;
+    bool copiedOnce = false;
+    std::uint64_t copiedVersion = 0;
+    VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+    std::uint32_t copyWidth = 0, copyHeight = 0, copyLevels = 0, copyLayers = 0, copyElementBytes = 0;
 };
 
 VkFormat AttachmentProxyFormat(const Context& context, VkFormat format);
@@ -116,7 +148,7 @@ VkFormat AttachmentProxyFormat(const Context& context, VkFormat format);
 // or it leaves the cache. Dispatches reusing the image meanwhile skip the round trip entirely.
 class StorageTexture : public std::enable_shared_from_this<StorageTexture> {
 public:
-    StorageTexture(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
+    static std::shared_ptr<StorageTexture> Create(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
     ~StorageTexture();
     StorageTexture(const StorageTexture&) = delete;
     StorageTexture& operator=(const StorageTexture&) = delete;
@@ -127,12 +159,13 @@ public:
     VkImageView View(std::uint32_t mip);
     VkImageView FirstLayerView(std::uint32_t mip);
     VkImageView StorageView(std::uint32_t mip, bool firstLayer);
+    VkImageView ElementView();
     VkImageView AtomicView(std::uint32_t mip, bool firstLayer);
     VkImageView Atomic64View(std::uint32_t mip, bool firstLayer);
     // Render targets live in the same images: draws attach mip 0 through a view of the color
     // buffer's format and mark the image dirty like a storage write.
     bool Attachable() const { return attachable; }
-    VkImageView AttachmentView(VkFormat format, std::uint32_t mip = 0, std::uint32_t depthSlice = 0);
+    VkImageView AttachmentView(VkFormat format, std::uint32_t mip = 0, std::uint32_t depthSlice = 0, std::uint32_t layers = 1, std::uint32_t layer = 0);
     VkImageView AttachmentProxyView();
     void RecordAttachmentProxyLoad(VkCommandBuffer commands, VkImageLayout attachmentLayout) const;
     void RecordAttachmentProxyStore(VkCommandBuffer commands, VkImageLayout attachmentLayout) const;
@@ -149,12 +182,20 @@ public:
     // overlapping pending image, as before).
     static bool FlushPending(std::uint64_t address, std::size_t bytes, const StorageTexture* except = nullptr, const char* reason = "memory access", PublishScope scope = PublishScope::Whole, bool* published = nullptr);
     static void FlushAllPending(const char* reason);
+    static bool AnyPending();
+    static void FlushDumpSelected(const char* reason);
+    static bool StoreAtFlipRequested(const char* value);
     // See PendingSerial: a change of a surface's source outside the registry (a unit shadow
     // retile) moves it too.
     static void BumpPendingSerial();
     // Whether an image with results pending, or one a FlushPending is storing right now, overlaps
     // any of the [begin, end) ranges: one acquisition of the registry's mutex.
     static bool AnyPendingOverlaps(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges);
+    // The same with FlushPending's own pretest for pending images: one counts only when a pending
+    // unit of it lies inside a range (pendingUnitInside), as a store through the flush hook would
+    // write those bytes; an image a FlushPending is storing right now counts on any overlap.
+    // APS5_COARSE_PENDING_IMAGES=1: AnyPendingOverlaps.
+    static bool AnyPendingUnitInside(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges);
     // Moves with every change of the pending registry (an image marked dirty, stored, flushed or
     // dropped; after the store for a flush), bumped under the registry's mutex with the change, so
     // a reader that loads it before and after its own reads knows the registry it consulted stayed
@@ -226,8 +267,9 @@ public:
     // `image` and `layer` naming it, whatever other images lie over the range (`others`, of which
     // `inside` wholly inside it: stale images of earlier uses of the memory, which the title's
     // transient allocator hands out again); otherwise part of one image (the fill inside the
-    // surface, the surface inside the fill, or straddling), several, or none but exactly one
-    // surface's DCC metadata. Images the cache let go (see Flush) do not count.
+    // surface, the surface inside the fill, or straddling), several, or a fill of one surface's DCC
+    // keys (Keys: at its dccAddress and at least one key long, and while other images overlap it no
+    // longer than its key extent; see keysFillMatches). Images the cache let go (see Flush) do not count.
     enum class FillCover { None, Exact, Inside, Around, Straddle, Several, Keys, Layer };
     struct FillCoverage {
         FillCover cover = FillCover::None;
@@ -253,8 +295,12 @@ public:
     // the range is stamped written so every other reader of it (other images over the memory,
     // captures, snapshots) takes the bytes through the flush hook, and this image alone is current.
     // False, naming why in `refusal`, when the fill must be stored as before.
+    // `pendingRegisterKeys` also accepts keys recorded work still writes when PendingKeysFill proves
+    // that work is a register-clear (0x20) fill: those keys read as stored once it lands, and an
+    // uncompressed key store the caller records after the clear lands behind the fill (the key-store
+    // run's leading barrier, Recorder::recordKeyStores).
     static constexpr std::uint32_t WholeImage = ~0u;
-    bool FillClear(std::span<const std::uint32_t, 4> pattern, std::uint32_t layer, const char*& refusal);
+    bool FillClear(std::span<const std::uint32_t, 4> pattern, std::uint32_t layer, const char*& refusal, bool pendingRegisterKeys = false);
     // The cached, live image whose surface is exactly [address, address + bytes), if any (the newest
     // of several: see ClassifyFill).
     static std::shared_ptr<StorageTexture> FindLive(std::uint64_t address, std::uint64_t bytes);
@@ -269,6 +315,7 @@ public:
     // False, naming why, when the copy must be a transfer.
     bool CopyFrom(StorageTexture& source, const char*& refusal);
     VkImage Image() const { return image; }
+    VkFormat StorageFormat() const { return storageFormat; }
     const GuestTextureResource& Descriptor() const { return descriptor; }
     std::uint32_t ImageLayers() const { return geometry.imageLayers; }
     std::uint32_t ImageDepth() const { return geometry.imageDepth; }
@@ -282,21 +329,35 @@ public:
     // GuestMemory::GpuMutex only, as Refresh is; never from a build's stage A.
     DccKeys UploadedKeys() const { return uploadedKeys; }
     DccKeys FilledKeys() const { return filledKeys; }
+    bool GuestSnapshotValid() const { return originalHolds(descriptor.baseAddress, static_cast<std::size_t>(guestBytes)); }
     DccKeyProof& KeyProof() const { return keyProof; }
+    DccRangeProof& TargetKeyProof() const { return targetKeyProof; }
     DccKeys ProvedKeys() const;
     bool ServesKeysAt(std::uint64_t dccAddress) const;
     // Brings the image up to date with guest memory before another use; returns whether its content
     // was still current (nothing uploaded).
     // Keeps the image current with guest memory (see GuestMemory::CollectWrites).
     bool Refresh();
+    static std::uint64_t SinglePassMoves();
+    static std::uint64_t RefreshesProved();
+    // Tracked layers Refresh copied from a stored single-layer image on the device (storedLayerSource).
+    static std::uint64_t LayerCopies();
+    // For a writer of the image that does not go through MarkDirty (the depth seed): the content is
+    // no longer what its last store left, so no other image copies it as such.
+    void ForgetLayerSync() { syncedVersion = ~std::uint64_t{0}; }
     std::uint64_t GuestBytes() const;
+    VkDeviceSize AllocationBytes() const { return memoryBytes; }
 
 private:
+    StorageTexture(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
     // The regions of every array layer, or of the tracked layers `layers` selects.
     std::vector<VkBufferImageCopy> CopyRegions(const std::vector<bool>* layers = nullptr) const;
     // Uploads the surface, or only the tracked layers `layers` selects (the direct path; the others
     // upload everything).
     void upload(const std::vector<bool>* layers = nullptr);
+    void captureGuestBytes(const std::vector<bool>* layers);
+    bool originalHolds(std::uint64_t address, std::size_t bytes) const;
+    bool compareUntracked(std::uint64_t address, std::size_t bytes, std::span<std::uint8_t> changed, bool memoize = false) const;
     // Stores the pending tracked layers overlapping [address, address + bytes) to guest memory; in
     // each, 64 KiB blocks the CPU wrote since the layer's generation keep the CPU's bytes. Block
     // units asked for in pieces too often are all stored at once for a while (the hysteresis:
@@ -304,6 +365,8 @@ private:
     // APS5_BLOCK_WRITEBACK_EACH=1 stores the touched units only).
     void writeBack(std::uint64_t address, std::size_t bytes);
     void writeBackLayers(const std::vector<bool>& layers);
+    bool unchangedSinceBaseline(std::uint64_t from, std::uint64_t to) const;
+    bool guestBytesSettled() const;
     // Tracked units as 64 KiB write-stamp blocks (`blockUnits`: a thin tiled surface at a 64 KiB
     // aligned base; APS5_NO_BLOCK_TRACKING=1 tracks array layers as above instead): a fill of one
     // layer, a CPU write or another image's store then costs the blocks it touched, moved through
@@ -353,7 +416,8 @@ private:
     // else from the import (`discard`: the image has no layout yet, a whole-surface first upload).
     // The write-back retiles into the import's unit shadow where a slab takes the piece
     // (`shadowed` receives those guest ranges, `imported` the pieces written to the import).
-    std::uint64_t uploadWindows(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> runs, bool discard = false);
+    // `passDetail`: upload's APS5_PASS_BREAKS detail, empty when off or no render pass was open.
+    std::uint64_t uploadWindows(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> runs, bool discard = false, const std::string& passDetail = {});
     std::uint64_t writeBackWindows(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> keep, std::uint64_t firstStored, std::uint64_t lastStored, std::vector<ShadowedRange>& shadowed, std::vector<std::pair<std::uint64_t, std::uint64_t>>& imported);
     // Per-layer validity (thin array surfaces whose layers are 64 KiB-aligned guest slices; every
     // other surface is one tracked layer): a layer's generation is the write generation its guest
@@ -363,6 +427,9 @@ private:
     std::uint64_t layerBegin(std::uint32_t layer) const { return descriptor.baseAddress + static_cast<std::uint64_t>(layer) * trackedLayerBytes; }
     bool anyLayerPending() const;
     void refreshGeneration();
+    bool refreshProved();
+    void takeRefreshProof(bool aliased);
+    bool otherPendingOverlaps() const;
     // Marks `count` tracked layers from `first` pending and registers the image (MarkDirty's
     // registration; APS5_EAGER_WRITEBACK=1 stores at once instead).
     void markLayersPending(std::uint32_t first, std::uint32_t count);
@@ -409,11 +476,36 @@ private:
     // still the pending ones and a write-back for the range would store them.
     bool skippedResultsInside(std::uint64_t address, std::size_t bytes) const;
     std::uint64_t borrowUnits(StorageTexture& source, const std::vector<bool>& units);
+    // A live single-layer image whose last write-back stored every byte of it into this image's
+    // tracked layer `layer`, with nothing written over the layer since (its stamps, the recorder's
+    // write notes and queued stores, and no completion-stamped writer recorded since) and its
+    // content unchanged since (its version): Refresh then
+    // copies that image into the layer on the device instead of reading the stored bytes back from
+    // the import. Both images uncompressed, without DCC, of one layout. APS5_NO_LAYER_COPY=1 reads
+    // the layer back as before.
+    std::shared_ptr<StorageTexture> storedLayerSource(std::uint32_t layer) const;
+    void copyLayerFrom(StorageTexture& source, std::uint32_t layer);
+    // Debug aid (APS5_VERIFY_LAYER_COPY=1): the tracked layer's content (every mip, packed) copied
+    // into a host buffer, recorded now and readable once the batch completed.
+    std::shared_ptr<Buffer> readLayerBack(std::uint32_t layer);
+    // The device copy of borrowUnits and copyLayerFrom: `source`'s image into this one, recorded with
+    // barriers over both images' whole subresource ranges.
+    void recordCopyFrom(StorageTexture& source, std::span<const VkImageCopy> regions, std::uint64_t bytes);
     void forgetBorrowed(std::uint32_t first, std::uint32_t count);
     bool clearByKeysFill(DccKeys keys, std::uint8_t key);
     bool overlaps(std::uint64_t address, std::size_t bytes) const;
+    // Whether the image is live (not released) and overlaps the fill: the test that gives ClassifyFill
+    // its overlapping images, and that NoteKeysFill and ClearByKeysFill use to bound the key match.
+    bool overlapsLive(std::uint64_t address, std::size_t bytes) const;
+    // Whether a fill of [address, address + bytes) is a fill of this image's DCC keys, `overlapped`
+    // saying whether any live image overlaps the fill (see Texture.cpp).
+    bool keysFillMatches(std::uint64_t address, std::size_t bytes, bool overlapped) const;
     bool pendingUnitInside(std::uint64_t address, std::size_t bytes) const;
     VkImageView createView(std::uint32_t mip, bool firstLayer, VkFormat format) const;
+    bool singlePass();
+    VkImageView elementLayerView(std::uint32_t level, std::uint32_t layer);
+    void recordDirectUploadBarrier(VkCommandBuffer commands, bool discard);
+    void recordDirectUploadDone(VkCommandBuffer commands);
     void release() noexcept;
 
     Context context;
@@ -425,10 +517,20 @@ private:
     std::uint64_t sliceLinearBytes = 0;
     SurfaceGeometry geometry;
     std::vector<std::byte> original;
+    mutable std::array<std::uint64_t, 4> comparedGuestBytes{};
+    std::vector<std::byte> generationBaseline;
     // DCC keys the image content was uploaded under: a fast-cleared surface starts as its clear value.
     DccKeys uploadedKeys = DccKeys::Uncompressed;
     mutable DccKeys filledKeys = DccKeys::Uncompressed;
     mutable DccKeyProof keyProof;
+    mutable DccRangeProof targetKeyProof;
+    struct RefreshProof {
+        std::uint64_t generation = 0;
+        std::uint64_t pendingSerial = 0;
+        std::uint64_t keyGeneration = 0;
+        DccKeys keys = DccKeys::Uncompressed;
+    };
+    RefreshProof refreshProof;
     struct ForeignKeyProof {
         std::uint64_t dccAddress = 0;
         DccKeyProof proof;
@@ -451,20 +553,31 @@ private:
     std::weak_ptr<StorageTexture> borrowedFrom;
     std::uint64_t borrowedVersion = 0;
     std::vector<bool> borrowedUnits;
+    // The version the content had when a GPU-direct write-back last stored all of it (one tracked
+    // layer, no block kept for the CPU), and the recorder (its id, 0 for none), write note and
+    // registered completions at that store (storedLayerSource).
+    std::uint64_t syncedVersion = ~std::uint64_t{0};
+    std::uint64_t syncedRecorder = 0;
+    std::uint64_t syncedNote = 0;
+    std::uint64_t syncedCompletions = 0;
     // Units of this image were borrowed since it was last written: the borrower's proofs
     // (the resource cache's serial memo) hold only while this image's version does, so the next
     // write here bumps the pending serial although the image was pending already.
     bool lent = false;
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize memoryBytes = 0;
     VkImageView view = VK_NULL_HANDLE;
     std::uint32_t defaultMip = 0;
     std::map<std::uint32_t, VkImageView> extraViews;
     std::map<std::uint32_t, VkImageView> firstLayerViews;
     std::map<std::pair<std::uint32_t, bool>, VkImageView> atomicViews;
     std::map<std::pair<std::uint32_t, bool>, VkImageView> uintViews;
+    VkImageView elementView = VK_NULL_HANDLE;
+    std::map<std::uint32_t, VkImageView> elementLayerViews;
+    std::int8_t singlePassState = -1;
     bool attachable = false;
-    std::map<std::tuple<VkFormat, std::uint32_t, std::uint32_t>, VkImageView> attachmentViews;
+    std::map<std::tuple<VkFormat, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t>, VkImageView> attachmentViews;
     VkImage proxyImage = VK_NULL_HANDLE;
     VkDeviceMemory proxyMemory = VK_NULL_HANDLE;
     VkImageView proxyView = VK_NULL_HANDLE;
@@ -473,7 +586,7 @@ private:
     bool dirty = false;
     std::uint64_t version = 0;
     // `original` holds the guest bytes; false after a GPU-side clear, which never read them.
-    bool originalValid = true;
+    std::vector<bool> layerOriginal;
     // The storage cache let the image go (Flush): a lookup makes a new image of the surface, so
     // no fill may put results into this one (guarded by the live-image registry lock).
     bool released = false;
@@ -502,7 +615,7 @@ private:
 // element (a fast miss is followed by a full lookup); the refresh, upload, DCC scan and pending
 // flush rows lie inside the storage and sampled rows.
 struct LookupOutcomes {
-    enum Kind : std::size_t { SampledFast, SampledFastMiss, SampledHitView, SampledHitClearedView, SampledHitSnapshot, SampledMadeView, SampledMadeSnapshot, StorageHit, StorageMade, RefreshUnchanged, RefreshCompared, UploadDirect, UploadCpu, UploadClear, DccScan, PendingFlush, Count };
+    enum Kind : std::size_t { SampledFast, SampledFastMiss, SampledHitView, SampledHitClearedView, SampledHitSnapshot, SampledMadeView, SampledMadeSnapshot, StorageHit, StorageMade, RefreshUnchanged, RefreshCompared, RefreshProved, UploadDirect, UploadCpu, UploadClear, DccScan, PendingFlush, Count };
     static const char* Name(Kind kind);
     static bool Profiled();
     // Charges the time since `start` to `kind` on this thread and returns now.

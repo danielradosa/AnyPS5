@@ -6,6 +6,7 @@ if(BUILD_TESTING)
     add_test_executable(fiber_tests ${LIBS_INCLUDE_DIR}/tests/Fiber.cpp)
     target_include_directories(fiber_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(fiber_tests PRIVATE libSceFiber libc)
+    configure_windows_unwind(fiber_tests)
     add_test(NAME fiber COMMAND fiber_tests)
     if(WIN32)
         set_tests_properties(fiber PROPERTIES ENVIRONMENT_MODIFICATION

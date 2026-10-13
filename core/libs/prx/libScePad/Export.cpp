@@ -14,6 +14,7 @@ namespace {
 
 constexpr int PAD_ERROR_DEVICE_NOT_CONNECTED = static_cast<int>(0x80920007);
 constexpr int PAD_ERROR_DEVICE_NO_HANDLE = static_cast<int>(0x80920008);
+constexpr int PAD_ERROR_NOT_PERMITTED = static_cast<int>(0x80920101);
 
 bool g_opened = false;
 
@@ -21,6 +22,12 @@ bool ValidPort(int userId, int type, int index) {
     const bool personalPort = type == PAD_PORT_TYPE_STANDARD || type == PAD_PORT_TYPE_SPECIAL;
     const bool systemRemote = userId == PAD_USER_ID_SYSTEM && type == PAD_PORT_TYPE_REMOTE;
     return index == 0 && (personalPort || systemRemote);
+}
+
+int UnsupportedOperation(int handle, bool validArguments) {
+    if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
+    if (!validArguments) return PAD_ERROR_INVALID_ARG;
+    return PAD_ERROR_NOT_PERMITTED;
 }
 
 }
@@ -33,6 +40,20 @@ int APS5_VABI scePadClose_nid_postfix(int handle) {
  }
  g_opened = false;
  return PAD_OK;
+}
+
+int APS5_VABI scePadVrControllerSetVibration(int handle, const void* param) {
+    return UnsupportedOperation(handle, param != nullptr);
+}
+
+int APS5_VABI scePadVrControllerSetVibrationMode(int handle, int mode) {
+    (void)mode;
+    return UnsupportedOperation(handle, true);
+}
+
+int APS5_VABI scePadVrControllerReadCombinedState() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
 }
 
 int APS5_VABI scePadDeviceClassGetExtendedInformation(int handle, PadDeviceClassExtendedInformation* info) {
@@ -73,7 +94,7 @@ int APS5_VABI scePadGetControllerInformation(int handle, PadControllerInformatio
 }
 
 int APS5_VABI scePadGetHandle(int user_id, int type, int index) {
- if (!g_opened || !ValidPort(user_id, type, index)) return PAD_ERROR_DEVICE_NO_HANDLE;
+ if (!g_opened || !ValidPort(user_id, type, index) || type == PAD_PORT_TYPE_SPECIAL) return PAD_ERROR_DEVICE_NO_HANDLE;
  return PAD_HANDLE;
 }
 
@@ -136,6 +157,7 @@ int APS5_VABI scePadOpen_nid_postfix(int userId, int type, int index, const void
  if (!ValidPort(userId, type, index)) {
   return PAD_ERROR_INVALID_ARG;
  }
+ if (type == PAD_PORT_TYPE_SPECIAL) return PAD_ERROR_DEVICE_NOT_CONNECTED;
  g_opened = true;
  return PAD_HANDLE;
 }
@@ -144,26 +166,27 @@ int APS5_VABI scePadOpenExt(int userId, int type, int index, const void* param) 
  if (!ValidPort(userId, type, index) || param == nullptr) {
   return PAD_ERROR_INVALID_ARG;
  }
- if (type != PAD_PORT_TYPE_SPECIAL) NotImplemented_nid_no_patch(__func__);
- return PAD_ERROR_DEVICE_NOT_CONNECTED;
+ return scePadOpen_nid_postfix(userId, type, index, param);
 }
-
-int APS5_VABI scePadReadExt() { NotImplemented_nid_no_patch(__func__); return 0; }
 
 int APS5_VABI scePadGetFeatureReport() { NotImplemented_nid_no_patch(__func__); return 0; }
 
 int APS5_VABI scePadSetFeatureReport() { NotImplemented_nid_no_patch(__func__); return 0; }
 
-int APS5_VABI scePadOutputReport() { NotImplemented_nid_no_patch(__func__); return 0; }
-
-int APS5_VABI scePadReadState(int handle, PadData* data);
+int APS5_VABI scePadOutputReport(int handle, int type, const void* report, int length) {
+ (void)type;
+ (void)length;
+ return UnsupportedOperation(handle, report != nullptr);
+}
 
 int APS5_VABI scePadRead_nid_postfix(int handle, PadData* data, int num) {
-    // The title drains the queued states; one current state is reported per call.
-    if (data == nullptr || num <= 0) APS5_INVALID_ARG_EX;
-    const int result = scePadReadState(handle, data);
-    if (result != 0) return result;
-    return 1;
+ if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
+ if (data == nullptr || num <= 0) APS5_INVALID_ARG_EX;
+ return Pad::Read(data, num);
+}
+
+int APS5_VABI scePadReadExt(int handle, PadData* data, int num) {
+ return scePadRead_nid_postfix(handle, data, num);
 }
 
 int APS5_VABI scePadReadState(int handle, PadData* data) {
@@ -189,7 +212,7 @@ int APS5_VABI scePadResetOrientation(int handle) {
 
 int APS5_VABI scePadSetAngularVelocityDeadbandState(int handle, bool enable) {
  if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
- if (enable) NotImplemented_nid_no_patch(__func__);
+ Pad::SetAngularVelocityDeadband(enable);
  return PAD_OK;
 }
 
@@ -240,7 +263,7 @@ int APS5_VABI scePadSetVibration(int handle, const PadVibrationParam* param) {
 
 int APS5_VABI scePadSetVibrationMode(int handle, int mode) {
  if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
- if (mode != 0 && mode != 1) return PAD_ERROR_INVALID_ARG;
+ if (mode < 0 || mode > 3) return PAD_ERROR_INVALID_ARG;
  Pad::SetVibrationMode(mode);
  return PAD_OK;
 }
@@ -255,7 +278,23 @@ int APS5_VABI scePadVrControllerGetDeviceInformation() {
  return 0;
 }
 
-int APS5_VABI scePadVrControllerRead() {
+int APS5_VABI scePadVrControllerRead(int handle, void* state, int num) {
+ return UnsupportedOperation(handle, state != nullptr && num > 0);
+}
+
+int APS5_VABI scePadVrControllerGetTriggerEffectState(int handle, void* state) {
+ return UnsupportedOperation(handle, state != nullptr);
+}
+
+int APS5_VABI scePadVrControllerReadState(int handle, void* state) {
+ return UnsupportedOperation(handle, state != nullptr);
+}
+
+int APS5_VABI scePadVrControllerSetTriggerEffect(int handle, const void* param) {
+ return UnsupportedOperation(handle, param != nullptr);
+}
+
+int APS5_VABI scePadVrControllerSetTriggerEffects() {
  NotImplemented_nid_no_patch(__func__);
  return 0;
 }
@@ -268,9 +307,21 @@ int APS5_VABI scePadIsRemoteController(int handle, bool* remote) {
 }
 
 
-int APS5_VABI scePadSetAngularVelocityBiasCorrectionState() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+int APS5_VABI scePadSetAngularVelocityBiasCorrectionState(int handle, bool enabled) {
+ if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
+ Pad::SetAngularVelocityBiasCorrection(enabled);
+ return PAD_OK;
+}
+
+APS5_EXPORT("n3kSX62fgNo", scePadUnknown_n3kSX62fgNo);
+int APS5_VABI scePadUnknown_n3kSX62fgNo() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI scePadVrControllerGetTriggerEffectStates(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
 }
 
 }

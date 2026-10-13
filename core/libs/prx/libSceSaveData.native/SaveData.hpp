@@ -19,11 +19,18 @@ constexpr int SAVE_DATA_ERROR_EXISTS = -2137063417;
 constexpr int SAVE_DATA_ERROR_NOT_FOUND = -2137063416;
 constexpr int SAVE_DATA_ERROR_INTERNAL = -2137063413;          // 0x809F000B
 constexpr int SAVE_DATA_ERROR_MEMORY_NOT_READY = -2137063406;  // 0x809F0012
+constexpr int SAVE_DATA_ERROR_BAD_MOUNTED = static_cast<int>(0x809F000Du);
+constexpr int SAVE_DATA_ERROR_RESOURCE_FULL = static_cast<int>(0x809F001Au);
+constexpr int SAVE_DATA_ERROR_RESOURCE_BUSY = static_cast<int>(0x809F001Bu);
+constexpr int SAVE_DATA_ERROR_RESOURCE_INVALID = static_cast<int>(0x809F001Cu);
 
 constexpr std::uint32_t SAVE_DATA_MOUNT_MODE_RDONLY = 1;
 constexpr std::uint32_t SAVE_DATA_MOUNT_MODE_RDWR = 2;
 constexpr std::uint32_t SAVE_DATA_MOUNT_MODE_CREATE = 4;
 constexpr std::uint32_t SAVE_DATA_MOUNT_MODE_CREATE2 = 32;
+
+constexpr std::uint32_t SAVE_DATA_PREPARE_MODE_ENABLE_CANCEL = 2;
+constexpr std::uint32_t SAVE_DATA_PREPARE_MODE_DEBUG_IGNORE_CANCEL_ON_HOST = 4;
 
 constexpr std::uint64_t SAVE_DATA_BLOCKS_MAX = 32768;
 constexpr std::uint32_t SAVE_DATA_PARAM_TYPE_ALL = 0;
@@ -33,10 +40,19 @@ constexpr std::uint32_t SAVE_DATA_PARAM_TYPE_DETAIL = 3;
 constexpr std::uint32_t SAVE_DATA_PARAM_TYPE_USER_PARAM = 4;
 constexpr std::uint32_t SAVE_DATA_PARAM_TYPE_MTIME = 5;
 
+constexpr std::uint32_t SAVE_DATA_SORT_KEY_DIRNAME = 0;
+constexpr std::uint32_t SAVE_DATA_SORT_KEY_USER_PARAM = 1;
+constexpr std::uint32_t SAVE_DATA_SORT_KEY_BLOCKS = 2;
+constexpr std::uint32_t SAVE_DATA_SORT_KEY_MTIME = 3;
+constexpr std::uint32_t SAVE_DATA_SORT_KEY_FREE_BLOCKS = 5;
+constexpr std::uint32_t SAVE_DATA_SORT_ORDER_ASCENT = 0;
+constexpr std::uint32_t SAVE_DATA_SORT_ORDER_DESCENT = 1;
+
 constexpr std::size_t SAVE_DATA_MOUNT_SLOTS = 16;
 
 struct MountSlot {
     bool used = false;
+    bool writable = false;
     std::string mount_point;
     std::string real_path;
 };

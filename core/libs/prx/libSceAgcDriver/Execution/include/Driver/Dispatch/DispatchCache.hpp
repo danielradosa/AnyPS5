@@ -40,6 +40,7 @@ struct DispatchVariant {
 
     std::uint32_t pushOffset = 0;
     std::shared_ptr<const ShaderRecompiler::ShaderVertexStageInfo> vertexInfo;
+    std::vector<std::uint32_t> userData;
 
     std::shared_ptr<ShaderMemory> memory;
     std::vector<ShaderRecompiler::MemoryRegion> captured;
@@ -81,6 +82,8 @@ struct DataMask {
 };
 
 enum class EntryOutcome { Equal, EqualData, Differing, Inaccessible, QueuedLabel, FlushingImage, PublishMoved, PendingMoved, ForgetMoved };
+
+bool CacheableResult(const ShaderRecompiler::RecompileResult& compiled);
 
 }
 
