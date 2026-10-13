@@ -6,10 +6,13 @@
 #include <string>
 #include <utility>
 
+extern "C" int* APS5_VABI __error_nid_postfix();
+
 namespace {
 
 constexpr int BadDescriptor = 9;
 constexpr int OutOfMemory = 12;
+constexpr int FunctionNotImplemented = 78;
 
 PosixSpawnAttributes& Attributes(PosixSpawnAttributes* const* attributes, const char* function) {
     if (attributes == nullptr || *attributes == nullptr) throw std::invalid_argument(std::string(function) + ": uninitialized attributes");
@@ -19,6 +22,11 @@ PosixSpawnAttributes& Attributes(PosixSpawnAttributes* const* attributes, const 
 PosixSpawnFileActions& FileActions(PosixSpawnFileActions* const* actions, const char* function) {
     if (actions == nullptr || *actions == nullptr) throw std::invalid_argument(std::string(function) + ": uninitialized file actions");
     return **actions;
+}
+
+int RefuseProcessCreation() {
+    *__error_nid_postfix() = FunctionNotImplemented;
+    return FunctionNotImplemented;
 }
 
 int Append(PosixSpawnFileActions& actions, PosixSpawnFileAction action) {
@@ -101,8 +109,7 @@ int APS5_VABI posix_spawn_nid_postfix(std::int32_t* processId, const char* path,
     (void)attributes;
     (void)arguments;
     (void)environment;
-    NotImplemented_nid_no_patch("posix_spawn: process creation");
-    return -1;
+    return RefuseProcessCreation();
 }
 
 int APS5_VABI posix_spawnp_nid_postfix(std::int32_t* processId, const char* file, PosixSpawnFileActions* const* actions, PosixSpawnAttributes* const* attributes, char* const* arguments, char* const* environment) {
@@ -112,8 +119,7 @@ int APS5_VABI posix_spawnp_nid_postfix(std::int32_t* processId, const char* file
     (void)attributes;
     (void)arguments;
     (void)environment;
-    NotImplemented_nid_no_patch("posix_spawnp: process creation");
-    return -1;
+    return RefuseProcessCreation();
 }
 
 }

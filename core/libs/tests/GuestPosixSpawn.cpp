@@ -19,6 +19,7 @@ int APS5_VABI posix_spawn_file_actions_adddup2_nid_postfix(PosixSpawnFileActions
 int APS5_VABI posix_spawn_file_actions_addclose_nid_postfix(PosixSpawnFileActions**, int);
 int APS5_VABI posix_spawn_nid_postfix(std::int32_t*, const char*, PosixSpawnFileActions* const*, PosixSpawnAttributes* const*, char* const*, char* const*);
 int APS5_VABI posix_spawnp_nid_postfix(std::int32_t*, const char*, PosixSpawnFileActions* const*, PosixSpawnAttributes* const*, char* const*, char* const*);
+int* APS5_VABI __error_nid_postfix();
 }
 
 static void Require(bool condition, int line) {
@@ -30,6 +31,7 @@ static void Require(bool condition, int line) {
 #define Check(value) Require((value), __LINE__)
 
 constexpr int BadDescriptor = 9;
+constexpr int FunctionNotImplemented = 78;
 
 template<typename TCall>
 static bool ThrowsInvalidArgument(TCall call) {
@@ -42,13 +44,10 @@ static bool ThrowsInvalidArgument(TCall call) {
 }
 
 template<typename TCall>
-static bool ReportsNotImplemented(TCall call, const std::string& message) {
-    try {
-        call();
-    } catch (const std::runtime_error& error) {
-        return std::string(error.what()) == message;
-    }
-    return false;
+static bool RefusesProcessCreation(TCall call) {
+    *__error_nid_postfix() = 0;
+    const int result = call();
+    return result == FunctionNotImplemented && *__error_nid_postfix() == FunctionNotImplemented;
 }
 
 static void CheckAttributes() {
@@ -122,11 +121,17 @@ static void CheckSpawn() {
     char* arguments[] = {program, nullptr};
     char* environment[] = {nullptr};
     std::int32_t processId = 77;
-    Check(ReportsNotImplemented([&] { posix_spawn_nid_postfix(&processId, program, &actions, &attributes, arguments, environment); },
-        "posix_spawn: process creation not implemented"));
-    Check(ReportsNotImplemented([&] { posix_spawnp_nid_postfix(&processId, "tool.elf", nullptr, nullptr, arguments, nullptr); },
-        "posix_spawnp: process creation not implemented"));
-    Check(processId == 77);
+    Check(posix_spawn_file_actions_addclose_nid_postfix(&actions, 3) == 0);
+    Check(RefusesProcessCreation([&] { return posix_spawn_nid_postfix(&processId, program, &actions, &attributes, arguments, environment); }));
+    Check(RefusesProcessCreation([&] { return posix_spawnp_nid_postfix(&processId, "tool.elf", nullptr, nullptr, arguments, nullptr); }));
+    Check(RefusesProcessCreation([&] { return posix_spawnp_nid_postfix(&processId, "tool.elf", &actions, &attributes, arguments, environment); }));
+    Check(RefusesProcessCreation([&] { return posix_spawn_nid_postfix(nullptr, program, nullptr, nullptr, arguments, nullptr); }));
+    PosixSpawnAttributes* uninitializedAttributes = nullptr;
+    PosixSpawnFileActions* uninitializedActions = nullptr;
+    Check(RefusesProcessCreation([&] {
+        return posix_spawn_nid_postfix(&processId, program, &uninitializedActions, &uninitializedAttributes, arguments, environment);
+    }));
+    Check(processId == 77 && actions->actions.size() == 1 && attributes->flags == 0);
     Check(posix_spawn_file_actions_destroy_nid_postfix(&actions) == 0 && posix_spawnattr_destroy_nid_postfix(&attributes) == 0);
 }
 
