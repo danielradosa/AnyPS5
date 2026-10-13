@@ -214,6 +214,9 @@ public:
         const bool depthBits = !stencil && words.size() >= 4 && ShaderRecompiler::DepthBitsTextureWidth(words[1], words[3]) == (d16 ? 16u : 32u);
         if (ResolveTextureFormat(resource.format) != expected && !depthBits) return nullptr;
         const bool oneLayer = resource.dimension == TextureDimension::k2DArray && resource.baseArray == 0 && resource.depthOrLastArray == 0;
+        // A layered depth array from layer 0 is an ordinary storage image seeded from the depth slices
+        // (cachedStorageTexture -> SeedStorageFromDepth; the depth surfaces take its writes back).
+        if (!stencil && resource.dimension == TextureDimension::k2DArray && resource.baseArray == 0 && !oneLayer) return nullptr;
         if (resource.dimension != TextureDimension::k2D && !oneLayer) {
             char text[256];
             std::snprintf(text, sizeof(text), "AGC graphics: storage image access to depth/stencil surface 0x%llx is not implemented (storage=%ux%u guest format=%u mip=%u dimension=%d tile=%d)", static_cast<unsigned long long>(resource.baseAddress), resource.width, resource.height, resource.format, mip, static_cast<int>(resource.dimension), static_cast<int>(resource.tileMode));

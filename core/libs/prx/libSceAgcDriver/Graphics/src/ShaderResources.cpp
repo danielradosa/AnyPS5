@@ -836,9 +836,20 @@ GuestTextureResource StorageSurface(const Context& context, const GuestTextureRe
 }
 
 // `guestBytes` is the surface size when the caller described the surface already (0: described here).
+std::shared_ptr<StorageTexture> lookupStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes);
+
 std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes) {
     RequireNoMultisampleTarget(viewed.baseAddress, guestBytes != 0 ? static_cast<std::size_t>(guestBytes) : 1u, "a storage image access");
     if (auto depth = DepthSurfaceStorage(context, words, viewed, mip)) return depth;
+    // A layered depth array (DepthSurfaceStorage leaves it): every layer that is a depth surface of its
+    // own is copied in, and the surface takes the image's writes back when it is drawn to again.
+    const bool layeredDepth = viewed.dimension == TextureDimension::k2DArray && DepthSurfaceAt(viewed.baseAddress) && DepthPlaneView(context, words, viewed);
+    auto texture = lookupStorageTexture(context, words, viewed, mip, guestBytes);
+    if (layeredDepth) SeedStorageFromDepth(context, texture);
+    return texture;
+}
+
+std::shared_ptr<StorageTexture> lookupStorageTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& viewed, std::uint32_t mip, std::uint64_t guestBytes) {
     static const bool disabled = std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
     if (disabled) return StorageTexture::Create(context, *context.detiler, viewed, mip);
     static_cast<void>(words);
