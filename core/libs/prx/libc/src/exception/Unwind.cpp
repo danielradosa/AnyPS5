@@ -3,6 +3,9 @@
 #include "prx/libc/include/specifics/linux/ElfTypes.hpp"
 #include "prx/libc/src/specifics/x86_64/RegisterContext.cpp"
 
+#include <cstdio>
+#include <cstdlib>
+
 #if defined(__linux__)
 #include <dlfcn.h>
 #endif
@@ -33,20 +36,26 @@ std::uintptr_t* CursorRegister(_Unwind_Context* context, int number) {
     return nullptr;
 }
 
+[[noreturn]] void AbortUnsupportedRegister(const char* operation, int number) {
+    std::fprintf(stderr, "libunwind: %s - unsupported x86_64 register %d\n", operation, number);
+    std::fflush(stderr);
+    std::abort();
+}
+
 bool APS5_VABI CursorValidRegister(_Unwind_Context* context, int number) {
     return CursorRegister(context, number) != nullptr;
 }
 
 std::uintptr_t APS5_VABI CursorGetRegister(_Unwind_Context* context, int number) {
     auto* value = CursorRegister(context, number);
-    if (!value) NotImplemented_nid_no_patch("libunwind cursor: read of an unknown register");
-    return value ? *value : 0;
+    if (!value) AbortUnsupportedRegister("getRegister", number);
+    return *value;
 }
 
 void APS5_VABI CursorSetRegister(_Unwind_Context* context, int number, std::uintptr_t value) {
     auto* slot = CursorRegister(context, number);
-    if (!slot) NotImplemented_nid_no_patch("libunwind cursor: write of an unknown register");
-    else *slot = value;
+    if (!slot) AbortUnsupportedRegister("setRegister", number);
+    *slot = value;
 }
 
 bool APS5_VABI CursorValidFloatRegister(_Unwind_Context*, int) {

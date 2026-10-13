@@ -22,6 +22,7 @@ extern "C" int APS5_VABI __cxa_atexit_nid_postfix(void (APS5_VABI *func)(void*),
 
 namespace {
 
+constexpr int FunctionNotImplemented = 78;
 std::mutex shutdownMutex;
 std::condition_variable shutdownChanged;
 std::vector<void (*)()> shutdownCallbacks;
@@ -189,7 +190,7 @@ int APS5_VABI at_quick_exit_nid_postfix(GuestExitCallback func) {
 int APS5_VABI daemon_nid_postfix(int noChdir, int noClose) {
     (void)noChdir;
     (void)noClose;
-    NotImplemented_nid_no_patch("daemon: forking into the background");
+    errno = FunctionNotImplemented;
     return -1;
 }
 

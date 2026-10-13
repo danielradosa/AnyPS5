@@ -184,6 +184,29 @@ void CheckDefaultTerminateMessage() {
     assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
     assert(output.find("  what():  " + message + "\n") != std::string::npos);
 }
+void CheckUnsupportedRegisterAborts(_Unwind_Context* context, bool write) {
+    int channel[2];
+    assert(pipe(channel) == 0);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(channel[0]);
+        dup2(channel[1], 2);
+        const auto* slots = *reinterpret_cast<const std::uintptr_t* const*>(context);
+        if (write) reinterpret_cast<void (*)(_Unwind_Context*, int, std::uintptr_t)>(slots[4])(context, 17, 0);
+        else reinterpret_cast<std::uintptr_t (*)(_Unwind_Context*, int)>(slots[3])(context, -3);
+        _exit(0);
+    }
+    close(channel[1]);
+    std::string output;
+    char buffer[256];
+    for (ssize_t count; (count = read(channel[0], buffer, sizeof(buffer))) > 0;) output.append(buffer, static_cast<std::size_t>(count));
+    close(channel[0]);
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    assert(output == (write ? "libunwind: setRegister - unsupported x86_64 register 17\n" : "libunwind: getRegister - unsupported x86_64 register -3\n"));
+}
 struct ForcedGuard { ~ForcedGuard() { ++destroyed; } };
 [[gnu::noinline]] void ForceUnwind() {
     ForcedGuard guard;
@@ -280,6 +303,10 @@ int main() {
         assert(_Unwind_GetGR_nid_postfix(context, 3) == rbx + 1);
         setRegister(context, 3, rbx);
         assert(!validFloatRegister(context, 17) && !isSignalFrame(context));
+        if (*static_cast<int*>(argument) == 0) {
+            CheckUnsupportedRegisterAborts(context, false);
+            CheckUnsupportedRegisterAborts(context, true);
+        }
         ++*static_cast<int*>(argument);
         return _URC_NO_REASON;
     }, &frames);

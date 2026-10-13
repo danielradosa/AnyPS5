@@ -1,19 +1,15 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cstdlib>
-#include <stdexcept>
-#include <string>
 extern "C" int APS5_VABI daemon_nid_postfix(int, int);
+extern "C" int* APS5_VABI __error_nid_postfix();
 static void Require(bool value) { if (!value) std::abort(); }
-static bool ReportsNotImplemented(int noChdir, int noClose) {
-    try {
-        daemon_nid_postfix(noChdir, noClose);
-    } catch (const std::runtime_error& error) {
-        return std::string(error.what()) == "daemon: forking into the background not implemented";
-    }
-    return false;
+static bool RefusesToFork(int noChdir, int noClose) {
+    *__error_nid_postfix() = 0;
+    return daemon_nid_postfix(noChdir, noClose) == -1 && *__error_nid_postfix() == 78;
 }
 int main() {
-    Require(ReportsNotImplemented(1, 0));
-    Require(ReportsNotImplemented(0, 0));
-    Require(ReportsNotImplemented(1, 1));
+    Require(RefusesToFork(1, 0));
+    Require(RefusesToFork(0, 0));
+    Require(RefusesToFork(1, 1));
+    Require(RefusesToFork(0, 1));
 }
