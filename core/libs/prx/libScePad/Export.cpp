@@ -42,14 +42,13 @@ int APS5_VABI scePadClose_nid_postfix(int handle) {
  return PAD_OK;
 }
 
-int APS5_VABI scePadVrControllerSetVibration() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI scePadVrControllerSetVibration(int handle, const void* param) {
+    return UnsupportedOperation(handle, param != nullptr);
 }
 
-int APS5_VABI scePadVrControllerSetVibrationMode() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI scePadVrControllerSetVibrationMode(int handle, int mode) {
+    (void)mode;
+    return UnsupportedOperation(handle, true);
 }
 
 int APS5_VABI scePadVrControllerReadCombinedState() {
@@ -279,23 +278,20 @@ int APS5_VABI scePadVrControllerGetDeviceInformation() {
  return 0;
 }
 
-int APS5_VABI scePadVrControllerRead() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+int APS5_VABI scePadVrControllerRead(int handle, void* state, int num) {
+ return UnsupportedOperation(handle, state != nullptr && num > 0);
 }
 
-int APS5_VABI scePadVrControllerGetTriggerEffectState() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+int APS5_VABI scePadVrControllerGetTriggerEffectState(int handle, void* state) {
+ return UnsupportedOperation(handle, state != nullptr);
 }
 
 int APS5_VABI scePadVrControllerReadState(int handle, void* state) {
  return UnsupportedOperation(handle, state != nullptr);
 }
 
-int APS5_VABI scePadVrControllerSetTriggerEffect() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+int APS5_VABI scePadVrControllerSetTriggerEffect(int handle, const void* param) {
+ return UnsupportedOperation(handle, param != nullptr);
 }
 
 int APS5_VABI scePadVrControllerSetTriggerEffects() {

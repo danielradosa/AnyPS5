@@ -23,6 +23,11 @@ int APS5_VABI scePadRead_nid_postfix(int, PadData*, int);
 int APS5_VABI scePadReadExt(int, PadData*, int);
 int APS5_VABI scePadOutputReport(int, int, const void*, int);
 int APS5_VABI scePadVrControllerReadState(int, void*);
+int APS5_VABI scePadVrControllerRead(int, void*, int);
+int APS5_VABI scePadVrControllerGetTriggerEffectState(int, void*);
+int APS5_VABI scePadVrControllerSetTriggerEffect(int, const void*);
+int APS5_VABI scePadVrControllerSetVibration(int, const void*);
+int APS5_VABI scePadVrControllerSetVibrationMode(int, int);
 int APS5_VABI scePadReadState(int, PadData*);
 int APS5_VABI scePadSetTiltCorrectionState(int, bool);
 int APS5_VABI scePadResetOrientation(int);
@@ -296,6 +301,36 @@ static void CheckVrControllerReadState(int user, int handle) {
     Require(state == untouched);
 }
 
+static void CheckVrControllerCalls(int handle) {
+    constexpr int notPermitted = static_cast<int>(0x80920101);
+    std::uint32_t seen = 0;
+    PadOutputState output;
+    PadFetchOutput_nid_postfix(&seen, &output);
+    std::array<std::uint8_t, 0x68 * 2> state;
+    state.fill(0xa5);
+    const auto untouched = state;
+    Require(scePadVrControllerRead(handle + 1, state.data(), 2) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadVrControllerRead(handle, nullptr, 2) == PAD_ERROR_INVALID_ARG);
+    Require(scePadVrControllerRead(handle, state.data(), 0) == PAD_ERROR_INVALID_ARG);
+    Require(scePadVrControllerRead(handle, state.data(), 2) == notPermitted);
+    Require(scePadVrControllerGetTriggerEffectState(handle + 1, state.data()) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadVrControllerGetTriggerEffectState(handle, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadVrControllerGetTriggerEffectState(handle, state.data()) == notPermitted);
+    Require(state == untouched);
+    const PadVibrationParam vibration{200, 100};
+    Require(scePadVrControllerSetVibration(handle + 1, &vibration) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadVrControllerSetVibration(handle, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadVrControllerSetVibration(handle, &vibration) == notPermitted);
+    Require(scePadVrControllerSetVibrationMode(handle + 1, 1) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadVrControllerSetVibrationMode(handle, 1) == notPermitted);
+    std::uint8_t trigger[120]{0x01};
+    trigger[8] = 1;
+    Require(scePadVrControllerSetTriggerEffect(handle + 1, trigger) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadVrControllerSetTriggerEffect(handle, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadVrControllerSetTriggerEffect(handle, trigger) == notPermitted);
+    Require(!PadFetchOutput_nid_postfix(&seen, &output));
+}
+
 static void CheckInjectedState(const std::filesystem::path& path) {
     PadInputState physical;
     physical.buttons = 0x2000;
@@ -382,6 +417,7 @@ int main() {
     CheckRemoteController(handle);
     CheckOutputReport(handle);
     CheckVrControllerReadState(user, handle);
+    CheckVrControllerCalls(handle);
     CheckInjectedState(path);
     Require(scePadSetVibrationMode(handle, 1) == 0);
     Require(scePadSetVibrationMode(handle, 2) == 0);
