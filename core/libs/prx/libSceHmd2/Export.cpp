@@ -9,13 +9,19 @@ constexpr std::int32_t SCE_HMD2_ERROR_NOT_INITIALIZED = static_cast<std::int32_t
 constexpr std::int32_t SCE_HMD2_ERROR_PARAMETER_NULL = static_cast<std::int32_t>(0x81110008);
 constexpr std::int32_t SCE_HMD2_ERROR_UNSUPPORTED_FEATURE = static_cast<std::int32_t>(0x81110016);
 
+struct Hmd2SizeAlign {
+    std::uint64_t size;
+    std::uint64_t align;
+};
+static_assert(sizeof(Hmd2SizeAlign) == 16);
+
 }
 
 extern "C" {
 
-int APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign() {
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign() {
     NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return {};
 }
 
 std::int32_t APS5_VABI sceHmd2Initialize(const void* param) {
@@ -95,14 +101,14 @@ std::int32_t APS5_VABI sceHmd2ReprojectionEnableVrMode(std::uint64_t mode) {
     return SCE_HMD2_ERROR_NOT_INITIALIZED;
 }
 
-int APS5_VABI sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign() {
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign() {
     NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return {};
 }
 
-int APS5_VABI sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign() {
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign() {
     NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return {};
 }
 
 std::int32_t APS5_VABI sceHmd2ReprojectionGetPredictedDisplayTime(std::uint64_t frame, std::uint64_t* time) {
@@ -117,14 +123,14 @@ std::int32_t APS5_VABI sceHmd2ReprojectionInitialize(const void* param, const vo
     return SCE_HMD2_ERROR_NOT_INITIALIZED;
 }
 
-int APS5_VABI sceHmd2ReprojectionQueryBufferSizeAlign() {
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQueryBufferSizeAlign() {
     NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return {};
 }
 
-int APS5_VABI sceHmd2ReprojectionQueryDisplayBufferSizeAlign() {
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQueryDisplayBufferSizeAlign() {
     NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return {};
 }
 
 std::int32_t APS5_VABI sceHmd2ReprojectionSetAllowPositionalReprojection() {
