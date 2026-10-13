@@ -286,6 +286,17 @@ bool SetGuestThreadAffinityIfLive(PthreadPrivate* thread, KernelCpumask mask) {
     return false;
 }
 
+bool SetGuestThreadAffinityByTid(std::int64_t tid, KernelCpumask mask) {
+    auto& registry = CpuClocks();
+    std::lock_guard lock(registry.lock);
+    for (const auto& [id, live] : registry.threads) {
+        if (live->tid != tid || live->_finished.load(std::memory_order_acquire)) continue;
+        live->affinity.store(mask, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
 bool GuestThreadCpuNanos(int cpuClockThread, std::uint64_t* nanos) {
     auto& registry = CpuClocks();
     std::lock_guard lock(registry.lock);

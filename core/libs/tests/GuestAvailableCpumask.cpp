@@ -6,6 +6,7 @@
 #include <bit>
 #include <chrono>
 #include <future>
+#include <stdexcept>
 #include <thread>
 
 extern "C" {
@@ -131,6 +132,81 @@ static void* APS5_VABI SetCpuset(void* arg) {
     result->results[7] = cpuset_setaffinity_nid_postfix(3, 2, getpid_nid_postfix(), 8, process);
     scePthreadGetaffinity(scePthreadSelf(), &result->affinity[2]);
     return nullptr;
+}
+
+static int SetError(int level, int which, std::int64_t id, KernelCpumask mask) {
+    const std::uint64_t set[1] = {mask};
+    *__error_nid_postfix() = 0;
+    if (cpuset_setaffinity_nid_postfix(level, which, id, sizeof(set), set) != -1) return 0;
+    return *__error_nid_postfix();
+}
+
+static void SetsOtherThreadsAndRejectsSharedSets(PthreadAttr* attr, KernelCpumask available) {
+    constexpr int LevelRoot = 1, LevelCpuset = 2, LevelWhich = 3;
+    constexpr int WhichTid = 1, WhichPid = 2, WhichCpuset = 3, WhichIrq = 4, WhichJail = 5, WhichDomain = 6;
+    constexpr int Eperm = 1, Esrch = 3, Edeadlk = 11, Einval = 22;
+    const KernelCpumask first = available & (~available + 1);
+    const KernelCpumask last = KernelCpumask{1} << (63 - std::countl_zero(available));
+    std::promise<void> release;
+    auto released = release.get_future();
+    Pinned worker{&released, 0};
+    Pthread thread = nullptr;
+    Require(scePthreadCreate(&thread, attr, PinnedWorker, &worker, nullptr) == SCE_OK);
+    while (__atomic_load_n(&worker.tid, __ATOMIC_ACQUIRE) == 0) std::this_thread::yield();
+    KernelCpumask affinity = 0;
+
+    Require(SetError(LevelWhich, WhichTid, worker.tid, last | (1ull << 40)) == 0);
+    Require(scePthreadGetaffinity(thread, &affinity) == SCE_OK && affinity == last);
+    Require(Affinity(LevelWhich, WhichTid, worker.tid) == last);
+    Require(SetError(LevelWhich, WhichTid, worker.tid, 1ull << 40) == Edeadlk);
+    Require(scePthreadGetaffinity(thread, &affinity) == SCE_OK && affinity == last);
+    Require(SetError(LevelWhich, WhichTid, scePthreadGetthreadid(), first) == 0);
+    Require(scePthreadGetaffinity(scePthreadSelf(), &affinity) == SCE_OK && affinity == first);
+    Require(SetError(LevelWhich, WhichTid, 1, available) == Esrch);
+
+    for (const int level : {LevelRoot, LevelCpuset}) {
+        Require(SetError(level, WhichTid, -1, available) == Eperm);
+        Require(SetError(level, WhichTid, worker.tid, available) == Eperm);
+        Require(SetError(level, WhichTid, 1, available) == Esrch);
+        Require(SetError(level, WhichPid, -1, available) == Eperm);
+        Require(SetError(level, WhichPid, getpid_nid_postfix() + 1, available) == Esrch);
+        Require(SetError(level, WhichCpuset, -1, available) == Eperm);
+        Require(SetError(level, WhichCpuset, 1, available) == Esrch);
+        Require(SetError(level, WhichJail, 0, available) == Esrch);
+        Require(SetError(level, WhichIrq, 0, available) == Einval);
+        Require(SetError(level, WhichDomain, 0, available) == Einval);
+        Require(SetError(level, 0, -1, available) == Einval);
+        Require(SetError(level, 7, -1, available) == Einval);
+    }
+    Require(SetError(LevelWhich, WhichCpuset, -1, available) == Eperm);
+    Require(SetError(LevelWhich, WhichCpuset, 2, available) == Esrch);
+    Require(SetError(LevelWhich, WhichJail, -1, available) == Esrch);
+    Require(SetError(LevelWhich, WhichDomain, 0, available) == Einval);
+    Require(SetError(LevelWhich, 0, -1, available) == Einval);
+    Require(SetError(LevelWhich, 7, -1, available) == Einval);
+    Require(SetError(0, WhichTid, -1, available) == Einval);
+    Require(SetError(4, WhichTid, -1, available) == Einval);
+    const std::uint64_t wide[2] = {available, 1};
+    Require(cpuset_setaffinity_nid_postfix(LevelRoot, WhichTid, -1, sizeof(wide), wide) == -1 && *__error_nid_postfix() == Einval);
+    bool threw = false;
+    try {
+        const std::uint64_t single[1] = {first};
+        cpuset_setaffinity_nid_postfix(LevelWhich, WhichIrq, 0, sizeof(single), single);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw);
+    Require(scePthreadGetaffinity(thread, &affinity) == SCE_OK && affinity == last);
+    Require(scePthreadGetaffinity(scePthreadSelf(), &affinity) == SCE_OK && affinity == first);
+
+    release.set_value();
+    Require(scePthreadJoin(thread, nullptr) == SCE_OK);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (SetError(LevelWhich, WhichTid, worker.tid, available) != Esrch) {
+        Require(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::yield();
+    }
+    Require(SetError(LevelWhich, WhichTid, -1, available) == 0);
 }
 
 static void* APS5_VABI ReportMask(void* arg) {
@@ -356,6 +432,7 @@ int main() {
     Require(scePthreadJoin(target, nullptr) == SCE_OK);
     Require(pthread_setaffinity_np_nid_postfix(target, GUEST_CPUSET_BYTES, request) == GUEST_ESRCH);
     Require(pthread_setaffinity_np_nid_postfix(pthread_self_nid_postfix(), GUEST_CPUSET_BYTES, request) == 0);
+    SetsOtherThreadsAndRejectsSharedSets(&attr, available);
     Require(scePthreadAttrDestroy(&attr) == SCE_OK);
 
     Require(ReadCpuset(pthread_self_nid_postfix()) == available);

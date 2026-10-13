@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 extern "C" {
@@ -71,8 +72,9 @@ int APS5_VABI cpuset_getaffinity_nid_postfix(int level, int which, std::int64_t 
 }
 
 int APS5_VABI cpuset_setaffinity_nid_postfix(int level, int which, std::int64_t id, std::size_t size, const void* mask) {
-    constexpr int LevelWhich = 3, WhichThread = 1, WhichProcess = 2;
-    constexpr int GuestEdeadlk = 11, GuestEfault = 14, GuestEinval = 22, GuestErange = 34;
+    constexpr int LevelRoot = 1, LevelCpuset = 2, LevelWhich = 3;
+    constexpr int WhichThread = 1, WhichProcess = 2, WhichCpuset = 3, WhichIrq = 4, WhichJail = 5, WhichDomain = 6;
+    constexpr int GuestEperm = 1, GuestEsrch = 3, GuestEdeadlk = 11, GuestEfault = 14, GuestEinval = 22, GuestErange = 34;
     constexpr std::size_t MaximumSize = 256 / 8;
     const auto fail = [](int error) {
         *__error_nid_postfix() = error;
@@ -84,16 +86,48 @@ int APS5_VABI cpuset_setaffinity_nid_postfix(int level, int which, std::int64_t 
     for (std::size_t index = sizeof(KernelCpumask); index < size; ++index) {
         if (bytes[index] != 0) return fail(GuestEinval);
     }
-    const bool thread = level == LevelWhich && which == WhichThread && id == -1;
-    const bool process = level == LevelWhich && which == WhichProcess && (id == -1 || id == getpid_nid_postfix());
-    if (!thread && !process) NotImplemented_nid_no_patch("cpuset_setaffinity other than the calling thread or process");
+    const std::int64_t self = scePthreadSelf()->tid;
+    const auto targetError = [self](int kind, std::int64_t target) {
+        KernelCpumask current = 0;
+        switch (kind) {
+        case WhichThread:
+            return target == -1 || target == self || GuestThreadAffinity(target, &current) ? 0 : GuestEsrch;
+        case WhichProcess:
+            return target == -1 || target == getpid_nid_postfix() ? 0 : GuestEsrch;
+        case WhichCpuset:
+            return target == -1 ? 0 : GuestEsrch;
+        case WhichJail:
+            return GuestEsrch;
+        default:
+            return 0;
+        }
+    };
+    if (level == LevelRoot || level == LevelCpuset) {
+        if (which < WhichThread || which > WhichDomain) return fail(GuestEinval);
+        if (const int error = targetError(which, id)) return fail(error);
+        return fail(which == WhichIrq || which == WhichDomain ? GuestEinval : GuestEperm);
+    }
+    if (level != LevelWhich) return fail(GuestEinval);
+    if (which == WhichCpuset || which == WhichJail) {
+        const int error = targetError(which, id);
+        return fail(error != 0 ? error : GuestEperm);
+    }
+    if (which == WhichIrq) throw std::runtime_error("cpuset_setaffinity: the console's interrupt sources are not known, irq " + std::to_string(id));
+    if (which != WhichThread && which != WhichProcess) return fail(GuestEinval);
+    if (const int error = targetError(which, id)) return fail(error);
     KernelCpumask requested = 0;
     std::memcpy(&requested, bytes, sizeof(requested));
     const KernelCpumask affinity = requested & sceKernelGetAvailableCpumask();
     if (affinity == 0) return fail(GuestEdeadlk);
-    if (thread) scePthreadSetaffinity(scePthreadSelf(), affinity);
-    else SetLiveGuestThreadsAffinity(affinity);
-    return 0;
+    if (which == WhichProcess) {
+        SetLiveGuestThreadsAffinity(affinity);
+        return 0;
+    }
+    if (id == -1 || id == self) {
+        scePthreadSetaffinity(scePthreadSelf(), affinity);
+        return 0;
+    }
+    return SetGuestThreadAffinityByTid(id, affinity) ? 0 : fail(GuestEsrch);
 }
 
 int APS5_VABI pthread_create_nid_postfix(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg) {
