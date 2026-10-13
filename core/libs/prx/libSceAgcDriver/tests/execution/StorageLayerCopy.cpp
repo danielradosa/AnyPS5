@@ -206,6 +206,7 @@ void Run(AgcDriver::VulkanDevice& device, std::uint8_t* texels, bool tracked) {
     const auto copies = StorageTexture::LayerCopies();
     Load(device, texels, 0);
     RequireOutput(0x22222222u, 0x22222222u, "B's layer 0 after A's second store");
+    tracked = tracked && AgcDriver::GuestMemory::Watched(surface, BlockBytes);
     if (!tracked) std::puts("guest memory has no write stamps: the layer copy is not checked");
     else if (std::getenv("APS5_NO_LAYER_COPY") != nullptr) Require(StorageTexture::LayerCopies() == copies, "APS5_NO_LAYER_COPY=1 still copied the layer");
     else Require(StorageTexture::LayerCopies() == copies + 1, "B's refresh read layer 0 back from guest memory instead of copying A's stored image");
