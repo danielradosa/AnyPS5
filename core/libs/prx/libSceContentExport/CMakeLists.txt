@@ -13,13 +13,15 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 
-    add_test_executable(guest_content_unimplemented_tests ${LIBS_INCLUDE_DIR}/tests/GuestContentUnimplemented.cpp)
-    target_include_directories(guest_content_unimplemented_tests PRIVATE ${LIBS_INCLUDE_DIR})
-    target_link_libraries(guest_content_unimplemented_tests PRIVATE libSceContentDelete libc)
-    configure_windows_unwind(guest_content_unimplemented_tests)
-    add_test(NAME guest_content_unimplemented COMMAND guest_content_unimplemented_tests)
+    add_test_executable(guest_content_delete_tests ${LIBS_INCLUDE_DIR}/tests/GuestContentDelete.cpp)
+    target_include_directories(guest_content_delete_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_content_delete_tests PRIVATE libSceContentDelete libSceContentExport libc)
+    configure_windows_unwind(guest_content_delete_tests)
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/content_delete)
+    add_test(NAME guest_content_delete COMMAND guest_content_delete_tests
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/content_delete)
     if(WIN32)
-        set_tests_properties(guest_content_unimplemented PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(guest_content_delete PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 endif()
