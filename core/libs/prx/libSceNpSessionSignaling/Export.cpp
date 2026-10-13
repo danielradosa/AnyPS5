@@ -11,6 +11,7 @@ static constexpr int SCE_NP_SESSION_SIGNALING_ERROR_NOT_INITIALIZED = static_cas
 static constexpr int SCE_NP_SESSION_SIGNALING_ERROR_ALREADY_INITIALIZED = static_cast<int>(0x80553302);
 static constexpr int SCE_NP_SESSION_SIGNALING_ERROR_INVALID_ARGUMENT = static_cast<int>(0x80553303);
 static constexpr int SCE_NP_SESSION_SIGNALING_ERROR_CTX_NOT_FOUND = static_cast<int>(0x80553308);
+static constexpr int SCE_NP_SESSION_SIGNALING_ERROR_GRP_NOT_FOUND = static_cast<int>(0x8055330A);
 static constexpr int SCE_NP_SESSION_SIGNALING_ERROR_CONN_NOT_FOUND = static_cast<int>(0x8055330C);
 static constexpr int SCE_NP_SESSION_SIGNALING_ERROR_UNAVAILABLE = static_cast<int>(0x80552D06);
 static std::atomic<uint32_t> g_nextContext{1};
@@ -149,9 +150,12 @@ int APS5_VABI sceNpSessionSignalingGetConnectionFromPeerAddress(void) {
     return 0;
 }
 
-int APS5_VABI sceNpSessionSignalingGetGroupFromSessionId(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpSessionSignalingGetGroupFromSessionId(uint32_t contextId, const char* sessionId, uint32_t* groupId) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_initialized) return SCE_NP_SESSION_SIGNALING_ERROR_NOT_INITIALIZED;
+    if (!sessionId || !groupId) return SCE_NP_SESSION_SIGNALING_ERROR_INVALID_ARGUMENT;
+    if (!g_contexts.contains(contextId)) return SCE_NP_SESSION_SIGNALING_ERROR_CTX_NOT_FOUND;
+    return SCE_NP_SESSION_SIGNALING_ERROR_GRP_NOT_FOUND;
 }
 
 }

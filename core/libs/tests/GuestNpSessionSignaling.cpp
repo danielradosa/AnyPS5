@@ -15,6 +15,7 @@ int APS5_VABI sceNpSessionSignalingRequestPrepare(std::uint32_t contextId, std::
 int APS5_VABI sceNpSessionSignalingGetMemoryInfo(void* memInfo);
 int APS5_VABI sceNpSessionSignalingGetConnectionStatistics(void* stats);
 int APS5_VABI sceNpSessionSignalingTerminate(void);
+int APS5_VABI sceNpSessionSignalingGetGroupFromSessionId(std::uint32_t contextId, const char* sessionId, std::uint32_t* groupId);
 }
 
 namespace {
@@ -23,6 +24,7 @@ constexpr int NotInitialized = static_cast<int>(0x80553301u);
 constexpr int AlreadyInitialized = static_cast<int>(0x80553302u);
 constexpr int InvalidArgument = static_cast<int>(0x80553303u);
 constexpr int ContextNotFound = static_cast<int>(0x80553308u);
+constexpr int GroupNotFound = static_cast<int>(0x8055330Au);
 constexpr int ConnectionNotFound = static_cast<int>(0x8055330Cu);
 constexpr int Unavailable = static_cast<int>(0x80552D06u);
 
@@ -62,6 +64,9 @@ int main() {
     Require(sceNpSessionSignalingGetConnectionStatistics(statisticsBuffer) == NotInitialized, "statistics before initialize");
     Require(sceNpSessionSignalingGetConnectionStatus(1, 1, &status, nullptr, nullptr) == NotInitialized, "status before initialize");
     Require(sceNpSessionSignalingTerminate() == NotInitialized, "terminate before initialize");
+    std::uint32_t groupId = 0xa5a5a5a5u;
+    Require(sceNpSessionSignalingGetGroupFromSessionId(1, "00000000-0000-0000-0000-000000000000", &groupId) == NotInitialized,
+        "group lookup before initialize");
 
     Require(sceNpSessionSignalingInitialize(nullptr) == InvalidArgument, "null initialize param");
     const std::size_t poolSize = 256 * 1024;
@@ -119,7 +124,14 @@ int main() {
 
     Require(sceNpSessionSignalingGetConnectionStatus(contextId, 1, &status, nullptr, nullptr) == ConnectionNotFound, "connection without peer outputs");
     Require(status == 0x5a5a5a5a && peerAddress == 0xa5a5a5a5u && peerPort == 0xa5a5, "failed status query wrote an output");
+    const char* sessionId = "8f2bba65-1f71-4cb2-9b3c-6d40b1a6e2f1";
+    Require(sceNpSessionSignalingGetGroupFromSessionId(contextId, nullptr, &groupId) == InvalidArgument, "null session id");
+    Require(sceNpSessionSignalingGetGroupFromSessionId(contextId, sessionId, nullptr) == InvalidArgument, "null group id");
+    Require(sceNpSessionSignalingGetGroupFromSessionId(contextId + 1, sessionId, &groupId) == ContextNotFound, "group lookup in unknown context");
+    Require(sceNpSessionSignalingGetGroupFromSessionId(contextId, sessionId, &groupId) == GroupNotFound, "group lookup without an activated session");
+    Require(groupId == 0xa5a5a5a5u, "failed group lookup wrote a group id");
     Require(sceNpSessionSignalingDestroyContext(contextId) == 0, "context destruction failed");
+    Require(sceNpSessionSignalingGetGroupFromSessionId(contextId, sessionId, &groupId) == ContextNotFound, "group lookup in destroyed context");
     Require(sceNpSessionSignalingGetConnectionStatus(contextId, 1, &status, nullptr, nullptr) == ContextNotFound, "status of destroyed context");
 
     Require(sceNpSessionSignalingTerminate() == 0, "terminate failed");
