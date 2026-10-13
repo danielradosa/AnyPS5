@@ -10,6 +10,7 @@
 #include <source_location>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #ifdef _WIN32
 #include <windows.h>
 #ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
@@ -515,8 +516,22 @@ int main() {
     Require(renameat_nid_postfix(-100, (root / "made.bin").string().c_str(), -100, (root / "final.bin").string().c_str()) == 0);
     Require(std::filesystem::is_regular_file(root / "final.bin"));
     Require(sceKernelClose(base) == 0);
+    std::vector<std::filesystem::path> links;
     for (const auto& entry : std::filesystem::directory_iterator(root)) {
-        if (entry.is_symlink()) std::filesystem::remove(entry.path());
+#ifdef _WIN32
+        const auto attributes = GetFileAttributesW(entry.path().wstring().c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) links.push_back(entry.path());
+#else
+        if (entry.is_symlink()) links.push_back(entry.path());
+#endif
+    }
+    for (const auto& link : links) {
+#ifdef _WIN32
+        if ((GetFileAttributesW(link.wstring().c_str()) & FILE_ATTRIBUTE_DIRECTORY) != 0) Require(RemoveDirectoryW(link.wstring().c_str()) != 0);
+        else Require(DeleteFileW(link.wstring().c_str()) != 0);
+#else
+        Require(std::filesystem::remove(link));
+#endif
     }
     std::filesystem::remove_all(root);
     return 0;
