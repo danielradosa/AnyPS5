@@ -60,8 +60,6 @@ extern "C" {
 
 float APS5_VABI sqrtf_nid_postfix(float value) { return std::sqrt(value); }
 float APS5_VABI fabsf_nid_postfix(float value) { return std::fabs(value); }
-float APS5_VABI ceilf_nid_postfix(float value) { return std::ceil(value); }
-float APS5_VABI truncf_nid_postfix(float value) { return std::trunc(value); }
 double APS5_VABI nearbyint_nid_postfix(double value) { return std::nearbyint(value); }
 
 double APS5_VABI remquo_nid_postfix(double x, double y, int* quotient) { return std::remquo(x, y, quotient); }

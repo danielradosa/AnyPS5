@@ -241,6 +241,8 @@ int APS5_VABI abs_nid_postfix(int x) { return x < 0 ? static_cast<int>(0u - stat
 double APS5_VABI trunc_nid_postfix(double x) { return std::trunc(x); }
 double APS5_VABI ceil_nid_postfix(double x) { return std::ceil(x); }
 double APS5_VABI floor_nid_postfix(double x) { return std::floor(x); }
+float APS5_VABI truncf_nid_postfix(float x) { return std::trunc(x); }
+float APS5_VABI ceilf_nid_postfix(float x) { return std::ceil(x); }
 float APS5_VABI floorf_nid_postfix(float x) { return std::floor(x); }
 double APS5_VABI fma_nid_postfix(double x, double y, double z) { return std::fma(x, y, z); }
 
@@ -456,6 +458,8 @@ short APS5_VABI _Dtest_nid_postfix(const double* value) {
 
 int APS5_VABI __isnanf_nid_postfix(float x) { return std::isnan(x) ? 1 : 0; }
 int APS5_VABI isnanf_nid_postfix(float x) { return __isnanf_nid_postfix(x); }
+int APS5_VABI isnan_nid_postfix(double x) { return __isnan_nid_postfix(x); }
+int APS5_VABI isinf_nid_postfix(double x) { return __isinf_nid_postfix(x); }
 int APS5_VABI __fpclassifyf_nid_postfix(float x) {
     constexpr int Infinite = 0x01, NotANumber = 0x02, Normal = 0x04, Subnormal = 0x08, Zero = 0x10;
     std::uint32_t bits;
