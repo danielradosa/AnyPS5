@@ -290,10 +290,7 @@ int APS5_VABI scePadVrControllerGetTriggerEffectState() {
 }
 
 int APS5_VABI scePadVrControllerReadState(int handle, void* state) {
- (void)handle;
- (void)state;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+ return UnsupportedOperation(handle, state != nullptr);
 }
 
 int APS5_VABI scePadVrControllerSetTriggerEffect() {

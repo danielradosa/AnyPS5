@@ -3,6 +3,7 @@
 #include "prx/libScePad/include/PadState.hpp"
 #include "prx/libScePad/include/InputCommandFile.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -21,6 +22,7 @@ int APS5_VABI scePadInit_nid_postfix(void);
 int APS5_VABI scePadRead_nid_postfix(int, PadData*, int);
 int APS5_VABI scePadReadExt(int, PadData*, int);
 int APS5_VABI scePadOutputReport(int, int, const void*, int);
+int APS5_VABI scePadVrControllerReadState(int, void*);
 int APS5_VABI scePadReadState(int, PadData*);
 int APS5_VABI scePadSetTiltCorrectionState(int, bool);
 int APS5_VABI scePadResetOrientation(int);
@@ -279,6 +281,21 @@ static void CheckOutputReport(int handle) {
     Require(!PadFetchOutput_nid_postfix(&seen, &output));
 }
 
+static void CheckVrControllerReadState(int user, int handle) {
+    constexpr int notPermitted = static_cast<int>(0x80920101);
+    Require(scePadOpen_nid_postfix(user, 3, 0, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadOpen_nid_postfix(user, 4, 0, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadGetHandle(user, 3, 0) == static_cast<int>(0x80920008));
+    std::array<std::uint8_t, 0x68> state;
+    state.fill(0xa5);
+    const auto untouched = state;
+    Require(scePadVrControllerReadState(0, state.data()) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadVrControllerReadState(handle + 1, state.data()) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadVrControllerReadState(handle, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadVrControllerReadState(handle, state.data()) == notPermitted);
+    Require(state == untouched);
+}
+
 static void CheckInjectedState(const std::filesystem::path& path) {
     PadInputState physical;
     physical.buttons = 0x2000;
@@ -364,6 +381,7 @@ int main() {
     CheckReadStateHandle(handle);
     CheckRemoteController(handle);
     CheckOutputReport(handle);
+    CheckVrControllerReadState(user, handle);
     CheckInjectedState(path);
     Require(scePadSetVibrationMode(handle, 1) == 0);
     Require(scePadSetVibrationMode(handle, 2) == 0);
