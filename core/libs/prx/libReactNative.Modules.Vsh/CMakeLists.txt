@@ -1,6 +1,7 @@
 add_library(libReactNative.Modules.Vsh SHARED EXCLUDE_FROM_ALL Export.cpp)
 target_include_directories(libReactNative.Modules.Vsh PRIVATE ${LIBS_INCLUDE_DIR})
 configure_windows_unwind(libReactNative.Modules.Vsh)
+target_link_libraries(libReactNative.Modules.Vsh PRIVATE libSceShare)
 
 if(BUILD_TESTING)
     add_test_executable(guest_react_native_vsh_tests ${LIBS_INCLUDE_DIR}/tests/GuestReactNativeVsh.cpp)
