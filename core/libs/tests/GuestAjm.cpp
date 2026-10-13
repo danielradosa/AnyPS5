@@ -25,6 +25,7 @@ int APS5_VABI sceAjmInstanceDestroy(std::uint32_t, std::uint32_t);
 int APS5_VABI sceAjmBatchInitialize(void*, std::size_t, AjmBatchInfo*);
 int APS5_VABI sceAjmBatchJobInitialize(AjmBatchInfo*, std::uint32_t, const void*, std::size_t, void*);
 int APS5_VABI sceAjmBatchJobDecode(AjmBatchInfo*, std::uint32_t, const void*, std::size_t, void*, std::size_t, void*);
+int APS5_VABI sceAjmBatchJobEncode(AjmBatchInfo*, std::uint32_t, const void*, std::size_t, void*, std::size_t, void*);
 int APS5_VABI sceAjmBatchJobDecodeSingle(AjmBatchInfo*, std::uint32_t, const void*, std::size_t, void*, std::size_t, void*);
 int APS5_VABI sceAjmBatchJobDecodeSplit(AjmBatchInfo*, std::uint32_t, const AjmBuffer*, std::size_t, const AjmBuffer*, std::size_t, void*);
 int APS5_VABI sceAjmBatchJobRun(AjmBatchInfo*, std::uint32_t, std::uint64_t, const void*, std::size_t, void*, std::size_t, void*, std::size_t);
@@ -416,16 +417,6 @@ bool OflParsesTo(const std::vector<std::uint8_t>& stream, std::uint32_t streamSi
     return frame.num_frames == frames && frame.encoder_delay == delay && frame.total_samples == total && frame.ofl_type == type;
 }
 
-bool OflThrows(const std::vector<std::uint8_t>& stream) {
-    AjmDecMp3ParseFrame frame{};
-    try {
-        sceAjmDecMp3ParseFrame(stream.data(), static_cast<std::uint32_t>(stream.size()), 1, &frame);
-    } catch (const std::runtime_error&) {
-        return true;
-    }
-    return false;
-}
-
 void TestMp3ParseOfl() {
     const auto stereo = Mp3Frame(LAME_MPEG1_STEREO_VBR, sizeof(LAME_MPEG1_STEREO_VBR), 417);
     Require(OflParsesTo(stereo, 417, 10, 1152 + 576 + 529, 10000, 1));
@@ -448,13 +439,20 @@ void TestMp3ParseOfl() {
 
     auto protectedFrame = stereo;
     protectedFrame[1] = 0xFA;
-    Require(OflThrows(protectedFrame));
+    Require(OflParsesTo(protectedFrame, 417, 0, 0, 0, 0));
+    const std::uint8_t crc[2] = {0x12, 0x34};
+    protectedFrame.insert(protectedFrame.begin() + 4, crc, crc + 2);
+    Require(OflParsesTo(protectedFrame, 419, 10, 1152 + 576 + 529, 10000, 1));
     auto layer2 = stereo;
     layer2[1] = 0xFD;
-    Require(OflThrows(layer2));
+    Require(OflParsesTo(layer2, 417, 10, 1152 + 576 + 529, 10000, 1));
     auto monoVbri = Mp3Frame(VBRI_FRAME, sizeof(VBRI_FRAME), 417);
     monoVbri[3] = 0xC4;
-    Require(OflThrows(monoVbri));
+    Require(OflParsesTo(monoVbri, 417, 0, 576, 0, 2));
+    auto mpeg2Vbri = monoVbri;
+    mpeg2Vbri[1] = 0xF3;
+    mpeg2Vbri[2] = 0x80;
+    Require(OflParsesTo(mpeg2Vbri, 208, 0, 576, 0, 2));
 }
 
 struct GaplessDecode {
@@ -617,16 +615,175 @@ void TestCodecInfo(std::uint32_t context) {
 
     constexpr std::uint64_t runGetCodecInfo = 1ull << 11;
     constexpr std::uint64_t runMultipleFrames = 1ull << 12;
-    std::uint8_t sideband[64] = {};
+    struct {
+        std::int32_t result;
+        std::int32_t internalResult;
+        std::uint32_t frames;
+        std::uint32_t reserved;
+        std::uint32_t superframeSize;
+        std::uint32_t framesInSuperframe;
+        std::uint32_t nextFrameSize;
+        std::uint32_t frameSamples;
+    } both;
+    std::memset(&both, 0xaa, sizeof(both));
     Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
-    Require(sceAjmBatchJobRun(&info, instance, runGetCodecInfo | runMultipleFrames, nullptr, 0, nullptr, 0, sideband, sizeof(sideband)) == 0);
-    Require(Refused(context, info));
+    Require(sceAjmBatchJobRun(&info, instance, runGetCodecInfo | runMultipleFrames, nullptr, 0, nullptr, 0, &both, sizeof(both)) == 0);
+    Submit(context, info);
+    Require(both.result == 0 && both.internalResult == 0 && both.frames == 0 && both.reserved == 0);
+    Require(both.superframeSize == 1024 && both.framesInSuperframe == 4 && both.nextFrameSize == 1024 && both.frameSamples == 256);
     Require(sceAjmInstanceDestroy(context, instance) == 0);
+}
 
-    Require(sceAjmInstanceCreate(context, 0, 0, &instance) == 0);
+struct Mp3CodecInfo {
+    std::uint32_t header;
+    std::uint8_t hasCrc;
+    std::uint8_t channelMode;
+    std::uint8_t modeExtension;
+    std::uint8_t copyright;
+    std::uint8_t original;
+    std::uint8_t emphasis;
+    std::uint16_t reserved[3];
+};
+static_assert(sizeof(Mp3CodecInfo) == 16);
+
+struct Mp3CodecInfoSideband {
+    std::int32_t result;
+    std::int32_t internalResult;
+    Mp3CodecInfo codec;
+};
+
+bool Mp3CodecInfoUntouched(const Mp3CodecInfo& codec) {
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(&codec);
+    return std::all_of(bytes, bytes + sizeof(codec), [](std::uint8_t byte) { return byte == 0xaa; });
+}
+
+Mp3CodecInfoSideband Mp3CodecInfoJob(std::uint32_t context, std::uint32_t instance) {
+    std::vector<std::uint8_t> batch(4096);
+    AjmBatchInfo info{};
+    Mp3CodecInfoSideband sideband;
+    std::memset(&sideband, 0xaa, sizeof(sideband));
     Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
-    Require(sceAjmBatchJobGetCodecInfo(&info, instance, sideband, sizeof(sideband)) == 0);
-    Require(Refused(context, info));
+    Require(sceAjmBatchJobGetCodecInfo(&info, instance, &sideband, sizeof(sideband)) == 0);
+    Submit(context, info);
+    return sideband;
+}
+
+void TestMp3CodecInfo(std::uint32_t context) {
+    constexpr std::uint64_t runGetCodecInfo = 1ull << 11;
+    constexpr std::uint64_t runMultipleFrames = 1ull << 12;
+    constexpr std::uint64_t sidebandStream = 1ull << 47;
+    std::uint32_t instance = 0;
+    Require(sceAjmInstanceCreate(context, 0, 0, &instance) == 0);
+    const auto early = Mp3CodecInfoJob(context, instance);
+    Require(early.result == 0 && early.internalResult == 0 && Mp3CodecInfoUntouched(early.codec));
+
+    std::vector<std::uint8_t> batch(4096);
+    std::vector<std::int16_t> pcm(1152 * 6);
+    struct {
+        DecodeSideband stream;
+        std::uint32_t frames;
+        std::uint32_t reserved;
+        Mp3CodecInfo codec;
+    } decoded;
+    std::memset(&decoded, 0xaa, sizeof(decoded));
+    AjmBatchInfo info{};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobRun(&info, instance, sidebandStream | runMultipleFrames | runGetCodecInfo, MP3_MONO, sizeof(MP3_MONO), pcm.data(), pcm.size() * sizeof(std::int16_t), &decoded, sizeof(decoded)) == 0);
+    Submit(context, info);
+    Require(decoded.stream.result == 0 && static_cast<std::size_t>(decoded.stream.inputConsumed) == sizeof(MP3_MONO) && decoded.stream.outputWritten == 1152 * 6 * 2 && decoded.frames == 6 && decoded.reserved == 0);
+    Require(std::memcmp(&decoded.codec.header, MP3_MONO, sizeof(decoded.codec.header)) == 0);
+    Require(decoded.codec.hasCrc == 1 && decoded.codec.channelMode == 3 && decoded.codec.modeExtension == 0 && decoded.codec.copyright == 0 && decoded.codec.original == 1 && decoded.codec.emphasis == 0);
+    Require(decoded.codec.reserved[0] == 0 && decoded.codec.reserved[1] == 0 && decoded.codec.reserved[2] == 0);
+
+    const auto later = Mp3CodecInfoJob(context, instance);
+    Require(later.result == 0 && std::memcmp(&later.codec, &decoded.codec, sizeof(later.codec)) == 0);
+
+    std::int32_t cleared[2] = {-1, -1};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobClearContext(&info, instance, cleared) == 0);
+    Submit(context, info);
+    const auto reset = Mp3CodecInfoJob(context, instance);
+    Require(cleared[0] == 0 && reset.result == 0 && Mp3CodecInfoUntouched(reset.codec));
+    Require(sceAjmInstanceDestroy(context, instance) == 0);
+}
+
+struct OpusCodecInfoSideband {
+    std::int32_t result;
+    std::int32_t internalResult;
+    std::uint32_t framesPerPacket;
+};
+
+std::uint32_t OpusFramesPerPacket(std::uint32_t context, std::uint32_t instance) {
+    std::vector<std::uint8_t> batch(4096);
+    AjmBatchInfo info{};
+    OpusCodecInfoSideband sideband{-1, -1, 0xaaaaaaaau};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobGetCodecInfo(&info, instance, &sideband, sizeof(sideband)) == 0);
+    Submit(context, info);
+    Require(sideband.result == 0 && sideband.internalResult == 0);
+    return sideband.framesPerPacket;
+}
+
+void TestOpusCodecInfo(std::uint32_t context) {
+    constexpr std::uint64_t runGetCodecInfo = 1ull << 11;
+    constexpr std::uint64_t sidebandStream = 1ull << 47;
+    std::uint32_t instance = 0;
+    Require(sceAjmInstanceCreate(context, 24, 0, &instance) == 0);
+    const std::uint32_t parameters[3] = {2, 48000, 0};
+    std::vector<std::uint8_t> batch(4096);
+    AjmBatchInfo info{};
+    std::int32_t initResult[2] = {-1, -1};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobInitialize(&info, instance, parameters, sizeof(parameters), initResult) == 0);
+    Submit(context, info);
+    Require(initResult[0] == 0 && OpusFramesPerPacket(context, instance) == 0);
+
+    std::vector<std::int16_t> pcm(960 * 2);
+    struct {
+        DecodeSideband stream;
+        std::uint32_t framesPerPacket;
+        std::uint32_t untouched;
+    } decoded;
+    std::memset(&decoded, 0xaa, sizeof(decoded));
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobRun(&info, instance, sidebandStream | runGetCodecInfo, OPUS_STEREO, sizeof(OPUS_STEREO), pcm.data(), pcm.size() * sizeof(std::int16_t), &decoded, sizeof(decoded)) == 0);
+    Submit(context, info);
+    Require(decoded.stream.result == 0 && decoded.stream.inputConsumed == 2 + OPUS_STEREO[0] && decoded.stream.outputWritten == 960 * 2 * 2);
+    Require(decoded.framesPerPacket == 1 && decoded.untouched == 0xaaaaaaaau && OpusFramesPerPacket(context, instance) == 1);
+
+    std::int32_t cleared[2] = {-1, -1};
+    Require(sceAjmBatchInitialize(batch.data(), batch.size(), &info) == 0);
+    Require(sceAjmBatchJobClearContext(&info, instance, cleared) == 0);
+    Submit(context, info);
+    Require(cleared[0] == 0 && OpusFramesPerPacket(context, instance) == 0);
+    Require(sceAjmInstanceDestroy(context, instance) == 0);
+}
+
+void TestEncodeRecord(std::uint32_t context) {
+    constexpr int invalidParameter = static_cast<int>(0x80930005);
+    constexpr int outOfResources = static_cast<int>(0x80930007);
+    std::uint32_t instance = 0;
+    Require(sceAjmInstanceCreate(context, 0, 0, &instance) == 0);
+    std::vector<std::int16_t> pcm(1152);
+    DecodeSideband sideband{-1, -1, -1, -1, 0};
+    std::vector<std::uint8_t> decodeBatch(256, 0x5a);
+    std::vector<std::uint8_t> encodeBatch(256, 0x5a);
+    AjmBatchInfo decodeInfo{};
+    AjmBatchInfo encodeInfo{};
+    Require(sceAjmBatchInitialize(decodeBatch.data(), decodeBatch.size(), &decodeInfo) == 0);
+    Require(sceAjmBatchInitialize(encodeBatch.data(), encodeBatch.size(), &encodeInfo) == 0);
+    Require(sceAjmBatchJobDecode(&decodeInfo, instance, MP3_MONO, sizeof(MP3_MONO), pcm.data(), pcm.size() * sizeof(std::int16_t), &sideband) == 0);
+    Require(sceAjmBatchJobEncode(&encodeInfo, instance, MP3_MONO, sizeof(MP3_MONO), pcm.data(), pcm.size() * sizeof(std::int16_t), &sideband) == 0);
+    Require(encodeInfo.offset != 0 && encodeInfo.offset == decodeInfo.offset && encodeBatch == decodeBatch);
+    Submit(context, encodeInfo);
+    Require(sideband.result == 0 && sideband.internalResult == 0 && sideband.inputConsumed == 96 && sideband.outputWritten == 1152 * 2 && sideband.totalDecodedSamples == 1152);
+
+    std::vector<std::uint8_t> small(32, 0x5a);
+    AjmBatchInfo smallInfo{};
+    Require(sceAjmBatchInitialize(small.data(), small.size(), &smallInfo) == 0);
+    Require(sceAjmBatchJobEncode(&smallInfo, instance, MP3_MONO, sizeof(MP3_MONO), pcm.data(), pcm.size() * sizeof(std::int16_t), &sideband) == outOfResources);
+    Require(smallInfo.offset == 0 && std::all_of(small.begin(), small.end(), [](std::uint8_t byte) { return byte == 0x5a; }));
+    Require(sceAjmBatchJobEncode(nullptr, instance, MP3_MONO, sizeof(MP3_MONO), pcm.data(), pcm.size() * sizeof(std::int16_t), &sideband) == invalidParameter);
     Require(sceAjmInstanceDestroy(context, instance) == 0);
 }
 
@@ -1485,6 +1642,9 @@ int main() {
     TestDecodeSplitInputs(context);
     TestGaplessDecode(context);
     TestCodecInfo(context);
+    TestMp3CodecInfo(context);
+    TestOpusCodecInfo(context);
+    TestEncodeRecord(context);
     TestGetInfo(context);
     TestBatchWaitRelease(context);
     TestBatchCancel(context);
