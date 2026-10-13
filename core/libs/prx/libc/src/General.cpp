@@ -112,6 +112,32 @@ std::optional<std::filesystem::path> ResolveAlias(const std::string& guestPath) 
     return std::nullopt;
 }
 
+bool SameHostComponent(const std::filesystem::path& left, const std::filesystem::path& right) {
+#ifdef _WIN32
+    return SameName(left.generic_string(), right.generic_string());
+#else
+    return left == right;
+#endif
+}
+
+std::optional<std::string> GuestPathInside(const std::filesystem::path& host, const std::filesystem::path& directory, const std::string& prefix) {
+    const auto target = std::filesystem::absolute(host).lexically_normal();
+    const auto base = std::filesystem::absolute(directory).lexically_normal();
+    auto part = target.begin();
+    for (const auto& component : base) {
+        if (component.empty()) continue;
+        if (part == target.end() || !SameHostComponent(*part, component)) return std::nullopt;
+        ++part;
+    }
+    std::string guest = prefix;
+    for (; part != target.end(); ++part) {
+        if (part->empty()) continue;
+        guest += '/';
+        guest += part->generic_string();
+    }
+    return guest.empty() ? std::string("/") : guest;
+}
+
 struct WorkingDirectory {
     std::mutex mutex;
     const std::filesystem::path root = std::filesystem::canonical(std::filesystem::current_path());
@@ -378,6 +404,19 @@ extern "C" std::filesystem::path ResolvePath_nid_no_patch(const char* path) {
     auto& state = Directories();
     std::lock_guard lock(state.mutex);
     return Resolve(state, path);
+}
+
+extern "C" std::string GuestPathFromHost_nid_no_patch(const std::filesystem::path& host) {
+    {
+        auto& aliases = Aliases();
+        std::lock_guard lock(aliases.mutex);
+        for (const auto& [prefix, directory] : aliases.entries) {
+            if (auto guest = GuestPathInside(host, directory, "/" + prefix)) return *guest;
+        }
+    }
+    auto& state = Directories();
+    std::lock_guard lock(state.mutex);
+    return GuestPathInside(host, state.root, "").value_or("");
 }
 
 extern "C" std::filesystem::path RelinkedModulePath_nid_no_patch(const std::filesystem::path& path) {

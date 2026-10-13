@@ -40,6 +40,7 @@ namespace {
 constexpr int GuestEnoent = 2;
 constexpr int GuestEperm = 1;
 constexpr int GuestEio = 5;
+constexpr int GuestEacces = 13;
 constexpr int GuestEfault = 14;
 constexpr int GuestEnotdir = 20;
 constexpr int GuestEisdir = 21;
@@ -47,10 +48,13 @@ constexpr int GuestEinval = 22;
 constexpr int GuestEexist = 17;
 constexpr int GuestExdev = 18;
 constexpr int GuestEdeadlk = 11;
+constexpr int GuestEnospc = 28;
+constexpr int GuestErofs = 30;
 constexpr int GuestEagain = 35;
 constexpr int GuestEloop = 62;
 constexpr int GuestEnametoolong = 63;
 constexpr int GuestEnotempty = 66;
+constexpr int GuestEnosys = 78;
 constexpr int GuestEoverflow = 84;
 constexpr int GuestAtFdcwd = -100;
 constexpr int GuestAtRemovedir = 0x800;
@@ -106,8 +110,14 @@ std::int64_t CopyLinkTarget(const std::string& target, char* buffer, std::size_t
     return static_cast<std::int64_t>(count);
 }
 
+std::int64_t CopyGuestLinkTarget(const std::filesystem::path& host, char* buffer, std::size_t size) {
+    const auto guest = GuestPathFromHost_nid_no_patch(host);
+    if (guest.empty()) throw std::runtime_error("readlink: the link target " + host.string() + " is outside the guest filesystem");
+    return CopyLinkTarget(guest, buffer, size);
+}
+
 #ifdef _WIN32
-struct SymbolicLinkReparseData {
+struct ReparseHeader {
     ULONG tag;
     USHORT dataLength;
     USHORT reserved;
@@ -115,31 +125,54 @@ struct SymbolicLinkReparseData {
     USHORT substituteNameLength;
     USHORT printNameOffset;
     USHORT printNameLength;
-    ULONG flags;
 };
 constexpr ULONG SymbolicLinkRelative = 1;
+using ReparseData = std::array<std::byte, MAXIMUM_REPARSE_DATA_BUFFER_SIZE>;
 
-bool ReadRelativeSymbolicLink(const std::filesystem::path& native, std::string& target) {
+enum class ReparseLink { None, Relative, Absolute };
+
+std::wstring ReparseName(const ReparseData& data, DWORD size, std::size_t names, USHORT offset, USHORT length) {
+    if (names + offset + length > size) throw std::runtime_error("readlink: malformed link reparse data");
+    std::wstring name(length / sizeof(wchar_t), L'\0');
+    std::memcpy(name.data(), data.data() + names + offset, name.size() * sizeof(wchar_t));
+    return name;
+}
+
+ReparseLink ReadReparseLink(const std::filesystem::path& native, std::filesystem::path& target) {
     const HANDLE handle = CreateFileW(native.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
         throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "readlink: CreateFileW");
-    std::array<std::byte, MAXIMUM_REPARSE_DATA_BUFFER_SIZE> data{};
+    ReparseData data{};
     DWORD size = 0;
     const BOOL read = DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, nullptr, 0, data.data(), static_cast<DWORD>(data.size()), &size, nullptr);
     const DWORD code = GetLastError();
     CloseHandle(handle);
     if (!read) throw std::system_error(static_cast<int>(code), std::system_category(), "readlink: FSCTL_GET_REPARSE_POINT");
-    SymbolicLinkReparseData header{};
-    if (size < sizeof(header)) return false;
+    ReparseHeader header{};
+    if (size < sizeof(header)) return ReparseLink::None;
     std::memcpy(&header, data.data(), sizeof(header));
-    if (header.tag != IO_REPARSE_TAG_SYMLINK || (header.flags & SymbolicLinkRelative) == 0) return false;
-    const std::size_t begin = sizeof(header) + header.substituteNameOffset;
-    if (begin + header.substituteNameLength > size) throw std::runtime_error("readlink: malformed symbolic link reparse data");
-    std::wstring name(header.substituteNameLength / sizeof(wchar_t), L'\0');
-    std::memcpy(name.data(), data.data() + begin, name.size() * sizeof(wchar_t));
-    target = std::filesystem::path(name).generic_string();
-    return true;
+    std::size_t names = sizeof(header);
+    bool relative = false;
+    if (header.tag == IO_REPARSE_TAG_SYMLINK) {
+        ULONG flags = 0;
+        if (size < sizeof(header) + sizeof(flags)) throw std::runtime_error("readlink: malformed link reparse data");
+        std::memcpy(&flags, data.data() + sizeof(header), sizeof(flags));
+        names += sizeof(flags);
+        relative = (flags & SymbolicLinkRelative) != 0;
+    } else if (header.tag != IO_REPARSE_TAG_MOUNT_POINT) {
+        return ReparseLink::None;
+    }
+    auto name = ReparseName(data, size, names, header.substituteNameOffset, header.substituteNameLength);
+    if (relative) {
+        target = std::filesystem::path(name);
+        return ReparseLink::Relative;
+    }
+    auto printName = ReparseName(data, size, names, header.printNameOffset, header.printNameLength);
+    if (!printName.empty()) name = std::move(printName);
+    else if (name.starts_with(L"\\??\\")) name.erase(0, 4);
+    target = std::filesystem::path(name);
+    return ReparseLink::Absolute;
 }
 #endif
 
@@ -147,12 +180,11 @@ std::int64_t ReadNativeLink(const std::filesystem::path& native, char* buffer, s
 #ifdef _WIN32
     const DWORD attributes = GetFileAttributesW(native.wstring().c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        std::string target;
-        if (!ReadRelativeSymbolicLink(native, target)) {
-            NotImplemented_nid_no_patch("readlink of a Windows reparse point other than a relative symbolic link");
-            return -1;
-        }
-        return CopyLinkTarget(target, buffer, size);
+        std::filesystem::path target;
+        const auto link = ReadReparseLink(native, target);
+        if (link == ReparseLink::None) return Fail(GuestEinval);
+        if (link == ReparseLink::Relative) return CopyLinkTarget(target.generic_string(), buffer, size);
+        return CopyGuestLinkTarget(target, buffer, size);
     }
 #endif
     std::error_code error;
@@ -160,9 +192,10 @@ std::int64_t ReadNativeLink(const std::filesystem::path& native, char* buffer, s
     if (error) return Fail(GuestError(error));
     if (status.type() == std::filesystem::file_type::not_found) return Fail(GuestEnoent);
     if (!std::filesystem::is_symlink(status)) return Fail(GuestEinval);
-    const auto target = std::filesystem::read_symlink(native, error).generic_string();
+    const auto target = std::filesystem::read_symlink(native, error);
     if (error) return Fail(GuestError(error));
-    return CopyLinkTarget(target, buffer, size);
+    if (target.is_absolute()) return CopyGuestLinkTarget(target, buffer, size);
+    return CopyLinkTarget(target.generic_string(), buffer, size);
 }
 
 bool HasLongComponent(std::string_view path) {
@@ -258,8 +291,7 @@ int RenamePath(const std::filesystem::path& source, const std::filesystem::path&
 extern "C" {
 
 int APS5_VABI fork_nid_postfix(void) {
-    NotImplemented_nid_no_patch("fork: child processes");
-    return -1;
+    return static_cast<int>(Fail(GuestEnosys));
 }
 
 int APS5_VABI setsid_nid_postfix(void) {
@@ -280,6 +312,7 @@ std::int64_t APS5_VABI readlink_nid_postfix(const char* path, char* buffer, std:
     if (path == nullptr) return Fail(GuestEfault);
     if (*path == '\0') return Fail(GuestEnoent);
     if (size > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) return Fail(GuestEinval);
+    if (std::strlen(path) >= GuestPathMax || HasLongComponent(path)) return Fail(GuestEnametoolong);
     std::filesystem::path native;
     if (const int error = ResolvePathError_nid_no_patch(path, native)) return Fail(error);
     return ReadNativeLink(native, buffer, size);
@@ -290,6 +323,7 @@ std::int64_t APS5_VABI readlinkat_nid_postfix(int fd, const char* path, char* bu
     if (*path == '\0') return Fail(GuestEnoent);
     if (size > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) return Fail(GuestEinval);
     if (fd == GuestAtFdcwd || *path == '/') return readlink_nid_postfix(path, buffer, size);
+    if (std::strlen(path) >= GuestPathMax || HasLongComponent(path)) return Fail(GuestEnametoolong);
     int error = 0;
     const char* base = GetDirectoryDescriptorPath_nid_no_patch(fd, &error);
     if (base == nullptr) return Fail(error);
@@ -388,11 +422,9 @@ int APS5_VABI chroot_nid_postfix(const char* path) {
 
 int APS5_VABI symlink_nid_postfix(const char* target, const char* created) {
     if (target == nullptr || created == nullptr) return static_cast<int>(Fail(GuestEfault));
+    if (std::strlen(target) >= GuestPathMax) return static_cast<int>(Fail(GuestEnametoolong));
     if (*target == '\0' || *created == '\0') return static_cast<int>(Fail(GuestEnoent));
-    if (*target == '/') {
-        NotImplemented_nid_no_patch("symlink: absolute targets");
-        return -1;
-    }
+    if (std::strlen(created) >= GuestPathMax || HasLongComponent(created)) return static_cast<int>(Fail(GuestEnametoolong));
     std::filesystem::path native;
     if (const int error = ResolvePathError_nid_no_patch(created, native)) return static_cast<int>(Fail(error));
     std::error_code error;
@@ -401,25 +433,46 @@ int APS5_VABI symlink_nid_postfix(const char* target, const char* created) {
 #else
     if (std::filesystem::exists(std::filesystem::symlink_status(native, error))) return static_cast<int>(Fail(GuestEexist));
 #endif
-    if (!std::filesystem::is_directory(native.parent_path(), error)) return static_cast<int>(Fail(GuestEnoent));
-    const std::filesystem::path contents(target);
-    const bool directory = std::filesystem::is_directory(native.parent_path() / contents, error);
+    const auto parent = native.parent_path();
+    const auto parentStatus = std::filesystem::status(parent, error);
+    if (!std::filesystem::is_directory(parentStatus))
+        return static_cast<int>(Fail(std::filesystem::exists(parentStatus) || HasNonDirectoryPrefix(native) ? GuestEnotdir : GuestEnoent));
+    std::filesystem::path contents(target);
+    if (*target == '/') {
+        std::filesystem::path host;
+        if (ResolvePathError_nid_no_patch(target, host) != 0)
+            throw std::runtime_error(std::string("symlink: the absolute target ") + target + " has no host path");
+        contents = std::filesystem::absolute(host);
+    }
+    const bool directory = std::filesystem::is_directory(parent / contents, error);
 #ifdef _WIN32
     DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
     if (directory) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
     if (!CreateSymbolicLinkW(native.wstring().c_str(), std::filesystem::path(contents).make_preferred().wstring().c_str(), flags)) {
         const DWORD code = GetLastError();
-        if (code == ERROR_PRIVILEGE_NOT_HELD) return static_cast<int>(Fail(GuestEperm));
-        if (code == ERROR_ALREADY_EXISTS || code == ERROR_FILE_EXISTS) return static_cast<int>(Fail(GuestEexist));
-        if (code == ERROR_PATH_NOT_FOUND) return static_cast<int>(Fail(GuestEnoent));
-        throw std::system_error(static_cast<int>(code), std::system_category(), "symlink");
+        switch (code) {
+        case ERROR_PRIVILEGE_NOT_HELD: return static_cast<int>(Fail(GuestEperm));
+        case ERROR_ALREADY_EXISTS:
+        case ERROR_FILE_EXISTS: return static_cast<int>(Fail(GuestEexist));
+        case ERROR_PATH_NOT_FOUND: return static_cast<int>(Fail(GuestEnoent));
+        case ERROR_ACCESS_DENIED: return static_cast<int>(Fail(GuestEacces));
+        case ERROR_WRITE_PROTECT: return static_cast<int>(Fail(GuestErofs));
+        case ERROR_DISK_FULL:
+        case ERROR_HANDLE_DISK_FULL: return static_cast<int>(Fail(GuestEnospc));
+        case ERROR_FILENAME_EXCED_RANGE: return static_cast<int>(Fail(GuestEnametoolong));
+        default: throw std::system_error(static_cast<int>(code), std::system_category(), "symlink");
+        }
     }
 #else
     if (directory)
         std::filesystem::create_directory_symlink(contents, native, error);
     else
         std::filesystem::create_symlink(contents, native, error);
-    if (error) throw std::system_error(error, "symlink");
+    if (error) {
+        const int guest = FilesystemError(error);
+        if (guest == GuestEio) throw std::system_error(error, "symlink");
+        return static_cast<int>(Fail(guest));
+    }
 #endif
     RecordWrittenPath_nid_no_patch(native);
     return 0;

@@ -35,6 +35,7 @@ char* APS5_VABI getcwd_nid_postfix(char*, std::size_t);
 int APS5_VABI sceKernelOpen(const char*, int, std::uint16_t);
 int APS5_VABI sceKernelClose(int);
 int APS5_VABI setsid_nid_postfix(void);
+int APS5_VABI fork_nid_postfix(void);
 int APS5_VABI link_nid_postfix(const char*, const char*);
 int APS5_VABI symlink_nid_postfix(const char*, const char*);
 int APS5_VABI openat_nid_postfix(int, const char*, int, ...);
@@ -45,6 +46,8 @@ int APS5_VABI renameat_nid_postfix(int, const char*, int, const char*);
 std::int64_t APS5_VABI sceKernelRead(int, void*, std::size_t);
 std::uint16_t APS5_VABI umask_nid_postfix(std::uint16_t);
 int* APS5_VABI __error_nid_postfix();
+void AddPathAlias_nid_no_patch(const char*, const char*);
+void RemovePathAlias_nid_no_patch(const char*);
 }
 
 void Require(bool condition, std::source_location location = std::source_location::current()) {
@@ -65,6 +68,65 @@ bool PathconfThrows(const char* path, int name) {
         return true;
     }
     return false;
+}
+
+bool ReadsLinkOutsideGuest(const std::string& path) {
+    char buffer[64];
+    try {
+        readlink_nid_postfix(path.c_str(), buffer, sizeof(buffer));
+    } catch (const std::runtime_error& error) {
+        return std::strstr(error.what(), "is outside the guest filesystem") != nullptr;
+    }
+    return false;
+}
+
+bool ReadsLink(const std::string& path, const std::string& expected) {
+    char buffer[1024];
+    std::memset(buffer, '#', sizeof(buffer));
+    const auto count = readlink_nid_postfix(path.c_str(), buffer, sizeof(buffer));
+    return count == static_cast<std::int64_t>(expected.size()) && std::memcmp(buffer, expected.data(), expected.size()) == 0 &&
+        buffer[expected.size()] == '#';
+}
+
+void CheckAbsoluteTargets(const std::filesystem::path& root) {
+    const auto guestRoot = "/" + root.filename().string();
+    std::filesystem::create_directory(root / "absolute-dir");
+    std::ofstream(root / "absolute-dir" / "inner.txt") << "xyz";
+    const auto fileLink = (root / "absolute-file").string();
+    Require(symlink_nid_postfix((guestRoot + "/absolute-dir/inner.txt").c_str(), fileLink.c_str()) == 0);
+    Require(ReadsLink(fileLink, guestRoot + "/absolute-dir/inner.txt"));
+    const int opened = sceKernelOpen(fileLink.c_str(), SCE_KERNEL_O_RDONLY, 0);
+    char byte = 0;
+    Require(opened >= 0 && sceKernelRead(opened, &byte, 1) == 1 && byte == 'x' && sceKernelClose(opened) == 0);
+    Require(symlink_nid_postfix((guestRoot + "/absolute-dir/inner.txt").c_str(), fileLink.c_str()) == -1 && Error() == 17);
+    const auto directoryLink = (root / "absolute-directory").string();
+    Require(symlink_nid_postfix((guestRoot + "/absolute-dir").c_str(), directoryLink.c_str()) == 0);
+    Require(ReadsLink(directoryLink, guestRoot + "/absolute-dir"));
+    const int through = sceKernelOpen((directoryLink + "/inner.txt").c_str(), SCE_KERNEL_O_RDONLY, 0);
+    byte = 0;
+    Require(through >= 0 && sceKernelRead(through, &byte, 1) == 1 && byte == 'x' && sceKernelClose(through) == 0);
+    const auto danglingLink = (root / "absolute-dangling").string();
+    Require(symlink_nid_postfix((guestRoot + "/absolute-dir/missing.txt").c_str(), danglingLink.c_str()) == 0);
+    Require(ReadsLink(danglingLink, guestRoot + "/absolute-dir/missing.txt"));
+    AddPathAlias_nid_no_patch("/aliasmount", std::filesystem::canonical(root / "absolute-dir").string().c_str());
+    const auto aliasLink = (root / "absolute-alias").string();
+    Require(symlink_nid_postfix("/aliasmount/inner.txt", aliasLink.c_str()) == 0);
+    Require(ReadsLink(aliasLink, "/aliasmount/inner.txt"));
+    Require(ReadsLink(fileLink, "/aliasmount/inner.txt"));
+    const auto mountLink = (root / "absolute-mount").string();
+    Require(symlink_nid_postfix("/aliasmount", mountLink.c_str()) == 0 && ReadsLink(mountLink, "/aliasmount"));
+    RemovePathAlias_nid_no_patch("/aliasmount");
+    Require(ReadsLink(aliasLink, guestRoot + "/absolute-dir/inner.txt"));
+    Require(ReadsLink(mountLink, guestRoot + "/absolute-dir"));
+    const auto outside = std::filesystem::canonical(std::filesystem::current_path()).parent_path() / ("missing-" + root.filename().string());
+    Require(!std::filesystem::exists(outside));
+    const auto outsideLink = root / "absolute-outside";
+#ifdef _WIN32
+    Require(CreateSymbolicLinkW(outsideLink.wstring().c_str(), outside.wstring().c_str(), SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0);
+#else
+    std::filesystem::create_symlink(outside, outsideLink);
+#endif
+    Require(ReadsLinkOutsideGuest(outsideLink.string()));
 }
 
 bool ChrootThrows(const std::string& path) {
@@ -111,6 +173,9 @@ void CheckPathconf(const std::filesystem::path& root, const std::string& file) {
 
 int main() {
     Require(setsid_nid_postfix() == -1 && Error() == 1);
+    *__error_nid_postfix() = 0;
+    Require(fork_nid_postfix() == -1 && Error() == 78);
+    Require(fork_nid_postfix() == -1 && Error() == 78);
     Require(umask_nid_postfix(0) == 022);
     Require(umask_nid_postfix(07777) == 0);
     Require(umask_nid_postfix(022) == 07777);
@@ -147,9 +212,9 @@ int main() {
     Require(readlink_nid_postfix((root / "missing").string().c_str(), buffer, sizeof(buffer)) == -1 && Error() == 2);
     Require(readlink_nid_postfix("", buffer, sizeof(buffer)) == -1 && Error() == 2);
     Require(readlink_nid_postfix(nullptr, buffer, sizeof(buffer)) == -1 && Error() == 14);
-#ifndef _WIN32
     Require(readlink_nid_postfix((root / std::string(300, 'n')).string().c_str(), buffer, sizeof(buffer)) == -1 && Error() == 63);
-#endif
+    Require(readlink_nid_postfix(("/" + std::string(1024, 'p')).c_str(), buffer, sizeof(buffer)) == -1 && Error() == 63);
+    Require(readlink_nid_postfix((root.generic_string() + "/missing/" + std::string(256, 'n')).c_str(), buffer, sizeof(buffer)) == -1 && Error() == 2);
     std::error_code error;
     const auto link = (root / "link").string();
     std::filesystem::create_symlink("sub/target.txt", link, error);
@@ -286,15 +351,9 @@ int main() {
         Require(symlink_nid_postfix("sub", directoryLink.c_str()) == 0);
         Require(readlink_nid_postfix(directoryLink.c_str(), buffer, sizeof(buffer)) == 3 && std::memcmp(buffer, "sub", 3) == 0);
         const auto absolute = std::filesystem::absolute(root / "absolute");
-        Require(CreateSymbolicLinkW(absolute.wstring().c_str(), std::filesystem::absolute(original).wstring().c_str(),
+        Require(CreateSymbolicLinkW(absolute.wstring().c_str(), std::filesystem::canonical(original).wstring().c_str(),
             SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0);
-        bool refused = false;
-        try {
-            readlink_nid_postfix((root / "absolute").string().c_str(), buffer, sizeof(buffer));
-        } catch (const std::runtime_error& failure) {
-            refused = std::string(failure.what()) == "readlink of a Windows reparse point other than a relative symbolic link not implemented";
-        }
-        Require(refused);
+        Require(ReadsLink((root / "absolute").string(), "/" + root.filename().string() + "/original.bin"));
 #else
         Require(std::filesystem::is_symlink(std::filesystem::symlink_status(symbolic)));
         Require(readlink_nid_postfix(symbolic.c_str(), buffer, sizeof(buffer)) == 12 && std::memcmp(buffer, "original.bin", 12) == 0);
@@ -304,11 +363,18 @@ int main() {
         Require(readlink_nid_postfix(dangling.c_str(), buffer, sizeof(buffer)) == 11 && !std::filesystem::exists(dangling));
         Require(symlink_nid_postfix("missing.bin", dangling.c_str()) == -1 && Error() == 17);
 #endif
+        CheckAbsoluteTargets(root);
     } else {
         Require(created == -1 && Error() == 1);
         std::fprintf(stderr, "symbolic links unavailable: the symlink success cases not tested\n");
     }
     Require(symlink_nid_postfix("original.bin", (root / "missing" / "symbolic").string().c_str()) == -1 && Error() == 2);
+    Require(symlink_nid_postfix("original.bin", (root / "file.txt" / "symbolic").string().c_str()) == -1 && Error() == 20);
+    Require(symlink_nid_postfix("original.bin", (root / "file.txt" / "deeper" / "symbolic").string().c_str()) == -1 && Error() == 20);
+    Require(symlink_nid_postfix(std::string(1024, 't').c_str(), (root / "long-target").string().c_str()) == -1 && Error() == 63);
+    Require(symlink_nid_postfix("original.bin", (root.generic_string() + "/" + std::string(256, 'n')).c_str()) == -1 && Error() == 63);
+    Require(symlink_nid_postfix("original.bin", ("/" + std::string(1024, 'p')).c_str()) == -1 && Error() == 63);
+    Require(!std::filesystem::exists(std::filesystem::symlink_status(root / "long-target")));
     Require(symlink_nid_postfix(nullptr, symbolic.c_str()) == -1 && Error() == 14);
     Require(symlink_nid_postfix("original.bin", "") == -1 && Error() == 2);
     const int base = sceKernelOpen(root.string().c_str(), SCE_KERNEL_O_RDONLY | SCE_KERNEL_O_DIRECTORY, 0);
@@ -336,6 +402,7 @@ int main() {
     Require(readlinkat_nid_postfix(-1, "file.txt", buffer, sizeof(buffer)) == -1 && Error() == 9);
     Require(readlinkat_nid_postfix(base, nullptr, buffer, sizeof(buffer)) == -1 && Error() == 14);
     Require(readlinkat_nid_postfix(base, "", buffer, sizeof(buffer)) == -1 && Error() == 2);
+    Require(readlinkat_nid_postfix(base, std::string(256, 'r').c_str(), buffer, sizeof(buffer)) == -1 && Error() == 63);
     Require(readlinkat_nid_postfix(-1, guestFile.c_str(), buffer, sizeof(buffer)) == -1 && Error() == 22);
     Require(readlinkat_nid_postfix(-100, file.c_str(), buffer, sizeof(buffer)) == -1 && Error() == 22);
     Require(mkdirat_nid_postfix(base, "dir", 0700) == 0 && std::filesystem::is_directory(root / "dir"));
