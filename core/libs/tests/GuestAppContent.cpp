@@ -11,6 +11,7 @@ int APS5_VABI sceAppContentInitialize(const AppContentInitParam*, AppContentBoot
 int APS5_VABI sceAppContentAddcontMount(uint32_t, const NpUnifiedEntitlementLabel*, AppContentMountPoint*);
 int APS5_VABI sceAppContentAddcontUnmount(const AppContentMountPoint*);
 int APS5_VABI sceAppContentAddcontEnqueueDownload(uint32_t, const NpUnifiedEntitlementLabel*);
+int APS5_VABI sceAppContentGetAddcontDownloadProgress(uint32_t, const NpUnifiedEntitlementLabel*, void*);
 int APS5_VABI sceAppContentTemporaryDataMount2(uint32_t, AppContentMountPoint*);
 int APS5_VABI sceAppContentTemporaryDataUnmount(const AppContentMountPoint*);
 int APS5_VABI sceAppContentTemporaryDataFormat(const AppContentMountPoint*);
@@ -89,6 +90,14 @@ int main() {
     NpUnifiedEntitlementLabel padded = label;
     padded.padding[2] = 1;
     Require(sceAppContentAddcontEnqueueDownload(0, &padded) == ErrorParameter);
+    unsigned char progress[16];
+    std::memset(progress, 0x5a, sizeof(progress));
+    Require(sceAppContentGetAddcontDownloadProgress(0, &label, progress) == ErrorNotFound);
+    Require(sceAppContentGetAddcontDownloadProgress(7, &label, progress) == ErrorNotFound);
+    for (unsigned char byte : progress) Require(byte == 0x5a);
+    Require(sceAppContentGetAddcontDownloadProgress(0, nullptr, progress) == ErrorParameter);
+    Require(sceAppContentGetAddcontDownloadProgress(0, &label, nullptr) == ErrorParameter);
+    Require(sceAppContentGetAddcontDownloadProgress(0, &padded, progress) == ErrorParameter);
 
     std::filesystem::create_directory(directory / "temp0");
     { std::ofstream file(directory / "temp0" / "old.txt"); file << "previous run"; }

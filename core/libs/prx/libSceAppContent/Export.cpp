@@ -28,6 +28,13 @@ struct AppContentAddcontInfo {
     uint32_t status;
 };
 
+struct AppContentAddcontDownloadProgress {
+    uint64_t data_size;
+    uint64_t downloaded_size;
+};
+
+static_assert(sizeof(AppContentAddcontDownloadProgress) == 16);
+
 namespace {
 
 struct TemporaryData {
@@ -41,6 +48,10 @@ struct TemporaryData {
 TemporaryData& Temporary() {
     static TemporaryData state;
     return state;
+}
+
+bool IsValidEntitlementLabel(const NpUnifiedEntitlementLabel* label) {
+    return label && std::none_of(std::begin(label->padding), std::end(label->padding), [](char value) { return value != 0; });
 }
 
 bool IsTemporaryMountPoint(const AppContentMountPoint* mountPoint) {
@@ -175,12 +186,13 @@ int APS5_VABI sceAppContentTemporaryDataUnmount(const AppContentMountPoint* moun
 
 int APS5_VABI sceAppContentAddcontEnqueueDownload(uint32_t service_label, const NpUnifiedEntitlementLabel* entitlement_label) {
     (void)service_label;
-    if (!entitlement_label || std::any_of(std::begin(entitlement_label->padding), std::end(entitlement_label->padding), [](char value) { return value != 0; })) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    if (!IsValidEntitlementLabel(entitlement_label)) return SCE_APP_CONTENT_ERROR_PARAMETER;
     return SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 
-int APS5_VABI sceAppContentGetAddcontDownloadProgress(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceAppContentGetAddcontDownloadProgress(uint32_t service_label, const NpUnifiedEntitlementLabel* entitlement_label, AppContentAddcontDownloadProgress* progress) {
+    (void)service_label;
+    if (!IsValidEntitlementLabel(entitlement_label) || !progress) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    return SCE_APP_CONTENT_ERROR_NOT_FOUND;
 }
 }
