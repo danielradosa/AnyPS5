@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <source_location>
 #include <span>
 #include <tuple>
 #include <unordered_set>
@@ -55,7 +56,7 @@ public:
     // so a dispatch, fill or copy whose leading barrier asks for a subset of them may skip it
     // (the [barriers] line counts the merges). The call clears the mask (whatever the caller
     // records is assumed uncovered until it marks); a new batch starts uncovered.
-    VkCommandBuffer Commands(VkAccessFlags* coveredAccess = nullptr);
+    VkCommandBuffer Commands(VkAccessFlags* coveredAccess = nullptr, std::source_location where = std::source_location::current());
     // After a trailing barrier with ALL_COMMANDS as its destination stage: `access` is its
     // destination access mask.
     void MarkCovered(VkAccessFlags access);
@@ -65,7 +66,13 @@ public:
         bool continued = false;
         bool barrier = true;
     };
-    DrawPassStart StartDrawPass(std::uint64_t key, bool forced, bool fenced, const PassAccess& access);
+    // `forced`: why the draw cannot continue the open pass (capture, reads target, ...), or null.
+    DrawPassStart StartDrawPass(std::uint64_t key, const char* forced, bool fenced, const PassAccess& access);
+    // APS5_PASS_BREAKS=1 (with the draw or GPU profiler): a draw beginning a render pass on `target`
+    // (its first color target, 1 = depth-only) counts why the pass before it ended and whether that
+    // pass had the same target; the [passes] line lists the counts every 10 s.
+    static bool PassBreaks();
+    void CountPassBegin(std::uint64_t target);
     void LeaveRenderPassOpen(std::uint64_t key, std::uint32_t timing, bool fenced, const PassAccess& access, std::function<void(VkCommandBuffer)> afterPass = {});
     // DCC "uncompressed" key stores (DccMetadata.cpp StoreUncompressedOnGpu): queued on the open
     // batch and recorded as one run (one barrier pair for every queued fill) at Submit, before a
@@ -79,8 +86,9 @@ public:
     bool QueuedKeyStoreOverlaps(std::uint64_t address, std::size_t bytes) const;
     // Whether `overlaps(begin, end)` holds for a queued store's range.
     bool AnyQueuedKeyStore(const std::function<bool(std::uint64_t, std::uint64_t)>& overlaps) const;
-    void FlushKeyStores();
-    void FlushKeyStoresOverlapping(std::uint64_t address, std::size_t bytes) { if (HasQueuedKeyStores() && QueuedKeyStoreOverlaps(address, bytes)) FlushKeyStores(); }
+    // `where` (also on the submit and sync calls below): the caller the [passes] line names.
+    void FlushKeyStores(std::source_location where = std::source_location::current());
+    void FlushKeyStoresOverlapping(std::uint64_t address, std::size_t bytes, std::source_location where = std::source_location::current()) { if (HasQueuedKeyStores() && QueuedKeyStoreOverlaps(address, bytes)) FlushKeyStores(where); }
     bool Recording() const { return open != nullptr; }
     bool Idle() const { return open == nullptr && inFlight.empty(); }
     // Whether recorded work still has completion actions (write-backs the CPU must see) to run.
@@ -91,7 +99,7 @@ public:
     std::size_t OpenKeptBytes() const { return open != nullptr ? open->keptBytes : 0; }
     void FlushDeferredReleases();
     static constexpr std::size_t KeptBytesBudget = std::size_t{512} << 20u;
-    void BoundKeptBytes();
+    void BoundKeptBytes(std::source_location where = std::source_location::current());
     std::size_t InFlightKeptBytes() const { return inFlightKeptBytes; }
     enum class SnapshotUse : std::uint8_t { Storage, Vertex, Index16, Index32, Index16Restart, Index32Restart };
     static constexpr std::size_t DrawSnapshotBudget = std::size_t{1024} << 20u;
@@ -174,10 +182,10 @@ public:
     };
     std::optional<PendingWriteInfo> DescribePendingWrite(std::uint64_t address, std::size_t bytes) const;
     // Ends and submits the open batch without waiting.
-    void Submit();
+    void Submit(std::source_location where = std::source_location::current());
     // Submits the open batch and returns the serial of the newest submitted batch (0 when nothing was
     // ever submitted); WaitSerial(serial) then covers all recorded work.
-    std::uint64_t SubmitAndEpoch();
+    std::uint64_t SubmitAndEpoch(std::source_location where = std::source_location::current());
     bool HasTimeline() const { return timeline != VK_NULL_HANDLE; }
     // Waits until every batch up to `serial` completed on the GPU. Called WITHOUT GuestMemory::GpuMutex:
     // it touches only the immutable timeline semaphore (the caller keeps the device alive). Requires
@@ -187,7 +195,7 @@ public:
     // front only; tolerates batches another thread finished meanwhile. Later batches stay in flight.
     void FinishUpTo(std::uint64_t serial);
     // Submits and waits for every batch, running completions in order.
-    void Sync();
+    void Sync(std::source_location where = std::source_location::current());
     void CountSamples();
     bool RecordMeshArguments(VkCommandBuffer commands, VkDeviceAddress record, VkDeviceAddress arguments, std::span<const std::uint32_t, 7> rules);
     std::uint64_t SamplesTotal();
@@ -219,7 +227,7 @@ public:
     // completions run under it, so other queues do not queue behind a CPU read's wait. Inside a
     // batch's completion action no wait is made at all: every batch still in flight was recorded
     // after the completing one, and its store is that batch's in-order write (see Recorder.cpp).
-    void SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUnlocked = false);
+    void SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUnlocked = false, std::source_location where = std::source_location::current());
     // Completes batches that already finished; returns whether nothing is in flight.
     bool Reap();
     std::uint64_t Submissions() const { return submissions; }
@@ -729,15 +737,24 @@ private:
     // form, toward the host only); returns whether the batch's host-read barrier was included.
     bool closeStoreRun(bool atSubmit = false);
     // Ends the render pass a draw left open (vkCmdEndRenderPass, the pass's trailing barrier).
-    void endOpenRenderPass(bool barrier = true);
+    // `why`: the [passes] reason (null: `where`, the code that ended it).
+    void endOpenRenderPass(bool barrier = true, const char* why = nullptr, std::source_location where = std::source_location::current());
+    // See CountPassBegin: how the last render pass ended and the target of the open one.
+    struct PassEnd {
+        const char* why = "batch start";
+        std::source_location where{};
+        std::uint64_t target = 0;
+        std::uint32_t queue = 0;
+    } lastPassEnd;
+    std::uint64_t openPassTarget = 0;
     // Records the queued key stores as one run (`forWriter`: before a command writing, reading or
     // labelling over one, not at Submit).
-    void recordKeyStores(bool forWriter);
+    void recordKeyStores(bool forWriter, const char* why = "key stores", std::source_location where = std::source_location::current());
 
     // The unlocked wait of SyncThrough(waitUnlocked): the target batch (submitting the open one when
     // it is the target), the timeline wait with the mutex released, then the completions up to it.
     // Returns false when the locked path must run instead (no timeline, nested acquisition, off).
-    bool syncThroughUnlocked(std::uint64_t address, std::uint64_t end, int source, const void* site);
+    bool syncThroughUnlocked(std::uint64_t address, std::uint64_t end, int source, const void* site, std::source_location where);
     // `source` is the CountSync source the wait is attributed to.
     void finish(std::unique_ptr<Batch> batch, bool wait, int source, bool releaseNow = false);
     void release(Batch& batch) noexcept;

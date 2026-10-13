@@ -13,7 +13,7 @@
 
 namespace AgcDriver::Graphics {
 Recorder* Recorder::Active() { return nullptr; }
-void Recorder::Submit() { Require(false, "the device tests have no recorder"); }
+void Recorder::Submit(std::source_location) { Require(false, "the device tests have no recorder"); }
 bool Recorder::Reap() { Require(false, "the device tests have no recorder"); return false; }
 }
 

@@ -1720,8 +1720,11 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     const bool unknownMemory = addressBased || resources.UsesAddressTable() || resources.HasCopiedWrites();
     const PassAccess passAccess{passReads, resources.GpuWrites(), passImages, passAttachments, unknownMemory, unknownMemory};
     const bool fenced = state.depth.has_value() || !record.proxies.empty();
-    const auto start = recorder->StartDrawPass(passKey, capture || readsTarget || gpuIndirect || meshIndirect, fenced, passAccess);
+    const char* forced = capture ? "capture" : readsTarget ? "reads target" : gpuIndirect ? "gpu indirect" : meshIndirect ? "mesh indirect" : nullptr;
+    const auto start = recorder->StartDrawPass(passKey, forced, fenced, passAccess);
     const bool continued = start.continued;
+    const auto passTarget = record.targets.empty() || record.targets.front() == nullptr ? 1 : record.targets.front()->Descriptor().baseAddress;
+    if (!continued) recorder->CountPassBegin(passTarget);
     outcome.passContinued = continued;
     outcome.passBegun = !continued;
     const auto commands = start.commands;
@@ -1732,7 +1735,7 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     // APS5_GPU_TIME_BY_PASS=1: the range is keyed by the pass's first color target (depth-only: 1), so
     // [gputime] lists passes by target among its programs instead of the draw class.
     static const bool byPass = std::getenv("APS5_GPU_TIME_BY_PASS") != nullptr;
-    const auto passTimingKey = byPass ? (record.targets.empty() || record.targets.front() == nullptr ? 1 : record.targets.front()->Descriptor().baseAddress) : Recorder::ClassKey(CommandClass::Draw);
+    const auto passTimingKey = byPass ? passTarget : Recorder::ClassKey(CommandClass::Draw);
     const auto drawTiming = !continued ? recorder->BeginGpuTiming(passTimingKey) : Recorder::NoTiming;
     if (!continued && Recorder::BarrierValidate()) {
         auto reads = resources.InPlaceReads();

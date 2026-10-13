@@ -1358,12 +1358,12 @@ std::uint64_t Recorder::ReapsWithWork() {
     return holdCounters.reapsWithWork;
 }
 
-VkCommandBuffer Recorder::Commands(VkAccessFlags* coveredAccess) {
+VkCommandBuffer Recorder::Commands(VkAccessFlags* coveredAccess, std::source_location where) {
     ensureOpen();
     // Work recorded after a draw's render pass or an inline store run must see their writes: the
     // pass's end and the run's trailing barrier go in first (a per-batch run waits for Submit, or
     // for a caller whose ranges overlap a queued store: FlushStores).
-    if (open->renderPass.open) endOpenRenderPass();
+    if (open->renderPass.open) endOpenRenderPass(true, nullptr, where);
     if (open->run.open && !LabelRunsPerBatch()) closeStoreRun();
     if (coveredAccess != nullptr) *coveredAccess = open->coveredAccess;
     open->coveredAccess = 0;
@@ -1374,11 +1374,14 @@ void Recorder::MarkCovered(VkAccessFlags access) {
     if (open != nullptr) open->coveredAccess = access;
 }
 
-Recorder::DrawPassStart Recorder::StartDrawPass(std::uint64_t key, bool forced, bool fenced, const PassAccess& access) {
+Recorder::DrawPassStart Recorder::StartDrawPass(std::uint64_t key, const char* forced, bool fenced, const PassAccess& access) {
     ensureOpen();
     auto& pass = open->renderPass;
-    if (!pass.open || forced || (countingSamples && segmentMode() && !segmentSlotReady(*open))) {
+    if (!pass.open || forced != nullptr || (countingSamples && segmentMode() && !segmentSlotReady(*open))) {
+        const bool ended = pass.open;
+        const bool keyDiffers = pass.open && pass.key != key;
         const auto commands = Commands();
+        if (ended) lastPassEnd.why = keyDiffers ? "pass key" : forced != nullptr ? forced : "sample segment";
         open->passHazards.Clear();
         open->passHazards.BeginPass();
         return {commands, false, true};
@@ -1387,7 +1390,8 @@ Recorder::DrawPassStart Recorder::StartDrawPass(std::uint64_t key, bool forced, 
     if (hazard == PassHazard::None && pass.key == key) return {open->commands, true, false};
     const bool merge = MergeBarriers() && !fenced && !pass.fenced && !pass.afterPass;
     const bool elide = merge && hazard == PassHazard::None;
-    endOpenRenderPass(!merge);
+    static constexpr const char* HazardReasons[] = {"hazard", "hazard raw", "hazard waw", "hazard war", "hazard image", "hazard unknown read", "hazard unknown write"};
+    endOpenRenderPass(!merge, pass.key != key ? "pass key" : HazardReasons[static_cast<std::size_t>(hazard)]);
     const auto commands = Commands();
     if (!elide) open->passHazards.Clear();
     open->passHazards.BeginPass();
@@ -1407,8 +1411,9 @@ void Recorder::LeaveRenderPassOpen(std::uint64_t key, std::uint32_t timing, bool
     open->passHazards.Add(access);
 }
 
-void Recorder::endOpenRenderPass(bool barrier) {
+void Recorder::endOpenRenderPass(bool barrier, const char* why, std::source_location where) {
     auto& pass = open->renderPass;
+    lastPassEnd = {why, where, openPassTarget, GuestMemory::GpuLockThreadTag()};
     if (open->segmentActive) endSegment(*open);
     EndRenderPass(context, open->commands);
     // The pass's attachment and shader writes are visible to everything recorded after it (the
@@ -1453,15 +1458,16 @@ bool Recorder::AnyQueuedKeyStore(const std::function<bool(std::uint64_t, std::ui
     return std::any_of(open->keyStores.begin(), open->keyStores.end(), [&](const Batch::KeyStore& store) { return overlaps(store.begin, store.end); });
 }
 
-void Recorder::FlushKeyStores() {
+void Recorder::FlushKeyStores(std::source_location where) {
     if (open == nullptr || open->keyStores.empty()) return;
-    recordKeyStores(true);
+    recordKeyStores(true, "key stores", where);
 }
 
-void Recorder::recordKeyStores(bool forWriter) {
+void Recorder::recordKeyStores(bool forWriter, const char* why, std::source_location where) {
     auto stores = std::move(open->keyStores);
     open->keyStores.clear();
     if (stores.empty()) return;
+    if (open->renderPass.open) endOpenRenderPass(true, why, where);
     const auto commands = Commands();
     const auto timing = beginTiming(ClassKey(CommandClass::DccKeyStore));
     // Ordered behind every earlier recorded read or write of the ranges (the title's DCC clear or
@@ -1556,8 +1562,8 @@ void Recorder::RecordStore(VkBuffer buffer, VkDeviceSize offset, std::span<const
     }
     // A label says the work before it is done: the queued key stores (results of that work) land
     // ahead of every store of the run.
-    if (!open->keyStores.empty()) recordKeyStores(true);
-    if (open->renderPass.open) endOpenRenderPass();
+    if (!open->keyStores.empty()) recordKeyStores(true, "label store");
+    if (open->renderPass.open) endOpenRenderPass(true, "label store");
     open->coveredAccess = 0;
     // Two transfers to the same bytes have no order of their own within the run.
     const auto overlapsRecorded = [&] { return std::any_of(run.recorded.begin(), run.recorded.end(), [&](const auto& store) { return std::get<0>(store) == buffer && offset < std::get<2>(store) && std::get<1>(store) < end; }); };
@@ -1628,8 +1634,8 @@ bool Recorder::closeStoreRun(bool atSubmit) {
         if (stores.empty()) return false;
         // A label says the work before it is done: the queued key stores (results of that work)
         // land ahead of every store of the run, and the pass a draw left open ends.
-        if (!open->keyStores.empty()) recordKeyStores(true);
-        if (open->renderPass.open) endOpenRenderPass();
+        if (!open->keyStores.empty()) recordKeyStores(true, "store run");
+        if (open->renderPass.open) endOpenRenderPass(true, "store run");
         const auto commands = open->commands;
         run.timing = beginTiming(ClassKey(CommandClass::LabelRun));
         if (BarrierValidate()) {
@@ -1753,6 +1759,9 @@ std::mutex timingMutex;
 std::map<std::uint64_t, TimingTotals> timingByKey;
 double timingProgramMs = 0, timingClassMs = 0, timingUnionMs = 0, timingBatchMs = 0;
 std::uint64_t timingBatches = 0;
+// APS5_PASS_BREAKS: passes begun by (target, previous pass had the same target, why it ended).
+std::mutex passBreakMutex;
+std::map<std::tuple<std::uint64_t, bool, std::string>, std::uint64_t> passBreaks;
 
 bool DrawOrGpuProfiled() {
     static const bool profiled = std::getenv("APS5_PROFILE_DRAW") != nullptr || Recorder::GpuTimingEnabled();
@@ -1764,7 +1773,7 @@ void reportBarriers() {
     static auto lastReport = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
     if (now - lastReport < std::chrono::seconds(10)) return;
-    lastReport = now;
+    const auto windowStart = std::exchange(lastReport, now);
     std::uint64_t total = 0, merged = 0;
     std::string line, mergedLine;
     for (std::size_t i = 0; i < CommandClasses; ++i) {
@@ -1802,6 +1811,29 @@ void reportBarriers() {
     }
     AgcDriver::ProfilePrint_nid_no_patch("\n");
     AgcDriver::ProfilePrint_nid_no_patch("[samples] occlusion dumps (cumulative): %llu queued (%llu inside an open pass), %llu recorded at once; %llu segments closed; %llu folds of queued dumps\n", static_cast<unsigned long long>(dumpsQueued.load(std::memory_order_relaxed)), static_cast<unsigned long long>(dumpsQueuedInPass.load(std::memory_order_relaxed)), static_cast<unsigned long long>(dumpsAtOnce.load(std::memory_order_relaxed)), static_cast<unsigned long long>(segmentsClosed.load(std::memory_order_relaxed)), static_cast<unsigned long long>(dumpFolds.load(std::memory_order_relaxed)));
+    if (Recorder::PassBreaks()) {
+        const auto seconds = std::chrono::duration<double>(now - windowStart).count();
+        decltype(passBreaks) taken;
+        {
+            std::lock_guard lock(passBreakMutex);
+            taken.swap(passBreaks);
+        }
+        std::vector<std::pair<std::uint64_t, const decltype(passBreaks)::key_type*>> sorted;
+        std::uint64_t begun = 0;
+        for (const auto& [key, count] : taken) {
+            sorted.emplace_back(count, &key);
+            begun += count;
+        }
+        std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::string text;
+        for (std::size_t i = 0; i < sorted.size() && i < 48; ++i) {
+            const auto& [target, same, why] = *sorted[i].second;
+            char entry[160];
+            std::snprintf(entry, sizeof(entry), " 0x%llx<-%s %s x%llu", static_cast<unsigned long long>(target), same ? "same" : "other", why.c_str(), static_cast<unsigned long long>(sorted[i].first));
+            text += entry;
+        }
+        AgcDriver::ProfilePrint_nid_no_patch("[passes] %llu begun (%.0f s); by target<-previous pass, why it ended:%s\n", static_cast<unsigned long long>(begun), seconds, text.c_str());
+    }
 }
 
 }
@@ -1946,7 +1978,7 @@ void Recorder::CountSamples() {
     gpuSampleCounter();
     countingSamples = true;
     if (segmentMode() || open == nullptr || open->samples != VK_NULL_HANDLE) return;
-    if (open->renderPass.open) endOpenRenderPass();
+    if (open->renderPass.open) endOpenRenderPass(true, "sample count");
     beginSamples(*open);
 }
 
@@ -2425,6 +2457,31 @@ void Recorder::readGpuTiming(Batch& batch) {
     reportBarriers();
 }
 
+bool Recorder::PassBreaks() {
+    static const bool enabled = std::getenv("APS5_PASS_BREAKS") != nullptr && DrawOrGpuProfiled();
+    return enabled;
+}
+
+void Recorder::CountPassBegin(std::uint64_t target) {
+    const auto previous = lastPassEnd;
+    openPassTarget = target;
+    lastPassEnd = {"no pass ended", {}, target, 0};
+    if (!PassBreaks()) return;
+    // "why file:line" (the internal reason and the caller that ended the pass), plus the ending
+    // thread's queue tag when it is not the one beginning this pass.
+    std::string file = previous.where.file_name();
+    if (const auto slash = file.find_last_of("/\\"); slash != std::string::npos) file.erase(0, slash + 1);
+    std::string why = previous.why != nullptr ? previous.why : "";
+    if (previous.where.line() != 0) why += (why.empty() ? "" : " ") + file + ":" + std::to_string(previous.where.line());
+    if (previous.where.line() != 0 && previous.queue != GuestMemory::GpuLockThreadTag()) {
+        char tag[32];
+        std::snprintf(tag, sizeof(tag), " [q 0x%x]", previous.queue);
+        why += tag;
+    }
+    std::lock_guard lock(passBreakMutex);
+    ++passBreaks[{target, previous.target == target, std::move(why)}];
+}
+
 bool Recorder::FlipReadCheck() {
     static const bool enabled = std::getenv("APS5_FLIP_READ_CHECK") != nullptr;
     return enabled;
@@ -2479,9 +2536,9 @@ void Recorder::KeepBytes(const void* owner, std::size_t bytes) {
     if (open->keptOwners.insert(owner).second) open->keptBytes += bytes;
 }
 
-void Recorder::BoundKeptBytes() {
+void Recorder::BoundKeptBytes(std::source_location where) {
     if (!GuestMemory::GpuMutex().HeldByThisThread()) return;
-    if (open != nullptr && open->keptBytes >= KeptBytesBudget) Submit();
+    if (open != nullptr && open->keptBytes >= KeptBytesBudget) Submit(where);
     if (DeferredBytes() != 0 && inFlightKeptBytes + DeferredBytes() > 2 * KeptBytesBudget) DestroyDeferred(TakeDeferred(), false);
     while (!inFlight.empty() && inFlightKeptBytes > 2 * KeptBytesBudget) {
         auto batch = std::move(inFlight.front());
@@ -3131,7 +3188,7 @@ bool Recorder::writtenBackSince(std::uint64_t sequence, std::uint64_t begin, std
     return false;
 }
 
-void Recorder::Submit() {
+void Recorder::Submit(std::source_location where) {
     PerformanceTimer frameTiming("Recorder.Submit");
     // The work count is cleared even when nothing is open: the driver counts a dispatch after its
     // call returns (outside the mutex), so a submit by another thread in between leaves a stale
@@ -3141,8 +3198,8 @@ void Recorder::Submit() {
     dropStaleHoldKept();
     if (open == nullptr) return;
     GuestMemory::AssertGpuLockHeld("Recorder::Submit");
-    if (!open->keyStores.empty()) recordKeyStores(false);
-    if (open->renderPass.open) endOpenRenderPass();
+    if (!open->keyStores.empty()) recordKeyStores(false, "submit", where);
+    if (open->renderPass.open) endOpenRenderPass(true, "submit", where);
     const bool segments = segmentMode();
     if (!segments) {
         endSamples(*open);
@@ -3202,8 +3259,8 @@ void Recorder::Submit() {
     if (activeRecorder == this) pendingLabelSince.store(NoPendingLabel, std::memory_order_release);
 }
 
-std::uint64_t Recorder::SubmitAndEpoch() {
-    Submit();
+std::uint64_t Recorder::SubmitAndEpoch(std::source_location where) {
+    Submit(where);
     return inFlight.empty() ? 0 : submissions;
 }
 
@@ -3276,11 +3333,11 @@ void Recorder::FinishUpTo(std::uint64_t serial) {
     activeSyncSite = previousSite;
 }
 
-void Recorder::Sync() {
+void Recorder::Sync(std::source_location where) {
     PerformanceTimer frameTiming("Recorder.Sync");
     const auto source = std::exchange(announcedSource, 4);
     const void* site = std::exchange(announcedSite, nullptr);
-    Submit();
+    Submit(where);
     // Counted only when something is waited for: an idle recorder's Sync is free and would only
     // swamp the site table with the callers that check nothing first.
     const auto previousSite = inFlight.empty() ? activeSyncSite : BeginSyncSite(source, site != nullptr ? site : __builtin_return_address(0));
@@ -3297,7 +3354,7 @@ void Recorder::FlushDeferredReleases() {
     ReleaseDeferredKeeps();
 }
 
-void Recorder::SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUnlocked) {
+void Recorder::SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUnlocked, std::source_location where) {
     if (bytes == 0) return;
     const auto end = address + bytes;
     if (completionDepth != 0 && !CompletionStoreSyncs()) {
@@ -3331,7 +3388,7 @@ void Recorder::SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUn
         // The hook's wait without the mutex: its own acquisition is the outermost on this thread.
         const auto source = announcedSource;
         const void* site = announcedSite != nullptr ? announcedSite : __builtin_return_address(0);
-        if (syncThroughUnlocked(address, end, source, site)) return;
+        if (syncThroughUnlocked(address, end, source, site, where)) return;
         // A completion-store wait (kill switch above) is already counted as 'waited'.
         if (completionDepth == 0) ++holdCounters.hookLockedWaits;
     }
@@ -3340,7 +3397,7 @@ void Recorder::SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUn
         if (announcedSite == nullptr) announcedSite = __builtin_return_address(0);
         // The open batch's work has not run; without one the newest in flight is the target.
         if (open != nullptr || (!inFlight.empty() && unsignaled(inFlight.back()->serial))) ++hookRealWaits;
-        Sync();
+        Sync(where);
         return;
     }
     const auto source = std::exchange(announcedSource, 4);
@@ -3424,7 +3481,7 @@ void ReportSyncWaits(SyncWaitStats& stats) {
 
 }
 
-bool Recorder::syncThroughUnlocked(std::uint64_t address, std::uint64_t end, int source, const void* site) {
+bool Recorder::syncThroughUnlocked(std::uint64_t address, std::uint64_t end, int source, const void* site, std::source_location where) {
     // Only for the outermost acquisition: a nested hook (inside a dispatch's hold) must not give
     // up the caller's mutex, and a thread that waits here holds nothing the relock could invert
     // (the hook took the mutex from a depth of 0 with the same locks held).
@@ -3434,7 +3491,7 @@ bool Recorder::syncThroughUnlocked(std::uint64_t address, std::uint64_t end, int
     // SyncThrough disabled everything is the target as well.
     std::uint64_t targetSerial = 0;
     if (!SyncThroughEnabled() || (open != nullptr && overlaps(*open, address, end))) {
-        Submit();
+        Submit(where);
         targetSerial = submissions;
     } else {
         for (auto it = inFlight.rbegin(); it != inFlight.rend(); ++it) {

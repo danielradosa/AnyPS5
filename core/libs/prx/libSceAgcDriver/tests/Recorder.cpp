@@ -4330,7 +4330,7 @@ public:
     CoverPass& operator=(const CoverPass&) = delete;
 
     bool Draw(Recorder& recorder) const {
-        const auto start = recorder.StartDrawPass(PassKey, false, false, PassAccess{});
+        const auto start = recorder.StartDrawPass(PassKey, nullptr, false, PassAccess{});
         const bool continued = start.continued;
         const auto commands = start.commands;
         if (!continued) {
