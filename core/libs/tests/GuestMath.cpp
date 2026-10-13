@@ -43,7 +43,10 @@ long double APS5_VABI frexpl_nid_postfix(long double, int*);
 struct LibcFloatConstant { std::uint32_t bits[4]; };
 extern LibcFloatConstant _FInf_nid_postfix;
 extern LibcFloatConstant _FNan_nid_postfix;
+struct alignas(16) LibcDoubleConstant { std::uint16_t words[8]; };
+extern LibcDoubleConstant _Inf_nid_postfix;
 short APS5_VABI _FDtest_nid_postfix(const float*);
+short APS5_VABI _Dtest_nid_postfix(const double*);
 int APS5_VABI __fpclassifyf_nid_postfix(float);
 int APS5_VABI isnanf_nid_postfix(float);
 int APS5_VABI __signbitl_nid_postfix(long double);
@@ -634,6 +637,27 @@ static void CheckMissingClassificationExports() {
     Require(__signbitl_nid_postfix(negativeNan) == 1);
 }
 
+static void CheckDoubleClassification() {
+    const struct { std::uint64_t bits; short code; } cases[] = {
+        {0x0000000000000000ull, 0}, {0x8000000000000000ull, 0},
+        {0x0000000000000001ull, -2}, {0x800fffffffffffffull, -2},
+        {0x0010000000000000ull, -1}, {0xbff0000000000000ull, -1}, {0x7fefffffffffffffull, -1},
+        {0x7ff0000000000000ull, 1}, {0xfff0000000000000ull, 1},
+        {0x7ff0000000000001ull, 2}, {0x7ff8000000000000ull, 2}, {0xfff8000000000000ull, 2},
+    };
+    for (const auto& test : cases) {
+        double value;
+        std::memcpy(&value, &test.bits, sizeof(value));
+        if (_Dtest_nid_postfix(&value) != test.code) {
+            std::fprintf(stderr, "Guest _Dtest failed for %016llx\n", static_cast<unsigned long long>(test.bits));
+            std::abort();
+        }
+    }
+    const std::uint16_t infinityWords[8] = {0, 0, 0, 0x7ff0, 0, 0, 0, 0};
+    Require(std::memcmp(_Inf_nid_postfix.words, infinityWords, sizeof(infinityWords)) == 0);
+    Require(_Dtest_nid_postfix(reinterpret_cast<const double*>(&_Inf_nid_postfix)) == 1);
+}
+
 static void CheckDoubleRounding(double value, std::int64_t expected, bool invalid) {
     for (const bool useLlround : {false, true}) {
         std::feclearexcept(FE_ALL_EXCEPT);
@@ -911,4 +935,5 @@ int main() {
     CheckAtanhf();
     CheckHypotSpecialValue();
     CheckFmodErrno();
+    CheckDoubleClassification();
 }
