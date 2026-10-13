@@ -6,7 +6,7 @@
 
 ### Unknown function info
 
-- [sceAudioInIsPadEmbeddedMic](../../../core/libs/prx/libSceAudioIn/Export.cpp) (libSceAudioIn) - name from its NID (`X+4jdIS75P0`); signature `int32_t(int32_t handle)` from the Ghost of Yotei (PPSA26344) call site in #2355; the result's meaning is unconfirmed, so it still throws rather than invent one
+- [sceAudioInIsPadEmbeddedMic](../../../core/libs/prx/libSceAudioIn/Export.cpp) (libSceAudioIn) - name from its NID (`X+4jdIS75P0`); signature `int32_t(int32_t handle)` from the Ghost of Yotei (PPSA26344) call site in #2355. Astro Bot (PPSA21567) compares the result with 1 at both of its call sites and takes 1 to mean that the port captures from the pad's microphone. A port reports 1 when it captures from the host's default recording device and that device's name contains "DualSense", the match AudioOut2 uses to find the pad's speaker, and 0 otherwise, also without a device; unknown handles return `0x80260101` like the other AudioIn calls. The console's code for an unknown handle and whether the result follows a change of device after the port opened are unknown
 
 ### Functional
 

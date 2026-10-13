@@ -35,6 +35,7 @@ struct Port {
     std::uint32_t samples = 0;
     std::uint32_t frameBytes = 0;
     SDL_AudioDeviceID device = 0;
+    bool padMicrophone = false;
     Clock::duration grain{};
     Clock::time_point next{};
 };
@@ -69,6 +70,26 @@ SDL_AudioDeviceID openDevice(std::uint32_t freq, std::uint32_t samples, const Fo
     return device;
 }
 
+bool namesPadMicrophone(const char* name) {
+    constexpr char needle[] = "dualsense";
+    constexpr std::size_t length = sizeof(needle) - 1;
+    for (const char* start = name; *start != '\0'; ++start) {
+        std::size_t matched = 0;
+        while (matched < length && start[matched] != '\0' && (start[matched] | 0x20) == needle[matched]) ++matched;
+        if (matched == length) return true;
+    }
+    return false;
+}
+
+bool defaultCaptureIsPadMicrophone() {
+    char* name = nullptr;
+    SDL_AudioSpec spec{};
+    if (SDL_GetDefaultAudioInfo(&name, &spec, 1) != 0 || name == nullptr) return false;
+    const bool pad = namesPadMicrophone(name);
+    SDL_free(name);
+    return pad;
+}
+
 Port* find(int handle) {
     if (handle <= 0 || static_cast<std::size_t>(handle) > g_ports.size()) return nullptr;
     Port& port = g_ports[static_cast<std::size_t>(handle - 1)];
@@ -95,7 +116,8 @@ int openPort(std::uint32_t len, std::uint32_t freq, std::uint32_t param, const c
         if (g_ports[i].used) continue;
         const auto frameBytes = static_cast<std::uint32_t>(SDL_AUDIO_BITSIZE(format.format) / 8 * format.channels);
         const auto grain = std::chrono::duration_cast<Clock::duration>(std::chrono::microseconds(1000000ull * len / freq));
-        g_ports[i] = {true, false, len, frameBytes, openDevice(freq, len, format), grain, {}};
+        const SDL_AudioDeviceID device = openDevice(freq, len, format);
+        g_ports[i] = {true, false, len, frameBytes, device, device != 0 && defaultCaptureIsPadMicrophone(), grain, {}};
         return static_cast<int>(i + 1);
     }
     return AUDIO_IN_ERROR_PORT_FULL;
@@ -185,9 +207,10 @@ int32_t APS5_VABI sceAudioInAsyncOpen(int32_t user_id, uint32_t type, uint32_t i
 }
 
 int32_t APS5_VABI sceAudioInIsPadEmbeddedMic(int32_t handle) {
- (void)handle;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    std::lock_guard lock(g_mutex);
+    const Port* port = find(handle);
+    if (!port) return AUDIO_IN_ERROR_INVALID_HANDLE;
+    return port->padMicrophone ? 1 : 0;
 }
 
 }
