@@ -10,15 +10,6 @@
 
 namespace {
 
-struct GuestVbapParams {
-    const AudioOut2Position* positions;
-    std::uint32_t numSpeakers;
-    std::uint8_t is3d;
-    void* memory;
-    std::size_t memorySize;
-    std::uint32_t correctionType;
-};
-
 constexpr std::uint32_t MaxSpeakers = 32;
 constexpr std::uint32_t MaxTriplets = MaxSpeakers * (MaxSpeakers - 1) * (MaxSpeakers - 2) / 6;
 constexpr std::uint32_t AmbisonicsChannelFlag = 0x40;
@@ -205,14 +196,15 @@ float Sn3d(std::uint32_t acn, const AudioOut2Position& direction) {
 extern "C" {
 
 int APS5_VABI sceAudioOut2SpeakerArrayCreate(AudioOut2SpeakerArrayHandle* handle, const void* vbap_params, const void* ambi_params) {
-    const auto* params = static_cast<const GuestVbapParams*>(vbap_params);
-    if (handle == nullptr || params == nullptr || ambi_params == nullptr || params->positions == nullptr ||
-        params->numSpeakers == 0 || params->numSpeakers > MaxSpeakers || params->memory == nullptr ||
-        params->memorySize < sizeof(SpeakerArray) || reinterpret_cast<std::uintptr_t>(params->memory) % alignof(SpeakerArray) != 0) {
+    static_assert(offsetof(AudioOut2SpeakerArrayParam, vbap_correction) == 0x20);
+    const auto* params = static_cast<const AudioOut2SpeakerArrayParam*>(vbap_params);
+    if (handle == nullptr || params == nullptr || ambi_params == nullptr || params->speaker_positions == nullptr ||
+        params->num_speakers == 0 || params->num_speakers > MaxSpeakers || params->buffer == nullptr ||
+        params->size < sizeof(SpeakerArray) || reinterpret_cast<std::uintptr_t>(params->buffer) % alignof(SpeakerArray) != 0) {
         APS5_INVALID_ARG_EX;
     }
-    auto* array = new (params->memory) SpeakerArray{SpeakerArrayMagic, params->numSpeakers, {}, params->correctionType, params->is3d, {}};
-    std::copy_n(params->positions, params->numSpeakers, array->directions);
+    auto* array = new (params->buffer) SpeakerArray{SpeakerArrayMagic, params->num_speakers, {}, params->vbap_correction.type, params->is_3d, {}};
+    std::copy_n(params->speaker_positions, params->num_speakers, array->directions);
     if (array->is3d != 0) FindFaces(*array);
     *handle = array;
     return 0;

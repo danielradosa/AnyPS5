@@ -522,6 +522,29 @@ struct AudioOut2SystemState {
 
 struct AudioOut2Position { float x; float y; float z; };
 
+struct AudioOut2VbapCorrectionParam {
+    std::uint32_t type;
+    float gain;
+    std::uint32_t reserved[6];
+};
+
+struct AudioOut2SpeakerArrayParam {
+    const AudioOut2Position* speaker_positions;
+    std::uint32_t num_speakers;
+    std::uint8_t is_3d;
+    void* buffer;
+    std::size_t size;
+    AudioOut2VbapCorrectionParam vbap_correction;
+};
+
+struct AudioOut2AmbisonicsParam {
+    std::uint32_t ambi_channel_order;
+    std::uint8_t height_aware;
+    std::uint8_t pad1;
+    std::uint16_t pad2;
+    std::uint32_t reserved[6];
+};
+
 struct AudioOut2SpeakerAngle {
     std::int16_t azimuth;
     std::int16_t elevation;
@@ -583,6 +606,17 @@ struct Audio3dAttribute {
     std::uint32_t pad;
     const void* value;
     std::uint64_t value_size;
+};
+
+using Audio3dPosition = AudioOut2Position;
+using Audio3dSpeakerArrayHandle = void*;
+
+struct Audio3dSpeakerArrayParameters {
+    const Audio3dPosition* speaker_positions;
+    std::uint32_t num_speakers;
+    std::uint8_t is_3d;
+    void* buffer;
+    std::uint64_t size;
 };
 
 using AudioPropagationHandle = std::uint64_t;
