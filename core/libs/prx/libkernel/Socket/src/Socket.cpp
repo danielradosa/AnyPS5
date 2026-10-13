@@ -2,7 +2,10 @@
 #include <cstddef>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
-#include "prx/libkernel/File/include/NativeStat.hpp"
+#include "prx/libkernel/Equeue/Equeue.hpp"
+#include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
+#include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/File/include/HostPipe.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libkernel/Socket/include/SocketPoll.hpp"
 #include "prx/libkernel/Socket/include/SocketSelectDeadline.hpp"
@@ -17,7 +20,13 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <io.h>
+#else
 #include <poll.h>
 #endif
 
@@ -27,8 +36,7 @@ constexpr int GuestEbadf = 9;
 constexpr int GuestEinval = 22;
 constexpr int SelectDescriptorLimit = 1024;
 constexpr int SelectPollSliceMilliseconds = 10;
-constexpr std::uint16_t FileTypeMask = 0170000;
-constexpr std::uint16_t FileTypeRegular = 0100000;
+constexpr std::int64_t PipeAtomicBytes = 512;
 
 struct GuestTimeval {
     std::int64_t seconds;
@@ -41,11 +49,6 @@ std::atomic<KernelSocketPoll::OptionSetter> g_socketOptionSetter{nullptr};
 
 bool DescriptorSet(const void* set, int descriptor) {
     return set != nullptr && ((static_cast<const std::uint64_t*>(set)[descriptor / 64] >> (descriptor % 64)) & 1u) != 0;
-}
-
-void UnknownDescriptor(int descriptor, bool polled) {
-    const auto what = "select on descriptor " + std::to_string(descriptor) + (polled ? " (not a libSceNet socket)" : " (libSceNet is not loaded)");
-    NotImplemented_nid_no_patch(what.c_str());
 }
 
 void ClearDescriptor(void* set, int descriptor) {
@@ -61,6 +64,57 @@ struct PollGroup {
 int KernelSockets(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds) {
     return GuestSockets::Poll(entries, count, timeoutMilliseconds);
 }
+
+template <typename TReadiness>
+int PollBySlices(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds, TReadiness readiness) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
+    for (;;) {
+        int ready = 0;
+        for (int index = 0; index < count; ++index) {
+            const short revents = readiness(entries[index].descriptor, entries[index].events);
+            if (revents < 0) return -GuestEbadf;
+            entries[index].revents = revents;
+            if (revents != 0) ++ready;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (ready > 0 || now >= deadline) return ready;
+        std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(std::chrono::milliseconds(1), deadline - now));
+    }
+}
+
+int KernelQueues(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds) {
+    return PollBySlices(entries, count, timeoutMilliseconds, [](int descriptor, short events) -> short {
+        const int pending = KqueuePendingEvents(descriptor);
+        if (pending < 0) return -1;
+        return static_cast<short>(pending > 0 ? events & KernelSocketPoll::Readable : 0);
+    });
+}
+
+#ifdef _WIN32
+
+short HostDescriptorEvents(int descriptor, short events) {
+    if (!DescriptorIsOpen_nid_no_patch(descriptor)) return -1;
+    const short both = static_cast<short>(events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable));
+    if (File::DirectoryDescriptorPath(descriptor)) return both;
+    if (const auto pipe = File::QueryHostPipe(descriptor)) {
+        const bool readable = (pipe->readEnd && pipe->available > 0) || pipe->peerClosed;
+        const bool writable = pipe->peerClosed || !pipe->writeEnd || pipe->space >= PipeAtomicBytes;
+        short revents = 0;
+        if (readable) revents = static_cast<short>(revents | (events & KernelSocketPoll::Readable));
+        if (writable) revents = static_cast<short>(revents | (events & KernelSocketPoll::Writable));
+        if (pipe->peerClosed) revents = static_cast<short>(revents | KernelSocketPoll::HangUp);
+        return revents;
+    }
+    const DWORD type = ::GetFileType(reinterpret_cast<HANDLE>(::_get_osfhandle(descriptor)));
+    if (type == FILE_TYPE_DISK || type == FILE_TYPE_CHAR) return both;
+    throw std::runtime_error("select: descriptor " + std::to_string(descriptor) + " has an unknown host type");
+}
+
+int HostDescriptors(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds) {
+    return PollBySlices(entries, count, timeoutMilliseconds, HostDescriptorEvents);
+}
+
+#endif
 
 #ifndef _WIN32
 
@@ -166,13 +220,15 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
         }
     }
     for (const auto& device : devices) requested.push_back(device);
-    bool devicesReady = std::any_of(devices.begin(), devices.end(), [](const auto& entry) { return entry.revents != 0; });
+    const bool devicesReady = std::any_of(devices.begin(), devices.end(), [](const auto& entry) { return entry.revents != 0; });
     std::vector<PollGroup> groups;
     if (!kernel.entries.empty()) groups.push_back(std::move(kernel));
     if (!net.entries.empty()) {
-        PollGroup hosts{nullptr, {}, {}};
-#ifndef _WIN32
-        hosts.poll = &HostPoll;
+        PollGroup queues{&KernelQueues, {}, {}};
+#ifdef _WIN32
+        PollGroup hosts{&HostDescriptors, {}, {}};
+#else
+        PollGroup hosts{&HostPoll, {}, {}};
 #endif
         net.poll = g_socketPoller.load();
         if (net.poll != nullptr) {
@@ -189,26 +245,15 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
                 continue;
             }
             const int descriptor = net.entries[index].descriptor;
-            if (hosts.poll == nullptr) {
-                FileStat stat{};
-                if (!File::FillFileStatFromDescriptor(descriptor, &stat)) {
-                    if (errno != EBADF) throw std::runtime_error("select: fstat of descriptor " + std::to_string(descriptor) + " failed");
-                    *__error_nid_postfix() = GuestEbadf;
-                    return -1;
-                }
-                if ((stat.st_mode & FileTypeMask) != FileTypeRegular) UnknownDescriptor(descriptor, net.poll != nullptr);
-                auto& file = requested[net.slots[index]];
-                file.revents = static_cast<short>(file.events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable));
-                if (file.revents != 0) devicesReady = true;
-            } else {
-                hosts.entries.push_back({descriptor, net.entries[index].events, 0});
-                hosts.slots.push_back(net.slots[index]);
-            }
+            auto& group = IsKqueueDescriptor(descriptor) ? queues : hosts;
+            group.entries.push_back({descriptor, net.entries[index].events, 0});
+            group.slots.push_back(net.slots[index]);
             net.entries.erase(net.entries.begin() + static_cast<std::ptrdiff_t>(index));
             net.slots.erase(net.slots.begin() + static_cast<std::ptrdiff_t>(index));
         }
         if (!net.entries.empty()) groups.push_back(std::move(net));
         if (!hosts.entries.empty()) groups.push_back(std::move(hosts));
+        if (!queues.entries.empty()) groups.push_back(std::move(queues));
     }
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = limit == nullptr ? std::chrono::steady_clock::time_point::max()
@@ -243,7 +288,10 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
         }
         int ready = 0;
         for (const auto& entry : requested) {
-            if ((entry.revents & KernelSocketPoll::Unknown) != 0) UnknownDescriptor(entry.descriptor, true);
+            if ((entry.revents & KernelSocketPoll::Unknown) != 0) {
+                *__error_nid_postfix() = GuestEbadf;
+                return -1;
+            }
             const bool readable = (entry.events & KernelSocketPoll::Readable) != 0 && (entry.revents & (KernelSocketPoll::Readable | KernelSocketPoll::HangUp | KernelSocketPoll::Error)) != 0;
             const bool writable = (entry.events & KernelSocketPoll::Writable) != 0 && (entry.revents & (KernelSocketPoll::Writable | KernelSocketPoll::Error)) != 0;
             const bool urgent = (entry.events & KernelSocketPoll::Urgent) != 0 && (entry.revents & KernelSocketPoll::Urgent) != 0;

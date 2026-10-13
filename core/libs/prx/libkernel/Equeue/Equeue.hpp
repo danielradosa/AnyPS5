@@ -54,10 +54,13 @@ struct KernelFilter {
     EqueueResetFunc resetFunc = nullptr;
     EqueueDeleteFunc deleteEventFunc = nullptr;
     EqueuePollFunc pollFunc = nullptr;
+    bool sliced = false;
 };
 
 struct KernelEqueueEvent {
     bool triggered = false;
+    bool disabled = false;
+    bool forced = false;
     uint64_t deadlineNs = 0;
     uint64_t intervalNs = 0;
     KernelEvent event;
@@ -85,6 +88,7 @@ public:
     int WaitForEvents(KernelEvent* ev, int num, uint32_t micros);
     int WaitForEventsUntil(KernelEvent* ev, int num, std::uint64_t deadlineNanos);
     void RemoveDescriptorEvents(uintptr_t ident);
+    bool CountPending(int* count, bool wait);
     void Close();
     static uint64_t MonotonicNs();
 
@@ -94,6 +98,7 @@ private:
     int CollectTriggered(KernelEvent* ev, int num);
     int CollectOncePerWait(KernelEvent* ev, int num);
     bool PollEvents();
+    bool HasSlicedEvents() const;
     void WakePollers();
     void WaitForDescriptors(std::unique_lock<std::mutex>& lock, std::uint64_t deadlineNanos);
 
@@ -111,10 +116,13 @@ using KernelEqueueRef = std::shared_ptr<KernelEqueuePrivate>;
 void EqueueDescriptorClosed(int descriptor);
 void KqueueDescriptorClosed(int descriptor);
 bool IsKqueueDescriptor(int descriptor);
-KernelEqueueEvent EqueueDescriptorEvent(int descriptor, int16_t filter, uint16_t flags, void* udata);
-void RequireVnodeNotes(uint32_t fflags);
+KernelEqueueRef FindKqueueDescriptor(int descriptor);
+int KqueuePendingEvents(int descriptor);
+void KqueueSignalSent(int signal);
+int MakeDescriptorEvent(int descriptor, int16_t filter, uint16_t flags, uint32_t fflags, int64_t data, void* udata, KernelEqueueEvent& event);
+void SetDescriptorWatch(KernelEqueueEvent& event, uint32_t fflags, int64_t data);
 void SetVnodeNotes(KernelEqueueEvent& event, uint32_t fflags);
-int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, uint32_t fflags, uint16_t flags, void* udata);
+int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, uint32_t fflags, uint16_t flags, void* udata, bool disabled);
 extern "C" {
 
 KernelEqueueRef EqueuePin_nid_postfix(KernelEqueue eq);

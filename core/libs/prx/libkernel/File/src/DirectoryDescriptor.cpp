@@ -80,6 +80,15 @@ std::optional<std::filesystem::path> DirectoryDescriptorPath(int fd) {
     return state->path;
 }
 
+std::optional<std::int64_t> DirectoryDescriptorUnread(int fd) {
+    const auto found = Find(fd);
+    if (!found) return std::nullopt;
+    auto& state = *found;
+    std::lock_guard lock(state.mutex);
+    Load(state);
+    return static_cast<std::int64_t>(state.entries.size()) - static_cast<std::int64_t>(state.cursor);
+}
+
 void ForgetDirectoryDescriptor(int fd) {
     if (g_directoryCount == 0) return;
     std::lock_guard lock(g_mutex);
@@ -164,7 +173,41 @@ int ReadDirectoryDescriptor(int fd, char* buf, int nbytes) {
 
 #else
 
+#include <cstdint>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
 namespace File {
+
+std::optional<std::int64_t> DirectoryDescriptorUnread(int fd) {
+    struct stat status{};
+    if (::fstat(fd, &status) != 0 || !S_ISDIR(status.st_mode)) return std::nullopt;
+    const off_t position = ::lseek(fd, 0, SEEK_CUR);
+    if (position < 0) return std::nullopt;
+    const auto path = "/proc/self/fd/" + std::to_string(fd);
+    const int copy = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (copy < 0) return std::nullopt;
+    std::int64_t count = 0;
+    if (::lseek(copy, position, SEEK_SET) == position) {
+        alignas(8) char buffer[4096];
+        for (;;) {
+            const long bytes = ::syscall(SYS_getdents64, copy, buffer, sizeof(buffer));
+            if (bytes <= 0) break;
+            for (long offset = 0; offset < bytes;) {
+                std::uint16_t length = 0;
+                std::memcpy(&length, buffer + offset + 16, sizeof(length));
+                if (length == 0) break;
+                ++count;
+                offset += length;
+            }
+        }
+    }
+    ::close(copy);
+    return count;
+}
 
 std::optional<std::filesystem::path> DirectoryDescriptorPath(int fd) {
     if (fd < 0) return std::nullopt;

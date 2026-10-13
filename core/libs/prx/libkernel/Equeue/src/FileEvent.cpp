@@ -1,6 +1,7 @@
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 
 #include <atomic>
@@ -31,6 +32,7 @@
 namespace {
 
 constexpr int GUEST_EBADF = 9;
+constexpr int GUEST_ENODEV = 19;
 constexpr int GUEST_EINVAL = 22;
 constexpr std::uint32_t NOTE_DELETE = 0x0001;
 constexpr std::uint32_t NOTE_WRITE = 0x0002;
@@ -38,7 +40,6 @@ constexpr std::uint32_t NOTE_EXTEND = 0x0004;
 constexpr std::uint32_t NOTE_ATTRIB = 0x0008;
 constexpr std::uint32_t NOTE_LINK = 0x0010;
 constexpr std::uint32_t NOTE_RENAME = 0x0020;
-constexpr std::uint32_t MAPPED_NOTES = NOTE_DELETE | NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_LINK | NOTE_RENAME;
 
 class VnodeWatch {
 public:
@@ -301,8 +302,11 @@ int OpenHostWatch(int descriptor, std::uint32_t notes, HostWatch& host) {
         if (type == FILE_TYPE_PIPE) {
             return GUEST_EINVAL;
         }
+        if (type == FILE_TYPE_CHAR) {
+            return descriptor > 2 ? GUEST_ENODEV : GUEST_EINVAL;
+        }
         if (type != FILE_TYPE_DISK) {
-            NotImplemented_nid_no_patch("EVFILT_VNODE: a descriptor that is not a file or a directory");
+            throw std::runtime_error("EVFILT_VNODE: descriptor " + std::to_string(descriptor) + " has an unknown host type");
         }
         host.target = ::ReOpenFile(handle, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0);
     }
@@ -506,8 +510,11 @@ int OpenHostWatch(int descriptor, std::uint32_t, HostWatch& host) {
     if (S_ISFIFO(status.st_mode) || S_ISSOCK(status.st_mode)) {
         return GUEST_EINVAL;
     }
+    if (S_ISCHR(status.st_mode)) {
+        return descriptor > 2 ? GUEST_ENODEV : GUEST_EINVAL;
+    }
     if (!S_ISREG(status.st_mode) && !S_ISDIR(status.st_mode)) {
-        NotImplemented_nid_no_patch("EVFILT_VNODE: a descriptor that is not a file or a directory");
+        throw std::runtime_error("EVFILT_VNODE: descriptor " + std::to_string(descriptor) + " has an unsupported host type");
     }
     host.directory = S_ISDIR(status.st_mode);
     const auto path = "/proc/self/fd/" + std::to_string(descriptor);
@@ -565,23 +572,19 @@ int VnodeDescriptorError(int descriptor) {
     if (!DescriptorIsOpen_nid_no_patch(descriptor)) {
         return GUEST_EBADF;
     }
-    return IsKqueueDescriptor(descriptor) ? GUEST_EINVAL : 0;
-}
-
-}
-
-void RequireVnodeNotes(std::uint32_t fflags) {
-    if ((fflags & ~MAPPED_NOTES) != 0) {
-        NotImplemented_nid_no_patch(("EVFILT_VNODE: fflags " + std::to_string(fflags & ~MAPPED_NOTES)).c_str());
+    if (IsKqueueDescriptor(descriptor)) {
+        return GUEST_EINVAL;
     }
+    return File::IsRandomDevice(descriptor) ? GUEST_ENODEV : 0;
+}
+
 }
 
 void SetVnodeNotes(KernelEqueueEvent& event, std::uint32_t fflags) {
     static_cast<VnodeWatch*>(event.filter.data)->SetInterest(fflags);
 }
 
-int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, std::uint32_t fflags, std::uint16_t flags, void* udata) {
-    RequireVnodeNotes(fflags);
+int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, std::uint32_t fflags, std::uint16_t flags, void* udata, bool disabled) {
     if (const int error = VnodeDescriptorError(descriptor)) {
         return error;
     }
@@ -601,6 +604,7 @@ int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, std::uint32_t ff
     event.event.filter = EVFILT_VNODE;
     event.event.flags = flags;
     event.event.udata = udata;
+    event.disabled = disabled;
     event.filter.data = watch.get();
     event.filter.owner = watch;
     event.filter.triggerFunc = TriggerVnode;
@@ -628,7 +632,6 @@ int APS5_VABI sceKernelAddFileEvent(KernelEqueue eq, int fd, int watch, void* ud
         return SCE_KERNEL_ERROR_EBADF;
     }
     const auto notes = static_cast<std::uint32_t>(watch);
-    RequireVnodeNotes(notes);
     if (const int error = VnodeDescriptorError(fd)) {
         return SceKernelError(error);
     }
@@ -639,7 +642,7 @@ int APS5_VABI sceKernelAddFileEvent(KernelEqueue eq, int fd, int watch, void* ud
     if (edited != SCE_KERNEL_ERROR_ENOENT) {
         return edited;
     }
-    const int error = AddVnodeEvent(queue, fd, notes, EV_CLEAR, udata);
+    const int error = AddVnodeEvent(queue, fd, notes, EV_CLEAR, udata, false);
     return error == 0 ? EQUEUE_OK : SceKernelError(error);
 }
 

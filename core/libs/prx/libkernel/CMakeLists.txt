@@ -3,11 +3,13 @@ add_library(libkernel SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Apr/src/Apr.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/Equeue.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/src/EventAccessors.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/src/DescriptorEvent.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/DescriptorControl.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/src/FileEvent.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Equeue/src/Kqueue.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/DirectoryDescriptor.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/FileLock.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/File/src/HostPipe.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/NativeStat.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/Terminal.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/File/src/Open.cpp
@@ -1060,6 +1062,16 @@ if(BUILD_TESTING)
         configure_windows_unwind(guest_select_tests)
         add_test(NAME guest_select COMMAND guest_select_tests)
         set_tests_properties(guest_select PROPERTIES TIMEOUT 20)
+    endif()
+    add_test_executable(guest_select_descriptors_tests ${LIBS_INCLUDE_DIR}/tests/GuestSelectDescriptors.cpp)
+    target_include_directories(guest_select_descriptors_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_select_descriptors_tests PRIVATE libkernel libc)
+    configure_windows_unwind(guest_select_descriptors_tests)
+    add_test(NAME guest_select_descriptors COMMAND guest_select_descriptors_tests)
+    set_tests_properties(guest_select_descriptors PROPERTIES TIMEOUT 20)
+    if(WIN32)
+        set_tests_properties(guest_select_descriptors PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
     add_test_executable(guest_tcp_tests ${LIBS_INCLUDE_DIR}/tests/GuestTcp.cpp)
     target_include_directories(guest_tcp_tests PRIVATE ${LIBS_INCLUDE_DIR})

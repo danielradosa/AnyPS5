@@ -35,15 +35,6 @@ static constexpr std::uint16_t EV_EOF = 0x8000;
 
 static void Require(bool value) { if (!value) std::abort(); }
 
-static bool Rejects(int (APS5_VABI *add)(KernelEqueue, int, std::size_t, void*), KernelEqueue eq, int fd, std::size_t size) {
-    try {
-        add(eq, fd, size, nullptr);
-    } catch (const std::exception&) {
-        return true;
-    }
-    return false;
-}
-
 int main() {
     const int listener = socket_nid_postfix(2, 1, 6);
     Require(listener >= 0);
@@ -114,6 +105,16 @@ int main() {
     Require(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(40));
     Require(count == 1 && events[0].ident == static_cast<std::uintptr_t>(reader) && events[0].data == sizeof(message));
     Require(recv_nid_postfix(reader, received, sizeof(received), 0) == sizeof(received));
+    Require(sceKernelAddReadEvent(blocking, reader, 8, &marker) == SCE_OK);
+    Require(send_nid_postfix(writer, "abcdef", 6, 0) == 6);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    Require(sceKernelWaitEqueue(blocking, events.data(), events.size(), &count, &shortTimeout) == SCE_KERNEL_ERROR_ETIMEDOUT);
+    Require(send_nid_postfix(writer, "gh", 2, 0) == 2);
+    Require(sceKernelWaitEqueue(blocking, events.data(), events.size(), &count, &timeout) == SCE_OK);
+    Require(count == 1 && events[0].ident == static_cast<std::uintptr_t>(reader) && events[0].data == 8 && events[0].udata == &marker);
+    char batch[8]{};
+    Require(recv_nid_postfix(reader, batch, sizeof(batch), 0) == sizeof(batch));
+    Require(sceKernelAddReadEvent(blocking, reader, 1, nullptr) == SCE_OK);
 
     std::thread waiter([&] {
         std::array<KernelEvent, 4> woken{};
@@ -132,8 +133,11 @@ int main() {
     Require(sceKernelDeleteEqueue(blocking) == SCE_OK);
 
     Require(sceKernelAddReadEvent(eq, client, 1, nullptr) == SCE_KERNEL_ERROR_EBADF);
-    Require(Rejects(sceKernelAddReadEvent, eq, 0, 1));
-    Require(Rejects(sceKernelAddWriteEvent, eq, accepted, 64));
+    Require(sceKernelDeleteReadEvent(eq, accepted) == SCE_OK);
+    Require(sceKernelAddWriteEvent(eq, accepted, 64, &marker) == SCE_OK);
+    Require(sceKernelWaitEqueue(eq, events.data(), events.size(), &count, &timeout) == SCE_OK);
+    Require(count == 1 && events[0].ident == static_cast<std::uintptr_t>(accepted) && events[0].filter == EVFILT_WRITE && events[0].udata == &marker);
+    Require(sceKernelDeleteWriteEvent(eq, accepted) == SCE_OK);
 
     Require(close_nid_postfix(accepted) == 0);
     Require(close_nid_postfix(listener) == 0);

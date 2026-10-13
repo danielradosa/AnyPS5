@@ -2,6 +2,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/Pthread/Posix/Common.hpp"
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
+#include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <atomic>
 #include <chrono>
@@ -455,6 +456,7 @@ int APS5_VABI sigaction_nid_postfix(int guest, const GuestSigaction* action, Gue
 }
 int APS5_VABI raise_nid_postfix(int guest) {
     if (guest < 1 || guest > MaxSignal) { *__error_nid_postfix() = 22; return -1; }
+    KqueueSignalSent(guest);
     const GuestSigaction action = Disposition(guest);
     if (action.handler > 1 && !Delivered(action)) throw std::runtime_error("raise: SA_SIGINFO handlers are not delivered");
     if (SignalBlocked(guest)) {
@@ -487,6 +489,7 @@ int APS5_VABI pthread_kill_nid_postfix(Pthread thread, int guest) {
     if (guest == 0) return 0;
     if (thread == scePthreadSelf()) return raise_nid_postfix(guest) == 0 ? 0 : *__error_nid_postfix();
     if (!GuestThreadIsLive(thread)) return PosixThread::GUEST_ESRCH;
+    KqueueSignalSent(guest);
     if (Disposition(guest).handler != 1) MarkPending(guest);
     return 0;
 }

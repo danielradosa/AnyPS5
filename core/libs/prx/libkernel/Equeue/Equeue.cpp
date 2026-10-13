@@ -14,6 +14,8 @@
 static std::unordered_map<KernelEqueue, KernelEqueueRef> g_equeues;
 static std::mutex g_equeueMutex;
 static uint64_t g_nextEqueue = 1;
+static constexpr std::uint64_t DESCRIPTOR_SLICE_NANOS = 1000000;
+static constexpr std::uint32_t NOTE_LOWAT = 0x0001;
 
 extern "C" {
 
@@ -66,7 +68,7 @@ void KernelEqueuePrivate::TriggerExpiredTimers(uint64_t nowNs) {
 bool KernelEqueuePrivate::NextTimerWaitMicros(uint64_t nowNs, uint32_t* out) const {
     uint64_t nearest = std::numeric_limits<uint64_t>::max();
     for (const auto& ev : m_events) {
-        if (!ev.triggered && ev.deadlineNs != 0) {
+        if (!ev.triggered && !ev.disabled && ev.deadlineNs != 0) {
             nearest = std::min(nearest, ev.deadlineNs);
         }
     }
@@ -83,11 +85,37 @@ bool KernelEqueuePrivate::PollEvents() {
     bool polled = false;
     for (auto& ev : m_events) {
         if (ev.filter.pollFunc != nullptr) {
-            ev.triggered = ev.filter.pollFunc(&ev);
-            polled = true;
+            const bool ready = ev.filter.pollFunc(&ev);
+            ev.triggered = ready || ev.forced;
+            polled = polled || !ev.disabled;
         }
     }
     return polled;
+}
+
+bool KernelEqueuePrivate::HasSlicedEvents() const {
+    return std::any_of(m_events.begin(), m_events.end(), [](const auto& ev) {
+        return ev.filter.sliced && !ev.disabled;
+    });
+}
+
+bool KernelEqueuePrivate::CountPending(int* count, bool wait) {
+    std::unique_lock lock(m_mutex, std::defer_lock);
+    if (wait) {
+        lock.lock();
+    } else if (!lock.try_lock()) {
+        return false;
+    }
+    *count = 0;
+    if (m_closed) {
+        return true;
+    }
+    TriggerExpiredTimers(MonotonicNs());
+    PollEvents();
+    *count = static_cast<int>(std::count_if(m_events.begin(), m_events.end(), [](const auto& ev) {
+        return ev.triggered && !ev.disabled;
+    }));
+    return true;
 }
 
 void KernelEqueuePrivate::WakePollers() {
@@ -99,7 +127,7 @@ void KernelEqueuePrivate::WakePollers() {
 void KernelEqueuePrivate::WaitForDescriptors(std::unique_lock<std::mutex>& lock, std::uint64_t deadlineNanos) {
     std::vector<GuestSockets::Interest> interests;
     for (const auto& e : m_events) {
-        if (e.filter.pollFunc != nullptr) {
+        if (e.filter.pollFunc != nullptr && !e.filter.sliced && !e.disabled) {
             interests.push_back({static_cast<int>(e.event.ident), e.event.filter == EVFILT_WRITE});
         }
     }
@@ -122,8 +150,9 @@ int KernelEqueuePrivate::CollectTriggered(KernelEvent* ev, int num) {
     for (auto it = m_events.begin(); it != m_events.end() && ret < num;) {
         auto& e = *it;
         bool erase = false;
-        while (e.triggered && ret < num) {
+        while (e.triggered && !e.disabled && ret < num) {
             ev[ret++] = e.event;
+            e.forced = false;
             if ((e.event.flags & EV_ONESHOT) != 0) {
                 erase = true;
                 break;
@@ -134,6 +163,10 @@ int KernelEqueuePrivate::CollectTriggered(KernelEvent* ev, int num) {
                 e.triggered = false;
                 e.event.fflags = 0;
                 e.event.data = 0;
+            }
+            if ((e.event.flags & EV_DISPATCH) != 0) {
+                e.disabled = true;
+                break;
             }
             if (e.pendingEvents.empty()) {
                 break;
@@ -152,11 +185,12 @@ int KernelEqueuePrivate::CollectOncePerWait(KernelEvent* ev, int num) {
     std::list<KernelEqueueEvent> requeued;
     for (auto it = m_events.begin(); it != m_events.end() && ret < num;) {
         auto& e = *it;
-        if (!e.triggered) {
+        if (!e.triggered || e.disabled) {
             ++it;
             continue;
         }
         ev[ret++] = e.event;
+        e.forced = false;
         if ((e.event.flags & EV_ONESHOT) != 0) {
             if (e.filter.deleteEventFunc != nullptr) {
                 auto owner = e.filter.owner;
@@ -172,8 +206,11 @@ int KernelEqueuePrivate::CollectOncePerWait(KernelEvent* ev, int num) {
             e.event.fflags = 0;
             e.event.data = 0;
         }
+        if ((e.event.flags & EV_DISPATCH) != 0) {
+            e.disabled = true;
+        }
         const auto next = std::next(it);
-        if (e.triggered) {
+        if (e.triggered && !e.disabled) {
             requeued.splice(requeued.end(), m_events, it);
         }
         it = next;
@@ -214,10 +251,14 @@ int KernelEqueuePrivate::WaitForEventsUntil(KernelEvent* ev, int num, std::uint6
         if (deadline == 0) {
             uint32_t timerWait = 0;
             const bool hasTimer = NextTimerWaitMicros(MonotonicNs(), &timerWait);
-            const std::uint64_t wake = hasTimer ? TimedWait::NowNanos() + static_cast<std::uint64_t>(timerWait) * 1000ULL : 0;
+            std::uint64_t wake = hasTimer ? TimedWait::NowNanos() + static_cast<std::uint64_t>(timerWait) * 1000ULL : 0;
+            if (HasSlicedEvents()) {
+                const std::uint64_t slice = TimedWait::NowNanos() + DESCRIPTOR_SLICE_NANOS;
+                wake = wake == 0 ? slice : std::min(wake, slice);
+            }
             if (polling) {
                 WaitForDescriptors(lock, wake);
-            } else if (hasTimer) {
+            } else if (wake != 0) {
                 m_cond.WaitUntil(lock, wake);
             } else {
                 m_cond.Wait(lock);
@@ -230,7 +271,10 @@ int KernelEqueuePrivate::WaitForEventsUntil(KernelEvent* ev, int num, std::uint6
                 return 0;
             }
             const std::uint64_t timerDeadline = now + static_cast<std::uint64_t>(timerWait) * 1000ULL;
-            const std::uint64_t wake = hasTimer ? std::min(deadline, timerDeadline) : deadline;
+            std::uint64_t wake = hasTimer ? std::min(deadline, timerDeadline) : deadline;
+            if (HasSlicedEvents()) {
+                wake = std::min(wake, now + DESCRIPTOR_SLICE_NANOS);
+            }
             if (polling) {
                 WaitForDescriptors(lock, wake);
             } else {
@@ -310,6 +354,9 @@ int KernelEqueuePrivate::EditEvent(uintptr_t ident, int16_t filter, const std::f
     );
     if (it == m_events.end()) {
         return SCE_KERNEL_ERROR_ENOENT;
+    }
+    if (filter == EVFILT_TIMER) {
+        TriggerExpiredTimers(MonotonicNs());
     }
     edit(*it);
     m_cond.NotifyOne();
@@ -594,17 +641,27 @@ int APS5_VABI sceKernelDeleteAmprSystemEvent(KernelEqueue eq, int id) {
 }
 
 static int AddDescriptorEvent(KernelEqueue eq, int fd, std::size_t size, void* udata, int16_t filter) {
-    const bool isSocket = GuestSockets::IsOpen(fd);
-    if (!isSocket && DescriptorIsOpen_nid_no_patch(fd)) {
-        NotImplemented_nid_no_patch(filter == EVFILT_READ ? "sceKernelAddReadEvent: non-socket descriptor" : "sceKernelAddWriteEvent: non-socket descriptor");
-    }
-    if (size > 1) {
-        NotImplemented_nid_no_patch(filter == EVFILT_READ ? "sceKernelAddReadEvent: low watermark" : "sceKernelAddWriteEvent: low watermark");
-    }
-    if (!isSocket) {
+    const auto owner = EqueuePin_nid_postfix(eq);
+    if (!owner) {
         return SCE_KERNEL_ERROR_EBADF;
     }
-    return EqueueAddEvent_nid_postfix(eq, EqueueDescriptorEvent(fd, filter, EV_ADD, udata));
+    if (fd < 0 || (!GuestSockets::IsOpen(fd) && !DescriptorIsOpen_nid_no_patch(fd))) {
+        return SCE_KERNEL_ERROR_EBADF;
+    }
+    const std::uint32_t notes = size > 1 ? NOTE_LOWAT : 0;
+    const auto mark = static_cast<std::int64_t>(std::min<std::size_t>(size, static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())));
+    const int edited = owner->EditEvent(static_cast<uintptr_t>(fd), filter, [notes, mark, udata](KernelEqueueEvent& event) {
+        event.event.udata = udata;
+        SetDescriptorWatch(event, notes, mark);
+    });
+    if (edited != SCE_KERNEL_ERROR_ENOENT) {
+        return edited;
+    }
+    KernelEqueueEvent event{};
+    if (const int error = MakeDescriptorEvent(fd, filter, EV_ADD, notes, mark, udata, event)) {
+        return SceKernelError(error);
+    }
+    return owner->AddEvent(event);
 }
 
 int APS5_VABI sceKernelAddReadEvent(KernelEqueue eq, int fd, std::size_t size, void* udata) {
@@ -623,28 +680,6 @@ int APS5_VABI sceKernelDeleteWriteEvent(KernelEqueue eq, int fd) {
     return EqueueDeleteEvent_nid_postfix(eq, static_cast<uintptr_t>(fd), EVFILT_WRITE);
 }
 
-}
-
-KernelEqueueEvent EqueueDescriptorEvent(int descriptor, int16_t filter, uint16_t flags, void* udata) {
-    KernelEqueueEvent event{};
-    event.event.ident = static_cast<uintptr_t>(descriptor);
-    event.event.filter = filter;
-    event.event.flags = flags;
-    event.event.udata = udata;
-    event.filter.pollFunc = [](KernelEqueueEvent* e) {
-        std::int64_t data = 0;
-        bool eof = false;
-        if (!GuestSockets::Ready(static_cast<int>(e->event.ident), e->event.filter == EVFILT_WRITE, &data, &eof)) {
-            return false;
-        }
-        e->event.data = static_cast<intptr_t>(data);
-        e->event.flags = static_cast<uint16_t>(eof ? (e->event.flags | EV_EOF) : (e->event.flags & ~EV_EOF));
-        return true;
-    };
-    event.filter.resetFunc = [](KernelEqueueEvent* e) {
-        e->triggered = false;
-    };
-    return event;
 }
 
 void EqueueDescriptorClosed(int descriptor) {
