@@ -39,11 +39,12 @@ int main(int argc, char** argv) {
     }
     LibcRegisterShutdown_nid_postfix(UnexpectedShutdown);
     Require(std::atexit(UnexpectedShutdown) == 0);
-    constexpr char otherApp[] = "sceSystemServiceKillApp: application other than the running title";
+    constexpr int noAppInfo = static_cast<int>(0x80A10009u);
     constexpr char otherArguments[] = "sceSystemServiceKillApp: arguments other than -1, 0 and 0";
-    Require(Rejects(appId + 1, -1, 0, 0, otherApp));
-    Require(Rejects(-1, -1, 0, 0, otherApp));
-    Require(Rejects(0, -1, 0, 0, otherApp));
+    Require(sceSystemServiceKillApp(appId + 1, -1, 0, 0) == noAppInfo);
+    Require(sceSystemServiceKillApp(-1, -1, 0, 0) == noAppInfo);
+    Require(sceSystemServiceKillApp(0, -1, 0, 0) == noAppInfo);
+    Require(sceSystemServiceKillApp(appId + 1, 0, 1, 1) == noAppInfo);
     Require(Rejects(appId, 0, 0, 0, otherArguments));
     Require(Rejects(appId, -2, 0, 0, otherArguments));
     Require(Rejects(appId, -1, 1, 0, otherArguments));

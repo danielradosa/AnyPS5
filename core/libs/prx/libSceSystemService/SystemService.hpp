@@ -7,6 +7,8 @@
 constexpr int SYSTEM_SERVICE_OK = 0;
 constexpr int SYSTEM_SERVICE_ERROR_PARAMETER = -2136932349;
 constexpr int SYSTEM_SERVICE_ERROR_NO_EVENT = -2136932348;
+constexpr int SYSTEM_SERVICE_ERROR_NO_APP_INFO = static_cast<int>(0x80A10009u);
+constexpr int SYSTEM_SERVICE_ERROR_LAUNCH_NOT_INSTALLED = static_cast<int>(0x816B000Fu);
 
 constexpr int SYSTEM_SERVICE_RUNNING_APP_ID = 1;
 

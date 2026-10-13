@@ -41,6 +41,20 @@ if(BUILD_TESTING)
         set_tests_properties(guest_system_service_language PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    add_test_executable(guest_system_service_launch_app_tests ${LIBS_INCLUDE_DIR}/tests/GuestSystemServiceLaunchApp.cpp)
+    target_include_directories(guest_system_service_launch_app_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_system_service_launch_app_tests PRIVATE libSceSystemService libc)
+    configure_windows_unwind(guest_system_service_launch_app_tests)
+    set(systemServiceLaunchAppRun ${CMAKE_CURRENT_BINARY_DIR}/system_service_launch_app)
+    file(WRITE ${systemServiceLaunchAppRun}/app0/sce_sys/param.json
+        "{\"titleId\":\"PPSA00000\",\"localizedParameters\":{\"en-US\":{\"titleName\":\"Example\"}},\"downloadDataSize\":0,"
+        "\"userDefinedParam1\":0,\"userDefinedParam2\":0,\"userDefinedParam3\":0,\"userDefinedParam4\":0}")
+    add_test(NAME guest_system_service_launch_app COMMAND guest_system_service_launch_app_tests
+        WORKING_DIRECTORY ${systemServiceLaunchAppRun})
+    if(WIN32)
+        set_tests_properties(guest_system_service_launch_app PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test_executable(guest_system_kill_app_tests ${LIBS_INCLUDE_DIR}/tests/GuestSystemKillApp.cpp)
     target_include_directories(guest_system_kill_app_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_system_kill_app_tests PRIVATE libSceSystemService libc)

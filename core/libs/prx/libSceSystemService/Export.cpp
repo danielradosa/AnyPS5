@@ -21,6 +21,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libSceSystemService/SystemService.hpp"
+#include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
 
 namespace {
 
@@ -324,11 +325,13 @@ int APS5_VABI sceSystemServiceLaunchWebBrowser(const char* uri, void* param) {
 }
 
 int APS5_VABI sceSystemServiceLaunchApp(const char* titleId, const char* const* arguments, const void* param) {
- (void)titleId;
  (void)arguments;
  (void)param;
- NotImplemented_nid_no_patch("sceSystemServiceLaunchApp: launching another application");
- return 0;
+ if (titleId == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
+ if (std::string_view(titleId) == GetAppTitleId_nid_postfix().value) {
+  throw std::runtime_error(std::string("sceSystemServiceLaunchApp: launching the running title ") + titleId + " again");
+ }
+ return SYSTEM_SERVICE_ERROR_LAUNCH_NOT_INSTALLED;
 }
 
 int APS5_VABI sceSystemServiceDisableMusicPlayer(void) {
@@ -356,11 +359,9 @@ int APS5_VABI sceSystemServiceGetAppIdOfRunningBigApp(void) {
 }
 
 int APS5_VABI sceSystemServiceKillApp(int appId, int how, int reason, int coreDump) {
- if (appId != SYSTEM_SERVICE_RUNNING_APP_ID) {
-  NotImplemented_nid_no_patch("sceSystemServiceKillApp: application other than the running title");
- }
+ if (appId != SYSTEM_SERVICE_RUNNING_APP_ID) return SYSTEM_SERVICE_ERROR_NO_APP_INFO;
  if (how != -1 || reason != 0 || coreDump != 0) {
-  NotImplemented_nid_no_patch("sceSystemServiceKillApp: arguments other than -1, 0 and 0");
+  throw std::runtime_error("sceSystemServiceKillApp: arguments other than -1, 0 and 0 for the running title");
  }
  LibcExit_nid_no_patch(0);
 }

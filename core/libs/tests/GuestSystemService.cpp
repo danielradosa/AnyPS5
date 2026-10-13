@@ -25,15 +25,6 @@ bool ParamGetStringThrows(int paramId, char* buf, std::size_t bufSize) {
     return false;
 }
 
-bool LaunchAppThrows(const char* titleId, const char* const* arguments, const void* param) {
-    try {
-        static_cast<void>(sceSystemServiceLaunchApp(titleId, arguments, param));
-    } catch (const std::runtime_error&) {
-        return true;
-    }
-    return false;
-}
-
 }
 
 extern "C" int APS5_VABI sceSystemServicePowerTick(void);
@@ -71,14 +62,7 @@ int main() {
     for (unsigned char byte : browserParam) Require(byte == 0x5a);
     Require(sceSystemServiceLaunchWebBrowser("", nullptr) == browserUnavailable);
     Require(sceSystemServiceLaunchWebBrowser(nullptr, nullptr) == browserUnavailable);
-    Require(LaunchAppThrows("PPSA99109", nullptr, nullptr));
-    Require(LaunchAppThrows(nullptr, nullptr, nullptr));
-    const char* launchArguments[] = {"--backup", nullptr};
-    unsigned char launchParam[0x20];
-    std::memset(launchParam, 0x5a, sizeof(launchParam));
-    Require(LaunchAppThrows("PPSA99110", launchArguments, launchParam));
-    for (unsigned char byte : launchParam) Require(byte == 0x5a);
-    Require(std::strcmp(launchArguments[0], "--backup") == 0 && launchArguments[1] == nullptr);
+    Require(sceSystemServiceLaunchApp(nullptr, nullptr, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
     Require(sceSystemServiceGetHdrToneMapLuminance(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
     SystemServiceHdrToneMapLuminance luminance{-1.0f, -1.0f, -1.0f};
     Require(sceSystemServiceGetHdrToneMapLuminance(&luminance) == SYSTEM_SERVICE_OK);
