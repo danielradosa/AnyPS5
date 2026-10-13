@@ -245,6 +245,16 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceNpWebApi2>")
     endif()
 
+    add_test_executable(guest_convert_keycode_tests tests/GuestConvertKeycode.cpp)
+    target_include_directories(guest_convert_keycode_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(guest_convert_keycode_tests PRIVATE libSceConvertKeycode libc)
+    configure_windows_unwind(guest_convert_keycode_tests)
+    add_test(NAME guest_convert_keycode COMMAND guest_convert_keycode_tests)
+    if(WIN32)
+        set_tests_properties(guest_convert_keycode PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceConvertKeycode>")
+    endif()
+
     add_test_executable(guest_signin_dialog_tests tests/GuestSigninDialog.cpp)
     target_include_directories(guest_signin_dialog_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(guest_signin_dialog_tests PRIVATE libSceSigninDialog libc)
