@@ -55,9 +55,11 @@ int APS5_VABI sceCoredumpAttachUserFile(uint32_t userValue, const char* path) {
     return SCE_COREDUMP_ERROR_NOT_IN_COREDUMP_HANDLER;
 }
 
-int APS5_VABI sceCoredumpGetStopInfoGpu_Agc(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceCoredumpGetStopInfoGpu_Agc(void* info, size_t size) {
+    const auto address = reinterpret_cast<uintptr_t>(info);
+    if (info == nullptr || size != sizeof(uint64_t) || address % alignof(uint64_t) != 0 || size > UINTPTR_MAX - address)
+        throw std::runtime_error(std::string(__func__) + ": null, unaligned, wrapping or unsupported GPU stop-info buffer outside the core dump handler");
+    return SCE_COREDUMP_ERROR_NOT_IN_COREDUMP_HANDLER;
 }
 
 int APS5_VABI sceCoredumpAttachMemoryRegionAsUserFile(uint32_t userValue, const void* mem, size_t size, const char* name) {
