@@ -40,6 +40,7 @@ constexpr int INVALID_OBJECT = static_cast<int>(0x80EA0003);
 constexpr int INVALID_PARAMETER = static_cast<int>(0x80EA0004);
 constexpr int OUT_OF_RESOURCES = static_cast<int>(0x80EA0006);
 constexpr int NOT_READY = static_cast<int>(0x80EA0007);
+constexpr int NOT_SUPPORTED = static_cast<int>(0x80EA0008);
 constexpr int SYSTEM_USER = 0xFF;
 constexpr std::uint32_t OBJECT_INVALID = 0xFFFFFFFF;
 
@@ -366,6 +367,7 @@ void CheckRemainingExports() {
     Require(invalid_port != nullptr && invalid_port[0] != '\0', "str error returns a non-empty string");
     const char* unknown = sceAudio3dStrError(0);
     Require(unknown != nullptr && unknown[0] != '\0', "str error returns a string for an unknown code");
+    Require(std::strcmp(sceAudio3dStrError(NOT_SUPPORTED), unknown) != 0, "0x80EA0008 is the not-supported error");
     std::uint32_t capabilities = 7;
     std::uint32_t num_capabilities = 99;
     Require(sceAudio3dPortGetAttributesSupported(1, &capabilities, &num_capabilities) == INVALID_PORT, "attributes supported on port 1");

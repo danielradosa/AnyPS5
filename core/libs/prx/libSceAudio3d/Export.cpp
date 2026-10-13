@@ -28,7 +28,7 @@ namespace {
 constexpr int AUDIO3D_ERROR_INVALID_PORT = static_cast<int>(0x80EA0002);
 constexpr int AUDIO3D_ERROR_INVALID_OBJECT = static_cast<int>(0x80EA0003);
 constexpr int AUDIO3D_ERROR_INVALID_PARAMETER = static_cast<int>(0x80EA0004);
-constexpr int AUDIO3D_ERROR_NOT_SUPPORTED = static_cast<int>(0x80EA0005);
+constexpr int AUDIO3D_ERROR_NOT_SUPPORTED = static_cast<int>(0x80EA0008);
 constexpr int AUDIO3D_ERROR_OUT_OF_RESOURCES = static_cast<int>(0x80EA0006);
 constexpr int AUDIO3D_ERROR_NOT_READY = static_cast<int>(0x80EA0007);
 
