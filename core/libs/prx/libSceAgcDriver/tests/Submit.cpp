@@ -8,6 +8,7 @@
 #include "prx/libc/include/Shutdown.hpp"
 #include "prx/libSceAgcDriver/Submit/include/Dcb.hpp"
 #include "prx/libSceAgcDriver/Submit/include/Acb.hpp"
+#include "prx/libSceAgcDriver/Submit/include/CommandBuffer.hpp"
 #include "prx/libSceAgcDriver/Eq/include/Query.hpp"
 #include "prx/libSceAgcDriver/Eq/include/Event.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
@@ -467,6 +468,53 @@ void testMultiSubmissions() {
     }
 }
 
+struct QueueContext {
+    std::uint32_t reserved;
+    std::uint32_t queue;
+};
+
+void testCommandBuffers() {
+    alignas(64) static volatile std::uint32_t value = 0, done = 0, gate = 0, direct = 0;
+    QueueContext graphics{0xffffffffu, 0}, compute{0xffffffffu, 0x21};
+    QueueContext below{0, 0x1f}, above{0, 0x58}, other{0, 1};
+    auto rejected = writeData(&value, 1);
+    Packet rejectedPacket{rejected.data(), static_cast<std::uint32_t>(rejected.size()), 0, {}};
+    std::array<std::uint32_t*, 1> rejectedBuffers{rejected.data()};
+    std::array<std::uint32_t, 1> rejectedSizes{static_cast<std::uint32_t>(rejected.size())};
+    expectFailure([&] { sceAgcDriverSubmitCommandBuffer(nullptr, &rejectedPacket); });
+    expectFailure([&] { sceAgcDriverSubmitMultiCommandBuffers(nullptr, rejectedBuffers.data(), rejectedSizes.data(), 1); });
+    for (auto* context : {&below, &above, &other}) {
+        check(expectFailure([&] { sceAgcDriverSubmitCommandBuffer(context, &rejectedPacket); }).find("unsupported queue") != std::string::npos, "a command buffer queue outside the graphics and compute queues was not rejected");
+        expectFailure([&] { sceAgcDriverSubmitMultiCommandBuffers(context, rejectedBuffers.data(), rejectedSizes.data(), 1); });
+    }
+    expectFailure([&] { sceAgcDriverSubmitMultiCommandBuffers(&compute, nullptr, rejectedSizes.data(), 1); });
+    check(sceAgcDriverSubmitMultiCommandBuffers(nullptr, nullptr, nullptr, 0) == 0, "an empty command buffer submit checked its queue context");
+    check(value == 0, "a rejected command buffer submit ran a command buffer");
+    for (auto* context : {&graphics, &compute}) {
+        value = 0;
+        done = 0;
+        gate = 0;
+        direct = 0;
+        auto wait = waitEqual(&gate, 1);
+        Packet held{wait.data(), static_cast<std::uint32_t>(wait.size()), 0, {}};
+        check(sceAgcDriverSubmitCommandBuffer(context, &held) == 0, "command buffer submit failed");
+        auto first = writeData(&value, 1);
+        auto second = writeData(&value, 2);
+        auto finish = writeData(&done, 1);
+        std::array<std::uint32_t*, 3> buffers{first.data(), second.data(), finish.data()};
+        std::array<std::uint32_t, 3> sizes{static_cast<std::uint32_t>(first.size()), static_cast<std::uint32_t>(second.size()), static_cast<std::uint32_t>(finish.size())};
+        check(sceAgcDriverSubmitMultiCommandBuffers(context, buffers.data(), sizes.data(), 3) == 0, "multi command buffer submit failed");
+        submit(context->queue, commands(writeData(&direct, 1)));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        check(value == 0 && done == 0 && direct == 0, "command buffers did not run in order on the queue their context names");
+        gate = 1;
+        waitFor(&done, 1, "the last command buffer of a multi command buffer submit never ran");
+        check(value == 2, "a multi command buffer submit did not run its command buffers in order");
+        waitFor(&direct, 1, "a submission behind the command buffers never ran");
+        AgcDriverWaitIdle_nid_postfix();
+    }
+}
+
 std::array<std::uint32_t, 7> memoryCopy(const void* destination, const void* source, std::uint32_t bytes) {
     const auto from = reinterpret_cast<std::uintptr_t>(source), to = reinterpret_cast<std::uintptr_t>(destination);
     return {0xc0055000, 0x60000000, static_cast<std::uint32_t>(from), static_cast<std::uint32_t>(static_cast<std::uint64_t>(from) >> 32u), static_cast<std::uint32_t>(to), static_cast<std::uint32_t>(static_cast<std::uint64_t>(to) >> 32u), bytes};
@@ -780,6 +828,7 @@ int main(int argc, char** argv) {
         testWaitFreeSubmissionBehindHeldOne();
         testWaitFreeSubmissionTheCpuWaitsFor();
         testMultiSubmissions();
+        testCommandBuffers();
         testShaderHeaderAlignment();
         testHeaderWithoutProgramAddress();
         testCopyIntoHostMemory();

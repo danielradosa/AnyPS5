@@ -17,14 +17,29 @@ struct TessellationFactorRing {
 std::mutex tessellationFactorRingMutex;
 TessellationFactorRing tessellationFactorRing;
 
+struct HsOffchipParam {
+ uint16_t first = 0;
+ uint16_t second = 0;
+};
+
+std::mutex hsOffchipParamMutex;
+HsOffchipParam hsOffchipParam;
+
 }
 
 extern "C" {
 
-int APS5_VABI sceAgcDriverSetHsOffchipParam(uint64_t value0, uint64_t value1, uint64_t value2) {
- (void)value0;
- (void)value1;
- (void)value2;
+int APS5_VABI sceAgcDriverSetHsOffchipParam(uint16_t first, uint16_t second) {
+ std::lock_guard lock(hsOffchipParamMutex);
+ hsOffchipParam = {first, second};
+ return 0;
+}
+
+int APS5_VABI sceAgcDriverGetHsOffchipParam(uint16_t* first, uint16_t* second) {
+ if (first == nullptr || second == nullptr) throw std::invalid_argument("sceAgcDriverGetHsOffchipParam: null output");
+ std::lock_guard lock(hsOffchipParamMutex);
+ *first = hsOffchipParam.first;
+ *second = hsOffchipParam.second;
  return 0;
 }
 
