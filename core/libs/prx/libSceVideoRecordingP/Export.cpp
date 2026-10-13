@@ -10,8 +10,13 @@
 #include <vector>
 
 namespace {
+constexpr int32_t SCE_VIDEO_RECORDING_ERROR_INVALID_STATE = static_cast<int32_t>(0x80A80006);
 constexpr int32_t SCE_VIDEO_RECORDING_ERROR_UNSUPPORTED = static_cast<int32_t>(0x80A80008);
 constexpr int32_t SCE_VIDEO_RECORDING_STATUS_NONE = 0;
+constexpr int32_t SCE_VIDEO_RECORDING_STATUS_RUNNING = 1;
+constexpr int32_t SCE_VIDEO_RECORDING_STATUS_PAUSED = 2;
+std::mutex g_statusMutex;
+int32_t g_status = SCE_VIDEO_RECORDING_STATUS_NONE;
 std::mutex g_infoMutex;
 std::map<int32_t, std::vector<unsigned char>> g_info;
 }
@@ -19,9 +24,11 @@ std::map<int32_t, std::vector<unsigned char>> g_info;
 extern "C" {
 
 int APS5_VABI sceVideoRecordingClose(int discard) {
- (void)discard;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    (void)discard;
+    std::lock_guard lock(g_statusMutex);
+    if (g_status == SCE_VIDEO_RECORDING_STATUS_NONE) return SCE_VIDEO_RECORDING_ERROR_INVALID_STATE;
+    g_status = SCE_VIDEO_RECORDING_STATUS_NONE;
+    return 0;
 }
 
 int APS5_VABI sceVideoRecordingGetInfo(int32_t info, void* data, size_t size) {
@@ -35,7 +42,8 @@ int APS5_VABI sceVideoRecordingGetInfo(int32_t info, void* data, size_t size) {
 }
 
 int APS5_VABI sceVideoRecordingGetStatus(void) {
-    return SCE_VIDEO_RECORDING_STATUS_NONE;
+    std::lock_guard lock(g_statusMutex);
+    return g_status;
 }
 
 int APS5_VABI sceVideoRecordingOpen(const char* path, const void* param, void* heap, int heapSize) {
@@ -59,13 +67,17 @@ int APS5_VABI sceVideoRecordingSetInfo(int32_t info, const void* data, size_t si
 }
 
 int APS5_VABI sceVideoRecordingStart(void) {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    std::lock_guard lock(g_statusMutex);
+    if (g_status == SCE_VIDEO_RECORDING_STATUS_NONE) return SCE_VIDEO_RECORDING_ERROR_INVALID_STATE;
+    g_status = SCE_VIDEO_RECORDING_STATUS_RUNNING;
+    return 0;
 }
 
 int APS5_VABI sceVideoRecordingStop(void) {
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    std::lock_guard lock(g_statusMutex);
+    if (g_status != SCE_VIDEO_RECORDING_STATUS_RUNNING) return SCE_VIDEO_RECORDING_ERROR_INVALID_STATE;
+    g_status = SCE_VIDEO_RECORDING_STATUS_PAUSED;
+    return 0;
 }
 
 APS5_EXPORT("iQS6DUtLybE", videoRecordingUnknown_iQS6DUtLybE);
