@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <stdexcept>
 
 extern "C" {
@@ -44,21 +45,42 @@ void TestSet3DLatency() {
     Require(ThrowsRuntimeError([] { sceAudioOut2Set3DLatency(user, 2); }), "a user other than the system user must throw");
 }
 
+constexpr int masteringInvalidApiParam = static_cast<int>(0x80268201);
+constexpr int masteringNotInitialized = static_cast<int>(0x80268203);
+constexpr std::uint32_t outputMain = 0;
+constexpr std::uint32_t outputHeadphone = 1;
+constexpr std::uint32_t outputRecording = 2;
+const std::uint32_t masteringParams[4] = {1u, 0u, 0u, 0u};
+
+void TestMasteringBeforeInit() {
+    Require(sceAudioOut2MasteringSetParam(masteringParams, outputMain, 0) == masteringNotInitialized, "parameters before initialization must be refused");
+    Require(sceAudioOut2MasteringTerm() == 0, "termination without an initialization must be accepted");
+    Require(sceAudioOut2MasteringSetParam(masteringParams, outputMain, 0) == masteringNotInitialized, "an unmatched termination must not initialize");
+}
+
 void TestMasteringInit() {
+    Require(sceAudioOut2MasteringInit(1) == masteringInvalidApiParam, "flags 1 must be refused");
+    Require(sceAudioOut2MasteringInit(0x80000000u) == masteringInvalidApiParam, "a high flag must be refused");
+    Require(sceAudioOut2MasteringSetParam(masteringParams, outputMain, 0) == masteringNotInitialized, "a refused initialization must not initialize");
     Require(sceAudioOut2MasteringInit(0) == 0, "flags 0 must be accepted");
-    Require(ThrowsRuntimeError([] { sceAudioOut2MasteringInit(1); }), "flags 1 must throw");
+}
+
+void TestMasteringSetParam() {
+    for (const std::uint32_t output : {outputMain, outputHeadphone, outputRecording}) {
+        Require(sceAudioOut2MasteringSetParam(masteringParams, output, 0) == 0, "mastering parameters must be accepted for each output");
+    }
+    Require(sceAudioOut2MasteringSetParam(masteringParams, outputRecording + 1, 0) == masteringInvalidApiParam, "an unknown output must be refused");
+    Require(sceAudioOut2MasteringSetParam(nullptr, outputMain, 0) == masteringInvalidApiParam, "null mastering parameters must be refused");
+    Require(ThrowsRuntimeError([] { sceAudioOut2MasteringSetParam(masteringParams, outputMain, 1); }), "unknown flags must throw");
 }
 
 void TestMasteringTerm() {
     Require(sceAudioOut2MasteringInit(0) == 0, "a second initialization must be accepted");
     Require(sceAudioOut2MasteringTerm() == 0, "termination must be accepted");
+    Require(sceAudioOut2MasteringSetParam(masteringParams, outputMain, 0) == 0, "one initialization is still outstanding");
     Require(sceAudioOut2MasteringTerm() == 0, "termination must be accepted for each initialization");
-}
-
-void TestMasteringSetParam() {
-    const std::uint32_t params[4] = {1u, 0u, 0u, 0u};
-    Require(sceAudioOut2MasteringSetParam(params, 0, 0) == 0, "mastering parameters must be accepted");
-    Require(ThrowsRuntimeError([] { sceAudioOut2MasteringSetParam(nullptr, 0, 0); }), "null mastering parameters must throw");
+    Require(sceAudioOut2MasteringSetParam(masteringParams, outputMain, 0) == masteringNotInitialized, "the last termination must end the mastering");
+    Require(sceAudioOut2MasteringTerm() == 0, "an extra termination must be accepted");
 }
 
 void TestEnableChat() {
@@ -71,9 +93,10 @@ void TestEnableChat() {
 int main() {
     Require(sceAudioOut2Initialize() == 0, "initialization must succeed");
     TestSet3DLatency();
+    TestMasteringBeforeInit();
     TestMasteringInit();
-    TestMasteringTerm();
     TestMasteringSetParam();
+    TestMasteringTerm();
     TestEnableChat();
     return 0;
 }
