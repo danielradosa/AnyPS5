@@ -6,30 +6,11 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
-extern "C" {
+namespace {
 
-uint32_t* APS5_VABI sceAgcDcbContextStateOp(CommandBuffer* buf, uint32_t operation) {
- (void)buf;
- (void)operation;
- NotImplemented_nid_no_patch(__func__);
- return nullptr;
-}
-
-uint64_t APS5_VABI sceAgcDcbContextStateOpGetSize(uint32_t operation) {
-    Agc::Command::Require(operation <= 3, __func__, "invalid context state operation");
-    if (operation == 0) {
-        return 5 * sizeof(std::uint32_t);
-    }
-    if (operation == 3) {
-        return 32 * sizeof(std::uint32_t);
-    }
-    return 27 * sizeof(std::uint32_t);
-}
-
-uint32_t* APS5_VABI sceAgcDcbContextStateOp_0100(CommandBuffer* buf, uint32_t operation) {
-    Agc::Command::Require(buf != nullptr, __func__, "null command buffer");
-    Agc::Command::Require(operation <= 3, __func__, "invalid context state operation");
-    const auto* function = __func__;
+uint32_t* WriteContextStateOp(CommandBuffer* buf, uint32_t operation, const char* function) {
+    Agc::Command::Require(buf != nullptr, function, "null command buffer");
+    Agc::Command::Require(operation <= 3, function, "invalid context state operation");
     std::uint32_t* first = nullptr;
     const auto append = [&](std::uint32_t count) {
         auto* packet = Agc::Command::WriteNop(buf, count, function);
@@ -58,6 +39,29 @@ uint32_t* APS5_VABI sceAgcDcbContextStateOp_0100(CommandBuffer* buf, uint32_t op
         append(5);
     }
     return first;
+}
+
+}
+
+extern "C" {
+
+uint32_t* APS5_VABI sceAgcDcbContextStateOp(CommandBuffer* buf, uint32_t operation) {
+    return WriteContextStateOp(buf, operation, __func__);
+}
+
+uint64_t APS5_VABI sceAgcDcbContextStateOpGetSize(uint32_t operation) {
+    Agc::Command::Require(operation <= 3, __func__, "invalid context state operation");
+    if (operation == 0) {
+        return 5 * sizeof(std::uint32_t);
+    }
+    if (operation == 3) {
+        return 32 * sizeof(std::uint32_t);
+    }
+    return 27 * sizeof(std::uint32_t);
+}
+
+uint32_t* APS5_VABI sceAgcDcbContextStateOp_0100(CommandBuffer* buf, uint32_t operation) {
+    return WriteContextStateOp(buf, operation, __func__);
 }
 
 std::uint32_t APS5_VABI sceAgcDcbSetBaseDispatchIndirectArgsGetSize() {

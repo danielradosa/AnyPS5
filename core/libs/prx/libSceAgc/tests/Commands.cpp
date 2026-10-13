@@ -29,6 +29,7 @@ extern "C" int APS5_VABI sceAgcWaitRegMemPatchMask(std::uint32_t* cmd, std::uint
 extern "C" int APS5_VABI sceAgcGetDataPacketPayloadAddress_0090(std::uint32_t** addr, std::uint32_t* cmd, int type);
 extern "C" std::uint32_t* APS5_VABI sceAgcCbSetShRegisterRangeDirect(CommandBuffer* buf, std::uint32_t offset, const std::uint32_t* values, std::uint32_t numValues);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbContextStateOp_0100(CommandBuffer* buf, std::uint32_t operation);
+extern "C" std::uint32_t* APS5_VABI sceAgcDcbContextStateOp(CommandBuffer* buf, std::uint32_t operation);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbPushMarker(CommandBuffer* buf, const char* str, std::uint32_t color);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbPopMarker(CommandBuffer* buf);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetWorkloadComplete(CommandBuffer* buf, std::uint32_t stream_id, std::uint32_t workload_id);
@@ -290,7 +291,9 @@ void testIndirectBase() {
     check(storage.words == before, "misaligned indirect base modified packet memory");
 }
 
-void testContextState() {
+using ContextStateBuilder = std::uint32_t* (APS5_VABI*)(CommandBuffer* buf, std::uint32_t operation);
+
+void testContextState(ContextStateBuilder build) {
     const std::array<std::array<std::uint32_t, 6>, 4> sizes{{{5}, {5, 8, 9, 3, 2}, {3, 5, 8, 9, 2}, {5, 8, 9, 3, 2, 5}}};
     const std::array<std::array<std::uint32_t, 4>, 4> reservations{{{5}, {22, 3, 2}, {3, 22, 2}, {22, 3, 2, 5}}};
     const std::array<std::uint32_t, 4> totals{5, 27, 27, 32};
@@ -313,7 +316,7 @@ void testContextState() {
             source.buffer.reserved_dw = 2;
             source.buffer.callback = growContext;
             source.buffer.user_data = &growth;
-            auto* first = sceAgcDcbContextStateOp_0100(&source.buffer, operation);
+            auto* first = build(&source.buffer, operation);
             check(first == (split == 0 ? growth.destination.words.data() : source.words.data()), "incorrect first context packet address");
             check(growth.calls == (requested == 0 ? 0u : 1u), "incorrect context callback count");
             auto* end = requested == 0 ? source.words.data() + totals[operation] : growth.destination.words.data() + totals[operation] - split;
@@ -334,24 +337,24 @@ void testContextState() {
             }
         }
     }
-    expectFailure([] { sceAgcDcbContextStateOp_0100(nullptr, 0); });
+    expectFailure([&] { build(nullptr, 0); });
     Storage invalid;
-    expectFailure([&] { sceAgcDcbContextStateOp_0100(&invalid.buffer, 4); });
+    expectFailure([&] { build(&invalid.buffer, 4); });
     check(invalid.buffer.cursor_up == invalid.words.data(), "invalid context operation advanced cursor");
     invalid.buffer.cursor_up = invalid.words.data() + 1;
     invalid.buffer.cursor_down = invalid.words.data();
-    expectFailure([&] { sceAgcDcbContextStateOp_0100(&invalid.buffer, 0); });
+    expectFailure([&] { build(&invalid.buffer, 0); });
     invalid.buffer.cursor_up = invalid.words.data();
-    expectFailure([&] { sceAgcDcbContextStateOp_0100(&invalid.buffer, 1); });
+    expectFailure([&] { build(&invalid.buffer, 1); });
     ContextGrowth growth{{}, invalid.words.data(), 22};
     invalid.buffer.callback = growContext;
     invalid.buffer.user_data = &growth;
     growth.success = false;
-    expectFailure([&] { sceAgcDcbContextStateOp_0100(&invalid.buffer, 1); });
+    expectFailure([&] { build(&invalid.buffer, 1); });
     growth.calls = 0;
     growth.success = true;
     growth.destination.buffer.cursor_down = growth.destination.words.data() + 21;
-    expectFailure([&] { sceAgcDcbContextStateOp_0100(&invalid.buffer, 1); });
+    expectFailure([&] { build(&invalid.buffer, 1); });
     check(invalid.buffer.cursor_up == growth.destination.words.data(), "failed reservation advanced cursor");
 }
 
@@ -641,7 +644,8 @@ int main(int argc, char** argv) {
         testWorkloadStreams();
         testIndexBuffer();
         testIndirectBase();
-        testContextState();
+        testContextState(sceAgcDcbContextStateOp_0100);
+        testContextState(sceAgcDcbContextStateOp);
         testFlip();
         testRegisters();
         testRegisterRange();
