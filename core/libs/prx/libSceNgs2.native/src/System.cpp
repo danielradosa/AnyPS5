@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -111,6 +113,32 @@ static int CreateSystem(const Ngs2SystemOption& option, const Ngs2ContextBufferI
     Systems().push_back(system);
     *handle = reinterpret_cast<Ngs2Handle>(system);
     return SCE_NGS2_OK;
+}
+
+struct Ngs2ReportEntry {
+    std::uint32_t type;
+    Ngs2ReportHandler handler;
+    std::uintptr_t userData;
+};
+
+static std::map<Ngs2Handle, Ngs2ReportEntry>& ReportHandlers() {
+    static auto* const handlers = new std::map<Ngs2Handle, Ngs2ReportEntry>();
+    return *handlers;
+}
+
+static Ngs2Handle& NextReportHandle() {
+    static Ngs2Handle next = 1;
+    return next;
+}
+
+static void ReportCpuLoad(Ngs2Handle systemHandle, float ratio) {
+    std::vector<Ngs2ReportEntry> targets;
+    for (const auto& registered : ReportHandlers()) {
+        if (registered.second.type == SCE_NGS2_REPORT_TYPE_CPU_LOAD) targets.push_back(registered.second);
+    }
+    if (targets.empty()) return;
+    const Ngs2ReportCpuLoadData data{{sizeof(Ngs2ReportCpuLoadData), systemHandle, SCE_NGS2_REPORT_TYPE_CPU_LOAD, SCE_NGS2_OK}, ratio, 0.0f, ratio, 0.0f};
+    for (const auto& entry : targets) entry.handler(&data.header, entry.userData);
 }
 
 #pragma GCC visibility push(default)
@@ -241,7 +269,28 @@ int APS5_VABI sceNgs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuffe
     auto* system = Ngs2FindSystem(system_handle);
     if (system == nullptr) return SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE;
     if (buffer_info == nullptr || num_buffer_info == 0) APS5_INVALID_ARG_EX;
+    const auto start = std::chrono::steady_clock::now();
     Ngs2RenderSystem(*system, buffer_info, num_buffer_info);
+    const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start;
+    const double grainSeconds = static_cast<double>(system->option.num_grain_samples) / system->option.sample_rate;
+    ReportCpuLoad(system_handle, static_cast<float>(elapsed.count() / grainSeconds));
+    return SCE_NGS2_OK;
+}
+
+int APS5_VABI sceNgs2ReportRegisterHandler(uint32_t report_type, Ngs2ReportHandler handler, uintptr_t user_data, Ngs2Handle* out_handle) {
+    if (out_handle == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    if (report_type >= SCE_NGS2_REPORT_TYPE_COUNT || handler == nullptr) APS5_INVALID_ARG_EX;
+    if (report_type != SCE_NGS2_REPORT_TYPE_CPU_LOAD) throw std::runtime_error(std::string(__func__) + ": report type " + std::to_string(report_type) + " is not produced");
+    std::lock_guard lock(Ngs2Mutex());
+    const Ngs2Handle handle = NextReportHandle()++;
+    ReportHandlers().emplace(handle, Ngs2ReportEntry{report_type, handler, user_data});
+    *out_handle = handle;
+    return SCE_NGS2_OK;
+}
+
+int APS5_VABI sceNgs2ReportUnregisterHandler(Ngs2Handle report_handle) {
+    std::lock_guard lock(Ngs2Mutex());
+    if (ReportHandlers().erase(report_handle) == 0) APS5_INVALID_ARG_EX;
     return SCE_NGS2_OK;
 }
 

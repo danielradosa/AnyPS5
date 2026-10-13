@@ -682,4 +682,26 @@ struct Ngs2GeomAttribute {
 };
 static_assert(sizeof(Ngs2GeomAttribute) == 308);
 
+static constexpr std::uint32_t SCE_NGS2_REPORT_TYPE_CPU_LOAD = 5;
+static constexpr std::uint32_t SCE_NGS2_REPORT_TYPE_COUNT = 10;
+
+struct Ngs2ReportDataHeader {
+    std::size_t size;
+    Ngs2Handle handle;
+    std::uint32_t type;
+    std::int32_t result;
+};
+static_assert(sizeof(Ngs2ReportDataHeader) == 24);
+
+struct Ngs2ReportCpuLoadData {
+    Ngs2ReportDataHeader header;
+    float total_ratio;
+    float flush_ratio;
+    float process_ratio;
+    float feedback_ratio;
+};
+static_assert(sizeof(Ngs2ReportCpuLoadData) == 40);
+
+using Ngs2ReportHandler = void (APS5_VABI *)(const Ngs2ReportDataHeader*, std::uintptr_t);
+
 #endif
