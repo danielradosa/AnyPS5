@@ -1,0 +1,301 @@
+{
+ "subsystem": "Graphics-side draw recording (core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp and its helpers: Pipeline, Recorder render-pass handling, DCC/CMASK, storage-target residency, draw snapshots, DepthSurface, ColorTarget transfer)",
+ "howItWorks": "Graphics::Draw (Draw.cpp:1494) runs once per DRAW packet, called by VulkanDevice::Draw (VulkanDevice.cpp:2530-2537) after Driver::draw has decoded the state and found the shaders. prepareDrawInputs (Draw.cpp:783-907) validates the draw and memoizes the fragment-output validation. It then copies the index buffer on the CPU and scans it for the highest index, and copies each vertex range into host-visible Buffers. Those copies are reused only when the write watch proves the memory unchanged (Recorder draw snapshots).\n\nFor each color target, the draw looks up the cached StorageTexture of the surface (CachedStorageSurface, then StorageTexture::Refresh: FlushPending, CollectWrites, key proof, upload if changed). It then scans the DCC and CMASK keys (materializeRegisterClear and materializeCmaskClear). Depth uses a host-only DepthSurface image.\n\nWhen every target is resident (the default), the draw is recorded:\n- resolveDrawResources reuses a ResourceCache template (Revalidate) or builds a ShaderResources.\n- CachedPipeline finds or creates the VkPipeline, VkRenderPass, layout and shader modules; AcquireFramebuffer follows.\n- recordDraw continues the open render pass only if the target views and extent are the same, the previous draw wrote no memory, there is no feedback and the draw is not GPU-indirect. Otherwise the old pass ends with an ALL to ALL barrier, and a new ALL_COMMANDS barrier plus vkCmdBeginRenderPass is recorded.\n- PrepareDrawBindings copies read-only in-place buffers into snapshot Buffers and a second, copied descriptor set.\n- Bind, push constants, draw. keepRecordedDraw keeps the objects until the fence and marks the targets dirty.\n\nThe driver submits the batch every 64 recorded works (APS5_BATCH_CAP), or at labels and syncs. Targets that are not resident go through a synchronous path: CPU read of the whole target, GPU detile, SubmitAndWait, CPU write-back.",
+ "threadingAndLocks": "The graphics queue's PM4 runs on its worker thread. By default Driver::draw decodes the state and looks up shaders without the lock (APS5_LOCKED_DRAW_PREPARE is unset). Then lockForDraw (Execution/src/Driver/Draw/Draw.cpp:260-271) takes GuestMemory::GpuMutex, which is recursive and process-wide, and holds it for the whole Graphics::Draw:\n- index and vertex copies\n- target Refresh and uploads\n- DCC and CMASK scans\n- the full ShaderResources build (draws have no unlocked stage A, unlike dispatches)\n- vkCreateGraphicsPipelines on a pipeline miss\n- descriptor allocation and update\n- recording\n\nFlush-hook waits nested in a draw (FlushForAccess, then SyncThrough or Sync, meaning submit plus a fence wait) also run with the lock held.\n\nThe inner mutexes taken per draw are:\n- validationMutex\n- the StorageTextureCache mutex (Refresh runs under it)\n- the DCC memo mutex\n- the ResourceCache mutex\n- Pipelines().mutex\n- the DescriptorCache mutex\n- the DepthSurface mutex\n- the write-tracker lock\n- the pending-image registry mutex\n\nWhile the GpuMutex is held, other queue workers (async compute dispatch recording), the presenter, reapCompletionLabels (try_lock fails) and game threads that hit the flush hook on pending ranges all block. A frame's draws therefore run one after another on a single core, and they also shut out work on the other queues. That matches the user's observation that threads sit idle and the GPU is starved.",
+ "findings": [
+  {
+   "id": "graphics-draw-1-locked-draw",
+   "title": "The whole draw runs under the global GpuMutex on one worker; draws have no unlocked resource-build stage and compile pipelines under the lock",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:260-271,383; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:992,1740; core/libs/prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp:89-97",
+   "category": "global-lock-serialization",
+   "mechanism": "Driver::draw takes GuestMemory::GpuMutex in lockForDraw, then calls localDevice->Draw, which reaches Graphics::Draw. Everything in Graphics::Draw executes inside that hold:\n- index and vertex CPU copies and the index scan\n- per-target CachedStorageSurface/Refresh plus the DCC and CMASK scans\n- the ShaderResources build: descriptor set allocation and writes, host-import lookups, texture cache lookups each with their own Refresh\n- CachedPipeline, which on a miss runs vkCreateShaderModule per stage, vkCreatePipelineLayout, vkCreateRenderPass and vkCreateGraphicsPipelines\n- AcquireFramebuffer (vkCreateFramebuffer on a miss)\n- PrepareDrawBindings memcpy snapshots and descriptor copies\n- recording\nThe dispatch path already splits its build: stage A runs without the lock (ShaderResources deferred ctor; VulkanDevice::PrepareDispatch at VulkanDevice.cpp:3040) and only Complete() runs under the lock (VulkanDevice.cpp:3416-3420). Draws always construct ShaderResources fully under the lock (Draw.cpp:992; the draw ctor at ShaderResources.hpp:90 has no deferred flag). Nested flush-hook waits then happen with the mutex held, so every other queue and the presenter wait too.",
+   "evidence": "Execution Draw.cpp:260-264: `const auto lockForDraw = [&] { ... GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Draw); gpuLock.lock();`; line 383 `localDevice->Draw(graphics, drawParameters, stages, snapshots, ...)` runs after it.\nGraphics Draw.cpp:992 `resolved.resources = std::make_shared<ShaderResources>(context, shaders, state.color, draw.indexAddress, ..., snapshots);`.\nShaderResources.hpp:91-97: 'Two-stage build for dispatches (see build): with `deferred` the constructor runs stage A only, which needs no device lock, and Complete() runs stage B under GuestMemory::GpuMutex' (compute only).\nPipeline.cpp:126/142/181/248 create objects inside CachedPipeline (Draw.cpp:1740).\nAPS5_LOCKED_DRAW_PREPARE is opt-in (Execution Draw.cpp:41), so by default only the decode and shader stage are unlocked.\nDraw.cpp:254-255 comment: 'the [lock] line's 'draw' hold max (tens of ms against an average well under a millisecond)'.",
+   "onDefaultPath": true,
+   "impact": "critical",
+   "whyImpact": "All draw recording for a frame is serial on one core while holding the lock every queue needs. A per-draw locked cost of a few tens of microseconds times 2,000-3,000 draws gives 60-120 ms per frame, the same order as the observed ~110 ms (8-9 FPS) frame. The other cores and the async-compute queues sit blocked on the mutex, and the GPU is fed in bursts.",
+   "proposal": "1) Give draws a deferred build, mirroring dispatches. Add a `deferred` overload of the draw ShaderResources ctor that runs buildPrepare only (ShaderResources.cpp:889). Call it from Driver::draw before lockForDraw (Execution Draw.cpp around lines 361-371), pass it through VulkanDevice::Draw, and in resolveDrawResources call Complete() (buildComplete, ShaderResources.cpp:1031) instead of constructing. Probe SharedResourceCache().Find unlocked, as PrepareDispatch does.\n2) Precompute the lock-free parts into a PreparedDraw struct outside the lock: CachedFragmentOutputs (own mutex), BuildVertexInputLayout, DrawResourceKey, pipelineKey and CachedPipeline (Pipelines().mutex; the layout key comes only from the stages' bindings), and DepthSurfaceView (own mutex). Graphics::Draw then only records.\n3) Create missing pipelines on a small job pool keyed by pipelineKey, so a first-use vkCreateGraphicsPipelines never runs under the GpuMutex. Have the draw wait on a future outside the lock, or skip the draw for one frame.",
+   "effort": "L",
+   "risk": "Stage A reads memory that can change before the lock. The dispatch path already handles this with the stage B re-check, presync and PrecollectSurfaces, and draws must reuse those proofs. Creating pipelines outside the lock must respect device replacement; the store entries already carry the device and pool identity.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1, then read:\n- the [lock] line per queue: acquisitions, waits and hold time by site 'draw'\n- the [draws] phase totals (resources, pipeline, readTarget, record) and 'longest draw ... longest phase'\n- the [resources] stage A/B split for dispatches, as the reference for what a draw split saves"
+  },
+  {
+   "id": "graphics-draw-2-cache-capacity",
+   "title": "Resource-cache, pipeline-store and framebuffer bounds are far below an AAA frame's working set, so draws fully rebuild and pipelines are recreated every frame",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2038-2050; core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:514-562,314; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1719",
+   "category": "shader-pipeline-compile",
+   "mechanism": "ResourceCache::Insert holds at most APS5_RESOURCE_CACHE_ENTRIES entries (default 1024), shared by dispatch and draw templates. Draw keys contain every texture, sampler and written-buffer descriptor word (ContentKey, ShaderResources.cpp:1192-1236), so each material/texture combination is its own entry. With several thousand distinct draws plus hundreds of dispatches per frame, last frame's entries are evicted before they can be reused.\n\nThe pipeline store is hard-bounded at 256 entries (Pipeline.cpp:552) and evicts least-recently-used entries no in-flight batch holds. Re-creating an evicted pipeline runs vkCreateShaderModule per stage (126), vkCreatePipelineLayout (142), vkCreateRenderPass (181) and vkCreateGraphicsPipelines (248), all under the GpuMutex. The persistent VkPipelineCache only saves the driver back-end compile.\n\nStages without a variantId get a private pipeline on every draw (Pipeline.cpp:520-523, `++store.uncached; return std::make_shared<Pipeline>(...)`), and so does a 64-bit hash collision (537-540). Framebuffers are cached per Pipeline with a bound of 8 (Pipeline.cpp:314).\n\nThe draw path's Insert (Draw.cpp:1719) passes no `evicted` vector, so displaced templates are destroyed inline under the lock. The dispatch path instead hands them to recorder->Keep (VulkanDevice.cpp:3400-3406, APS5_NO_DEFERRED_EVICTION).",
+   "evidence": "ShaderResources.cpp:2041-2045: `const char* value = std::getenv(\"APS5_RESOURCE_CACHE_ENTRIES\"); const auto parsed = value ? std::strtoull(value, nullptr, 10) : 1024ull;`.\nPipeline.cpp:552: `constexpr std::size_t bound = 256;`.\nPipeline.cpp:520-523: `if (key.empty()) { ++store.uncached; return std::make_shared<Pipeline>(context, state, vertexInput, resources, shaders, attachmentLayout); }`.\nDraw.cpp:1719: `SharedResourceCache().Insert(contentKey, resources);`.\nDefaults: APS5_NO_DRAW_RESOURCE_CACHE, APS5_NO_TEXTURE_CACHE and APS5_NO_PIPELINE_CACHE are all unset, so the caches are on but bounded.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "If the per-frame working set is larger than the bounds, the hit rate across frames is close to zero. Every draw then pays a full build (set allocation and writes, import and texture lookups with Refresh). Every frame also re-creates pipelines past 256; each costs roughly 0.1-1 ms even with a driver cache hit, so 100 evictions per frame alone is 10-100 ms. This could become critical if [pipecache] shows evictions or private pipelines.",
+   "proposal": "- Raise the resource-cache default to about 16384, or give draws and dispatches separate capacities.\n- Make the pipeline bound configurable (for example APS5_PIPELINE_CACHE_ENTRIES, default 4096).\n- Deduplicate VkShaderModule by variantId and VkRenderPass by attachment format, layout and export key; compatible passes may be shared. A pipeline miss then costs only vkCreateGraphicsPipelines.\n- Key framebuffers globally by (render-pass-compatibility key, views, extent) instead of per Pipeline with a bound of 8.\n- At Draw.cpp:1719, pass a `std::vector<std::shared_ptr<ShaderResources>> evicted` and recorder->Keep each entry, as VulkanDevice::dispatch does.\n- Log once per stage whenever a draw falls to the private-pipeline path.",
+   "effort": "M",
+   "risk": "Cached ShaderResources pin descriptor sets, textures and storage images past the texture-cache budgets (comment at ShaderResources.cpp:2038-2040), so memory and VRAM use grows. More pipelines use more driver memory. Shared render passes must remain compatible: same formats, samples, layouts and attachment count.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1, then read:\n- [rescache] 'draws: N hits, N misses, N invalidated, N uncacheable', plus the miss-churn line\n- [pipecache] 'lookups: hits, misses, private (no variant id), evicted, cached'\n- [descriptors] sets, pools and dedicated pools\n- [draws] 'per kind (avg us, count): recipe hit / template hit / build / BDA'"
+  },
+  {
+   "id": "graphics-draw-3-dcc-scan",
+   "title": "Every draw scans the whole DCC key range (and the CMASK) of every color target, repeating work Refresh just proved",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:114-153,913-927; core/libs/prx/libSceAgcDriver/Graphics/src/DccMetadata.cpp:414-471",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "refreshResidentTarget runs for every resident color target of every draw (Draw.cpp:1562; also in DrawWithRecipe at 2074). Its lookup() runs StorageTexture::Refresh, which already establishes the DCC keys from write stamps (Texture.cpp:1259 `keys = ProvedKeys();`, which goes through ProvedClearKeys with KeyFastPath on by default, DccMetadata.cpp:583-617).\n\nmaterializeRegisterClear (Draw.cpp:116) then calls CurrentDccKeys(color.dccAddress, color.bytes) without any proof. currentDccKeys leads to readDccKeys, which takes the memo mutex, checks AnyShadowedOverlaps, and runs AllKeysEqual over color.bytes/256 bytes (DccMetadata.cpp:436-438). In steady state the keys are all 0xff after the first write, so the 8-byte compare loop runs to the end every time.\n\nmaterializeCmaskClear (Draw.cpp:139-141) does the same over cmaskBytes (4 KiB per 1024x512 metablock, State.cpp:686-691) for every target with CMASK enabled.\n\nWhen the title's clear kernel wrote the keys and is still pending in the batch, currentDccKeys instead calls recorder->SyncThrough (DccMetadata.cpp:462-468). That is a full GPU wait under the lock, once per compute-cleared target per frame. Fills recorded by the DMA HLE are memoized and do not wait.",
+   "evidence": "Draw.cpp:116: `if (CurrentDccKeys(color.dccAddress, color.bytes) != DccKeys::ClearRegister) return;`.\nDraw.cpp:140: `const auto state = CurrentDccKeys(color.cmaskAddress, metadataBytes);`.\nDccMetadata.cpp:437: `const bool uniform = AllKeysEqual(keys + 1, count - 1, first);`.\nDccMetadata.cpp:28-30 comment: 'an all-0xff (uncompressed) surface's keys are read to the end each time (132 KiB for a 4K RGBA8 target)'.\nSizes in SW_64KB_R_X: 2560x1440 RGBA16F is about 30 MB, so 118 KiB of keys; 1440p RGBA8 is about 15.7 MB, so 61 KiB.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "A 3-4 render-target (MRT) G-buffer or forward draw scans about 250-450 KiB. Over 2,000-3,000 draws that is about 0.5-1.3 GB of byte compares per frame on the locked thread, roughly 15-40 ms per frame. A single-threaded, early-exit loop runs at about 20-40 GB/s.",
+   "proposal": "Replace the unproven scan with a proved one.\n- Add a raw-key variant to DccMetadata, for example `DccKeys ProvedRawKeys(std::uint64_t meta, std::size_t count, DccKeyProof& proof)`. It mirrors ProvedClearKeys:\n  1. Collect first: `collected = GuestMemory::CollectWrites(meta, count)`.\n  2. If `proof.generation != 0 && GuestMemory::UnchangedSince(meta, count, proof.generation)` and `!Recorder::SnapshotWriteOverlaps(meta, count)`, return the cached raw ByteKeys.\n  3. Otherwise scan and store a proof only when the result is stable.\n- Keep one proof per target. StorageTexture already has a foreignKeyProofs ring (Texture.cpp:1452-1458) to hold it; alternatively use a small map keyed by dccAddress and cmaskAddress.\n- Use it in materializeRegisterClear and materializeCmaskClear.\n\nThe per-draw cost falls from O(bytes/256) to O(number of 64 KiB stamp blocks), about 1-4 checks.",
+   "effort": "S",
+   "risk": "Keep the 'collect before scan' order and treat memoized or pending results as unproven (as ProvedClearKeys does). Otherwise a title clear kernel writing the keys between draws would be missed. The pending-write case must still take the SyncThrough or PendingStoreKeys path.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1, then read:\n- [dcc] 'N scans, X MiB scanned, N memo hits, ... Y ms; key proofs: proved/scanned/unstable'\n- [draws] readTarget phase total and 'target lookups ... us'\n- [recorder] top sync sites for SyncThrough calls from currentDccKeys"
+  },
+  {
+   "id": "graphics-draw-4-snapshot-bindings",
+   "title": "PrepareDrawBindings copies every read-only in-place buffer and allocates and copies a second descriptor set for every recorded draw",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2775-2862 (called from core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1362); core/libs/prx/libSceAgcDriver/Graphics/include/Recorder.hpp:94-95; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2222-2257",
+   "category": "allocation-copy",
+   "mechanism": "recordDraw calls resources.PrepareDrawBindings for every recorded draw, whether the template was just built or hit. The function walks every allocation, and each read-only guest buffer read in place through a host import, plus every moved or data-word override, becomes a CPU snapshot:\n- CollectWrites, then a std::map lookup in ReusableDrawSnapshot\n- on a miss, a new pooled host-visible Buffer and a memcpy of the whole descriptor view (ShaderResources.cpp:2809-2815)\n\nIf anything was selected, it then:\n- allocates a new set through DescriptorCache::Allocate (mutex plus vkAllocateDescriptorSets; the newest pool is tried first and fuller pools are retried)\n- runs vkUpdateDescriptorSets copying every binding of the template set (2830-2841), then the snapshot writes (2842-2858)\n- keeps the result alive with recorder.Keep\n\nSo a fresh build writes two descriptor sets per draw. A set larger than the chain pool limits (for example a bindless table over 1024 sampled images) gets a dedicated VkDescriptorPool created and destroyed per set (ShaderResources.cpp:2156-2176).\n\nThe snapshot pool is capped at 1024 entries and 256 MiB (Recorder.hpp:94-95), which a frame of about 3,000 draws with about 3 read-only buffers each overflows. Every snapshot is also dropped whenever the global guest-allocation generation moves (Recorder.cpp:2225). That generation is bumped by any DirectMemory map or unmap and, on Windows, by a heap-cache release (GuestAllocations.cpp:110-129; GuestHeap.cpp:171-172).",
+   "evidence": "ShaderResources.cpp:2809-2815: `auto buffer = recorder.ReusableDrawSnapshot(begin, bytes); if (buffer == nullptr) { buffer = std::make_shared<Buffer>(...); std::memcpy(buffer->Bytes().data(), reinterpret_cast<const void*>(begin), bytes); recorder.KeepDrawSnapshot(...); }`.\n2826: `result->allocation = result->cache->Allocate(_layout, sizes);`.\n2840: `update(context.device, 0, nullptr, static_cast<std::uint32_t>(copies.size()), copies.data());`.\nRecorder.hpp:94-95: `DrawSnapshotBudget = 256 MiB; DrawSnapshotEntries = 1024;`.\nRecorder.cpp:2225: `if (found->second.registryGeneration != GuestAllocations::GuestAllocationsGeneration_nid_postfix() || ...) { eraseDrawSnapshot(found); return {}; }`.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Each draw pays N memcpys (as large as each read-only view; vertex pools read through buffer loads can be megabytes), one or two set allocations and a full descriptor copy. The copies repeat across frames whenever the 1024-entry pool thrashes or any allocation mapping changes. For about 3,000 draws this is likely several to tens of milliseconds per frame on the locked thread, plus extra GPU reads from system memory.",
+   "proposal": "(a) When the template is freshly built (resolved.built != nullptr), have the build bind the snapshot buffers directly for read-only direct elements. PrepareDrawBindings then selects nothing and skips the second set and copy.\n(b) Replace per-snapshot Buffers with a per-batch linear host-visible arena: one VkBuffer with a bump allocator, released at batch completion. Bind the snapshots with VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC offsets, or with VK_KHR_push_descriptor. This removes the per-draw set allocation and the copy of every binding.\n(c) Raise DrawSnapshotEntries (for example 16384) and the budget.\n(d) Make registry invalidation range-scoped. The invalidator already receives the changed ranges (GuestAllocationsSetInvalidator), so drop only the snapshots that overlap them instead of comparing the global generation.",
+   "effort": "L",
+   "risk": "The snapshots exist because PM4 WRITE_DATA or DMA (and guest CPU stores) run before the deferred batch executes. Any in-place path must keep that guarantee. The arena must outlive the batch (recorder.Keep), and dynamic offsets must respect minStorageBufferOffsetAlignment.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: [draws] 'record' phase, where PrepareDrawBindings runs, and 'resources' (bindings/upload/descriptors/other).\n- [descriptors] 'sets N from M pools and K dedicated pools'.\n- APS5_CAPTURE_TRACE=1: count 'draw-snapshot' lines per batch."
+  },
+  {
+   "id": "graphics-draw-5-pass-churn",
+   "title": "Render-pass churn: strict continuation rules plus full ALL_COMMANDS barriers at every pass boundary drain the GPU between passes",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1337-1365,1388-1409,1437; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:1347-1398; core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:144-188",
+   "category": "gpu-side-efficiency",
+   "mechanism": "A draw continues the open pass only if all of the following hold:\n- passKey is equal: same attachment views and extent\n- the previous draw left the pass continuable, meaning `!resources.WritesMemory()`. WritesMemory is true for any storage-image or buffer write, a copied write, BDA completion work or a lease (ShaderResources.cpp:2918-2920).\n- the draw does not sample its own attachment\n- the draw is not a GPU-indirect or mesh-indirect draw\n- nothing was recorded in between. recorder->Commands() ends the pass (Recorder.cpp:1352); it is called by dispatches, by uploads during the resource build or Refresh, by FillClear, and by label or key-store flushes (Draw.cpp:1359-1361). Address-based (BDA) draws flush unconditionally because HoldsLease() is true. The 64-work submit (APS5_BATCH_CAP, DeferredLabels.cpp:83-89) also ends it.\n\nEach new pass records:\n- endOpenRenderPass: vkCmdEndRenderPass plus an ALL_COMMANDS to ALL_COMMANDS barrier (Recorder.cpp:1386-1389)\n- the draw's own ALL_COMMANDS to color/depth/vertex/shader barrier (Draw.cpp:1395-1397), even though the end-of-pass barrier just covered those accesses (coveredAccess is computed in Commands() but recordDraw ignores it)\n- vkCmdBeginRenderPass with LOAD/STORE on every attachment in GENERAL layout (Pipeline.cpp:149-170)",
+   "evidence": "Draw.cpp:1365: `const bool continued = !capture && !readsTarget && !gpuIndirect && !meshIndirect && recorder->ContinuesRenderPass(passKey);`.\nDraw.cpp:1437: `recorder->LeaveRenderPassOpen(passKey, drawTiming, !resources.WritesMemory(), ...)`.\nRecorder.cpp:1388: `recordBarrier(open->commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, ...)`.\nDraw.cpp:1396: `cmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, ..., 0, 1, &before, ...)`.\nAPS5_DRAW_TRANSITIONS is unset by default (lean path).",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Every pass boundary is a full pipeline drain, and two drains in a row. Draws that write storage images or buffers (common in PS5 renderers), indirect draws and BDA draws each get their own pass, so the GPU runs them one at a time with idle bubbles. This is one reason the GPU looks underused even when the CPU feeds it.",
+   "proposal": "1) Add a subpass self-dependency (src = dst = subpass 0; FRAGMENT_SHADER|COLOR_ATTACHMENT_OUTPUT|LATE_FRAGMENT_TESTS to the same stages plus VERTEX_SHADER; BY_REGION) to the render pass at Pipeline.cpp:176-181. When the previous draw only wrote memory that this draw does not read (check its WritesOverlap against this draw's InPlaceReads and storage images), record an in-pass vkCmdPipelineBarrier and continue the pass instead of ending it.\n2) Have recordDraw call recorder->Commands(&covered) and skip the pre-pass barrier when `covered` already includes those accesses. Narrow srcStage from ALL_COMMANDS to the classes recorded since the last barrier.\n3) For GPU-indirect draws, record the argument barrier and constant-rule rewrites before the first pass of a run of indirect draws to the same targets, so they can continue one pass.\n4) Test APS5_BATCH_CAP values.",
+   "effort": "M",
+   "risk": "Narrower barriers can introduce read-after-write races. Validate with APS5_BARRIER_VALIDATE=1 and image comparisons. An in-pass barrier needs the self-dependency declared in every pipeline's render pass, which also changes render-pass compatibility.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: [draws] 'render passes N begun, M draws continued one'; [barriers] by class ('draw', 'label-run').\n- APS5_PROFILE_GPU=1: [gputime], comparing 'batch ms first to last command' with class time ('untimed ... outside every range') to see GPU idle time."
+  },
+  {
+   "id": "graphics-draw-6-input-sync",
+   "title": "Index and vertex inputs are always CPU-copied; if a GPU pass produced them, each draw first waits for the GPU under the lock",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:737-753,847-904,1024-1027; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:993-1018",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "CopyDrawInput first calls GuestMemory::FlushGpuWrites, which goes to Recorder's FlushForAccess. When the range overlaps a pending GPU write (index or vertex data written earlier by a dispatch in the open or in-flight batch: compute skinning, GPU culling or compaction, particles), FlushForAccess takes the GpuMutex and calls recorder->SyncThrough(address, bytes, true). Inside a draw the mutex is already held, so this is a nested, locked submit plus fence wait.\n\nThe bytes are then memcpy'd into a new HOST_VISIBLE Buffer, a GPU to CPU to GPU round trip. For index buffers, the CPU then scans every index to find the maximum (Draw.cpp:854-864), which is only used to size the vertex copies and to check maxDrawIndexedIndexValue. Reuse happens only if Recorder draw snapshots prove the range unchanged, which never applies to GPU-written data.\n\nOn the mesh (GS) path, recordDrawCommands never binds the copied index buffer (Draw.cpp:1024-1027): the mesh shader reads indices through MeshIndexBufferDescriptor. The copy and scan there are wasted work, and can still sync.",
+   "evidence": "Draw.cpp:741: `GuestMemory::FlushGpuWrites(address, bytes);`.\nDraw.cpp:750-751: `copy.buffer = std::make_shared<Buffer>(...); GuestMemory::Read(address, copy.buffer->Bytes(), alignment);`.\nRecorder.cpp:1013-1018: `std::lock_guard gpu(GuestMemory::GpuMutex()); if (... recorder->PendingWriteOverlaps(address, bytes)) { ... Recorder::CountSync(1); recorder->SyncThrough(address, bytes, true); }`.\nDraw.cpp:854: `for (std::size_t offset = 0; offset < indexBytes; offset += draw.indexSize)`.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Each draw whose inputs a GPU pass produced costs a full GPU drain under the global lock (submit latency plus all queued GPU work, often 0.2-2 ms) and leaves the GPU idle while the CPU finishes recording. With tens of such draws per frame this alone is a large part of the frame. When it does not apply, the remaining cost is the O(indexCount) scan on snapshot misses.",
+   "proposal": "In CopyDrawInput (and the vertex loop at Draw.cpp:894-900): when `recorder->PendingWriteOverlaps(address, bytes)` and `HostImportFor(context, address, bytes)` covers the range, do not flush or copy. Bind import->buffer at offset (address - import->base) directly; index offsets must be a multiple of indexSize, and the imports need VERTEX/INDEX usage bits. Call recorder->NotePendingRead(address, bytes, ...) and keep the import. The pass-begin barrier already covers this case: it lists VK_ACCESS_INDEX_READ_BIT and VERTEX_ATTRIBUTE_READ_BIT from ALL_COMMANDS (Draw.cpp:1395).\n\nSkip the max-index scan when the stage has no vertex attributes, or when limits.maxDrawIndexedIndexValue == UINT32_MAX; vertex copies can then use VertexBufferExtent or the in-place import. Skip the index copy entirely on the mesh path, except for the triangle-fan restart check.",
+   "effort": "M",
+   "risk": "Binding in place requires that the CPU does not write the range before the batch runs; NotePendingRead makes driver-side CPU stores wait. Guest CPU writes to GPU-produced buffers are unusual, but the snapshot rationale applies. Import buffers may lack index/vertex usage flags and need them added at import creation.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1, then read:\n- [draws] 'hook waits inside draws X ms (max Y)' and the 'vertex' phase total\n- [recorder] 'pending write N/T s' and 'top sync sites (source@caller ...)'\n- [hooksync]"
+  },
+  {
+   "id": "graphics-draw-7-write-watch",
+   "title": "Every per-draw reuse proof depends on the host write watch: on Linux without PAGEMAP_SCAN or async userfaultfd write-protect, draws re-copy, re-scan and round-trip their targets",
+   "location": "core/libs/prx/libc/src/GuestWriteWatch.cpp:131-158,257-307; core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:1078-1123,1342-1348; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:742-748; core/libs/prx/libSceAgcDriver/Graphics/src/Texture.cpp:1229-1330",
+   "category": "memory-tracking",
+   "mechanism": "GuestMemory::CollectWrites returns 0 when the tracker is not watched. On Linux the watch exists only if the build saw PAGEMAP_SCAN and UFFD_FEATURE_WP_ASYNC (kernel 6.7 headers) and the running kernel supports them. Otherwise:\n- CopyDrawInput never reuses a snapshot (`if (copy.generation != 0)`) and KeepDrawInput returns early, so every draw re-copies index and vertex data and re-scans indices.\n- PrepareDrawBindings re-snapshots every read-only buffer.\n- ProvedClearKeys cannot prove anything, so it scans.\n- StorageTexture::Refresh sees every unit as changed: ChangedBlocks fills BlockWritten and returns false. droppable() is false without tracking, so a target with pending results is written back and re-uploaded, per draw per target.\nIf the headers were missing at build time, no message is printed.\n\nOn Windows, CollectWrites walks GetWriteWatch, which costs in proportion to the pages covered (GuestMemory.cpp:1025-1067). The walk is memoized only within a collect epoch, and the epoch is bumped at submissions, reaps, waits and drains (PacketExecution.cpp:106, QueueWorker.cpp:34), with a 64-entry per-thread ring (GuestMemory.cpp:997-1000). So large targets are walked again after every bump.",
+   "evidence": "GuestWriteWatch.cpp:297: `#if defined(__linux__) && defined(PAGEMAP_SCAN) && defined(UFFD_FEATURE_WP_ASYNC)`, else `return false;`.\nLine 157: '[memory] write watch unavailable: %s failed (%s); guest memory is compared instead'.\nGuestMemory.cpp:1343-1348: ChangedBlocks pre-fills BlockWritten and returns false when unwatched.\nTexture.cpp comment: 'Without a generation (no tracking) a unit's stamps say nothing, so it is stored.'\nDraw.cpp:744: `if (copy.generation != 0) copy.buffer = recorder->ReusableDrawSnapshot(...)`.\nAPS5_NO_WRITE_WATCH (opt-out) is unset by default.",
+   "onDefaultPath": true,
+   "impact": "critical",
+   "whyImpact": "This depends on the host, but it is the default behaviour on any Linux host or build without the kernel feature. There, each draw copies O(index + vertex + constant) bytes and moves O(target size) through GPU write-back and re-upload, which is far beyond any other cost. On Windows and on watched Linux hosts, the per-epoch page walks of the targets cost tens of microseconds per target per draw.",
+   "proposal": "- At startup, log clearly (and fail loudly in Release) when GuestWriteWatchAvailable_nid_postfix() is false, including when the feature was compiled out.\n- Document that Linux needs a 6.7+ kernel and 6.7+ headers.\n- Add a fallback tracker for older kernels: /proc/self/clear_refs soft-dirty bits, or mprotect with SIGSEGV.\n- Enlarge ThreadCollectMemo (64 entries) to cover a draw's working set of targets, buffers and keys.\n- Consider bumping the collect epoch only at real ordering points that affect CPU writes.",
+   "effort": "M",
+   "risk": "A soft-dirty or mprotect fallback has its own overhead and signal-safety problems. Over-long epochs risk missing CPU writes, so the epoch semantics must stay conservative.",
+   "howToMeasure": "- Grep stderr for '[memory] write watch unavailable'.\n- APS5_PROFILE_DRAW=1: [draws] 'target lookups: full-scissor/partial/pages walked/us' and 'resident lookups ... >= 1 ms'; [texture] reused versus uploads.\n- APS5_TRACE_UPLOAD=1 shows '[upload] ... untracked' reasons."
+  },
+  {
+   "id": "graphics-draw-8-sync-fallback",
+   "title": "Targets that are not resident (linear, or a failed lookup) make the draw synchronous: CPU copies and retiles the whole target, plus a full GPU drain",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1555-1608,1799-2001; core/libs/prx/libSceAgcDriver/Graphics/src/ColorTargetTransfer.cpp:8-41; core/libs/prx/libSceAgcDriver/Graphics/src/ColorTargetLayout.cpp:155-169",
+   "category": "upload-readback",
+   "mechanism": "A target is resident only if it is tiled, the detiler exists and the lookup did not throw. Exceptions in refreshResidentTarget (Attachable(), layout size mismatch, Draw.cpp:1564-1565) are logged once per address (924) and leave the target non-resident for good. The draw then becomes synchronous (recordable is false, Draw.cpp:1614) and per draw it:\n- allocates a host Buffer, two DeviceBuffers and a std::vector, each the size of the target (1580-1583)\n- reads the whole target with GuestMemory::Read plus a memcpy (1584-1585), or, for non-RenderTarget tilings, runs ReadColorTarget with a CPU per-texel detile (one memcpy per pixel, ColorTargetLayout.cpp:155-160)\n- fills DCC clears on the CPU (1594-1597)\n- runs the GPU detile, render and retile\n- runs batch->SubmitAndWait (1966), which syncs the recorder and drains the GPU\n- writes the target back with GuestMemory::WriteChanged or WriteColorTarget (1996-1997; Write re-reads, CPU-tiles and writes the whole target) and runs MarkDccUncompressed\nLinear color targets always take this path.",
+   "evidence": "Draw.cpp:1555: `if ((binding.gpuTiling || (color.tileMode != ColorTileMode::Linear && context.detiler != nullptr)) && residentTargets)`.\nDraw.cpp:924: `std::fprintf(stderr, \"[gpu] color target 0x%llx stays non-resident: %s\\n\", ...)`.\nDraw.cpp:1966: `batch->SubmitAndWait();`.\nColorTargetLayout.cpp:158: `for (std::uint32_t x = 0; x < width; ++x) std::memcpy(row + ..., source.data() + offset(x, y), elementBytes);`.\nAPS5_NO_RESIDENT_TARGETS (opt-out) is unset, so residency is on.",
+   "onDefaultPath": false,
+   "impact": "high",
+   "whyImpact": "Only taken for linear targets or targets whose lookup failed, but each such draw moves about 4x the target's bytes through the CPU (a 1080p RGBA8 target is about 8 MB) and drains the GPU. A few per frame cost milliseconds; one recurring post-process or UI target can dominate the frame.",
+   "proposal": "- Add a resident path for Linear color targets: a storage image whose upload and write-back are plain buffer-image copies through the host import.\n- For Standard4KB/64KB targets that failed the resident lookup, use the GPU TextureDetiler instead of the CPU per-texel loop, and reuse staging buffers per target address.\n- Count failed resident lookups by reason in [draws] instead of logging once, and retry the lookup after the cause (for example an eviction) clears.",
+   "effort": "M",
+   "risk": "The linear resident path needs the write-back rules of StorageTexture (pending units, DCC) to apply to the linear layout. Retrying lookups must not throw on every draw.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: [draws] 'N synchronous avg X us; ... waited or synchronous because: non-resident target N' and the readTarget/writeBack phases.\n- stderr: '[gpu] color target 0x... stays non-resident: ...'."
+  },
+  {
+   "id": "graphics-draw-9-recipe-depth",
+   "title": "Draw recipes (the fast path for draw-cache hits) exclude every draw with a depth target",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1732,1770,2056",
+   "category": "incomplete-implementation",
+   "mechanism": "Draw only builds a recipe when `!state.depth` (1770) and there is no proxied target (1732). It must also be direct, not waited, cacheable, Reusable(), and have no moved buffers. DrawWithRecipe additionally requires `recipe.targetViews.size() == state.colors.size()` (2056), so a depth view cannot be part of a recipe.\n\nNearly every 3D scene draw has a depth target. Those draws always take the full path: validation memo, DrawResourceKey with Find and Revalidate, pipelineKey with CachedPipeline, and AcquireFramebuffer. They never get the recipe path that skips lookups and key building. Depth surfaces are host-only and stable until device teardown (DepthSurface.cpp:152-165), so a recipe could simply store the view. targetViews already includes the depth view (pushed at Draw.cpp:1610 and copied into the recipe at 1778).",
+   "evidence": "Draw.cpp:1770: `if (recipeOut != nullptr && DrawRecipes() && cacheable && !outcome.waited && args == nullptr && resources->Reusable() && !state.depth && resolved.moved.empty())`.\nDraw.cpp:2056: `Require(recipe.targets.size() == state.colors.size() && recipe.targetViews.size() == state.colors.size(), ...)`.\nAPS5_NO_DRAW_RECIPE is unset, so recipes are on, but they do not apply here.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "It removes the cheapest per-draw path for most of the frame. The gain is limited because draw-cache hits also need identical register and user data across frames (Execution side).",
+   "proposal": "- Allow `recipe.targetViews.size() == state.colors.size() + (state.depth ? 1 : 0)` and drop `!state.depth` at 1770.\n- In DrawWithRecipe, pass the stored targetViews, depth included, to AcquireFramebuffer. Validity is already covered by the recipe->device check (VulkanDevice.cpp:2976-2979), because ClearDepthSurfaces runs only per device.\n- Allow moved read-only buffers by recomputing MovedReadOnlyBuffers at the hit and passing them to PrepareDrawBindings.",
+   "effort": "S",
+   "risk": "If depth surfaces are ever evicted in future, a stored VkImageView would dangle. A weak handle or a serial is then needed.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: [draws] 'recipe hits N, misses by reason' and 'per kind ... recipe hit (count)'.\n- The Execution [recipe] precheck misses 'no recipe'."
+  },
+  {
+   "id": "graphics-draw-10-bookkeeping",
+   "title": "Per-draw key building, allocations and lookups under the lock (validation key, vertex layout, resource and pipeline keys, framebuffer list, InPlaceReads copies, loader lookups)",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:456-565,583-603,873-904,1353-1361,1456-1464,1021-1037; core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:291-327,364-463,514-547; core/libs/prx/libSceAgcDriver/Graphics/include/VertexInput.hpp:97-120,166-194",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Each recorded draw rebuilds or looks up the following, all under the GpuMutex:\n- ValidationKey: a std::vector<uint64_t> of about 40 + 12 words per stage, then a std::map<std::vector,...> lookup under validationMutex, then a returned copy of std::set<uint32_t> fragmentOutputs (Draw.cpp:532-565).\n- BuildVertexInputLayout: a std::set of locations and one vkGetPhysicalDeviceFormatProperties call per attribute (VertexInput.hpp:100-114).\n- PlanVertexCopies: 3 vectors and a stable_sort.\n- DrawResourceKey: each stage's ContentKey vector concatenated, FNV-hashed and fully compared in ResourceCache::Find.\n- pipelineKey: a std::vector<std::byte> grown by about 100 small inserts with no reserve, a byte-wise FNV (Pipeline.cpp:456-463) and a full key compare, all under the process-wide Pipelines().mutex.\n- maskedState: copies the whole State (two vectors) when a write mask changes (1731-1738).\n- AcquireFramebuffer: erase_if plus weak_ptr::lock per owner.\n- The `touches` lambda: calls ReadsOverlap, which calls InPlaceReads() and builds a new vector per queued label store checked (1353-1361; ShaderResources.cpp:2923-2926; GuestBufferMemory.cpp:2722-2734). PrepareDrawBindings and MarkGpuWrites build it again.\n- Context::Function: a loader vkGetDeviceProcAddr name lookup under the loader's global mutex (Context.hpp:40-42,147-154) for every mesh draw (vkCmdDrawMeshTasksEXT, 1021/1026) and every count-indirect draw (1036-1037).\n- VulkanDevice::Draw copies the roughly 1.3 KB Context (including a shared_ptr refcount) per draw (VulkanDevice.cpp:2535).",
+   "evidence": "Draw.cpp:535: `std::vector<std::uint64_t> key;` and 537: `static std::map<std::vector<std::uint64_t>, std::set<std::uint32_t>> memo;`.\nVertexInput.hpp:113: `context.formatProperties(context.physical, format.format, &properties);`.\nPipeline.cpp:357-362: `append` uses `key.insert(...)` per field.\nPipeline.cpp:456-463: byte-wise FNV loop.\nDraw.cpp:1021: `context.Function<PFN_vkCmdDrawMeshTasksIndirectEXT>(\"vkCmdDrawMeshTasksIndirectEXT\")` (no DeviceFunctions entry).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Each item costs about 0.5-5 microseconds, so 10-20 microseconds per draw under the global lock, or about 30-60 ms per 3,000-draw frame. That is much of the gap between a lean recorded draw and the observed per-draw cost.",
+   "proposal": "- Compute one 64-bit structural hash per compiled stage at compile time, and one per decoded State in the Execution draw-cache decode (DrawDecode is already cached by draw key). Key validation, pipeline and resource caches with fixed-size std::array keys or the precomputed hashes in std::unordered_map, keeping a full compare on hit.\n- Return fragment outputs as a uint32 bitmask.\n- Memoize vertex-format support per VkFormat in a static table.\n- Compute InPlaceReads() once per draw and pass it down.\n- Add vkCmdDrawMeshTasksEXT, vkCmdDrawMeshTasksIndirectEXT, vkCmdDrawIndexedIndirectCountKHR and vkCmdDrawIndirectCountKHR to DeviceFunctions.\n- reserve() the key vectors.\n- Return the cached Context by const reference from graphicsContext().",
+   "effort": "M",
+   "risk": "Hash collisions must still fall back to a full compare. Precomputed state hashes must include every field the pipeline key uses.",
+   "howToMeasure": "- APS5_PROFILE_DRAW=1: [draws] phase totals validate/vertex/lookup/pipeline/prepare; [vk] line (DeviceProcLookups); [pipecache] lookups.\n- A sampling profiler (perf, VTune) on the queue-0 worker thread."
+  },
+  {
+   "id": "graphics-draw-11-indirect",
+   "title": "Indirect draws: each GPU-side indirect draw begins its own render pass, rewrites constant-rule records one vkCmdUpdateBuffer at a time, and some cases read records on the CPU after a full sync",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1074-1122,1330-1365,1632-1676",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "GPU path (default; APS5_NO_GPU_INDIRECT_DRAW is unset):\n- gpuIndirect forces a new pass (1365).\n- It records an ALL_COMMANDS|HOST to DRAW_INDIRECT|TRANSFER barrier (1077).\n- If either dimension's rule is Constant, it allocates a new DeviceBuffer per draw (1089), records vkCmdCopyBuffer and a barrier, then one vkCmdUpdateBuffer per record per dimension (1094-1098), then another barrier. That is O(count) commands plus a device allocation per indirect draw.\n- Mesh-indirect draws allocate a Buffer and record RecordMeshArguments per draw (1109-1116).\n\nThe decision step (1634-1648) falls back to the CPU in three cases:\n- a pending storage image over the arguments: FlushPending, then recorder->Sync(), a full drain (1635-1639)\n- a pending label or copied writer\n- arguments that are not imported\nThe CPU path then reads every record through the flush hook (1665-1667), which costs a SyncThrough per draw when the arguments are still being produced.",
+   "evidence": "Draw.cpp:1089: `scratch = std::make_unique<DeviceBuffer>(context, bytes, ...)`.\nDraw.cpp:1094-1097: `for (std::uint32_t record = 0; record < args->count; ++record) { ... update(commands, scratch->Handle(), base + args->VertexDwordOffset(), 4, &args->vertexConstant); ...}`.\nDraw.cpp:1637-1638: `Recorder::CountSync(2); recorder->Sync();`.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "GPU-driven renderers issue many indirect draws per frame. Each gets its own pass with full barriers and per-draw allocations, and the CPU fallbacks add full GPU drains. Most visible if Astro Bot uses multi-draw indirect.",
+   "proposal": "- Use a per-batch scratch arena instead of a DeviceBuffer per draw.\n- Replace the per-record vkCmdUpdateBuffer loop with a tiny compute dispatch, or batch all pending constant-rule rewrites of the batch into one pre-pass dispatch.\n- Record the argument barrier once before a run of indirect draws into the same targets, so they can continue a pass.\n- For PendingImage, flush and use SyncThrough on the argument range instead of a full Sync().",
+   "effort": "M",
+   "risk": "Rewrites must stay ordered after the argument producers and before the indirect reads. Arena lifetime must cover the batch.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1, then read:\n- [draws] 'indirect: gpu-side N (M rewritten), cpu-side K (reasons), argument reads X ms'\n- 'render passes begun'\n- [recorder] top sync sites"
+  },
+  {
+   "id": "graphics-draw-12-gpu-placement",
+   "title": "GPU-side efficiency: vertex, index and snapshot copies live in host-cached system memory, and render targets are storage images in GENERAL layout",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Resources.cpp:10-48; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:750; core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2812; core/libs/prx/libSceAgcDriver/Graphics/src/Texture.cpp:719; core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:144-170",
+   "category": "gpu-side-efficiency",
+   "mechanism": "Buffer defaults to HOST_VISIBLE|HOST_COHERENT and prefers HOST_CACHED (Resources.cpp:33-41). Index and vertex copies (Draw.cpp:750) and draw snapshots (ShaderResources.cpp:2812) therefore sit in system memory. On a discrete GPU every vertex fetch and constant read crosses PCIe each time the draw executes, every frame, even when a snapshot is reused across frames.\n\nResident render targets are StorageTextures with TRANSFER|STORAGE|SAMPLED usage (Texture.cpp:719). Lean draws render into them in VK_IMAGE_LAYOUT_GENERAL with LOAD/STORE ops, and on AMD drivers storage usage plus GENERAL disables DCC color compression.",
+   "evidence": "Resources.cpp:33-38: `constexpr VkMemoryPropertyFlags hostDefault = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT; if (properties == hostDefault) { ... hostDefault | VK_MEMORY_PROPERTY_HOST_CACHED_BIT ...}`.\nTexture.cpp:719: `imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;`.\nPipeline.cpp:149-157: loadOp LOAD, storeOp STORE, initial/final layout attachmentLayout (GENERAL when lean).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "This lowers GPU efficiency (memory-bound vertex fetch over PCIe, higher bandwidth), but the user sees the GPU underused, so it is secondary until the CPU-side limits are removed.",
+   "proposal": "- For buffers kept in the draw snapshot pool (KeepDrawSnapshot), allocate DEVICE_LOCAL|HOST_VISIBLE memory (ReBAR) when the device offers it. Otherwise upload once to a DeviceBuffer and reuse that device copy while the snapshot stays valid.\n- Keep HOST_CACHED only for buffers the CPU reads back.",
+   "effort": "M",
+   "risk": "ReBAR memory is limited on some systems, and CPU writes to it must be sequential (write-combined).",
+   "howToMeasure": "- APS5_PROFILE_GPU=1: [gputime] by class ('draw' ms compared with batch time).\n- A GPU profiler (Nsight Graphics or RGP) to check vertex-fetch or memory-bound draws."
+  },
+  {
+   "id": "graphics-draw-13-zero-count",
+   "title": "Indexed draws with a zero index or instance count throw instead of being no-ops, after the full prepare and the lock",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:807; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPrecheck.cpp:15",
+   "category": "incomplete-implementation",
+   "mechanism": "precheckDraw returns Nothing only for non-indexed zero counts. An indexed draw with indexCount == 0 or instanceCount == 0 is decoded, looks up or compiles its shaders, takes the GpuMutex in lockForDraw, and then throws in prepareDrawInputs ('zero-count indexed draws are unsupported'). It is counted as a DrawSkip::Thrown packet. Hardware treats such a draw as a no-op. Engines that cull on the CPU by zeroing counts would pay an exception (allocation plus unwind) and a lock acquisition per culled draw.",
+   "evidence": "DrawPrecheck.cpp:15: `if (!drawParameters.indirect && !drawParameters.indexed && (drawParameters.indexCount == 0 || drawParameters.instanceCount == 0)) return DrawVerdict::Nothing;`.\nDraw.cpp:807: `if (args == nullptr) Require(draw.indexCount != 0 && draw.instanceCount != 0, \"zero-count indexed draws are unsupported\");`.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "Costly only if the title emits many zero-count indexed draws. Cheap to fix.",
+   "proposal": "- Remove the `!drawParameters.indexed` condition at DrawPrecheck.cpp:15.\n- In prepareDrawInputs, set inputs.nothing for indexed zero counts instead of throwing.",
+   "effort": "S",
+   "risk": "None for direct draws. Indirect draws are unaffected because their counts live in records.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1: [draws] 'skipped packets: ... thrown N in X ms'."
+  }
+ ],
+ "incompleteOrStubbed": [
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp:89-97; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:992",
+   "what": "Draws have no two-stage, unlocked ShaderResources build; only compute has the deferred constructor and Complete(). Draw resources are always built entirely under GpuMutex.",
+   "perfRelevance": "This is the main serialization point: it keeps the most expensive per-draw phase ('resources') inside the global lock."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1770,2056",
+   "what": "Draw recipes are not built for draws with a depth target or a proxied target (and are rejected for indirect draws, moved buffers or non-reusable templates). DrawWithRecipe requires targetViews.size() == colors.size().",
+   "perfRelevance": "Depth-tested 3D draws, most of a frame, can never use the recipe fast path."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/DepthSurface.cpp:22-83,152-165; core/libs/prx/libSceAgcDriver/Graphics/src/State.cpp:195-197",
+   "what": "Depth/stencil targets are host-only VkImages:\n- cleared once at creation with DB_DEPTH_CLEAR\n- never written back to guest memory, never refreshed from it, never evicted\n- HTILE is not modeled\n- decodeDepth throws for DB_RENDER_CONTROL depth/stencil clear draws (zero mask 0x1f9f), so per-frame depth clears are dropped",
+   "perfRelevance": "Depth is not cleared each frame, so early-Z rejects or keeps fragments wrongly. GPU load is not representative and may look low. Any guest compute that reads depth memory (HiZ, SSAO) sees stale data."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPrecheck.cpp:31-37",
+   "what": "Depth/stencil-only draws without a pixel shader are rejected with 'depth/stencil-only draws without a pixel shader are not implemented'.",
+   "perfRelevance": "Shadow-map and depth-prepass draws are skipped. The measured 8-9 FPS excludes this GPU work, so real cost is higher once it is implemented, and frames render incompletely."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1555-1608",
+   "what": "Linear color targets have no resident path, and a target whose resident lookup throws stays non-resident after one log line.",
+   "perfRelevance": "Each such draw is synchronous: O(target) CPU copy, tiling and write-back plus SubmitAndWait."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:137-153; core/libs/prx/libSceAgcDriver/Graphics/src/State.cpp:773-780",
+   "what": "Partial support for color metadata:\n- CMASK only handles all-fast-cleared or all-expanded states; a mixed CMASK, or a DCC target whose CMASK is not expanded, throws.\n- DCC keys of mipmapped color targets are ignored.\n- DCC handles only uniform clear codes.",
+   "perfRelevance": "Throws drop draws. The clear materialization does whole-target fills and, when the keys came from a compute kernel, a GPU sync per fast clear."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:793,807",
+   "what": "Draw modifier flags and zero-count indexed draws throw 'unsupported' instead of being decoded or treated as no-ops.",
+   "perfRelevance": "Each such packet runs the full prepare, the lock and an exception."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/State.cpp:824-881",
+   "what": "DrawRejection or DecodeState reject the following features, so the draw is skipped:\n- MSAA\n- alpha-to-coverage\n- sample masks\n- depth export and ordered fragment execution\n- clip distance and layer exports\n- window offsets\n- Z_24 depth\n- stencil add/sub by values other than 1\n- non-normal CB modes (except metadata passes)",
+   "perfRelevance": "Missing GPU work makes current FPS numbers optimistic. The decode and exception cost shows in the [draws] skipped-packets counts."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/include/Draw.hpp:94-107; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:658-662,1695-1711",
+   "what": "A stale comment says copied-write draws are listed only under APS5_RECORD_COPIED_DRAWS=1. The code lists them by default (APS5_NO_RECORD_COPIED_DRAWS is the opt-out), and VulkanDevice consults the list. DrawCopiedWriters is a std::vector scanned linearly for every indirect, fill and draw-indirect check and erased in O(n) at each completion.",
+   "perfRelevance": "O(n) to O(n^2) per batch when many draws have copied writes; such draws also never continue a render pass (WritesMemory)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1779-1783; core/libs/prx/libSceAgcDriver/Execution/include/Recipe.hpp:80",
+   "what": "recipe->passKey is computed but never read, and it omits the blends/exportIndex mix that recordDraw uses.",
+   "perfRelevance": "Dead per-recipe work; a latent bug if it is ever used to continue passes."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:3",
+   "what": "GpuColorTransfer.hpp is included but not used by the draw path; GpuColorTransfer serves only the presenter.",
+   "perfRelevance": "None (cleanup)."
+  }
+ ],
+ "quickExperiments": [
+  {
+   "setting": "APS5_PROFILE_DRAW=1",
+   "expectedEffect": "Prints these lines every 10 s:\n- [draws]: phases, recorded/synchronous counts and reasons, passes begun/continued, hook waits, indirect paths, recipe hits\n- [rescache], [pipecache] (evicted/private), [dcc] (MiB scanned, ms), [descriptors], [texture]\n- [lock] (GpuMutex hold and wait by site) and [recorder] (syncs by source and top sync sites)\nTogether these rank the findings above with real numbers.",
+   "risk": "Adds per-draw timers and per-batch timestamp queries (BatchStampsEnabled), so FPS drops slightly. Use it for diagnosis only."
+  },
+  {
+   "setting": "APS5_RESOURCE_CACHE_ENTRIES=16384",
+   "expectedEffect": "If the [rescache] draw misses are capacity misses (the default holds 1024 entries for draws and dispatches together), template hits rise and the 'resources' phase shrinks.",
+   "risk": "Cached templates pin descriptor sets, textures and storage images, so RAM and VRAM use grows. Revalidate time per hit is added."
+  },
+  {
+   "setting": "APS5_BATCH_CAP=256 (also compare with 32)",
+   "expectedEffect": "256 means fewer vkQueueSubmit calls and fewer forced render-pass ends at the 64-work submit, so more 'draws continued one'. 32 gives the GPU work earlier, which raises CPU/GPU overlap if [gputime] shows idle gaps.",
+   "risk": "A larger cap delays GPU start and makes each Sync wait for more work; a smaller cap means more submits and pass breaks."
+  },
+  {
+   "setting": "APS5_PROFILE_GPU=1",
+   "expectedEffect": "[gputime] shows GPU time per batch and per class against wall time, which tells whether the GPU is truly idle (starved) or busy (GPU-bound).",
+   "risk": "Adds timestamp queries and a Commands() call per timed range, which slightly perturbs recording."
+  },
+  {
+   "setting": "No env var: grep the stderr log for '[memory] write watch unavailable', '[gpu] color target 0x... stays non-resident' and '[pipeline-cache] loaded'",
+   "expectedEffect": "The first line means every draw re-copies inputs and round-trips its targets (Linux needs kernel and headers 6.7+ for PAGEMAP_SCAN and async userfaultfd write-protect; a build that lacked the headers prints nothing). The second identifies synchronous draws. The third confirms the persistent pipeline cache is used.",
+   "risk": "None."
+  },
+  {
+   "setting": "Build with -DCMAKE_BUILD_TYPE=Release",
+   "expectedEffect": "The root CMakeLists.txt sets no default build type, so a configure without one compiles without optimization. Every per-draw path above becomes several times slower.",
+   "risk": "None. Release is what docs/dev/BUILD.md shows."
+  },
+  {
+   "setting": "APS5_PROFILE_DRAW=1 APS5_TRACE_DRAWS=1 (only for a few seconds)",
+   "expectedEffect": "Prints one [draw] line per draw with its phase times, plus inputs for synchronous draws. It identifies which draws have the long readTarget, resources or pipeline phases.",
+   "risk": "Very heavy stderr output that distorts timing. Use it only for short captures."
+  },
+  {
+   "setting": "APS5_BARRIER_VALIDATE=1",
+   "expectedEffect": "Checks barrier coverage of recorded work. Use it as a safety net when trying the pass-continuation or barrier-narrowing changes.",
+   "risk": "Adds CPU overhead per recorded command."
+  }
+ ]
+}

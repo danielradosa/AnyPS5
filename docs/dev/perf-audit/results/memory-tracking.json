@@ -1,0 +1,281 @@
+{
+ "subsystem": "Guest memory tracking, GpuMutex, captures and write evidence (GuestMemory.cpp/.hpp, WriteWatchCoverage, MemoryAccessScope, ShaderMemory, Driver/Memory/{WriteEvidence,WrittenBuffers,CaptureValidation,CaptureDiagnostics}, DeviceAccess) plus the libc write-watch backends they call (GuestWriteWatch.cpp on Linux, WindowsMappings.hpp on Windows)",
+ "howItWorks": "The driver reads and writes guest memory through GuestMemory. Every Read, ReadCommitted, EqualsCommitted, Write and WriteChanged first calls FlushGpuWrites. That calls Recorder's FlushForAccess hook, which syncs the GPU when recorded work writes the range and publishes pending storage-image or unit-shadow results. The call then checks the mapping with describePages and does the memcpy or memcmp. On Windows, describePages uses a 1-byte-per-4KiB page-state cache. On Linux there is no cache: each call is a PROCMAP_QUERY ioctl, or a parse of /proc/self/maps.\n\nCPU writes are detected differently per OS. On Linux, direct-memory mappings are registered for asynchronous userfaultfd write protection. PAGEMAP_SCAN with PM_SCAN_WP_MATCHING reports the written pages and write-protects them again. On Windows, private commits use GetWriteWatch. Section-backed direct-memory views use VirtualProtect arming plus an access-violation handler (HandleWrite).\n\nCollectWrites walks a range under one tracker mutex and stamps each touched 64 KiB block with a new 32-bit generation. Walks are memoized per thread per epoch in a 64-entry ring. The epoch is bumped at every submission start, wait and drain. Consumers (texture and storage-image caches, draw-input snapshots, heap mirrors, unit shadows, dispatch/draw caches) store a generation and call UnchangedSince to skip byte compares. If it fails, or the range is unwatched (CollectWrites returns 0), they fall back to full-surface compares, copies and re-uploads.\n\nDriver GPU stores call MarkWritten on their blocks. Driver CPU stores (storeOwn) walk the range before and after the store. ShaderMemory captures the descriptor and SRT dwords a shader reads, page by page or word by word. Word-wise reads go through a per-dword write-evidence classifier, which avoids GPU syncs. Draw and dispatch cache hits re-validate those dwords with CompareMapped.",
+ "threadingAndLocks": "Threads that run this code: the queue workers (graphics queue 0 plus each compute queue), the presenter, game threads (Submit's CheckRange, the flush hook, write faults) and the release thread.\n\nGpuMutex wraps std::recursive_mutex. That is a pthread recursive mutex on Linux and SRW-based on MSVC. It is unfair and has no priority, and timing is added only under APS5_PROFILE_DRAW. It is held for these operations:\n- Each draw from lockForDraw through the whole Graphics::Draw. This includes draw-input copies, CheckRange, precollect walks, texture lookups and compares, and recording.\n- Each dispatch's stage B.\n- Label, store and DMA recording.\n- Drains, flips and presentation.\n- The flush hook's sync. The GPU wait is released only at depth 1, so a nested hook waits for the fence while holding the mutex.\n\nThe tracker std::mutex is held across every write-watch kernel walk and every UnchangedSince, MarkWritten, TrackerGeneration, ChangedBlocks and StoredOver call.\n\nOther locks:\n- Linux: GuestWriteWatch::_lock (a shared_mutex) is taken exclusive in every Collect.\n- Windows: WindowsMappings::mutex is taken by every Collect and by the game-thread access-violation handler (HandleWrite).\n- The flush hook takes StorageTexture Pending().mutex and UnitShadow Registry().mutex on every access. The write-evidence path takes writtenBuffersMutex (with an O(4096) scan) and labelTableMutex.\n- DeviceUseGate takes a global std::mutex twice per packet.\n\nThe memo ring and the collect epoch are per thread and take no lock.",
+ "findings": [
+  {
+   "id": "memory-tracking-linux-no-page-cache",
+   "title": "Linux has no page-state cache: every guest-memory range check is a PROCMAP_QUERY syscall, or a /proc/self/maps parse on older kernels",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:483-647",
+   "category": "memory-tracking",
+   "mechanism": "describePages uses the cached PageSpan tables only for the 'arena' and 'image' spans. On Linux GuestArenaRange returns size 0, so arena.allocate() fails. The image span is built only under _WIN32, and the ForgetPages invalidator is never installed. So every verify(), DescribeCommitted, CompareMapped and CopyMapped call does at least one ioctl(PROCMAP_QUERY) per VMA run (kernel 6.11 or later). On older kernels, or with APS5_NO_PROCMAP_QUERY set, it instead opens std::ifstream(\"/proc/self/maps\") and parses lines with istringstream until it reaches the address. Callers per draw: draw-cache hit validation runs CompareMapped once per captured run of every stage; the index buffer gets a CheckRange; each vertex copy gets a CheckRange plus another one inside CopyDrawInput's Read; DrawDecode does a CheckRange; and every capture page costs Accessible plus Read, i.e. 2 queries. Every label/WAIT_REG_MEM Read and Write adds one more. Windows hits the cache, which costs a few byte loads.",
+   "evidence": "core/libs/prx/libc/src/GuestArena.cpp:109-133: the Arena() body that sets _base/_end exists only under #ifdef _WIN32, so on Linux Size() is 0 (:183-186). GuestMemory.cpp:485-486: arena.allocate() is fed GuestArenaRange. :387-388: allocate() returns false when size==0. :488-504: the image span is _WIN32-only. :505: the invalidator is set only if something is cached. :542: spanOf() is therefore always null on Linux. :590-608: one ioctl(fd, PROCMAP_QUERY) per run. :615-643: the ifstream /proc/self/maps fallback. :517-529: APS5_NO_PROCMAP_QUERY (default unset), which also falls back when the kernel lacks the ioctl. Callers: VariantValidation.cpp:28 and CaptureValidation.cpp:128 (CompareMapped per region); Graphics/src/Draw.cpp:813 (index CheckRange), :896-897 (vertex CheckRange plus CopyDrawInput->Read at :751); ShaderMemory.cpp:104 and :111 (Accessible plus Read per page); Execution/src/Driver/Draw/DrawDecode.cpp:70.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "An estimated ~10-40 describePages per draw. At thousands of draws per frame that is 30k-120k syscalls per frame on the graphics worker, at roughly 0.5-2 \u00b5s each, so ~15-240 ms per frame against a ~110-125 ms frame at 8-9 FPS. On kernels older than 6.11 each call becomes a file open plus text parse (tens of \u00b5s to ms), which would make the title unplayable. Part of this (CheckRange and CopyDrawInput inside Graphics::Draw) runs inside the GpuMutex hold, so it also stalls compute queues. This is Linux-only; Windows already caches.",
+   "proposal": "Port the page-state cache to Linux:\n1. In PageSpan::allocate, under !_WIN32, reserve the table with mmap(PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE) over the guest window: GuestArena's ArenaStart 0x2'0000'0000 to ApplicationAreaEnd 0xFC'0000'0000, about 250 M entries, demand-zero.\n2. In the Linux branch of describePages, store the flags for the whole [vma_start, vma_end) run that PROCMAP_QUERY returns, like the Windows branch does at :578-585, with the same GuestAllocationsGeneration before/after re-check.\n3. Call GuestAllocationsSetInvalidator(&ForgetPages) on Linux too.\n4. Make every Linux guest mmap/munmap/mprotect (libkernel DirectMemory Map at DirectMemory.cpp:273, unmap/protect, flexible memory) report through GuestAllocations Begin/End/recordChange or GuestAllocationsInvalidate.\n\nCheaper interim step: a per-thread cache of the last ~8 PROCMAP_QUERY results (start, end, flags), valid only while GuestAllocationsGeneration_nid_postfix() is unchanged.",
+   "effort": "M",
+   "risk": "If a mapping change is not reported, a page stays cached as readable after it is unmapped. The memcpy/memcmp then crashes with SIGSEGV instead of the clean 'not readable' exception. Every Linux path that changes guest mappings must be audited. Host-only ranges must stay uncached, as on Windows.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, the [guestmem] line shows 'verify N calls ... s'. That covers CheckRange, Accessible and DescribeCommitted only: CompareMapped and CopyMapped have no TimedAccess, so add one around the Linux ioctl, e.g. a TimedAccess(CounterQuery) as the Windows branch has. Outside the program: `strace -f -c -e trace=ioctl -p <pid>` or `perf trace -s -p <pid>`. In the driver: the [draw] driver-phase rows DrawRowKeyLookupValidate and Graphics::Draw phases. Check `uname -r`: 6.11 or later is needed for PROCMAP_QUERY."
+  },
+  {
+   "id": "memory-tracking-windows-imports-unwatched",
+   "title": "Windows: every host import is excluded from write tracking, so snapshot reuse is disabled for most GPU-visible memory and each check becomes a full compare or copy",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:284-290,408-413",
+   "category": "memory-tracking",
+   "mechanism": "On Windows, decideImportWatch unconditionally sets unwatchImports=true. After each import, GuestMemory::Unwatch calls WriteWatchCoverage::Exclude on every overlapping 64 KiB block. tracker.covers() is then false, so CollectWrites returns 0 and UnchangedSince is always false for those resources. The fallbacks that follow:\n- fastRevalidate fails with FastFail::Collect, which forces a full resource build per draw.\n- A cachedTexture hit is proven only by EqualsCommitted, a whole-surface memcmp through the flush hook under the texture-cache mutex.\n- StorageTexture::Refresh compares the whole surface against 'original'.\n- CopyDrawInput gets generation 0, so it skips ReusableDrawSnapshot. Every indexed draw allocates a new Buffer, copies the index buffer and scans all indices for the maximum.\n- Heap mirrors refuse the range.\n- Unit shadows require Watched().\n- knownValueCurrent can never succeed.\nWindows direct memory is a section (CreateFileMappingW) mapped as views. Write detection for those views is VirtualProtect arming plus the access-violation handler, not GetWriteWatch dirty bits. The import itself goes through a separate alias view of the section. So the debt note's concern (a driver marking pages dirty after the import window) applies to private MEM_WRITE_WATCH memory, not to section views.",
+   "evidence": "GuestBufferMemory.cpp:286-290 (#ifdef _WIN32 ... state.unwatchImports = true;), :408-413 (ImportWatched then `if (entry.unwatched) GuestMemory::Unwatch(base, bytes)`), :397 (entry.alias = GuestArenaMapAlias for MEM_MAPPED). GuestMemory.cpp:1144-1147 (coverage.Exclude); WriteWatchCoverage.hpp:22-27 (Covers false for excluded blocks); GuestMemory.cpp:1102 (collectWrites returns 0 when !covers). Consumers: ShaderResources.cpp:1458-1459 (FastFail::Collect), :403-412 (EqualsCommitted fallback), Texture.cpp:1247-1251, 1302 (equalsOriginal), Graphics/src/Draw.cpp:740-751 and 849-866 (copy plus index scan), GuestBufferMemory.cpp:843-845 (heapUnwatched), UnitShadow.cpp:520, WriteEvidence.cpp:137-141. Section-backed direct memory: libkernel/DirectMemory/DirectMemory.cpp:229, 271. Protection-based tracking: WindowsMappings.hpp:134-145, 233-260; CrashReport.cpp:244. docs/dev/TechnicalDebt.md:243 notes that this 'disables snapshot reuse and unit shadows' and that restoring tracking on import retirement and measuring the comparison cost remain unimplemented.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Per draw, every texture, storage image and index or vertex buffer in imported memory takes the slow path: a full rebuild, plus a memcmp or copy proportional to resource size (MiB per texture, all index bytes per indexed draw). Every compare also runs the flush hook, which can sync the GPU. With thousands of draws per frame this means GB of memory traffic per frame plus serialized lock time. This alone can explain low FPS on Windows.",
+   "proposal": "1. Keep tracking for imports made through a section alias (entry.alias != nullptr, i.e. MEM_MAPPED direct-memory views). Their CPU-write detection is protection-based on the guest view and independent of the GPU driver's activity on the alias; recorded GPU writes are already stamped with MarkWritten. Unwatch only imports of private (MEM_WRITE_WATCH) memory.\n2. Port the Linux ProbeImportWriteProtection approach (GuestBufferMemory.cpp:307-313) to Windows, so the decision is measured on the user's driver.\n3. Implement the debt item: restore coverage when an import is retired (coverage.Restore exists in WriteWatchCoverage.hpp:51-73).",
+   "effort": "M",
+   "risk": "If the GPU driver's import somehow changed the guest view's protection, or skipped the AV handler, CPU writes could be missed and textures or buffers would be stale. Verify with the probe and a visual A/B. Private-memory imports must stay compared.",
+   "howToMeasure": "stderr shows '[write-watch] host imports are compared on Windows because driver writes can arrive after the import window' when this path is active. With APS5_PROFILE_DRAW=1: [guestmem] 'compare N calls X MiB Y s' and the read-site 'texture-compare' samples; the resource-build fast-fail counters (FastFail::Collect / Changed) and LookupOutcomes rows; [hooksync] 'texture-compare' and 'mirror-refresh' entries; the [draws] pagesWalked and lookup \u00b5s."
+  },
+  {
+   "id": "memory-tracking-gpumutex-unfair-wide-hold",
+   "title": "GpuMutex is an unfair recursive mutex held across the whole draw, including its guest-memory validation",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/include/GuestMemory.hpp:118-145",
+   "category": "global-lock-serialization",
+   "mechanism": "GpuMutexType::lock() is std::recursive_mutex::lock() plus owner and depth bookkeeping when not profiling. It gives no FIFO order and no priority, so a releasing compute worker can immediately re-acquire it ahead of a waiting graphics worker. Every queue worker takes it per draw, dispatch stage B, label/store recording, drain and flip; the presenter and game threads take it through the flush hook. For draws, lockForDraw takes it before localDevice->Draw, so everything in Graphics::Draw runs under it: CheckRange, CopyDrawInput copies, the precollect walks, texture lookups and compares, uploads and Vulkan recording. Dispatches have an unlocked stage A (PrepareDispatch) but draws do not. APS5_LOCKED_DRAW_PREPARE (opt-in) only moves the lock earlier. The header itself says the graphics worker's frame is mostly spent waiting for this lock behind the compute workers.",
+   "evidence": "GuestMemory.hpp:118-122 ('the graphics worker's frame is mostly spent waiting for this lock behind the compute workers'), :139 (std::recursive_mutex mutex). GuestMemory.cpp:1575-1580 (non-profiled lock() = mutex.lock(); acquired()), :1544-1557 (unlock + unlock hook). Execution/src/Driver/Draw/Draw.cpp:41-60 (APS5_LOCKED_DRAW_PREPARE opt-in), :260-276 (lockForDraw), :370-383 (localDevice->Draw / DrawFromRecipe under the lock). Execution/src/VulkanDevice.cpp:2531-2537 (Draw = Graphics::Draw, no unlocked stage); :2590-2602 (dispatches have stage A / stage B). Graphics/src/Draw.cpp:813, 849, 896-897 (guest-memory work inside the draw).",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Recording for all queues is effectively single-threaded. Because the lock is unfair, the graphics queue can wait behind long compute holds; the code's own comment says this wait dominates queue 0's frame. Everything per-draw that is described in the other memory-tracking findings (syscalls, walks, compares, copies) is multiplied by this serialization. That matches the user's report of idle CPU threads and an idle GPU.",
+   "proposal": "1. (S/M) Graphics-priority handoff in GpuMutexType: queue-0 threads increment an atomic waitingGraphics before lock(). For an outermost acquisition by a non-queue-0 thread, lock() spins briefly and then yields while waitingGraphics>0. Alternatively use a ticket lock for outermost acquisitions so the order is FIFO. Recursion is kept by the existing owner/depth fields.\n2. (M) Give draws a stage A like dispatches: run prepareDrawInputs' CheckRange, CopyDrawInput, CollectWrites and ImageRecord lookups before lockForDraw, re-checking the generations under the lock. Leave only recording and descriptor binding under the lock.\n3. (XL) Split GpuMutex per recorder/queue and protect the shared caches with their own locks.",
+   "effort": "M",
+   "risk": "A priority gate can starve compute queues the graphics queue waits on through WAIT_REG_MEM, so bound the yield. Moving draw preparation out of the lock needs the same generation and serial re-checks that dispatch stage A/B uses (PendingSerial, PublishGeneration, ForgetSerial).",
+   "howToMeasure": "APS5_PROFILE_DRAW=1. The [lock] line per queue shows 'waited X ms for the GPU mutex in N of M acquisitions', 'held ... by site (holds, held, max)', 'waited behind (holder/site ms)', and 'lock() / try / try failed; locked GPU waits'. Compare q0's waited ms against the frame time. APS5_NO_HOLD_PROFILE=1 reduces the profiling cost."
+  },
+  {
+   "id": "memory-tracking-compare-syncs-under-lock",
+   "title": "Snapshot-validation compares go through the flush hook and sync the GPU, often while GpuMutex is held",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:1746-1750",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "Whenever UnchangedSince fails (block stamped, range untracked or unwatched), cache validation falls back to EqualsCommitted, which calls FlushGpuWrites. FlushForAccess then calls recorder->SyncThrough if recorded GPU work writes into the range: the open batch is submitted and its fence is waited on. When the compare runs inside a draw's or dispatch's hold (stage B, depth 2), syncThroughUnlocked refuses to release the mutex (depth != 1). The wait therefore happens while holding GpuMutex and every other queue stops. The compare is only a cache check: if recorded work will overwrite the range, the snapshot is stale anyway, so waiting to compare bytes buys nothing.",
+   "evidence": "GuestMemory.cpp:1746-1749 (EqualsCommitted -> FlushGpuWrites). Recorder.cpp:1010-1020 (hook: SnapshotOverlaps -> lock GpuMutex -> SyncThrough(\u2026, true)), :3048 (`GpuMutex().DepthOnThisThread() != 1` returns false, so the wait is locked). Compare sites: ShaderResources.cpp:407-412 (equalsCommitted lambda in cachedTexture), Texture.cpp:1247-1251 / 1302 (Refresh equalsOriginal), GuestBufferMemory.cpp:725-739 (prepareRange: FlushGpuWrites + full recorder->Sync() before each writable mirror compare). GuestMemory.hpp:169-171 (NoteLockedGpuWait counts these).",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Each locked GPU wait drains the GPU pipeline and blocks all queue workers for the length of a batch, which can be milliseconds. A handful per frame turns the GPU and CPU into lock-step and leaves both under-utilized, which matches the user's symptom. The frequency rises sharply wherever write tracking is ineffective (Windows imports, Linux unwatched imports, 64 KiB false sharing).",
+   "proposal": "At cache-validation sites, check Recorder::SnapshotOverlaps(address, bytes) first. If it overlaps, treat the snapshot as changed: re-upload, ordered after the pending writes in the same recorder stream, or take the storage-image view. Do not compare through the hook. Otherwise use EqualsCommittedUnsynced. For writable mirrors, replace the full recorder->Sync() in prepareRange with a SyncThrough of the range, done in an unlocked pre-phase like dispatch stage A's pre-sync (VulkanDevice.cpp:2600-2602).",
+   "effort": "M",
+   "risk": "The re-upload must be recorded after the pending GPU writes it supersedes; for in-place imported memory, the GPU copy must read after the writes. Wrong ordering gives stale texels. Keep the synced compare when it is a real semantic read (Read, labels).",
+   "howToMeasure": "APS5_PROFILE_DRAW=1: the [lock] line 'locked GPU waits N / X ms' per queue; [hooksync] entries by queue/packet/site (texture-compare, mirror-refresh, draw-cache) with waited ms; the DrawRowValidateWait and DrawRowCaptureHookWaits driver phases; [presync] for dispatches."
+  },
+  {
+   "id": "memory-tracking-64k-false-sharing",
+   "title": "UnchangedSince checks at 64 KiB granularity, so one CPU page write or label store invalidates every snapshot sharing that block",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:1196-1223",
+   "category": "memory-tracking",
+   "mechanism": "Collects stamp the whole 64 KiB block for any written 4 KiB page. MarkWritten stamps whole blocks for each GPU label or store the driver records (WriteLabelOnGpu calls it per label). UnchangedSince and UnchangedSinceAll compare only these block stamps. Page-precise information already exists: cpuPages keeps per-4 KiB CPU stamps and driverPieces keeps up to 4 byte ranges per block. But only StoredOver uses it. Any resource that shares a 64 KiB block with per-frame CPU data or labels therefore fails reuse every frame: textures, index/vertex snapshots, dispatch spans and SRT tables suballocated next to dynamic constants or labels. The failure leads to a full rebuild (FastFail::Changed), ReusableDrawSnapshot eviction plus re-copy, or a Refresh compare or upload. driverPieces' 4-slot ring also degrades: with labels 0x20 apart, 'dropped' makes StoredOver conservative.",
+   "evidence": "GuestMemory.cpp:746-748 (WriteBlockBytes 65536). :1012-1019 (Linux stampWrittenRun stamps blocks) and :1041-1045 (Windows). :1259-1272 (MarkWritten stamps blocks). :1196-1207 / 1209-1223 (UnchangedSince(All): `stampOf(block) > generation`). :860-893 (cpuPages / driverPieces with 4 pieces). :1274-1306 (StoredOver uses page/piece precision). Comment at :765-767 ('the title's per-job slots are 0x20 apart'). VulkanDevice.cpp:1328, 1337 (MarkWritten per label). Consumers: ShaderResources.cpp:1558 (FastFail::Changed), Recorder.cpp:2225-2227 (snapshot erase), DispatchLookup.cpp:63-69.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Reuse misses turn per-draw validation into copies, compares and re-uploads, done inside the GpuMutex hold for draws. PS5 engines suballocate many resources from big heaps, so 64 KiB neighbourhoods often contain per-frame data. The cost is title-dependent but recurs every frame.",
+   "proposal": "When stampOf(block) > generation, make UnchangedSince(All) refine as StoredOver does. Fail only if a CPU page stamp (cpuPages) newer than the generation intersects the query's bytes within the block, or a driverPieces entry newer than it overlaps (or entry.whole/dropped is newer). Raise driverPieces capacity (e.g. 16) or keep a 4 KiB-granular driver page stamp array per block. Treat blocks with no page info (coverage restore, import-window stamps) as changed, as StoredOver does.",
+   "effort": "M",
+   "risk": "Must stay conservative wherever page info is missing or evicted. Adds a hash lookup per stamped block (cheap next to the compare it avoids).",
+   "howToMeasure": "Add a counter to the [guestmem] line for 'block-stale but page-clean' answers. Existing signals with APS5_PROFILE_DRAW=1: resource fast-fail 'Changed' counts, LookupOutcomes snapshot/compare rows, [guestmem] compare MiB, and Recorder draw-snapshot reuse (the [draws] lines)."
+  },
+  {
+   "id": "memory-tracking-collect-walk-serialization",
+   "title": "Write-watch walks run under one global tracker mutex, and the per-thread memo (64 entries, reset at every submission, wait and drain) thrashes",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:1076-1121",
+   "category": "global-lock-serialization",
+   "mechanism": "collectWrites takes the tracker std::mutex, then runs walkWrites while holding it:\n- Linux: a PAGEMAP_SCAN ioctl that walks every PTE of the range and write-protects the written ones again; GuestWriteWatch also takes its _lock exclusively.\n- Windows: GetWriteWatch, or a per-16 KiB std::map walk plus VirtualProtect re-arming under WindowsMappings::mutex.\nEvery UnchangedSince, MarkWritten, TrackerGeneration (each label group close), ChangedBlocks and StoredOver from every worker contends on the same mutex. The memo is a per-thread 64-entry FIFO ring with a linear scan. It matches only within the thread's current epoch, which is bumped at every submission start, WAIT_REG_MEM and drain. A graphics epoch touching more than 64 distinct texture and buffer ranges therefore re-walks them. UnchangedSinceCollected and CollectWritesUncached always walk; they are used for late labels, ClassifyAccess and AccessKeptByCpu on hook calls, and evictStale.",
+   "evidence": "GuestMemory.cpp:1100 (lockTracker), :1113 (walkWrites under the lock), :1022-1074 (walk). GuestWriteWatch.cpp:84 (unique_lock), :107-127 (PAGEMAP_SCAN, PM_SCAN_WP_MATCHING). WindowsMappings.hpp:219-275 (mutex, per-page map find, VirtualProtect, GetWriteWatch). GuestMemory.cpp:995-999 (64-entry ring), :1087-1099 (linear scan, epoch match), :1133-1136 (BumpCollectEpoch). PacketExecution.cpp:106 (bump per submission). WaitMemory.cpp:74-79 (per wait). PacketMemory.cpp:28 and 172 (drains). GuestMemory.cpp:1316-1327 and Texture.cpp:2508, 2520 (uncached walks in the hook). Header GuestMemory.hpp:79-96 documents the epoch design and APS5_PACKET_EPOCH (opt-in, worse).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Each walk costs about \u00b5s to tens of \u00b5s (proportional to range pages; a 16 MiB surface is 4096 PTEs) and is serialized across all queue workers and the presenter. Memo misses multiply walks per draw (stage A precollect, CopyDrawInput, the hook's uncached collects). Contention on the tracker mutex adds to the GpuMutex serialization.",
+   "proposal": "(a) Replace the 64-entry ring with a per-thread open-addressing hash keyed by page-aligned begin, storing end, epoch and unwatch serial, with capacity around 1-4K and entries invalidated lazily by epoch. That makes the memo hold a whole epoch's working set.\n(b) Move the kernel walk out of the tracker mutex. Under the lock, bump the generation and register an in-flight walk. Unlocked, run the ioctl into a thread-local run list. Relock, stamp with the pre-bumped generation, and unregister. TrackerGeneration must wait for in-flight walks that started before it, to keep the guarantee documented at :1310-1312.\n(c) Shard stamp access by block range, or make UnchangedSince read stamps with atomics, so readers do not take the mutex.",
+   "effort": "M",
+   "risk": "The TrackerGeneration / late-label ordering argument relies on walks being complete under the mutex. Breaking it can trust a label over a CPU store. Hash memo capacity must keep the 'entry only for a completed walk' rule.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 [guestmem]: 'collect N calls X MiB Y s', 'collect-memo hits', 'collect epochs', 'tracker waits N / M' (waits divided by acquisitions shows contention). Graphics [draws] 'pagesWalked'. A/B with APS5_SHARED_COLLECT_MEMO=1 (256-entry shared ring) to estimate the capacity effect, and APS5_NO_COLLECT_MEMO=1 to see the upper bound of walk cost."
+  },
+  {
+   "id": "memory-tracking-flush-hook-fixed-cost",
+   "title": "Every guest-memory access pays a flush-hook toll: two global mutexes, an atomic shared_ptr load and unconditional caller sampling",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:993-1044",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "FlushGpuWrites, called by Read, ReadCommitted, EqualsCommitted, Write and WriteChanged, always runs FlushForAccess. That does: hookCalls.fetch_add on one global cache line; a QueuedLabelRanges scan; pendingWrites.load(), an std::atomic<std::shared_ptr> load (lock bit plus refcount RMW on a shared control block); StorageTexture::AccessKeptByCpu, which calls overlappingPending and locks the global Pending().mutex; then PublishShadowsOnly, whose AnyShadowedOverlaps locks the UnitShadow Registry().mutex. These run whether or not anything is pending. In addition, Read and Write call CountReadCaller and CountWriteCaller unconditionally, without the APS5_PROFILE_DRAW gate. Every 256th read and 16th write takes the global callersMutex, and on Windows calls GetModuleHandleExA(FROM_ADDRESS) through ModuleOffset, which takes the loader's lock (the code itself avoids this elsewhere for that reason). Captures run this per 4 KiB page and per word-wise dword.",
+   "evidence": "GuestMemory.cpp:1713-1715 (FlushGpuWrites -> hook), :1719-1721 (Read: hook, TimedAccess, CountReadCaller), :1841-1843 (Write: hook, CountWriteCaller), :302-312 and :224-236 (sampling; callersMutex), :76-80 (Windows ModuleOffset = GetModuleHandleExA), :275-277 (comment: per-call GetModuleHandleEx would take the loader lock under the GpuMutex). Recorder.cpp:994 (hookCalls), :627, 642-646 (atomic<shared_ptr> load), :1038-1044 (AccessKeptByCpu / PublishShadowsOnly). Texture.cpp:2460-2465 (Pending().mutex), :2399-2400. UnitShadow.cpp:483-488 (registry.mutex).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Hundreds of ns to \u00b5s per access uncontended, and more with eight workers hammering the same lines and mutexes. That is multiplied by every capture page and word, every draw-input copy, every label or WAIT read and every compare, so several ms per frame, partly under GpuMutex.",
+   "proposal": "1. Fast reject without locks: keep std::atomic<std::size_t> counts of pending storage textures and live shadow units, and publish an immutable sorted range snapshot (like pendingWrites) for each registry. FlushForAccess then returns after a few loads when nothing overlaps.\n2. Cache the pendingWrites snapshot per thread, keyed by Recorder::PublishGeneration(), as PendingView already does, instead of an atomic shared_ptr load per access.\n3. Make hookCalls per-thread or profile-only.\n4. Gate CountReadCaller and CountWriteCaller behind MemoryProfiled().",
+   "effort": "S",
+   "risk": "Low. The snapshot must be republished on every registry change under the existing registry mutexes; a reader seeing a slightly old snapshot must still fall through to the locked path when it overlaps.",
+   "howToMeasure": "perf record -g on the queue workers, looking at pthread_mutex_lock/futex or SRW waits under FlushForAccess. With APS5_PROFILE_DRAW=1: [guestmem] read/write/compare call counts (calls \u00d7 per-call toll), [hooksync] 'hook calls / locks', and the [capture] page and word read \u00b5s per capture."
+  },
+  {
+   "id": "memory-tracking-store-double-walk",
+   "title": "Each driver CPU store costs two write-watch walks, a write fault and a re-protect; WriteChanged also scans differing blocks byte by byte",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:1225-1257,1800-1848",
+   "category": "memory-tracking",
+   "mechanism": "Write runs FlushGpuWrites, CheckRange, then StoreOwnBytes, which calls storeOwn: tracker lock, walkWrites(Cpu) (one kernel walk), the memcpy, walkWrites(Driver) (a second kernel walk), then stamp. The memcpy write-faults the protected page: on Linux an in-kernel uffd-wp fault; on Windows an access violation, HandleWrite and VirtualProtect for armed section views. The second walk re-protects the page, which on Linux means a TLB flush to every CPU running the process. So a 4-byte label store costs about 3 kernel entries, a fault and a shootdown, under the tracker mutex, usually while the caller also holds GpuMutex. This path is used for:\n- labels when the recorder is idle or the range is not imported (reason 1/4);\n- deferred-label fallbacks;\n- 16 Writes per ZPASS sample dump;\n- COPY_DATA / DMA_DATA / WRITE_DATA fallbacks;\n- write-backs (WriteChanged, WriteChangedCommitted).\nWriteChanged also walks each differing 256-byte block one byte at a time and memcpy's each byte run. A fully rewritten target (e.g. 8 MiB) means ~8 M scalar iterations, and millions of tiny memcpys when channels alternate equal and changed.",
+   "evidence": "GuestMemory.cpp:1243-1249 (walk, store(), walk, stamp), :1837-1848 (Write), :1817-1834 (WriteChanged byte loop: `if (current[run] == original[run]) { ++run; continue; }` ... memcpy per run). GuestWriteWatch.cpp:111-119 (PM_SCAN_WP_MATCHING re-protects). WindowsMappings.hpp:134-145, 248-258. Callers: PacketMemory.cpp:39, 83, 127 (label/store fallbacks under GpuMutex at :30, 74, 112), :226-229 (dumpSampleCounters 16 Writes), DeferredLabels.cpp:120-123, VulkanDevice.cpp:1289 (`if (recorder.Idle()) return 1;`), Pm4.cpp:833-877, Texture.cpp:3700 and GuestBufferMemory.cpp:2564-2640 (WriteChanged write-backs), Graphics/src/Draw.cpp:1996.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "There can be hundreds of label and store fallbacks per frame, each a few to tens of \u00b5s inside GpuMutex. Write-backs of large images add milliseconds of scalar byte scanning per image on the worker that holds the lock.",
+   "proposal": "1. Store through an unwatched alias of the same backing, then MarkWritten, with no pre/post walk. On Linux, a MAP_SHARED mapping of the direct-memory memfd (GuestArenaSharedBacking_nid_postfix gives file and offset). On Windows, GuestArenaMapAlias_nid_postfix already exists. The guest view's protection state is untouched, so earlier CPU stores stay pending for the next collect and are stamped as CPU there.\n2. Vectorize WriteChanged: compare 32 or 64 bytes with SIMD and turn movemask bits into runs. Use AVX-512BW masked byte stores, or AVX2 32-bit maskstore when the differing bytes align to dwords. This keeps the 'never touch unchanged bytes' rule (GuestMemory.hpp:49-51).",
+   "effort": "M",
+   "risk": "The alias mapping lifecycle must follow remaps and unmaps. WriteChanged must never write an unchanged byte (it races with CPU writes), so no 8-byte read-modify-write merges.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 [guestmem]: 'write N calls ... s', 'write-changed N calls X MiB Y s', and the write callers. The [sync] report's label outcome counters (reason 1/2/4 = CPU stores). Linux: `perf stat -e page-faults,tlb:tlb_flush -p <pid>`. Windows: the exception count in ETW/WPA."
+  },
+  {
+   "id": "memory-tracking-capture-per-word-cost",
+   "title": "Shader-resource capture does several syscalls per page and up to ~7 global-mutex acquisitions plus a linear 4096-entry scan per word on pages with pending GPU writes",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/ShaderMemory.cpp:97-201",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Page fetch: Accessible (describePages) then GuestMemory::Read (flush hook, CheckRange's second describePages, 4 KiB memcpy). A page overlapped by recorded GPU writes is read word by word (APS5_NO_WORDWISE_CAPTURE unset, the default). For each dword, queryPendingWrite builds a fresh PendingView whose Load() does an atomic shared_ptr load. classifyPendingWrite then takes:\n- the UnitShadow registry mutex (AnyShadowedOverlaps);\n- writtenBuffersMutex, with newestWriter scanning the writtenBuffers deque newest-first; the deque holds up to 4096 64-byte entries, every draw's written buffers are pushed in, and the scan runs to the end when no writer overlaps;\n- labelTableMutex twice or more (WideLabelIn, plus LookupLabelValue per dword);\n- the tracker mutex twice (knownValueCurrent: CollectWrites + UnchangedSince);\n- writtenBuffersMutex again (dwordEvidence).\nThen Accessible again and GuestMemory::Read (hook plus CheckRange). CaptureTotals counters (++reads, ++pages and others) are seq_cst global atomics bumped on every word whether profiling or not, and word-wise reads take two steady_clock::now() calls each.",
+   "evidence": "ShaderMemory.cpp:104 and 111 (Accessible + Read per page), :105 (pendingWrite on the page), :123 (`++CaptureTotals().reads;` unconditional), :143-144 (per-word pendingWrite + Accessible), :159, 171, 184 (GuestMemory::Read per word), :183-186 (clock reads). WriteEvidence.cpp:206-211 (new PendingView per query), :15-22 (Load), :145-204 (classification steps), :137-141 (knownValueCurrent). WrittenBuffers.cpp:45-55 (reverse linear scan), :32-43 (noteForeignWriter per draw writer). WriteEvidence.hpp:14 (WrittenBufferRing = 4096). Execution Draw.cpp:144 (ShaderMemory with queryPendingWrite per draw).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "This runs on every draw-cache and dispatch-cache miss (each miss captures all stages) and on GPU-driven data (SRTs and arguments written by compute). With hundreds of captured words per stage, tens to hundreds of \u00b5s per capture go to locks and syscalls instead of analysis, on the queue worker's critical path.",
+   "proposal": "1. Hold one PendingView in ShaderMemory and reload it only when Recorder::PublishGeneration() changes.\n2. Classify a whole page (or run) once and reuse the answer for its dwords.\n3. Replace the writtenBuffers deque scan with an interval index: std::map keyed by begin plus a max-end skip, or per-64 KiB buckets.\n4. Replace Accessible + Read per page with one explicit FlushGpuWrites + CopyMapped (one describePages).\n5. Gate the CaptureTotals counters, except wordsKnown, and the word-wise clock reads under CaptureProfiled().",
+   "effort": "M",
+   "risk": "Per-page classification must give the same answer as per-dword classification wherever writers, labels or evidence differ within a page. Fall back to per-dword when the page has mixed states.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 [capture] line: captures, word reads, pages fetched / word-wise, words waited, 'page reads' and 'word reads' \u00b5s per capture, hook GPU waits. [draw-cache] hits and misses. The [validate] line."
+  },
+  {
+   "id": "memory-tracking-evidence-sampling-syncs",
+   "title": "Write-evidence sampling forces a GPU sync on 1 in 16 validations, even when the evidence already proves a raw read is safe",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Memory/WriteEvidence.cpp:9-11,86-99,199-203",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "A region overlapping recorded GPU writes may be read without waiting only if its writer is known and stable: streak \u2265 APS5_WRITE_EVIDENCE_AFTER (default 4), writer range \u2264 APS5_WRITE_EVIDENCE_MAX_KIB (default 16 KiB), no labels. Even then, every 16th SampledReadScope (APS5_WRITE_EVIDENCE_SAMPLE default 16; per-site counters by default) sets sampledRead, and classifyPendingWrite returns Sync. The region then goes through FlushGpuWrites, i.e. Recorder SyncThrough: the open batch is submitted and its fence waited on, on the queue worker's critical path. The synced paths also heap-allocate a 'before' copy vector per pending region.",
+   "evidence": "WriteEvidence.cpp:9-11 (`reads.fetch_add(1) % writeEvidenceSampleEvery() == 0`), :91-94 (default 16), :86-89 (default 4), :96-99 (16 KiB), :162-165 / 189-196 (evidence gates), :199-202 (`if (sampledRead()) { reason = syncedSample; return Policy::Sync; }`). CaptureValidation.cpp:151 (scope per validation), :177-181 and 189-206 (sync path, `before` copies at :191-203). VariantValidation.cpp:20-56 (syncPendingRuns: before vector + FlushGpuWrites per pending region). DrawCapture.cpp:33-36 (sampling scope per capture).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "In GPU-driven frames (compute writing indirect args, SRTs or constants that later draws and dispatches read), each forced sample costs a full CPU-to-GPU round trip of ~0.1-several ms. A few to dozens per frame directly lengthen the frame and leave the GPU idle while the CPU waits.",
+   "proposal": "1. Adaptive sampling: store a per-dword or per-writer sample interval in DwordEvidence and double it after each agreeing sample (cap e.g. 1/1024). Reset to 1/16 on a mismatch or writer change.\n2. Or verify asynchronously: read raw, enqueue (address, raw bytes) as a completion action of the writing batch, and compare at reap. On mismatch, reset the evidence and invalidate the dependent draw/dispatch cache entries.\n3. Reuse thread-owned buffers for the 'before' copies.",
+   "effort": "S",
+   "risk": "Fewer samples, or deferred verification, means a stale read is detected later. The exposure is the same kind as today's 15 in 16 unsampled raw reads.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 [validate] line: 'synced N waiting X ms (... sampled N ...)', 'skipped the sync N', 'missed without the sync N', and the dword streak stats. APS5_TRACE_CAPSYNC=1 gives per-region detail. A/B with APS5_WRITE_EVIDENCE_SAMPLE=1000000."
+  },
+  {
+   "id": "memory-tracking-linux-writewatch-compiled-out",
+   "title": "Linux write watch is silently compiled out when the build host's kernel headers predate 6.7, so all tracking falls back to compares",
+   "location": "core/libs/prx/libc/src/GuestWriteWatch.cpp:13-28,252-263",
+   "category": "build-config",
+   "mechanism": "The whole Watch class (userfaultfd async write protection plus PAGEMAP_SCAN) exists only if <linux/fs.h> defines PAGEMAP_SCAN and <linux/userfaultfd.h> defines UFFD_FEATURE_WP_ASYNC, i.e. linux-libc-dev 6.7 or later. Otherwise GuestWriteWatchAvailable() returns false, and no message is printed: the '[memory] write watch unavailable' line lives inside the compiled-out class. WriteTracker.watched is then false, so CollectWrites returns 0 and UnchangedSince is false everywhere, and every consumer takes the compare/copy path described in memory-tracking-windows-imports-unwatched. At runtime the kernel must also be 6.7 or later (that case is reported).",
+   "evidence": "GuestWriteWatch.cpp:28 (`#if defined(__linux__) && defined(PAGEMAP_SCAN) && defined(UFFD_FEATURE_WP_ASYNC)`), :153-158 (message only inside the class), :257-262 (Available false otherwise). GuestMemory.cpp:817-819 (watched = GuestWriteWatchAvailable), :1102 (return 0). Compare GuestMemory.cpp:41-66, which defines PROCMAP_QUERY locally when headers lack it.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "A build on a distro with older headers (e.g. Ubuntu 22.04's linux-libc-dev 5.15) loses all snapshot reuse on Linux with no diagnostic. That multiplies per-draw compares, copies and flush-hook syncs.",
+   "proposal": "Provide local fallback definitions, as GuestMemory.cpp does for PROCMAP_QUERY:\n- struct page_region and struct pm_scan_arg;\n- PAGEMAP_SCAN _IOWR('f', 16, struct pm_scan_arg);\n- PAGE_IS_WRITTEN, PM_SCAN_WP_MATCHING, PM_SCAN_CHECK_WPASYNC;\n- UFFD_FEATURE_WP_ASYNC and UFFD_FEATURE_WP_UNPOPULATED.\nThen the feature is decided at runtime by the existing probe. Always print one startup line naming the write-watch mode (watched / unavailable: reason).",
+   "effort": "S",
+   "risk": "Low. The runtime probe (probe()) already validates behaviour before use.",
+   "howToMeasure": "On Linux, look for either '[memory] write watch unavailable: ...' or a '[write-watch] host imports ...' line on stderr. Neither appearing suggests the feature is compiled out. With APS5_PROFILE_DRAW=1 the [guestmem] line will show 'collect 0 calls'."
+  },
+  {
+   "id": "memory-tracking-write-fault-cost",
+   "title": "Write detection costs game threads a fault per armed page: Windows section views use an access-violation exception, Linux uses uffd-wp faults plus TLB flushes",
+   "location": "core/libs/prx/libc/include/WindowsMappings.hpp:134-145,219-275",
+   "category": "memory-tracking",
+   "mechanism": "Windows: direct memory is a section mapped as 16 KiB views. A clearing Collect re-arms each written view page and its aliases with VirtualProtect(PAGE_READONLY), one syscall per page and alias, under the global WindowsMappings::mutex while the tracker mutex is also held. The game's next store to that page raises EXCEPTION_ACCESS_VIOLATION, which the process's crash handler (ReportCrash) turns into HandleWrite: the same global mutex plus VirtualProtect back. That is user-mode exception dispatch plus 2 syscalls per first store per page per collect cycle, on game CPU threads, contending with driver collects. Linux: PAGEMAP_SCAN with PM_SCAN_WP_MATCHING re-protects written PTEs, flushing the TLB across all CPUs of the process. The next store takes an in-kernel async uffd-wp fault, which is cheaper and has no user round trip. Re-arming happens for every collected range, whether or not any snapshot will ever compare against it again.",
+   "evidence": "WindowsMappings.hpp:248-258 (clear: VirtualProtect per alias, `other.armed = true`), :134-145 (HandleWrite: lock mutex, VirtualProtect), :220 (Collect locks mutex), :278 (pageBytes 0x4000). libc/src/specifics/windows/CrashReport.cpp:244 (AV -> GuestArenaHandleWrite). libkernel/DirectMemory/DirectMemory.cpp:229, 271 (section views). GuestWriteWatch.cpp:111-119 (WP matching re-protect), :160-166 (UFFDIO_WRITEPROTECT for fresh ranges). GuestMemory.cpp:1100-1113 (walk under tracker lock).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "A game rewriting per-frame data (constants, dynamic vertices, command buffers in tracked direct memory) pays \u00b5s to tens of \u00b5s per 16 KiB page per frame on Windows, and serializes on WindowsMappings::mutex against the driver's collects. That slows the CPU side that feeds the GPU. On Linux the cost is lower but TLB-shootdown IPIs grow with core count.",
+   "proposal": "1. Re-arm only ranges that have a live snapshot consumer. Pass a 'keep watching' hint from the caches, and leave ranges whose entries were evicted unarmed until the next lookup.\n2. On Windows, arm at the 64 KiB stamp granularity (4 views per fault) to cut faults up to 4\u00d7. The stamps are 64 KiB anyway.\n3. Adaptively switch ranges the CPU rewrites every frame (high fault rate) to compare mode.",
+   "effort": "M",
+   "risk": "Leaving a range unarmed means its next use must treat it as changed (a full compare or upload). Coarser arming loses 4 KiB cpuPages precision, which only StoredOver uses.",
+   "howToMeasure": "Windows: add an atomic HandleWrite counter to the [guestmem] line; ETW exception counts in WPA. Linux: `perf stat -e page-faults,tlb:tlb_flush -p <pid>`. [guestmem] 'collect-dirty' (walks that found written pages)."
+  },
+  {
+   "id": "memory-tracking-device-gate-per-packet",
+   "title": "DeviceUseGate takes a global std::mutex twice per PM4 packet on every queue worker",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/DeviceAccess.cpp:23-32",
+   "category": "global-lock-serialization",
+   "mechanism": "For every packet except waits and flips, PacketExecution builds a std::shared_lock on deviceReplacement. That covers SET_*_REG, draws, dispatches and labels. lock_shared locks the gate's std::mutex and checks 'replacing'. unlock_shared locks it again, decrements 'users' and calls condition_variable::notify_all whenever users reaches 0, which happens on almost every packet when one worker is active. Tens of thousands of packets per frame across 8+ workers bounce one cache line and mutex.",
+   "evidence": "PacketExecution.cpp:116-117 (`std::shared_lock deviceUse(deviceReplacement, std::defer_lock); if (opcode != 0x3c && ...) deviceUse.lock();` inside the per-packet loop). DeviceAccess.cpp:23-32 (lock_shared / unlock_shared with mutex + notify_all), :34-39 (writer). Driver.hpp:284 (DeviceUseGate deviceReplacement).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "About 40-200 ns per packet uncontended, more when contended. At tens of thousands of packets per frame that is roughly 1-10 ms of aggregate worker time, a small but free saving.",
+   "proposal": "Replace it with an atomic users counter plus an atomic<bool> replacing:\n- Reader: users.fetch_add(1); if replacing, undo, then wait with atomic::wait on replacing and retry.\n- Writer: set replacing, then wait until users==0 with atomic::wait/notify.\nstd::shared_mutex would also do.",
+   "effort": "S",
+   "risk": "Low. Device replacement is rare; keep the seq_cst ordering between the flag and the counter.",
+   "howToMeasure": "perf record on the queue workers (pthread_mutex_lock / futex samples inside Driver's packet loop). APS5_PROFILE_DRAW packet timing (the [packets] rows' per-packet overhead)."
+  }
+ ],
+ "incompleteOrStubbed": [
+  {
+   "location": "core/libs/prx/libc/src/GuestArena.cpp:109-133 (used by GuestMemory.cpp:483-506)",
+   "what": "The Linux guest arena is empty: the Arena() constructor body runs only under _WIN32, so GuestArenaRange reports 0 bytes on Linux. GuestMemory's page-state cache and its ForgetPages invalidator are therefore never enabled on Linux.",
+   "perfRelevance": "Every CheckRange, Accessible, CompareMapped, CopyMapped and DescribeCommitted on Linux becomes a PROCMAP_QUERY ioctl, or a /proc/self/maps parse on kernels older than 6.11 (finding memory-tracking-linux-no-page-cache)."
+  },
+  {
+   "location": "docs/dev/TechnicalDebt.md:243; Graphics/src/GuestBufferMemory.cpp:286-290",
+   "what": "Windows host imports are always unwatched (compared). Restoring tracking on import retirement, and measuring the comparison cost, are listed as unimplemented.",
+   "perfRelevance": "Disables snapshot reuse, unit shadows, heap mirrors and known-value evidence for imported memory on Windows. Every validation becomes a full compare or copy (finding memory-tracking-windows-imports-unwatched)."
+  },
+  {
+   "location": "core/libs/prx/libc/src/GuestWriteWatch.cpp:28",
+   "what": "Linux write watch is compiled only when the build headers provide PAGEMAP_SCAN and UFFD_FEATURE_WP_ASYNC, and nothing is printed when it is compiled out.",
+   "perfRelevance": "Silent total loss of write tracking on Linux builds against older headers (finding memory-tracking-linux-writewatch-compiled-out)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:852-857,878-893",
+   "what": "driverPieces keeps only 4 sub-block byte ranges per 64 KiB block. Older ones fold into 'dropped', which makes StoredOver answer 'stored over' conservatively.",
+   "perfRelevance": "With labels 0x20 apart in one block, precision is lost after 4 stores, so more write-backs and compares happen."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:785,895-936",
+   "what": "The tracker generation and block stamps are 32-bit (std::atomic<std::uint32_t>), while the API returns uint64. Every walk, MarkWritten and store increments the generation, about 1e5 per second at this load, so it wraps after hours.",
+   "perfRelevance": "Not a cost today, but after a wrap 'stamp > generation' comparisons invert and UnchangedSince could report stale data as unchanged. It is a latent correctness risk for long sessions, and any reuse fix must keep the comparisons monotonic."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:1762-1785,589-614",
+   "what": "CompareMapped and CopyMapped (draw and dispatch-cache validation) and the Linux PROCMAP_QUERY ioctl are not timed by TimedAccess. Only the Windows VirtualQuery is counted under 'query'.",
+   "perfRelevance": "The [guestmem] profile under-reports the main per-draw validation cost and the Linux syscall cost. Instrumentation should be added before tuning."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:260-276,370-383",
+   "what": "Draws have no unlocked 'stage A'. Dispatches split preparation (PrepareDispatch, unlocked) from stage B, but Graphics::Draw runs entirely under GpuMutex, including guest-memory checks, copies and collects.",
+   "perfRelevance": "Draw-side memory validation serializes all queues (finding memory-tracking-gpumutex-unfair-wide-hold)."
+  }
+ ],
+ "quickExperiments": [
+  {
+   "setting": "APS5_PROFILE_DRAW=1 (optionally with APS5_NO_HOLD_PROFILE=1 to reduce overhead)",
+   "expectedEffect": "Diagnostic, not a fix. Every 10 s it prints [guestmem] (collect calls, MiB and s, memo hits, epochs, tracker waits; compare, verify, read and write totals), [lock] (per-queue GpuMutex waits, holds by site, locked GPU waits), [validate] (sampled and evidence syncs with waited ms), [capture], [hooksync] and [draw-cache]. Together these show which mechanism dominates on the user's machine.",
+   "risk": "Adds timing overhead; FPS drops somewhat while enabled."
+  },
+  {
+   "setting": "No env var: on Linux check `uname -r` (PROCMAP_QUERY needs 6.11 or later, write watch needs 6.7 or later) and stderr for '[memory] write watch unavailable' or '[write-watch] host imports ...'; on Windows look for '[write-watch] host imports are compared on Windows ...'",
+   "expectedEffect": "Tells which tracking regime is active. On Linux, no write-watch lines at all means the feature was compiled out; a kernel older than 6.11 means a /proc/self/maps parse per range check. Upgrading the kernel or building against 6.7+ headers can give a large speedup on Linux.",
+   "risk": "None."
+  },
+  {
+   "setting": "APS5_WRITE_WATCH_IMPORTS=watch (Linux only; the default is 'probe')",
+   "expectedEffect": "If the startup probe decided 'imported ranges are compared', this keeps host imports write-watched, restoring snapshot reuse (fast revalidation, draw-input snapshot reuse, unit shadows) for GPU-visible memory. Fewer full compares, copies and flush-hook syncs per draw.",
+   "risk": "If the driver really breaks write protection on imported pages, CPU edits can be missed (stale textures or buffers) or show up as spurious writes. Check visually for corruption."
+  },
+  {
+   "setting": "APS5_SHARED_COLLECT_MEMO=1 (default: per-thread 64-entry ring)",
+   "expectedEffect": "Uses the tracker's shared 256-entry memo ring, keyed by thread epoch, so the graphics worker can memoize up to 4\u00d7 more ranges per epoch. Fewer PAGEMAP_SCAN/GetWriteWatch walks if its working set exceeds 64 ranges. Compare [guestmem] 'collect calls' and 'collect-memo hits'.",
+   "risk": "Memo lookups move under the tracker mutex, adding contention. No correctness change."
+  },
+  {
+   "setting": "APS5_WRITE_EVIDENCE_SAMPLE=1000000 (default 16)",
+   "expectedEffect": "Practically removes the 1-in-16 forced GPU syncs on evidence-proven raw reads of GPU-written regions. The [validate] 'sampled' count and 'synced ... waiting ms' should drop.",
+   "risk": "Stale reads of GPU-written SRTs or arguments would no longer be caught by sampling, so rendering glitches are possible if the evidence is wrong."
+  },
+  {
+   "setting": "APS5_WRITE_EVIDENCE_AFTER=1 and/or APS5_WRITE_EVIDENCE_MAX_KIB=64 (defaults 4 and 16)",
+   "expectedEffect": "Evidence is trusted after one unchanged observation, and for writer ranges up to 64 KiB, so fewer 'evidence short' and 'larger range' syncs in [validate].",
+   "risk": "Higher chance of reading data the pending GPU work changes, so visual glitches are possible."
+  },
+  {
+   "setting": "APS5_NO_WRITE_WATCH=1 (A/B only)",
+   "expectedEffect": "Disables tracking entirely; everything is compared. If FPS barely changes, tracking is already ineffective (imports unwatched, compiled out, or 64 KiB false sharing), which confirms the reuse findings. If FPS drops a lot, tracking works and the focus should be on lock and syscall costs.",
+   "risk": "Slower; diagnostic only."
+  },
+  {
+   "setting": "APS5_NO_COLLECT_MEMO=1 (A/B only)",
+   "expectedEffect": "Every CollectWrites walks. The FPS delta and the [guestmem] 'collect ... s' growth show how much walk cost the memo saves, and how much a bigger memo could still save.",
+   "risk": "Slower; diagnostic only."
+  }
+ ]
+}

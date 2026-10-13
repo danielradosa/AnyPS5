@@ -1,0 +1,311 @@
+{
+ "subsystem": "Guest buffers, uploads, host imports, write-backs, copy/fill HLE (GuestBufferMemory, BufferPool, BdaResources, Resources, BufferCopy/BufferFill)",
+ "howItWorks": "Every draw or dispatch build (ShaderResources) feeds one GuestBufferMemory. Each buffer V# element becomes a region through AddWritable/AddReadable, which calls DescribeCommitted once per element. Captured constants arrive through AddSnapshot. Address-based (BDA) shaders first call AcquireRegistered, which leases every readable registered allocation (about 1200). That lease is served from a per-device cached AddressSpace, valid while the registry generation and the import epoch stay unchanged.\n\nUploadPrepare sorts and merges the regions. It runs unlocked in a non-BDA dispatch's stage A and under GpuMutex for draws. A region binds in place through a host import when its start is aligned to minStorageBufferOffsetAlignment. Imports use VK_EXT_external_memory_host on the whole registered allocation, are made on demand, and stop at APS5_HOST_IMPORT_MIB (default 6 GiB).\n- **Misaligned regions inside an import** are copied by the GPU into a pooled host-visible buffer. Read-only ones also get an extra CPU snapshot buffer.\n- **Written or atomic dispatch elements of 16 KiB\u20132 MiB** get device-local staging shadows.\n- **Everything else** is CPU-copied on every build, with a full reference copy kept for written ranges. This covers ranges that are not imported: read-only on Linux, partially uncommitted, over budget, or with a misaligned allocation base.\n\nFor BDA builds, registered ranges that cannot be imported become persistent mirrors:\n- Exe image (Windows MEM_IMAGE): read-only sections are filled once; writable sections are memcmp'd in 64 KiB blocks on every build.\n- Heaps: refreshed from write-watch stamps.\n\nUploadFinish runs under GpuMutex. It reconciles and creates imports, refreshes writable mirrors (which may sync the recorder) and records the GPU copies. BdaResources builds or reuses the page table and allocates a 16 KiB fault buffer per build. MarkGpuWrites records the GPU copy-backs. CPU write-backs (WriteChanged diffs) run as batch completion actions. All buffers come from BufferPool, with one VkDeviceMemory per buffer. The copy and fill HLE replace their kernels with vkCmdCopyBuffer or vkCmdFillBuffer into imports, or with a CPU memcpy or fill. The fill's CPU path drains the whole device.",
+ "threadingAndLocks": "This code runs on the per-queue PM4 worker threads.\n- **Draws** hold GuestMemory::GpuMutex for the whole draw (Draw.cpp:232), so all their uploads are serialized.\n- **Non-BDA dispatches**: stage A (UploadPrepare, CPU copies of read-only regions) runs unlocked. Stage B (UploadFinish, import create/retire, mirror refresh, GPU copy record) runs under GpuMutex.\n- **BDA builds** run entirely under GpuMutex (ShaderResources.cpp:774-779).\n\nLock nesting: GpuMutex \u2192 Imports().mutex. HostImportFor holds Imports().mutex while it copies a full registry lease under the GuestAllocations registry mutex. The write-tracker mutex nests below these. Separate locks: Mirrors().mutex, the BufferPool mutex, the BDA TableCache mutex and the Leases mutex. The RefreshPool helpers (3 by default) run memcmp while the caller holds GpuMutex.\n\nGPU waits made while holding GpuMutex:\n- prepareRange calls recorder->Sync().\n- WaitForLeases calls FinishUpTo, whose fence waits happen under the lock.\n- FillBuffer and CopyBuffer call SyncThrough.\n- The fill HLE's CPU fallback calls WaitIdle (vkDeviceWaitIdle).\n\nCompletion actions (CPU WriteChanged write-backs, BDA CheckFault) run in Reap/finish under GpuMutex, on whichever thread reaps. Guest game threads enter through malloc/free/mprotect, which take the registry mutex. While any address-based work is in flight, all readable ranges are pinned, so these threads go into WaitForLeases: they take GpuMutex and wait for the GPU.",
+ "findings": [
+  {
+   "id": "buffers-copied-writers-overlisted",
+   "title": "Copied-writer registries list every BDA dispatch and every GPU-copied-back draw, causing needless CPU syncs for fills, copies, indirect arguments and labels",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:3317-3328",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "**Dispatches:** dispatch() adds the build to state->copiedWriters whenever NeedsCompletion() is true. NeedsCompletion is `bda != nullptr || HasCopiedWrites()`, so every address-based (BDA) dispatch and every fault-buffer build is listed. That includes builds whose descriptor writes all land in host imports in place, where WriteBack stores nothing.\n\n**Draws:** Draw.cpp computes copiedWrites = HasCopiedWrites() before keepRecordedDraw calls MarkGpuWrites, which runs RecordCopyBacks. HasCopiedWrites counts gpuCopy regions until copiedBack is set, so a draw with misaligned written V#s goes into DrawCopiedWriters even though the GPU copies its results back.\n\nThe consumers treat every listed writer as a CPU store still to come:\n- FillBuffer: SyncThrough under GpuMutex.\n- CopyBuffer: the CPU copy is refused, or the copy syncs first.\n- DispatchIndirect: falls back to a CPU read of the arguments, which waits for the GPU through the flush hook.\n- Labels: deferred behind completions as CPU stores.\n\nWritesOverlap also matches the build's in-place (direct) ranges.",
+   "evidence": "VulkanDevice.cpp:3317 `if (resources.NeedsCompletion()) { ... writers->push_back(kept); }`. ShaderResources.hpp:133 `bool NeedsCompletion() const { return bda != nullptr || guestMemory.HasCopiedWrites(); }`. GuestBufferMemory.cpp:2620-2623 WriteBack only calls MarkWritten for direct regions (no store). Draw.cpp:1699 `const bool copiedWrites = completion && resources->HasCopiedWrites();` runs before Draw.cpp:1182 `resources->MarkGpuWrites(recorder);`. GuestBufferMemory.cpp:2542 `if (region.gpuCopy && (region.copiedBack || region.deviceLocal)) continue;`.\n\nConsumers:\n- VulkanDevice.cpp:1416-1432 FillBuffer: `any_of(state->copiedWriters ... WritesOverlap)` leads to `recorder.SyncThrough(address, bytes)`.\n- VulkanDevice.cpp:1622-1626 / 1704-1716 CopyBuffer: completionStoreOverlaps leads to SyncThrough.\n- VulkanDevice.cpp:3176-3196 indirect: cpuReason=2, then `GuestMemory::Read(arguments...)`.\n- VulkanDevice.cpp:379-381 CopiedWriterOverlaps, used at 1315 to send the label to AfterCompletions (return 5).",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "GPU-driven work hits this every frame: compute that writes indirect arguments or buffers that are then cleared by fill kernels. Each hit is a GPU-to-CPU round trip on the queue worker, usually with GpuMutex held. That keeps the GPU queue draining and every worker waiting, which matches the symptom of an under-used CPU and GPU.",
+   "proposal": "1. In VulkanDevice::dispatch, push to copiedWriters only if `resources.HasCopiedWrites()`. Keep the OnComplete for the BDA CheckFault.\n2. In Draw.cpp, compute `listed` after MarkGpuWrites. Alternatively, have HasCopiedWrites treat gpuCopy regions as copied back when the use is a recorded draw, since keepRecordedDraw always calls RecordCopyBacks.\n3. Add GuestBufferMemory::CopiedWritesOverlap(address, bytes), which tests only write ranges whose owner region is written back by the CPU (not direct, not a copiedBack or deviceLocal gpuCopy, not a read-only mirror). Use it in State::CopiedWriterOverlaps, FillBuffer, CopyBuffer and DispatchIndirect.\n4. Optionally, merge State::copiedWriters and DrawCopiedWriters into one interval index (the tech-debt note in Draw.hpp:94-106).",
+   "effort": "S",
+   "risk": "Low. The lists exist only to order work against CPU write-backs. Direct and GPU-copied-back writes are already ordered by the recorded barriers (fill/copy ALL_COMMANDS->TRANSFER, indirect ALL_COMMANDS->DRAW_INDIRECT). The completion action that runs BDA CheckFault must stay.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [fill-sync] `N synced ... waited X ms`\n- [indirect] `pending label or copied write N ... CPU argument reads took X s`\n- [copy] `refused cpu: destination unsettled / source unsettled`, `waited for the source`\n- [sync] `deferred behind completions N`\n- [recorder] sync site table, source 4\n\nCompare these counts before and after the change."
+  },
+  {
+   "id": "buffers-misaligned-gpu-copy",
+   "title": "V# ranges inside host imports are copied by the GPU instead of bound in place, though per-element byte adjustments already exist",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:2030-2060",
+   "category": "upload-readback",
+   "mechanism": "When a region's start is not a multiple of minStorageBufferOffsetAlignment relative to its import base, UploadPrepare and UploadFinish move it to the GPU-copy path. Yet Descriptor() already handles any offset inside a direct region: it binds at `offset - adjustment` and the shader adds a per-element byte offset. That is how misaligned V#s inside an AddressSpace base region are bound today.\n\nWhat the copy path costs per affected build:\n- A pooled host-visible buffer for each region.\n- For read-only regions, a second inputSnapshot buffer plus a CPU memcpy under GpuMutex.\n- Per region: FlushKeyStoresOverlapping, FlushStoresOverlapping and StorageTexture::FlushPending.\n- Two global barriers around the copies: ALL_COMMANDS|HOST->TRANSFER and TRANSFER->ALL_COMMANDS.\n- For written ranges, a copy-back with two more global barriers.\n\nThe build also becomes non-reusable: DirectRegions() returns nullopt for a host-visible gpuCopy region, so noteReusable fails and every draw or dispatch rebuilds its descriptor set and upload. The changing device addresses of pooled buffers also break the BDA table cache (69% misses noted in BdaResources.cpp:26-31). This never happens on RADV (alignment 4); it does on NVIDIA (16 or more) and Intel (64).",
+   "evidence": "GuestBufferMemory.cpp:2038 `const bool misaligned = (region.begin - entry->base) % context.limits.minStorageBufferOffsetAlignment != 0;` and 2049 `if (misaligned || staged) {` lead to the copy path. GuestBufferMemory.cpp:2172 bind in place only `if (... % minStorageBufferOffsetAlignment == 0)`.\n\nThe adjustment mechanism already exists:\n- Descriptor 2487-2497: `base = region.direct ? region.direct->base : ...; adjustment = offset % max(minStorageBufferOffsetAlignment,4); return {handle, offset - adjustment, range}`.\n- ShaderResources.cpp:1096-1107 patches `allocation.adjustment` into push constants or the data byte.\n- SpirvBufferAccess.cpp:63-71,98 loads memoryByteOffsets and applies `access.byteOffset`.\n- GuestBufferMemory.cpp:1634-1636 returns on BaseOverlap::Inside, so V#s in BDA builds already bind in place with an adjustment.\n\nCosts in code: 2053 Buffer per region; 2360-2367 inputSnapshot Buffer plus memcpy; 2333 and 2415 barriers; 2448 and 2474 copy-back barriers; 2705-2707 DirectRegions nullopt. The comments at 1742-1746 and Draw.cpp:1680-1682 report about 31000 such regions per run (~34 bytes each) and 0x48-byte constant buffers at the menu.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "On NVIDIA and Intel this hits common small constant-buffer V#s on many draws per frame. Each one adds GPU pipeline-draining barriers, allocations and CPU copies inside the lock, and blocks reuse of the resource cache and recipes, so thousands of builds per frame stay on the slow path.",
+   "proposal": "1. ShaderResources::buildPrepare knows, before UploadPrepare (ShaderResources.cpp:976), whether every GuestBuffers allocation has pushByte>=0 or dataAllocation>=0. Pass this as GuestBufferMemory::AllowAdjustedViews().\n2. When it is set, UploadPrepare drops `misaligned` from the copy condition at 2049, and UploadFinish drops the alignment test at 2172. Bind as direct whenever an import serves the region and it is not staged.\n3. Keep the copy only when (a) adjustments are unavailable, (b) the ViewBytes-rounded view would cross the import's end (the Require at 2494), or (c) device-local staging is chosen.",
+   "effort": "M",
+   "risk": "Medium.\n- Written misaligned elements will store over PCIe in place, as aligned ones do now; dispatches can still use device-local staging.\n- The adjustment must stay below 256 (the spec caps the alignment at 256).\n- The view-end edge case near the end of an import needs the fallback.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, the [buffers] uploads line: `copies on the GPU: N regions (KiB) copied out of imports, M written sub-ranges copied back`. Also the [rescache] hit/miss rates and the [address] `[bda-table] hits/misses` field. With APS5_PROFILE_GPU, the [gputime] StagingIn/StagingOut classes."
+  },
+  {
+   "id": "buffers-linux-page-query-uncached",
+   "title": "On Linux every accessibility check costs a PROCMAP_QUERY ioctl or a full /proc/self/maps parse (the page-state cache is filled only on Windows), and the buffer path makes these checks for each V# element",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:536-647",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "describePages checks a per-page cache first, but only the `#ifdef _WIN32` branch ever stores into it. On Linux the cache always reads 0, so every Accessible, CheckRange and DescribeCommitted call costs either:\n- one PROCMAP_QUERY ioctl per VMA run, or\n- when PROCMAP_QUERY is missing (kernels older than 6.11, or APS5_NO_PROCMAP_QUERY set), opening /proc/self/maps and parsing it with ifstream and istringstream on every call.\n\nThe Linux image span is never set either. GuestBufferMemory makes these calls:\n- per V# element: addDescriptorRegion calls DescribeCommitted;\n- per copied range: addCopiedRange;\n- per CPU copy: GuestMemory::Read calls CheckRange;\n- per writable or heap mirror on every BDA build: prepareRange calls Accessible;\n- per import attempt;\n- per written range at write-back: storeChanged calls DescribeCommitted, and WriteChanged calls CheckRange.\n\nThe fill HLE (CheckRange) and copy HLE (Accessible \u00d73) add more. Each ioctl takes mmap_lock, competing with guest mmap and mprotect.",
+   "evidence": "GuestMemory.cpp:551-588 `#ifdef _WIN32 ... for (auto at = first; at < last; at += PageBytes) span->store(at, value);` is the only store. Linux branch 589-614: `ioctl(fd, PROCMAP_QUERY, &query)` with no store; 615-643: `std::ifstream maps(\"/proc/self/maps\"); while (std::getline(maps, line))`. GuestMemory.cpp:488-504: the image span is set only under _WIN32.\n\nCallers: GuestBufferMemory.cpp:1648 `GuestMemory::DescribeCommitted(begin, ...)` in addDescriptorRegion; 1570 addCopiedRange; 2299 `GuestMemory::Read` (whose CheckRange is at GuestMemory.cpp:1724); 728 prepareRange `Require(GuestMemory::Accessible(...))`; 400 importAllocation; 2562 storeChanged. BufferFill.cpp:133 `GuestMemory::CheckRange`; BufferCopy.cpp:135,156 `GuestMemory::Accessible`.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "With thousands of draws, each having several V#s, this is roughly 10^4 or more queries per frame, all made under GpuMutex. With PROCMAP_QUERY each one costs a syscall plus mmap_lock. On 6.8-era kernels (Ubuntu 24.04 GA) each one regenerates and parses the whole maps file (hundreds of \u00b5s to ms), which alone can cap the frame rate. Not relevant on Windows, which caches.",
+   "proposal": "1. On Linux, after a successful PROCMAP_QUERY of a readable VMA inside the arena or image span, store PageReadable|PageWritable for its pages, as GuestMemory.cpp:578-585 does on Windows. Use the same GuestAllocationsGeneration re-check and forget the pages if the generation changed. Registry mutations already invalidate through ForgetPages (GuestMemory.cpp:505), and the Linux write watch uses userfaultfd WP (GuestWriteWatch.cpp:50,164), which leaves VMA protections alone.\n2. Initialize the image span on Linux from the dl_iterate_phdr extent used in GuestAllocationsRegisterMainImage.\n3. In addDescriptorRegion, skip DescribeCommitted when HostImportCovers(context, begin, end - begin) is true: imported ranges are pinned and fully committed.",
+   "effort": "S",
+   "risk": "Low to medium. A protection change made outside the registry would be missed; Windows already relies on the same assumption. Keep unreadable or reserved pages uncached, as on Windows.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, the [guestmem] line: `verify N calls X MiB Y s`. Compare calls per second with draws per second. Check `uname -r`: 6.11 or newer means PROCMAP_QUERY; older means the /proc/self/maps parse path."
+  },
+  {
+   "id": "buffers-lease-pins-guest-frees",
+   "title": "Address-based builds pin every readable range: guest free/mprotect wait for the GPU under GpuMutex",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:971-1026",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "An address-based build leases every readable registered range. The cached AddressSpace keeps that lease, and each build and recorded batch using the space holds it until its WriteBack at batch completion. The registry counts a range as pinned whenever use_count != 1. So any guest free, realloc, mprotect or munmap of any readable range, small malloc blocks included, calls WaitForLeases while address-based work is in flight.\n\nWaitForLeases first drops the cache, which is cheap. Then it:\n1. locks GpuMutex, queuing behind whole draws;\n2. calls recorder->Submit() and FinishUpTo(newestLeaseSerial), whose fence waits run under the mutex, or a full Sync() if no lease serial was noted.\n\nThe next build republishes a space and pins everything again, so a guest thread can loop.",
+   "evidence": "GuestBufferMemory.cpp:\n- 1430 `lease = GuestAllocations::GuestAllocationsAcquire_nid_postfix();`\n- 1522 `built->lease = std::move(lease);`\n- 2687-2688 `lease.clear(); space.reset();` happen only in WriteBack.\n- 994-1009 `std::lock_guard lock(GuestMemory::GpuMutex()); ... recorder->Submit(); recorder->FinishUpTo(target);` or `recorder->Sync();`.\n\nGuestAllocations.cpp:261 `range.use_count() != 1` means pinned; 270-274 calls the waiter; 282 prints `still pinned after %d recorder syncs`; 428-435 the lease copies every readable range. GuestHeap.cpp:232-237 GuestHeapFree calls `mutation.RequireUnpinned`. Recorder.cpp:2887-2889: FinishUpTo comment `a caller that did not wait first, WaitForLeases`.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Game threads stall on GPU completion and on the global GpuMutex each time they free memory during a frame with BDA work in flight. Meanwhile the waiter's locked fence wait blocks every PM4 worker. That directly matches the symptom of under-used CPU threads and GPU.",
+   "proposal": "1. (S) Rework WaitForLeases to follow the presync pattern (VulkanDevice.cpp:3010-3031): under GpuMutex, only Submit (SubmitAndEpoch) and read the target serial; release the lock; WaitSerial(target) unlocked when HasTimeline(); then relock for FinishUpTo.\n2. (M) Defer guest heap frees of pinned blocks. GuestHeapFree on a pinned range moves the block to a quarantine list, keeping the registry entry but excluding it from new leases, and returns immediately. A lease-drop or completion callback does the real Remove and rawFree. munmap and mprotect keep the synchronous wait.",
+   "effort": "M",
+   "risk": "Step 1 is low risk. Step 2 is medium risk: freed blocks are held longer (more memory), and realloc and RequireUnpinned semantics must be preserved for mprotect and munmap.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [address-sync] `N pin-contention waits by guest threads (X finished the lease batch, Y drained the recorder, Z cache-only drops) S s`\n- [lock] holder matrix, untagged column (game threads)\n- stderr `leased allocation ... still pinned after 8 recorder syncs`"
+  },
+  {
+   "id": "buffers-generation-churn",
+   "title": "Every guest malloc/free bumps the registry generation, invalidating the address-space cache and forcing full-lease import reconciles on labels, fills and copies",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:1309-1321",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Each Mutation bumps the generation unconditionally in GuestAllocationsEnd. That covers every guest malloc, free and realloc through ApplicationHeap and GuestHeap, plus mmap and mprotect. A changed generation then:\n- Makes the cached AddressSpace miss (rebuiltGeneration). The next BDA build re-leases about 1200 shared_ptrs under the registry mutex (no reserve, an atomic increment each), locks Imports once per range, runs importAllocation or acquireMirror for each, and rebuilds and hashes the BDA table.\n- Makes HostImportFor leave its fast path. HostImportFor is called for every GPU label, fill, copy-HLE and indirect-argument check. On a miss it acquires a full lease and runs refreshImports while holding Imports().mutex.\n- Makes refreshImports walk every import and re-call GuestMemory::Unwatch on each unwatched one. On Windows all imports are unwatched, and Exclude loops over every 64 KiB block: about 98K iterations for 6 GiB imported.\n- Makes HostImportSerial(reconcile=true), used by Revalidate, repeat the same work.",
+   "evidence": "GuestAllocations.cpp:110-112 `GuestAllocationsEnd_nid_postfix ... generation.fetch_add(1)`; 428-435 Acquire copies every range under `registry().mutex`. GuestHeap.cpp:227-273: every API opens a `GuestAllocations::Mutation`.\n\nGuestBufferMemory.cpp:\n- 1404 `else if (current->generation != generation) spaces.rebuiltGeneration...`\n- 1314-1318 `if (!importsStale(...)) {...} const auto lease = GuestAllocations::GuestAllocationsAcquire_nid_postfix(); refreshImports(...)`\n- 491-495 per import `if (it->second.unwatched) GuestMemory::Unwatch(...)`\n- 2769 HostImportSerial reconcile.\n\nVulkanDevice.cpp:1292 (label), 1380 (fill), 1739-1740 (copy), 3179 (indirect) call HostImportFor. WriteWatchCoverage.hpp:42-47 loops per block.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "How much this costs depends on how often the game allocates. Engines that malloc and free per frame (GuestHeap.cpp:121-123 notes hundreds of MB re-allocated each frame) turn cache hits into full rebuilds on each BDA build, and put lease copies onto hot label and fill paths, all inside GpuMutex.",
+   "proposal": "1. In HostImportFor, when the table is stale, validate only the import that contains the address: do one O(log N) registry lookup, via a new call returning the shared_ptr<const Range> at that base, and compare it with entry.range. Leave the full reconcile to the build paths.\n2. In refreshImports, re-apply Unwatch only when the import's watch state could have changed: track a per-import flag, and on Windows check GuestArenaCommitGeneration.\n3. Publish an immutable lease snapshot per generation (shared_ptr<const Lease>) so acquiring a lease costs one atomic increment. The pin check must then also count holders of the snapshot.\n4. Make the AddressSpace incremental: GuestAllocationsEnd already reports the changed ranges, so patch only the regions overlapping them.",
+   "effort": "M",
+   "risk": "Steps 1 and 2 are low risk. Steps 3 and 4 are medium risk: pin semantics, and keeping the space consistent with the registry.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, the [address] line: `space hits N / rebuilds: generation M, epoch .., waiter drop ..` and `us per build: lease X, imports pass Y`. Also the [lock] 'label'/'fill' site hold times. APS5_TRACE_HOST_IMPORT=1 shows retire churn."
+  },
+  {
+   "id": "buffers-sticky-import-refusal",
+   "title": "Import refusals are permanent per base address, and Linux never imports read-only ranges, so affected memory is CPU-copied on every build",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:343-404",
+   "category": "upload-readback",
+   "mechanism": "importAllocation refuses a range and records its base in state.failed when:\n- on Linux, the range is not fully accessible and writable (`Accessible(..., true)`), so read-only guest mappings (GPU-read-only direct memory, read-only image sections) are never imported;\n- on Windows, any page is not MEM_COMMIT, or the range is a fully read-only private or image range.\n\n`failed` is keyed by base address and cleared only when no range starts at that base anymore (504). So a heap registered whole and committed on demand, or a range later mprotect'ed to writable at the same base, stays un-imported for its whole life. Nothing is printed for these refusals.\n\nFallbacks on every use:\n- Descriptor regions are CPU-copied through GuestMemory::Read, whose flush hook may SyncThrough, into a pool buffer. Written ranges also keep a full `uploaded` vector and get a CPU WriteChanged byte-diff at batch completion.\n- The build becomes non-reusable and is listed as a copied writer, which feeds the syncs in buffers-copied-writers-overlisted.\n- BDA builds get a heap mirror or, when pages are uncommitted, a sparse copy of every committed page on each build. Over APS5_ADDRESS_COPY_MAX_MIB=64 the process aborts.\n- The fill HLE falls back to WaitIdle (see buffers-fill-cpu-fallback-waitidle).\n- BDA stores into these ranges throw a fault.",
+   "evidence": "GuestBufferMemory.cpp:\n- 344 `if (... || state.failed.contains(base)) return nullptr;`\n- 399-403 Linux `if (!GuestMemory::Accessible(..., true)) { state.failed.insert(base); return nullptr; }`\n- 375-378 Windows `info.State != MEM_COMMIT ... failed.insert`\n- 387-390 read-only refused\n- 504 `it = leasedRangeAt(lease, *it) != nullptr ? std::next(it) : state.failed.erase(it);`\n- 2294-2300 copyRegion `GuestMemory::Read(...); if (written) region.uploaded.assign(...)`\n- 2666-2684 CPU write-back\n- 1476-1495 per-build copy and `FATAL ... APS5_ADDRESS_COPY_MAX_MIB`\n\nBdaResources.cpp:265 `read-only in the BDA table ... not ones served by a mirror or a copy`. The arena's shared memfd backing is already available: GuestBufferMemory.cpp:264 `GuestArenaSharedBacking_nid_postfix(..., &file, &offset)`.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Wherever Astro Bot binds read-only-mapped or lazily committed GPU memory, every draw or dispatch that touches it pays a CPU copy and loses reuse. Written ranges also add completion write-backs, which gate labels and fills. The per-build sparse copies can reach 64 MiB per BDA dispatch. This becomes high impact if the profile histogram shows large 'outside imports' totals.",
+   "proposal": "1. Key `failed` by Range identity (a weak_ptr, or the registry generation of that base). Retry when the Range object changes; on Windows, also retry when the commit generation changes.\n2. On Linux, import read-only ranges through a read-write alias of the shared arena backing: mmap(MAP_SHARED, PROT_READ|PROT_WRITE) of the memfd offset that GuestArenaSharedBacking returns. createHostPointerImport (214) already uses entry.alias, and destroyImport must unmap it as on Windows. For non-NVIDIA drivers, try createDmaBufImport before the writable check, since udmabuf imports pages regardless of VMA protection.\n3. On Windows, retry partially committed heaps after commits, or import their committed sub-ranges.",
+   "effort": "M",
+   "risk": "Medium. Alias views make read-only memory GPU-writable, but BDA permissions still grant Write only to writable ranges (2508). More pinned memory counts toward APS5_HOST_IMPORT_MIB.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [buffers] `N copied regions on the CPU: ... outside imports (MiB): 0x..:count/MiB` histogram (2279-2285)\n- `[resources] guest upload of ... copied X MiB took Y ms`\n- [buffers] image mirrors `heap N (X MiB)`\n\nAPS5_TRACE_BIGBUF=1 lists copies of 1 MiB or more."
+  },
+  {
+   "id": "buffers-fill-cpu-fallback-waitidle",
+   "title": "Fill HLE CPU fallback drains the whole device (recorder Sync plus vkDeviceWaitIdle) under GpuMutex",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Memory/BufferFill.cpp:192-202",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "VulkanDevice::FillBuffer returns false when:\n- no import serves the range (not one readable Range, allocation not import-aligned, a sticky failure, or over budget);\n- the address is not 16-aligned;\n- or the import retired during its own SyncThrough.\n\nThe fill HLE then calls localDevice->WaitIdle(), which syncs every recorded batch and runs vkDeviceWaitIdle while holding GpuMutex. It then writes the pattern in 1 MiB chunks through GuestMemory::Write, paying the flush hook, CheckRange and StoreOwnBytes on each chunk.",
+   "evidence": "BufferFill.cpp:\n- 121 `std::lock_guard gpuLock(GuestMemory::GpuMutex());`\n- 171 `const bool stored = cleared || localDevice->FillBuffer(base, bytes, pattern);`\n- 192-201 `if (!stored) { ++cpuFills; localDevice->WaitIdle(); ... GuestMemory::Write(base + done, ...)`\n\nVulkanDevice.cpp:\n- 1210-1219 WaitIdle `state->recorder->Sync(); ... vkDeviceWaitIdle`\n- 1380-1381 `import = HostImportFor(...); if (import == nullptr) return false;`\n- 1435-1436 returns false after the import retired",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Each occurrence is a full GPU drain with every worker blocked. Combined with import refusals or a budget overflow it can happen many times per frame. It is rare when all GPU memory is imported.",
+   "proposal": "Replace WaitIdle with targeted ordering:\n- GuestMemory::Write's flush hook already makes pending writers over the range finish (SyncThrough).\n- For write-after-read, call recorder->SyncThrough over the batches whose PendingReadOverlaps(base, bytes) is true when Recorder::ReadTracking() is on; otherwise call recorder->Sync() without vkDeviceWaitIdle.\n\nAlso fix the root cause by getting the range imported (see buffers-sticky-import-refusal and buffers-import-budget).",
+   "effort": "S",
+   "risk": "Low to medium. The CPU store must still follow every recorded GPU reader and writer of the range; recorder Sync() covers this, and vkDeviceWaitIdle adds only waits on work the recorder does not own.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [fill] `N buffer fills (MiB), M stored by the CPU; hold phases ms: ... cpu X`\n- [recorder] sync site table: WaitIdle passes its caller to CountSync(0, return address)\n- [sync] device drains by packet"
+  },
+  {
+   "id": "buffers-writable-image-mirror-compare",
+   "title": "Writable exe-image mirrors are fully memcmp'd on every address-based build, and any pending write inside them triggers a full recorder Sync (Windows)",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:1415-1425",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "On Windows the exe image is MEM_IMAGE and cannot be imported; the comment at 42-49 puts its writable sections at about 15 MiB. On every address-based build, cache hits included, each writable image mirror goes through prepareRange over its whole range, and all of its 64 KiB blocks are compared. compareBlock runs a memcmp of guest bytes against the shadow and, if they differ, two memcpys. RefreshPool spreads this over 3 helper threads plus the caller, but the caller holds GpuMutex the whole time.\n\nprepareRange also:\n- runs FlushGpuWrites over the whole range, which costs flush-hook registry scans;\n- calls recorder->Sync() (a full locked drain) if any recorded work has a pending write anywhere in the range. On Windows, labels in .data/.bss are never imported, so they become AfterCompletions CPU stores that note pending writes.",
+   "evidence": "GuestBufferMemory.cpp:\n- 1419-1424 cache-hit path: `else if (region.mirror->writable && prepareRefresh(...)) appendBlocks(...)`\n- 614-626 `std::memcmp(block.mirror->shadow.data() + offset, guest, block.length) ... memcpy x2`\n- 669 `requested = text != nullptr ? std::atoi(text) : 3;`\n- 733 `GuestMemory::FlushGpuWrites(address, bytes);`\n- 735-738 `if (recorder->PendingWriteOverlaps(address, bytes)) { ... recorder->Sync(); }`\n\nVulkanDevice.cpp:1292-1298: a label without an import goes to `recorder.AfterCompletions`. Recorder.cpp:2707 `noteWriteOn(batch, address, bytes.size(), true)`. On Linux the writable image is remapped anonymously and imported (GuestAllocations.cpp:73-101).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "About 240 blocks (15 MiB) are compared per BDA build, roughly 0.5-1.5 ms with 4 threads, under the global lock and multiplied by the number of BDA builds per frame. Any pending label in the exe's data turns each such build into a full GPU drain. This applies to Windows hosts only.",
+   "proposal": "1. (S) In prepareRange, call recorder->SyncThrough(address, bytes) instead of Sync(), so the wait covers only batches up to the newest writer of the range.\n2. (M) Memoize the refresh of each writable image mirror per collect epoch (GuestMemory::BumpCollectEpoch, per packet) or per recorder submission. Skip the compare when no driver store (StoreOwnBytes/MarkWritten) hit the range since then. This approximates GPU-time reads the same way today's record-time snapshot does.\n3. (M/L) On Windows, track writes to the writable image (guard pages/VEH) so the heap-mirror ChangedBlocks path can replace the memcmp.",
+   "effort": "M",
+   "risk": "Step 1 is low risk. Step 2 relaxes freshness within one packet or submission: CPU writes made concurrently during recording may be missed. That is already a race on hardware, but it should be gated behind a switch first.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [address] `us per build: ... mirror prepare X, compare Y (N blocks, M copied)`\n- [buffers] image mirrors `refreshes: blocks compared, copied, refresh syncs N`\n- [recorder] sync site table, source 4"
+  },
+  {
+   "id": "buffers-heap-mirror-per-block",
+   "title": "Each non-importable registered heap block becomes its own heap mirror, refreshed one by one on every BDA build",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:776-806",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "For BDA builds, every readable registered range that is not imported becomes a mirror, and releasable ranges become heap mirrors. Guest malloc blocks are registered one by one at raw+16. Their base is therefore never aligned to minImportedHostPointerAlignment, so each block gets its own heap mirror: a Buffer with its own VkDeviceMemory, plus a generations vector.\n\nEvery BDA build, cache hit or not, then runs refreshHeapMirrors. It sorts the mirrors, groups them into contiguous runs (malloc blocks are never contiguous because of their headers) and, for each run, calls:\n- prepareRange: Accessible (a syscall on Linux), the flush hook, and PendingWriteOverlaps, which can trigger a full Sync;\n- CollectWrites;\n- ChangedBlocks for each mirror, under the write-tracker mutex.\n\nsweepMirrors then scans every mirror under the mirror mutex. When a Range is replaced, the mirror is rebuilt by re-reading the whole range. The heap mirror budget is 24 GiB of host-visible memory, and the process aborts past it.",
+   "evidence": "GuestBufferMemory.cpp:\n- 1466-1475 `region.mirror = acquireMirror(context, range, blocks, range->releasable);`\n- 344 alignment refusal\n- 783 `while (last < mirrors.size() && mirrors[last]->base == mirrors[last - 1]->base + mirrors[last - 1]->bytes) ++last;`\n- 786-792 prepareRange, CollectWrites, ChangedBlocks per mirror\n- 852 `std::make_shared<Buffer>(context, range->bytes, ...)`\n- 864 `GuestMemory::Read(range->address, mirror->buffer->Bytes())`\n- 889-901 sweepMirrors\n- 587-593 `APS5_HEAP_MIRROR_MIB ... 24576`\n- 849 heapMirrorFatal\n\nGuestHeap.cpp:207-212 `address = alignUp(raw + HeaderBytes, alignment); mutation.Add(pointer, bytes, true, true)`.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "The fixed per-mirror CPU work (syscall, locks, write-watch query) multiplies with the number of registered heap blocks and with the number of BDA builds per frame, all under GpuMutex. It also uses up VkDeviceMemory allocation slots, which are limited to 4096 on NVIDIA Windows.",
+   "proposal": "1. Mirror, or better import, at the granularity of the containing page-aligned arena block (GuestHeap spans are 1 MiB; large blocks are 64 KiB-granular) instead of per Range. The BDA table entries for each registered block then point into the shared span import or mirror with an offset, and permissions still come from the per-Range entries.\n2. Short term: in refreshHeapMirrors, merge mirrors that share a 64 KiB block run into one hull, with one prepareRange, one CollectWrites and one ChangedBlocks per hull.",
+   "effort": "M",
+   "risk": "Medium. Spans contain unregistered bytes (headers, free blocks); the BDA permissions per Range still prevent access to them. Import identity checks (sameRange) would need span keys.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [buffers] image mirrors `N ranges (X MiB, W writable, H heap Y MiB) ... heap refills, unwatched heaps`\n- [address] `mirror prepare X us` per build\n- [bufferpool] large-tier misses"
+  },
+  {
+   "id": "buffers-import-budget",
+   "title": "The 6 GiB host-import budget is below a PS5 title's mapped memory, and overflow falls back to copies, mirrors, device drains and BDA faults",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:345-365",
+   "category": "upload-readback",
+   "mechanism": "Imports stop at APS5_HOST_IMPORT_MIB, 6144 MiB by default. PS5 titles can map about 12.5 GiB of direct and flexible memory. Past the budget:\n- descriptor regions are CPU-copied on every build;\n- BDA builds get heap mirrors (host-visible, up to APS5_HEAP_MIRROR_MIB=24576, abort past it);\n- the fill HLE drains the device;\n- the copy HLE gives up and runs its kernel as a dispatch;\n- BDA stores into these ranges throw.\n\nThe refusal message prints at most every 10 s. The live total is recomputed by iterating all imports on every new import.",
+   "evidence": "GuestBufferMemory.cpp:\n- 348-351 `std::getenv(\"APS5_HOST_IMPORT_MIB\") ... : 6144ull`\n- 352-353 `for (const auto& [address, existing] : state.imports) live += existing.bytes;`\n- 362 `[gpu] host import budget: ... refused so far`\n- 447-448 a second live loop\n\nBufferCopy.cpp:164 `if (outcome.path == CopyNotImported || ...) return false;`. BdaResources.cpp:265 `past APS5_HOST_IMPORT_MIB`.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "If Astro Bot's registered GPU memory exceeds 6 GiB, every later-imported heap falls onto the slowest paths, which feeds most of the other findings. On a host with enough RAM, raising the budget is a free fix.",
+   "proposal": "1. Default the budget from installed RAM, for example min(physical RAM \u2212 8 GiB, 16 GiB).\n2. Keep a running liveBytes in HostImports, updated by importAllocation, retireImport, refreshImports and ClearHostImports.\n3. Print the first refusal immediately together with the variable to raise.",
+   "effort": "S",
+   "risk": "Low. Pinned memory reduces host RAM headroom. On Windows, imports may then need APS5_WORKING_SET_MIB (VulkanDevice.cpp:864-870).",
+   "howToMeasure": "Look for the stderr line `[gpu] host import budget: X MiB live of Y MiB (APS5_HOST_IMPORT_MIB); N imports (M MiB) refused`. With APS5_TRACE_HOST_IMPORT=1, each import prints `ok (N live, X MiB live, Y MiB ever)`."
+  },
+  {
+   "id": "buffers-pool-dedicated-allocations",
+   "title": "Each transient per-build buffer has its own VkDeviceMemory, and pool slots are capped at maxMemoryAllocationCount/6",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Resources.cpp:10-58",
+   "category": "allocation-copy",
+   "mechanism": "Every Buffer is its own VkBuffer plus VkDeviceMemory, with vkMapMemory and vkGetBufferDeviceAddress on top. BufferPool only recycles whole allocations, keyed by (capacity, usage, properties). Each build takes:\n- a data buffer per ShaderData/FlattenedSrt binding;\n- a buffer per CPU-copied region;\n- a buffer per GPU-copied region, plus an inputSnapshot for read-only ones;\n- a 16 KiB+ fault buffer per BDA or rect-list build, and a BDA table on a cache miss.\n\nPool slots per tier are min(4096, maxMemoryAllocationCount/6). On NVIDIA Windows (maxMemoryAllocationCount 4096) that is 682 slots per tier, so thousands of transient buffers per frame cause misses: a vkAllocateMemory/vkFreeMemory per buffer (tens of \u00b5s). Every eviction runs a linear min_element over all keys under the pool mutex. Varying usage bits (DEVICE_ADDRESS, TRANSFER_DST) split the keys further.",
+   "evidence": "Resources.cpp:\n- 29 `Check(... vkCreateBuffer ...)`\n- 49 `vkAllocateMemory buffer`\n- 52 `vkMapMemory`\n\nBufferPool.cpp:\n- 21 `maxSlots(std::max<std::size_t>(1, std::min<std::size_t>(MaxSlots(), context.limits.maxMemoryAllocationCount / 6u)))`\n- 91 `std::min_element(tier.free.begin(), tier.free.end(), ...)`\n- 117-122 eviction loop under the mutex\n\nPer-build allocations: ShaderResources.cpp:2316 `std::make_unique<Buffer>(context, size, ...)` (data); GuestBufferMemory.cpp:2289, 2053, 2348, 2361; BdaResources.cpp:126-127 fault buffer plus memset, 195 table.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Allocation churn adds tens of \u00b5s per miss to every build, all under GpuMutex for draws. It is worst on NVIDIA Windows, where the allocation-count cap shrinks the pool.",
+   "proposal": "Add a per-batch linear sub-allocator:\n- A few large, persistently mapped host-visible buffers (HOST_CACHED where the CPU reads back) with all usage bits set (STORAGE|TRANSFER_SRC|TRANSFER_DST|SHADER_DEVICE_ADDRESS).\n- Hand out (VkBuffer, offset) slices aligned to minStorageBufferOffsetAlignment.\n- Recycle a batch's slices all at once when it completes, via recorder.Keep, or after a CommandBatch wait.\n- Use it for data buffers of non-reusable builds, copy regions, input snapshots and fault buffers. Keep BufferPool for long-lived objects (mirrors, tables, cached templates).\n\nBuffer/Descriptor would need an offset member; Descriptor already returns offsets.",
+   "effort": "M",
+   "risk": "Medium. Slice lifetimes must follow batch completion exactly. Reusable cached templates must not keep per-batch slices.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [bufferpool] `small/large/device: hits, misses, evictions, retained`\n- [buffers] uploads line `buffer allocation X ms`\n- [resources] phase totals"
+  },
+  {
+   "id": "buffers-input-snapshot-double-copy",
+   "title": "Read-only GPU-copied regions get a CPU memcpy into an extra buffer plus a GPU copy into another host-visible buffer",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:2352-2375",
+   "category": "allocation-copy",
+   "mechanism": "For a gpuCopy region with no pending writer that is not written, recordGpuCopies:\n1. allocates an inputSnapshot Buffer;\n2. memcpy's the guest bytes into it on the CPU;\n3. keeps it in the batch;\n4. records vkCmdCopyBuffer from inputSnapshot to region->buffer.\n\nBut region->buffer is itself a mapped host-visible buffer (copyBufferProperties(false)), so the CPU could fill it directly. The two global barriers around the copies are recorded either way.",
+   "evidence": "GuestBufferMemory.cpp:\n- 2360-2365 `if (!pendingWriter && !writable) { inputSnapshot = std::make_shared<Buffer>(...); std::memcpy(inputSnapshot->Bytes().data(), reinterpret_cast<const void*>(address), bytes); copySource = inputSnapshot->Handle(); ... recorder->Keep(inputSnapshot);`\n- 2375 `CopyBuffer(context, commands, copySource, copyOffset, region->buffer->Handle(), 0, bytes);`\n- 2053 the region buffer is created with `copyBufferProperties(false)`\n- 1820-1822 `HOST_VISIBLE | HOST_COHERENT`\n- 2333 and 2415 barriers",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "Avoids one pool allocation, one GPU transfer and possibly both barriers for each read-only misaligned constant buffer. This is a cheap stop-gap if buffers-misaligned-gpu-copy is not adopted.",
+   "proposal": "When `!pendingWriter && !writable && region->buffer->Mapped()`, memcpy straight into region->buffer->Bytes() and skip CopyBuffer. Record the leading and trailing barriers only if at least one region in `copies` still needs a GPU copy; a host write before submission is visible without a barrier. Keep the CaptureTrace log.",
+   "effort": "S",
+   "risk": "Low. The CPU read already happens today, only into a different buffer.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, the [buffers] uploads line `copies on the GPU: N regions`. With APS5_PROFILE_GPU, [gputime] StagingIn. With APS5_CAPTURE_TRACE, `copy-input-snapshot` entries."
+  },
+  {
+   "id": "buffers-windows-imports-unwatched",
+   "title": "On Windows every host import is excluded from the write watch, so surface and snapshot validation in GPU memory falls back to byte compares",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:284-291",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "On Windows, decideImportWatch always sets unwatchImports=true; APS5_WRITE_WATCH_IMPORTS and the write-protection probe exist only on Linux. Every import is therefore unwatched, so CollectWrites/UnchangedSince cannot vouch for ranges inside imports, which is nearly all GPU memory.\n\nAs a result, storage-image refresh, texture validation and snapshot reuse fall back to EqualsCommitted, a memcmp of the whole surface against its saved copy. refreshImports also re-runs Unwatch on every import whenever the generation changes, which walks every 64 KiB block.",
+   "evidence": "GuestBufferMemory.cpp:\n- 286-290 `#ifdef _WIN32 ... state.unwatchImports = true; ... \"host imports are compared on Windows ...\"`\n- 1215-1218 `ProbeImportWriteProtection ... probe.failure = \"the Linux write watch\";`\n- 412-413 `if (entry.unwatched) GuestMemory::Unwatch(base, bytes);`\n- 494\n\nTexture.cpp:1229 `GuestMemory::CollectWrites(...)` and 1250 `return GuestMemory::EqualsCommitted(descriptor.baseAddress, original);`. ShaderResources.cpp:365-412 the same pattern for draw snapshots. GuestMemory.cpp:1146-1147 the Windows Unwatch uses `coverage.Exclude`.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "On Windows, every texture or storage-image check in imported memory becomes a memcmp of the surface (MiB per render target) instead of a stamp check. This adds CPU time inside the lock on texture-heavy frames. Not relevant on Linux, where the probe usually keeps imports watched.",
+   "proposal": "1. Port ProbeImportWriteProtection to Windows: create a MEM_WRITE_WATCH scratch region, import it, check GetWriteWatch after a GPU read, and keep imports watched when no driver write lands after the import window. The ImportWindow stamp kind already exists for this.\n2. Let APS5_WRITE_WATCH_IMPORTS=watch work on Windows for A/B testing.\n3. Skip re-Unwatch of imports that are already unwatched.",
+   "effort": "M",
+   "risk": "Medium to high. A wrong probe result means stale textures. Keep the compare as the fallback.",
+   "howToMeasure": "Look for the startup line `[write-watch] host imports are compared on Windows ...`. With APS5_PROFILE_DRAW=1, check the [guestmem] `compare N calls X MiB Y s` and the [texture] lookup outcomes."
+  },
+  {
+   "id": "buffers-fault-buffer-blocks-reuse",
+   "title": "BDA and rect-list builds get a per-build 16 KiB fault buffer, which makes them never reusable",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/BdaResources.cpp:123-128",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Every build with a FaultBuffer binding gets a BdaResources object. That is every BDA build and every rect-list draw (the TessellationControl stage has a fault buffer and no table). Each one:\n- allocates a buffer of FaultBufferBytes = (9+4096)*4 = 16420 bytes, which lands in the 32 KiB pool class;\n- memsets it on every build;\n- scans 4096 words at completion in markWrittenPages.\n\nBecause bda is non-null, NeedsCompletion() is true, so noteReusable bails out and the build is never cached. Every rect-list draw (fullscreen and post passes) therefore rebuilds its descriptor set and upload and registers an OnComplete.",
+   "evidence": "BdaResources.cpp:\n- 126-127 `fault = std::make_unique<Buffer>(context, FaultBufferBytes, ...); std::memset(fault->Bytes().data(), 0, ...)`\n- 281-285 `for (std::uint32_t slot = 0; slot < Abi::WrittenPageSlots; ++slot)`\n\nBdaAbi.hpp:49-53 `WrittenPageSlots = 4096; FaultBufferBytes = (WrittenSlotsWord + WrittenPageSlots) * 4`. ShaderAddressResources.cpp:18 `rectListFault = shader.stage == TessellationControl && tables == 0 && faults == 1`. ShaderResources.cpp:1050 `else if (usesFaultBuffer) bda = std::make_unique<BdaResources>(context);` and 1161 `if (NeedsCompletion() || HoldsLease()) return;`. Draw.cpp:1677-1679 comment: every rect-list draw needs one.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Post-processing and blit passes cannot use the resource cache or draw recipes. Each one pays a full build (descriptor alloc and update, uploads) plus completion work, under GpuMutex.",
+   "proposal": "1. Separate the per-use fault buffer from the cached template: a build whose only completion work is the fault check stays reusable, and each use gets a fresh fault slice (from the batch sub-allocator) bound in a small second descriptor set.\n2. Alternatively, make the rect-list validity check a debug option, since it only diagnoses InvalidRectangle.\n3. Separately, memset only the 9 header words, and have the shader keep a slot count so markWrittenPages scans only the used slots.",
+   "effort": "M",
+   "risk": "Low to medium. Making the check optional loses the InvalidRectangle and loop-guard diagnostics; the second-set approach needs pipeline layout changes.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1: the [draw] per-kind averages (build vs template hit vs BDA), the [rescache] hits and misses, and the number of draws reported as `recorded with completion`."
+  }
+ ],
+ "incompleteOrStubbed": [
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:1213-1218,1246-1251",
+   "what": "ProbeImportWriteProtection and ProbeDmaBufImportWriteProtection are stubs on Windows (they return failure 'the Linux write watch'), and decideImportWatch hard-codes unwatchImports=true there (286-290).",
+   "perfRelevance": "All Windows host imports are compared rather than watched, so texture and snapshot validation in GPU memory falls back to memcmp (see buffers-windows-imports-unwatched)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:1102",
+   "what": "'a guest buffer off the storage buffer offset alignment in a shader without shader data is not implemented': per-element adjustments need push constants or a shader-data buffer.",
+   "perfRelevance": "This is the only real limit on binding misaligned import sub-ranges in place. Today all of them are copied (buffers-misaligned-gpu-copy)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:2490",
+   "what": "Require: 'a guest buffer view in a GPU owner that does not start at a DWORD boundary is not implemented'.",
+   "perfRelevance": "Forces regions to be rounded to dwords (addDescriptorRegion 1632-1633) and constrains in-place binding."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/BdaResources.cpp:279",
+   "what": "'more than 4096 pages stored to through the BDA table in one use are not implemented': the written-page log is fixed at 4096 slots.",
+   "perfRelevance": "Fixes the fault buffer at 16 KiB per build, memset and scanned every time (buffers-fault-buffer-blocks-reuse)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:2567-2572",
+   "what": "storeChanged throws 'aliased writes are not implemented' when the GPU changed bytes in a non-writable direct-memory alias.",
+   "perfRelevance": "Not a performance stub, but it shows write-backs must re-query commitment and writability (DescribeCommitted) for every range."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/include/Draw.hpp:94-106",
+   "what": "Tech debt: two copied-writer registries (VulkanDevice State::copiedWriters and DrawCopiedWriters) that fill, copy, indirect and label code scan linearly. The comment is stale: it still describes opt-in APS5_RECORD_COPIED_DRAWS, but Draw.cpp:1697 now lists by default (APS5_NO_RECORD_COPIED_DRAWS).",
+   "perfRelevance": "Linear scans plus over-listing cause unnecessary GPU syncs (buffers-copied-writers-overlisted)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:1487-1495,849",
+   "what": "Hard aborts instead of degradation: an address-based build copying more than APS5_ADDRESS_COPY_MAX_MIB (64) aborts with FATAL, as does going past the heap mirror budget (APS5_HEAP_MIRROR_MIB=24576).",
+   "perfRelevance": "The sparse per-build copy path, which can copy up to 64 MiB per BDA dispatch, is reachable on the default path when imports are refused."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:1010-1014",
+   "what": "WaitForLeases falls back to std::this_thread::yield() when nothing recorded holds the lease, and the guest thread spins until APS5_PIN_WAIT_MS (60000 ms).",
+   "perfRelevance": "Guest threads can busy-spin in free() while a build in progress holds a lease."
+  }
+ ],
+ "quickExperiments": [
+  {
+   "setting": "APS5_PROFILE_DRAW=1",
+   "expectedEffect": "Measurement only. Prints every 10 s: [address], [address-sync], [buffers] (uploads, CPU-copied regions by granule, image mirrors, staging), [bufferpool], [guestmem] (verify/compare/collect calls and seconds), [fill], [fill-sync], [copy], [indirect], [sync] and [lock]. Together these show which findings dominate.",
+   "risk": "Some timing overhead, and stderr volume."
+  },
+  {
+   "setting": "APS5_TRACE_HOST_IMPORT=1",
+   "expectedEffect": "Prints each import, failure (with /proc/self/maps or VirtualQuery detail) and retire, with live and 'ever' MiB. Fast growth of 'MiB ever' shows import churn; failures show which ranges fall back to copies.",
+   "risk": "Log volume only."
+  },
+  {
+   "setting": "APS5_HOST_IMPORT_MIB=12288",
+   "expectedEffect": "If stderr shows '[gpu] host import budget: ... refused', more guest memory is imported in place. That removes per-build CPU copies, heap mirrors, fill-HLE WaitIdle drains and BDA write faults for those ranges.",
+   "risk": "Pins up to 12 GiB of host RAM; needs at least 32 GB of RAM. On Windows this may also need APS5_WORKING_SET_MIB."
+  },
+  {
+   "setting": "APS5_WORKING_SET_MIB=16384 (Windows only)",
+   "expectedEffect": "If imports fail with '[gpu] host import of ... failed at vkAllocateMemory', raising the working-set minimum lets the driver lock the pages, so ranges are imported instead of copied.",
+   "risk": "A large locked working set reduces memory available to other processes."
+  },
+  {
+   "setting": "APS5_MIRROR_REFRESH_THREADS=7",
+   "expectedEffect": "On Windows with 8 or more cores, the per-BDA-build writable image mirror compare (about 15 MiB) finishes sooner, which shortens GpuMutex holds. The value is clamped to 16; the default is 3.",
+   "risk": "The helper threads compete with game threads for cores, and they help only when at least 8 blocks are compared."
+  },
+  {
+   "setting": "APS5_BDA_TABLE_CACHE_ENTRIES=32",
+   "expectedEffect": "Useful if the [address] line shows many [bda-table] misses with 'hash differs low/heap'. More tables are kept, so fewer ~38 KiB tables are rebuilt and hashed per BDA build.",
+   "risk": "About 38 KiB of host-visible memory per retained table; tables are held weakly."
+  },
+  {
+   "setting": "APS5_NO_SNAPSHOT_CHECK=1",
+   "expectedEffect": "Skips the memcmp of each captured snapshot against live import- or mirror-backed memory in AddSnapshot. Saves CPU per BDA build; the snapshots time appears in the [address] line.",
+   "risk": "Loses only the consistency diagnostic. The region serves the GPU from live memory either way."
+  },
+  {
+   "setting": "APS5_STAGING_POOL_MIB=1024",
+   "expectedEffect": "If [bufferpool] shows device-tier evictions or misses, more device-local staging shadows and detiler scratch buffers are kept, so fewer vkAllocateMemory calls happen per dispatch.",
+   "risk": "Up to 1 GiB of VRAM retained."
+  },
+  {
+   "setting": "APS5_WRITE_WATCH_IMPORTS=watch (Linux only)",
+   "expectedEffect": "If the startup line says imports 'are compared', this keeps them write-watched, so texture and snapshot validation uses stamps instead of full memcmp.",
+   "risk": "The probe found driver writes after the import window, so texture data may be stale. Use for A/B testing only."
+  },
+  {
+   "setting": "Linux kernel >= 6.11 with APS5_NO_PROCMAP_QUERY unset",
+   "expectedEffect": "Avoids the /proc/self/maps open-and-parse path that every guest-memory accessibility check takes on older kernels (there are thousands per frame from the buffer path). Do not set APS5_NO_PROCMAP_QUERY.",
+   "risk": "None. The kernel upgrade is the only cost."
+  }
+ ]
+}
