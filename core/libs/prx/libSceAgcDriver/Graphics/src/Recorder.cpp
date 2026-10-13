@@ -1364,6 +1364,8 @@ VkCommandBuffer Recorder::Commands(VkAccessFlags* coveredAccess, std::source_loc
     // pass's end and the run's trailing barrier go in first (a per-batch run waits for Submit, or
     // for a caller whose ranges overlap a queued store: FlushStores).
     if (open->renderPass.open) endOpenRenderPass(true, nullptr, where);
+    // A detail noted for this call (NotePassEndDetail) never reaches a later pass end.
+    if (!passEndDetail.empty()) passEndDetail.clear();
     if (open->run.open && !LabelRunsPerBatch()) closeStoreRun();
     if (coveredAccess != nullptr) *coveredAccess = open->coveredAccess;
     open->coveredAccess = 0;
@@ -1413,7 +1415,7 @@ void Recorder::LeaveRenderPassOpen(std::uint64_t key, std::uint32_t timing, bool
 
 void Recorder::endOpenRenderPass(bool barrier, const char* why, std::source_location where) {
     auto& pass = open->renderPass;
-    lastPassEnd = {why, where, openPassTarget, GuestMemory::GpuLockThreadTag()};
+    lastPassEnd = {why, where, openPassTarget, GuestMemory::GpuLockThreadTag(), std::exchange(passEndDetail, {})};
     if (open->segmentActive) endSegment(*open);
     EndRenderPass(context, open->commands);
     // The pass's attachment and shader writes are visible to everything recorded after it (the
@@ -1826,9 +1828,9 @@ void reportBarriers() {
         }
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         std::string text;
-        for (std::size_t i = 0; i < sorted.size() && i < 48; ++i) {
+        for (std::size_t i = 0; i < sorted.size() && i < 96; ++i) {
             const auto& [target, same, why] = *sorted[i].second;
-            char entry[160];
+            char entry[320];
             std::snprintf(entry, sizeof(entry), " 0x%llx<-%s %s x%llu", static_cast<unsigned long long>(target), same ? "same" : "other", why.c_str(), static_cast<unsigned long long>(sorted[i].first));
             text += entry;
         }
@@ -2463,16 +2465,19 @@ bool Recorder::PassBreaks() {
 }
 
 void Recorder::CountPassBegin(std::uint64_t target) {
-    const auto previous = lastPassEnd;
+    const auto previous = std::move(lastPassEnd);
     openPassTarget = target;
-    lastPassEnd = {"no pass ended", {}, target, 0};
+    lastPassEnd = {"no pass ended", {}, target, 0, {}};
     if (!PassBreaks()) return;
-    // "why file:line" (the internal reason and the caller that ended the pass), plus the ending
-    // thread's queue tag when it is not the one beginning this pass.
+    // An upload ending this pass tells a write stamp made since its begin from an older one.
+    passBeginStamp = GuestMemory::TrackerGeneration();
+    // "why file:line detail" (the internal reason, the caller that ended the pass and the detail it
+    // noted), plus the ending thread's queue tag when it is not the one beginning this pass.
     std::string file = previous.where.file_name();
     if (const auto slash = file.find_last_of("/\\"); slash != std::string::npos) file.erase(0, slash + 1);
     std::string why = previous.why != nullptr ? previous.why : "";
     if (previous.where.line() != 0) why += (why.empty() ? "" : " ") + file + ":" + std::to_string(previous.where.line());
+    if (!previous.detail.empty()) why += (why.empty() ? "" : " ") + previous.detail;
     if (previous.where.line() != 0 && previous.queue != GuestMemory::GpuLockThreadTag()) {
         char tag[32];
         std::snprintf(tag, sizeof(tag), " [q 0x%x]", previous.queue);

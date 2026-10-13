@@ -1999,6 +1999,26 @@ constexpr std::uint64_t GenerationBaselineBytes = 1ull << 20;
 
 void StorageTexture::upload(const std::vector<bool>* layers) {
     CaptureTrace::Log("upload image=%llx bytes=%llu generation=%llu reason=%s partial=%d", static_cast<unsigned long long>(descriptor.baseAddress), static_cast<unsigned long long>(guestBytes), static_cast<unsigned long long>(generation), uploadReason, layers != nullptr);
+    // APS5_PASS_BREAKS: what the [passes] line says when this upload's Commands() ends the open
+    // render pass (after the upload reason): the surface, its layout, whether a write stamp over the
+    // selected units is newer than the pass's begin ("in-pass") or not ("old"), and whether their
+    // own bytes were stored over since their generation ("own") or only a 64 KiB block they share
+    // was stamped ("false-share"; StoredOver, conservative: unknown pieces count as stored). Taken
+    // before the upload stamps its units.
+    std::string passDetail;
+    if (Recorder::PassBreaks()) {
+        if (const auto* active = Recorder::Active(); active != nullptr && active->PassOpen()) {
+            bool inPass = false, own = false;
+            for (std::uint32_t layer = 0; layer < trackedLayers; ++layer) {
+                if (layers != nullptr && !(*layers)[layer]) continue;
+                inPass = inPass || GuestMemory::NewestStamp(layerBegin(layer), static_cast<std::size_t>(layerBytes(layer))) > active->PassBeginStamp();
+                own = own || GuestMemory::StoredOver(layerBegin(layer), static_cast<std::size_t>(layerBytes(layer)), layerGeneration[layer]);
+            }
+            char text[160];
+            std::snprintf(text, sizeof(text), " @%llx+%llx %ux%u format %u tile %d %s %s %s", static_cast<unsigned long long>(descriptor.baseAddress), static_cast<unsigned long long>(guestBytes), descriptor.width, descriptor.height, descriptor.format, static_cast<int>(descriptor.tileMode), blockUnits ? "block-units" : "layer-units", inPass ? "in-pass" : "old", own ? "own" : "false-share");
+            passDetail = text;
+        }
+    }
     const bool profile = LookupOutcomes::Profiled();
     const auto start = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto elementBytes = BytesPerElement(descriptor.format);
@@ -2053,6 +2073,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
         VkCommandBuffer commands = VK_NULL_HANDLE;
         auto timing = Recorder::NoTiming;
         if (recorder != nullptr) {
+            if (!passDetail.empty()) recorder->NotePassEndDetail(uploadReason + passDetail);
             commands = recorder->Commands();
             timing = recorder->BeginGpuTiming(Recorder::CommandClass::DccClear);
             if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
@@ -2109,7 +2130,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
                 forgetBorrowed(0, trackedLayers);
                 runs.emplace_back(0, guestBytes);
             }
-            const auto uploadedBytes = uploadWindows(*import, runs, layers == nullptr && version == 0);
+            const auto uploadedBytes = uploadWindows(*import, runs, layers == nullptr && version == 0, passDetail);
             countStorageUpload(1, uploadedBytes);
             if (layers != nullptr) {
                 partialUploads.fetch_add(1, std::memory_order_relaxed);
@@ -2139,6 +2160,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
         if (recorder != nullptr) {
             // A queued label store in the surface lands before the detile reads it.
             recorder->FlushStoresOverlapping(descriptor.baseAddress, static_cast<std::size_t>(guestBytes));
+            if (!passDetail.empty()) recorder->NotePassEndDetail(uploadReason + passDetail);
             commands = recorder->Commands();
             timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageUpload);
             if (linear) recorder->Keep(linear, linear->Size());
@@ -2461,7 +2483,7 @@ void StorageTexture::recordDirectUploadDone(VkCommandBuffer commands) {
     context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &written);
 }
 
-std::uint64_t StorageTexture::uploadWindows(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> runs, bool discard) {
+std::uint64_t StorageTexture::uploadWindows(const HostImport& import, std::span<const std::pair<std::uint64_t, std::uint64_t>> runs, bool discard, const std::string& passDetail) {
     const auto elementBytes = BytesPerElement(descriptor.format);
     // Each run's pieces by source (a unit shadow's slab while fresh, else the import), the tail
     // blocks moved whole by one window each; the windows are built per piece.
@@ -2516,6 +2538,7 @@ std::uint64_t StorageTexture::uploadWindows(const HostImport& import, std::span<
         }
         // A queued label store in a run lands before the detile reads it.
         for (const auto& [begin, end] : reads) recorder->FlushStoresOverlapping(begin, static_cast<std::size_t>(end - begin));
+        if (!passDetail.empty()) recorder->NotePassEndDetail(uploadReason + passDetail);
         commands = recorder->Commands();
         timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageUpload);
         if (linear) recorder->Keep(linear, linear->Size());

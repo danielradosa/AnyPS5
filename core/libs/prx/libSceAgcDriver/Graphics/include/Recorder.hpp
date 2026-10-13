@@ -17,6 +17,7 @@
 #include <optional>
 #include <source_location>
 #include <span>
+#include <string>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
@@ -73,6 +74,13 @@ public:
     // pass had the same target; the [passes] line lists the counts every 10 s.
     static bool PassBreaks();
     void CountPassBegin(std::uint64_t target);
+    // For the [passes] line: whether a draw left its render pass open, the write-tracker generation
+    // its begin saw (GuestMemory::TrackerGeneration, read under APS5_PASS_BREAKS only), and a detail
+    // the caller gives the pass end its next Commands() makes (appended to the reason; dropped when
+    // that call ends no pass).
+    bool PassOpen() const { return open != nullptr && open->renderPass.open; }
+    std::uint64_t PassBeginStamp() const { return passBeginStamp; }
+    void NotePassEndDetail(std::string detail) { if (PassOpen()) passEndDetail = std::move(detail); }
     void LeaveRenderPassOpen(std::uint64_t key, std::uint32_t timing, bool fenced, const PassAccess& access, std::function<void(VkCommandBuffer)> afterPass = {});
     // DCC "uncompressed" key stores (DccMetadata.cpp StoreUncompressedOnGpu): queued on the open
     // batch and recorded as one run (one barrier pair for every queued fill) at Submit, before a
@@ -745,8 +753,11 @@ private:
         std::source_location where{};
         std::uint64_t target = 0;
         std::uint32_t queue = 0;
+        std::string detail;
     } lastPassEnd;
     std::uint64_t openPassTarget = 0;
+    std::uint64_t passBeginStamp = 0;
+    std::string passEndDetail;
     // Records the queued key stores as one run (`forWriter`: before a command writing, reading or
     // labelling over one, not at Submit).
     void recordKeyStores(bool forWriter, const char* why = "key stores", std::source_location where = std::source_location::current());
