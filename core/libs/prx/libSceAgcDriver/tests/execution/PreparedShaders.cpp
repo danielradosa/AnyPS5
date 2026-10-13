@@ -200,7 +200,11 @@ void FailureCapture(AgcDriver::VulkanDevice& device) {
 #else
     Require(unsetenv("APS5_DUMP_SHADERS") == 0, "cannot disable shader capture");
 #endif
-    Require(failure([&] { static_cast<void>(AgcDriver::DriverDetail::PrepareShaderWithDiagnostics(request)); }) == expected, "disabled shader capture changed the preparation failure");
+    std::ostringstream prefix;
+    prefix << "shader 0x" << std::hex << request.shader.codeAddress << " stage " << static_cast<unsigned>(request.shader.stage) << ": ";
+    const auto diagnosed = failure([&] { static_cast<void>(AgcDriver::DriverDetail::PrepareShaderWithDiagnostics(request)); });
+    Require(diagnosed.rfind(prefix.str(), 0) == 0, "diagnosed failure names no shader address and stage");
+    Require(diagnosed.substr(prefix.str().size()) == expected, "diagnosed failure changed the reason");
     Require(!std::ifstream(path, std::ios::binary).is_open(), "disabled shader capture created a request");
 #ifdef _WIN32
     Require(_putenv_s("APS5_DUMP_SHADERS", "1") == 0, "cannot enable shader capture");
@@ -208,12 +212,14 @@ void FailureCapture(AgcDriver::VulkanDevice& device) {
     Require(setenv("APS5_DUMP_SHADERS", "1", 1) == 0, "cannot enable shader capture");
 #endif
     const auto actual = failure([&] { static_cast<void>(AgcDriver::DriverDetail::PrepareShaderWithDiagnostics(request)); });
+    std::ostringstream dumpedPrefix;
+    dumpedPrefix << "shader 0x" << std::hex << request.shader.codeAddress << " stage " << static_cast<unsigned>(request.shader.stage) << " (" << path << "): ";
+    Require(actual == dumpedPrefix.str() + expected, "enabled shader capture changed the diagnosed failure");
 #ifdef _WIN32
     Require(_putenv_s("APS5_DUMP_SHADERS", saved.c_str()) == 0, "cannot restore shader capture");
 #else
     Require((previous != nullptr ? setenv("APS5_DUMP_SHADERS", saved.c_str(), 1) : unsetenv("APS5_DUMP_SHADERS")) == 0, "cannot restore shader capture");
 #endif
-    Require(actual == expected, "shader capture changed the preparation failure");
     std::ifstream file(path, std::ios::binary);
     std::ostringstream text;
     text << file.rdbuf();
@@ -471,10 +477,12 @@ void Registration(bool indirect) {
     Shader copy = header.shader;
     copy.user_data = reinterpret_cast<ShaderUserData*>(&copy);
     AgcDriverResolveShaderAbi_nid_postfix(&copy, {}, {});
-    alignas(Shader) std::array<std::byte, sizeof(Shader)> padded{};
-    std::memcpy(padded.data(), &copy, sizeof(Shader));
+    alignas(Shader) std::array<std::byte, sizeof(Shader) + 4> padded{};
+    auto* unaligned = padded.data() + 4;
+    Require(reinterpret_cast<std::uintptr_t>(unaligned) % alignof(Shader) != 0, "shader ABI test header is unexpectedly aligned");
+    std::memcpy(unaligned, &copy, sizeof(Shader));
     padded.back() = std::byte{0x7d};
-    AgcDriverResolveShaderAbi_nid_postfix(reinterpret_cast<Shader*>(padded.data()), {}, {});
+    AgcDriverResolveShaderAbi_nid_postfix(reinterpret_cast<Shader*>(unaligned), {}, {});
     copy.target ^= 1u;
     ExpectFailure([&] { AgcDriverResolveShaderAbi_nid_postfix(&copy, {}, {}); }, "replaced shader header");
     header.registers[1].value |= 0x100u;
@@ -523,6 +531,54 @@ void Registration(bool indirect) {
     ExpectFailure([] { AgcDriverWaitIdle_nid_postfix(); }, "");
     ExpectFailure([] { AgcDriverShutdown_nid_postfix(); }, "");
     Require(destination == 0, "failed dispatch executed a subsequent memory write");
+}
+
+void RegisteredVertexWorkgroup(const ShaderRecompiler::SpirvTarget& target, bool registrationOnly = false) {
+    if (!registrationOnly && ((target.subgroupSize != 32u && target.subgroupSize != 64u) || std::find(target.supportedCapabilities.begin(), target.supportedCapabilities.end(), spv::CapabilityMeshShadingEXT) == target.supportedCapabilities.end())) {
+        std::cout << "registered NGG wave64 preparation not run: requires mesh shading and a 32- or 64-lane host subgroup; subgroup=" << target.subgroupSize << '\n';
+        return;
+    }
+    alignas(256) static constexpr std::array<std::uint32_t, 8> code{
+        0xd8340000u, 0u, 0xd7600000u, 0x00017f05u, 0x7e020200u, 0xf80008cfu, 0x04030201u, 0xbf810000u
+    };
+    struct Header {
+        Shader shader{};
+        std::array<ShaderRegister, 4> registers{};
+        std::array<ShaderRegister, 3> context{{{0x1ff, 64}, {0x2ab, 4}, {0x2ce, 0}}};
+        ShaderSpecialRegs specials{{0x25b, 0x8040}, {0x2d5, 0x2000}, 0, {}, {}, {0x29b, 2}, {0x260, 0}};
+        ShaderUserData userData{};
+    } header;
+    const auto address = reinterpret_cast<std::uintptr_t>(code.data());
+    header.shader.file_header = 0x34333231u;
+    header.shader.version = 0x18;
+    header.shader.header_size = sizeof(header);
+    header.shader.shader_size = sizeof(code);
+    header.shader.code = code.data();
+    header.shader.type = 2;
+    header.shader.user_data = &header.userData;
+    header.shader.sh_registers = header.registers.data();
+    header.shader.num_sh_registers = header.registers.size();
+    header.shader.cx_registers = header.context.data();
+    header.shader.num_cx_registers = header.context.size();
+    header.shader.specials = &header.specials;
+    header.registers = {{{0xc8, static_cast<std::uint32_t>(address >> 8u)}, {0xc9, static_cast<std::uint32_t>(address >> 40u)}, {0x8a, 0x622c0187}, {0x8b, 5u << 19u}}};
+    AgcDriverRegisterShader_nid_postfix(&header.shader);
+    if (registrationOnly) {
+        header.shader.user_data = nullptr;
+        AgcDriverRegisterShader_nid_postfix(&header.shader);
+        header.specials.vgt_shader_stages_en.value = 0;
+        ExpectFailure([&] { AgcDriverRegisterShader_nid_postfix(&header.shader); }, "missing AGC user-data header");
+        header.shader.user_data = &header.userData;
+        if (target.subgroupSize < 64u && std::getenv("APS5_SYNC_SHADER_PREPARE") != nullptr) {
+            ExpectFailure([&] { AgcDriverRegisterShader_nid_postfix(&header.shader); }, "v_readlane_b32 of lane 63 is outside");
+        }
+        std::cout << "registered NGG preparation deferral passed; subgroup=" << target.subgroupSize << '\n';
+        return;
+    }
+    const std::array<ShaderRegister, 1> primitive{{{0x242, 4}}};
+    AgcDriverResolveShaderAbi_nid_postfix(&header.shader, {}, primitive);
+    AgcDriverResolveShaderAbi_nid_postfix(&header.shader, {}, primitive);
+    std::cout << "registered NGG wave64 preparation passed; subgroup=" << target.subgroupSize << '\n';
 }
 
 void DeferredRegistration() {
@@ -585,7 +641,14 @@ void DeferredUndecodableRegistration() {
 
 int main(int argc, char** argv) {
     try {
-        Require(argc == 1 || (argc == 2 && (std::string_view(argv[1]) == "--indirect" || std::string_view(argv[1]) == "--fail-before-registration" || std::string_view(argv[1]) == "--deferred" || std::string_view(argv[1]) == "--deferred-undecodable")), "invalid test arguments");
+        Require(argc == 1 || (argc == 2 && (std::string_view(argv[1]) == "--indirect" || std::string_view(argv[1]) == "--fail-before-registration" || std::string_view(argv[1]) == "--deferred" || std::string_view(argv[1]) == "--deferred-undecodable" || std::string_view(argv[1]) == "--registered-workgroup")), "invalid test arguments");
+        if (argc == 2 && std::string_view(argv[1]) == "--registered-workgroup") {
+            const auto device = OpenVulkanTestDevice();
+            if (!device) return VulkanTestSkipped;
+            RegisteredVertexWorkgroup(device->Target(), true);
+            AgcDriverShutdown_nid_postfix();
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--deferred") {
             if (!OpenVulkanTestDevice()) return VulkanTestSkipped;
             DeferredRegistration();
@@ -601,6 +664,7 @@ int main(int argc, char** argv) {
         auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
         Run(*device);
+        RegisteredVertexWorkgroup(device->Target());
         FailureCapture(*device);
         PendingRegistrationPreparation(*device);
         Require(argc != 2 || std::string_view(argv[1]) != "--fail-before-registration", "injected failure before registration");

@@ -1,0 +1,9 @@
+# libSceSystemGesture technical debt
+
+### Silent stubs
+
+- [libSceSystemGesture](../../../core/libs/prx/libSceSystemGesture/Export.cpp) - the recognizers accept every call but never report a touch or primitive event, so a title that builds its touch UI on them sees no tap or drag even though libScePad reports touchpad contacts; lookups by event or primitive ID find nothing and `sceSystemGestureGetTouchRecognizerInformation` reports `updated_time` 0
+
+### Unknown function info
+
+- [sceSystemGestureGetTouchEventByEventID, sceSystemGestureGetPrimitiveTouchEventByPrimitiveID, sceSystemGestureGetTouchRecognizerInformation](../../../core/libs/prx/libSceSystemGesture/Export.cpp) (libSceSystemGesture) - signatures, the information layout, the null checks, zeroing the event on a failed lookup, the null-rectangle error of `sceSystemGestureUpdateTouchRecognizerRectangle` and `EVENT_DATA_NOT_FOUND` `0x80890005` follow [KytyPS5](https://github.com/KytyPS5/KytyPS5/blob/62643c3424c0b0f73261785af879d9288127683d/src/libs/libSystemService.cpp); the Vita libSceSystemGesture error list ([vitasploit](https://github.com/Sorvigolova/vitasploit/blob/master/include/FW_200_320/errors.js)) has the same name and value. KytyPS5 also puts `INVALID_ARGUMENT` (`0x80890001`) and `INVALID_HANDLE` (`0x80890006`) in facility `0x8089`, while this file keeps the unsourced `0x80D10002`/`0x80D10003`/`0x80D10005` from before. The type and rectangle are kept in the opaque recognizer from `sceSystemGestureCreateTouchRecognizer` and `sceSystemGestureUpdateTouchRecognizerRectangle`; the unit and source of `updated_time` are unknown. The rectangle reported for a recognizer created without one is unknown, so that case throws, as does a recognizer not created by `sceSystemGestureCreateTouchRecognizer`

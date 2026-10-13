@@ -68,6 +68,13 @@ extern "C" std::uint64_t AgcDriverWorkloadStreamSlot_nid_no_patch(std::uint32_t 
 
 extern "C" {
 
+bool AgcDriverWorkloadStreamRegistered_nid_postfix(uint32_t streamId) {
+    if (!validWorkloadStream(streamId)) return false;
+    auto& streams = workloadStreams();
+    std::lock_guard lock(streams.mutex);
+    return (streams.registered & (1u << streamId)) != 0;
+}
+
 int APS5_VABI sceAgcDriverRegisterOwner(uint32_t* owner_handle, const char* name) {
     (void)owner_handle;
     (void)name;

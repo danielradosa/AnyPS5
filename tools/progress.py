@@ -13,9 +13,13 @@ ISA = Path(__file__).resolve().parent / "rdna_isa.txt"
 SOURCE = f'https://github.com/{os.environ.get("GITHUB_REPOSITORY", "boykopovar/AnyPS5")}/blob/main'
 DEFINITION = re.compile(r"\bAPS5_VABI\s+(\w+)\s*\([^;{]*\)\s*(?:noexcept\s*)?(?:try\s*)?\{")
 STUB = "NotImplemented_nid_no_patch"
+CALL = re.compile(r"\b(\w+)\s*\(")
 CMAKE_SHARED = re.compile(r'^\s*include\(\s*"?\$\{CMAKE_CURRENT_SOURCE_DIR\}/\.\./([\w.-]+)/[\w.-]+\.cmake"?\s*\)', re.M)
 SOURCE_SHARED = re.compile(r'^\s*#\s*include\s*"prx/([\w.-]+)/[\w./-]+\.cpp"', re.M)
-STUB_WRAPPER = re.compile(r"\bstatic\s+(?:\[\[noreturn\]\]\s+)?[\w:<>,\s*&]+?\s+(\w+)\s*\([^;{]*\)\s*\{")
+STUB_WRAPPER = re.compile(
+    r"^[ \t]*(?:static\s+)?(?:\[\[noreturn\]\]\s+)?(?:(?!APS5_VABI)[\w:<>,\s*&])+?[\s*&]"
+    r"(?!(?:if|while|for|switch|catch|return|else)\b)(\w+)\s*\([^;{]*\)\s*"
+    r"(?:const\s*)?(?:noexcept\s*)?(?:->\s*[\w:<>*&\s]+?)?\{", re.M)
 NON_CODE = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
 DISCARD = re.compile(r"\(void\)\s*\w+\s*;")
 EMPTY_RETURN = re.compile(r"return\s*;")
@@ -91,10 +95,11 @@ def body_end(text, start):
 
 
 def stub_calls(text):
-    calls = [STUB]
+    calls = {STUB}
     for match in STUB_WRAPPER.finditer(text):
-        if STUB in text[match.end() - 1:body_end(text, match.end() - 1)]:
-            calls.append(match.group(1) + "(")
+        body = text[match.end() - 1:body_end(text, match.end() - 1)]
+        if any(call.group(1) == STUB for call in CALL.finditer(body)):
+            calls.add(match.group(1))
     return calls
 
 
@@ -156,7 +161,7 @@ def scan_library(path):
             if name.endswith("_nid_no_patch"):
                 continue
             body = text[match.end() - 1:body_end(text, match.end() - 1)]
-            if any(call in body for call in calls):
+            if any(call.group(1) in calls for call in CALL.finditer(body)):
                 todo.add(name)
                 continue
             done.add(name)
@@ -256,7 +261,7 @@ def squarify(values, x, y, w, h):
 
 
 def cells(count, x, y, w, h):
-    if not count:
+    if not count or w <= 0 or h <= 0:
         return []
     rows = max(1, min(count, round((count * h / w) ** 0.5)))
     result = []
@@ -361,6 +366,7 @@ def summary(libraries, shaders):
         f'<p>The total is the AMD RDNA 1 + RDNA 2 instruction list (<a href="{SOURCE}/tools/rdna_isa.txt">tools/rdna_isa.txt</a>). '
         f'An instruction is implemented when the <a href="{SOURCE}/core/shader/recompiler/RdnaDecoder">decoder</a> recognizes it. '
         f"Decoded opcodes not present in AMD's public list are not counted: {extra}.</p>",
+        '<p><a href="history.html">Progress history</a> (one point per day).</p>',
         "</body></html>",
     ]) + "\n"
 

@@ -30,12 +30,6 @@ constexpr std::int32_t WRITING_MASK_NONE = 0;
 constexpr std::int32_t WRITING_MASK_FORMAT_CHARACTERS = 1;
 constexpr std::uint64_t CHARACTER_FLAG_FORMAT = 1ull << 42;
 constexpr std::uint64_t TEXT_CODES_TAG = 0x5345444F43545854ull;
-constexpr int SYLLABLE_STRING_NON_DETECTION = 0;
-
-bool InSyllableScript(std::uint32_t code) {
-    return (code >= 0x0900 && code <= 0x0FFF) || (code >= 0x1000 && code <= 0x109F) || (code >= 0x1100 && code <= 0x11FF) ||
-        (code >= 0x1780 && code <= 0x17FF) || (code >= 0xA960 && code <= 0xA97F) || (code >= 0xD7B0 && code <= 0xD7FF);
-}
 
 struct TextCodesState {
     std::uint64_t tag;
@@ -99,10 +93,11 @@ struct FontWritingData {
     bool hasCurrentStep = false;
     bool maskFormatCharacters = true;
     bool ownsStorage = false;
+    bool hasRawGlyphMetrics = false;
     FontWritingStep step{};
     FontWritingMetrics metrics{};
     FontGlyphMetrics rawGlyphMetrics{};
-    bool hasRawGlyphMetrics = false;
+    FontWritingLetterStep letterStep{};
 };
 
 static_assert(sizeof(FontWritingData) <= sizeof(FontWriting));
@@ -528,11 +523,12 @@ int APS5_VABI sceFontCharacterGetBidiLevel(const FontTextCharacter* textCharacte
 }
 
 int APS5_VABI sceFontCharacterGetSyllableStringState(const FontTextCharacter* textCharacter, int* syllableStringState) {
-    if (!textCharacter || !syllableStringState) return SCE_FONT_ERROR_INVALID_PARAMETER;
-    if (InSyllableScript(textCharacter->characterCode))
-        throw std::runtime_error("sceFontCharacterGetSyllableStringState: syllable clusters of character code " +
-            std::to_string(textCharacter->characterCode) + " are not segmented");
-    *syllableStringState = SYLLABLE_STRING_NON_DETECTION;
+    if (!textCharacter || !syllableStringState) {
+        if (syllableStringState) *syllableStringState = 0;
+        return SCE_FONT_ERROR_INVALID_PARAMETER;
+    }
+    if (textCharacter->characterCode >= 0x0E00 && textCharacter->characterCode <= 0x0E7F) throw std::runtime_error("libSceFont: sceFontCharacterGetSyllableStringState for Thai syllable clusters is not implemented");
+    *syllableStringState = 0;
     return SCE_FONT_OK;
 }
 
@@ -664,21 +660,22 @@ const FontWritingStep* APS5_VABI sceFontWritingRefersRenderStep(FontWriting* fon
     return &writing->step;
 }
 
-FontTextCharacter* APS5_VABI sceFontWritingRefersRenderStepCharacter(FontWriting* fontWriting, FontWritingLetterStep* letterStep) {
-    if (letterStep) std::memset(letterStep, 0, sizeof(*letterStep));
+FontTextCharacter* APS5_VABI sceFontWritingRefersRenderStepCharacter(FontWriting* fontWriting, const FontWritingLetterStep** pLetterStep) {
+    if (pLetterStep) *pLetterStep = nullptr;
     auto* writing = GetWritingData(fontWriting);
     if (!writing || !writing->hasCurrentStep || !writing->storage || writing->currentIndex >= writing->storage->characters.size()) return nullptr;
-    if (letterStep) {
-        letterStep->x = writing->step.x;
-        letterStep->y = writing->step.y;
-        letterStep->advanceX = writing->step.advanceX;
-        letterStep->advanceY = writing->step.advanceY;
-        letterStep->Components.textsCount = 1;
-        letterStep->Components.textsIndex = static_cast<std::uint32_t>(writing->currentIndex);
-        letterStep->Components.glyphsCount = 1;
-        letterStep->Components.glyphsIndex = static_cast<std::uint32_t>(writing->currentIndex);
-        letterStep->Components.characterTextCount = static_cast<std::uint8_t>(std::max<std::uint32_t>(writing->step.Profile.characterCount, 1));
-    }
+    auto& letterStep = writing->letterStep;
+    letterStep = {};
+    letterStep.x = writing->step.x;
+    letterStep.y = writing->step.y;
+    letterStep.advanceX = writing->step.advanceX;
+    letterStep.advanceY = writing->step.advanceY;
+    letterStep.Components.textsCount = 1;
+    letterStep.Components.textsIndex = static_cast<std::uint32_t>(writing->currentIndex);
+    letterStep.Components.glyphsCount = 1;
+    letterStep.Components.glyphsIndex = static_cast<std::uint32_t>(writing->currentIndex);
+    letterStep.Components.characterTextCount = static_cast<std::uint8_t>(std::max<std::uint32_t>(writing->step.Profile.characterCount, 1));
+    if (pLetterStep) *pLetterStep = &letterStep;
     return &writing->storage->characters[writing->currentIndex];
 }
 

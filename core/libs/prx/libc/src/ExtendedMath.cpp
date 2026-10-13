@@ -48,7 +48,6 @@ long double CheckNeighbor_nid_no_patch(long double from, long double to, long do
 extern "C" {
 
 long double APS5_VABI acosl_nid_postfix(long double value) { return std::acos(value); }
-long double APS5_VABI asinl_nid_postfix(long double value) { return std::asin(value); }
 long double APS5_VABI atanl_nid_postfix(long double value) { return std::atan(value); }
 long double APS5_VABI atan2l_nid_postfix(long double y, long double x) { return std::atan2(y, x); }
 long double APS5_VABI tanl_nid_postfix(long double value) { return std::tan(value); }

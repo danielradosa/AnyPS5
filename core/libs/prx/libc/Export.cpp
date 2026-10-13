@@ -24,4 +24,8 @@ extern "C" {
     throw std::runtime_error(std::string("std::_Atomic_assert: ") + (expression ? expression : "") + " (" + (file ? file : "") + ")");
 }
 
+APS5_EXPORT("H2e8t5ScQGc", libc___cxa_finalize);
+void APS5_VABI libc___cxa_finalize(void* dsoHandle) {
+    CxaFinalize_nid_no_patch(dsoHandle);
+}
 }

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -527,6 +528,10 @@ const char* APS5_VABI _ZNK3sce4Json6String5c_strEv(const String* self) { return 
 bool APS5_VABI _ZNK3sce4Json6String5emptyEv(const String* self) { return self->text->empty(); }
 std::size_t APS5_VABI _ZNK3sce4Json6String6lengthEv(const String* self) { return self->text->size(); }
 bool APS5_VABI _ZNK3sce4Json6StringeqEPKc(const String* self, const char* text) { return text != nullptr && *self->text == text; }
+int APS5_VABI _ZNK3sce4Json6String7compareEPKc(const String* self, const char* text) {
+    if (text == nullptr) throw std::invalid_argument("sce::Json::String::compare: null text");
+    return self->text->compare(text);
+}
 
 void APS5_VABI _ZN3sce4Json5ArrayC1Ev(Array* self) { Construct(*self); }
 void APS5_VABI _ZN3sce4Json5ArrayC1ERKS1_(Array* self, const Array* other) { CopyArray(*self, *other); }
@@ -582,6 +587,11 @@ ObjectIterator* APS5_VABI _ZNK3sce4Json6Object3endEv(ObjectIterator* result, con
 void APS5_VABI _ZN3sce4Json6Object8iteratorD1Ev(ObjectIterator* self) { (void)self; }
 ObjectIterator* APS5_VABI _ZN3sce4Json6Object8iteratorppEv(ObjectIterator* self) { ++self->it; return self; }
 Pair* APS5_VABI _ZNK3sce4Json6Object8iteratordeEv(const ObjectIterator* self) { return &*self->it; }
+Pair* APS5_VABI _ZNK3sce4Json6Object8iteratorptEv(const ObjectIterator* self) { return &*self->it; }
+ObjectIterator* APS5_VABI _ZNK3sce4Json6Object4findERKNS0_6StringE(ObjectIterator* result, const Object* self, const String* key) {
+    result->it = std::find_if(self->items->begin(), self->items->end(), [&](const Pair& pair) { return *pair.key.text == *key->text; });
+    return result;
+}
 bool APS5_VABI _ZNK3sce4Json6Object8iteratorneERKS2_(const ObjectIterator* self, const ObjectIterator* other) { return self->it != other->it; }
 bool APS5_VABI _ZNK3sce4Json6Object5emptyEv(const Object* self) { return self->items->empty(); }
 std::size_t APS5_VABI _ZNK3sce4Json6Object4sizeEv(const Object* self) { return self->items->size(); }
@@ -821,8 +831,9 @@ struct InitParameter2 {
     void* userData;
     std::size_t fileBufferSize;
     SpecialFloatFormatType specialFloatFormatType;
+    std::uint32_t reserved[3];
 };
-static_assert(sizeof(InitParameter2) <= 40);
+static_assert(sizeof(InitParameter2) == 0x28 && offsetof(InitParameter2, specialFloatFormatType) == 0x18);
 
 void APS5_VABI _ZN3sce4Json14InitParameter2C1Ev(InitParameter2* self) {
     *self = {};
@@ -837,24 +848,17 @@ void APS5_VABI _ZN3sce4Json14InitParameter212setAllocatorEPNS0_12MemAllocatorEPv
     self->userData = userData;
 }
 
+void APS5_VABI _ZN3sce4Json18InitParameterRtti216setAllocatorRttiEPNS0_14AllocParamRttiEPv(InitParameter2* self, void* allocParam, void* userData) {
+    self->allocator = allocParam;
+    self->userData = userData;
+}
+
 void APS5_VABI _ZN3sce4Json14InitParameter217setFileBufferSizeEm(InitParameter2* self, std::size_t size) {
     self->fileBufferSize = size;
 }
 
 void APS5_VABI _ZN3sce4Json14InitParameter225setSpecialFloatFormatTypeENS0_22SpecialFloatFormatTypeE(InitParameter2* self, SpecialFloatFormatType format) {
-    if (format != SpecialFloatFormatDefault) throw std::invalid_argument("sce::Json::InitParameter2::setSpecialFloatFormatType: unsupported format");
     self->specialFloatFormatType = format;
-}
-
-struct InitParameterRtti2 {
-    void* allocatorRtti;
-    void* userData;
-};
-static_assert(sizeof(InitParameterRtti2) <= 32);
-
-void APS5_VABI _ZN3sce4Json18InitParameterRtti216setAllocatorRttiEPNS0_14AllocParamRttiEPv(InitParameterRtti2* self, void* allocatorRtti, void* userData) {
-    self->allocatorRtti = allocatorRtti;
-    self->userData = userData;
 }
 
 int APS5_VABI _ZN3sce4Json11Initializer10initializeEPKNS0_14InitParameter2E(void* self, const InitParameter2* parameter) {
@@ -875,6 +879,56 @@ void APS5_VABI _ZN3sce4Json12MemAllocator11notifyErrorEimPv(void* self, int erro
 }
 
 int APS5_VABI _ZN3sce4Json5Value21setNullAccessCallBackEPFRKS1_NS0_9ValueTypeEPS2_PvES6_() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json5Value30setElementAccessFailureHandlerEPFviPKNS0_6StringEPKmPKS1_S8_PvES9_(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json5Value22setSpecialFloatHandlerEPFKS1_NS0_12FunctionTypeEdPS2_PvPbES5_(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json5Value22setTypeMismatchHandlerEPFRKS1_NS0_9ValueTypeEPS2_S5_PvES6_(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZNK3sce4Json5ValuecvbEv(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json6Object4PairD1Ev() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json6Object6insertERKNS1_4PairE() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json5Array8iteratorppEi() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json5Array8iteratoraSERKS2_() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce4Json5Array8iteratorC1Ev() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

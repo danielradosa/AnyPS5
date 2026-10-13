@@ -31,7 +31,6 @@ int APS5_VABI pthread_attr_get_np_nid_postfix(Pthread thread, PthreadAttr* attr)
 
 static constexpr int SCE_OK = 0;
 static constexpr int SCE_KERNEL_ERROR_EINVAL = static_cast<int>(0x80020016);
-static constexpr int GUEST_EINVAL = 22;
 static constexpr int EXPLICIT_SCHED = 0;
 static constexpr int INHERIT_SCHED = 4;
 static constexpr int SCOPE_PROCESS = 0;
@@ -43,6 +42,7 @@ static constexpr KernelCpumask CREATION_AFFINITY = 0x3;
 static constexpr KernelCpumask UPDATED_AFFINITY = 0x1000;
 static constexpr std::size_t STACK_SIZE = 2u << 20;
 static constexpr std::size_t MIN_STACK_SIZE = 16384;
+static constexpr int GUEST_EINVAL = 22;
 static constexpr int GUEST_ENOTSUP = 45;
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -88,6 +88,8 @@ static void CheckStackSizeLimit() {
     Require(scePthreadAttrDestroy(&attr) == SCE_OK);
 }
 
+extern "C" int APS5_VABI scePthreadAttrSetsolosched(PthreadAttr* attr, int solosched);
+
 static void CheckSoloSched() {
     PthreadAttr attr = nullptr;
     Require(pthread_attr_setsolosched_np_nid_postfix(nullptr, 1) == GUEST_EINVAL);
@@ -95,10 +97,21 @@ static void CheckSoloSched() {
     Require(scePthreadAttrInit(&attr) == SCE_OK);
     int soloSched = -1;
     Require(scePthreadAttrGetsolosched(&attr, &soloSched) == SCE_OK && soloSched == 0);
-    Require(pthread_attr_setsolosched_np_nid_postfix(&attr, 1) == 0);
-    Require(scePthreadAttrGetsolosched(&attr, &soloSched) == SCE_OK && soloSched == 1);
+    Require(pthread_attr_setsolosched_np_nid_postfix(&attr, 16) == 0);
+    Require(scePthreadAttrGetsolosched(&attr, &soloSched) == SCE_OK && soloSched == 16);
+    constexpr int GuestEopnotsupp = 45;
+    constexpr int SceKernelErrorEopnotsupp = static_cast<int>(0x8002002Du);
+    for (int rejected : {-1, 1, 2, 4, 8, 15, 17, 32, 100, 0x7fffffff}) {
+        Require(pthread_attr_setsolosched_np_nid_postfix(&attr, rejected) == GuestEopnotsupp);
+        Require(scePthreadAttrSetsolosched(&attr, rejected) == SceKernelErrorEopnotsupp);
+        Require(scePthreadAttrGetsolosched(&attr, &soloSched) == SCE_OK && soloSched == 16);
+    }
     Require(pthread_attr_setsolosched_np_nid_postfix(&attr, 0) == 0);
     Require(scePthreadAttrGetsolosched(&attr, &soloSched) == SCE_OK && soloSched == 0);
+    PthreadAttr unset = nullptr;
+    Require(scePthreadAttrSetsolosched(&unset, 16) == SCE_KERNEL_ERROR_EINVAL);
+    Require(scePthreadAttrSetsolosched(nullptr, 16) == SCE_KERNEL_ERROR_EINVAL);
+    Require(scePthreadAttrGetsolosched(&unset, &soloSched) == SCE_KERNEL_ERROR_EINVAL);
     Require(scePthreadAttrDestroy(&attr) == SCE_OK);
     Require(pthread_attr_setsolosched_np_nid_postfix(&attr, 1) == GUEST_EINVAL);
 }
@@ -242,14 +255,7 @@ int main() {
     Require(scePthreadAttrGet(thread, nullptr) == SCE_KERNEL_ERROR_EINVAL);
     Require(scePthreadAttrInit(&attr) == SCE_OK);
     Require(scePthreadAttrGet(nullptr, &attr) == SCE_KERNEL_ERROR_EINVAL);
-    int solosched = -1;
-    Require(scePthreadAttrGetsolosched(&attr, &solosched) == SCE_OK && solosched == 0);
-    Require(pthread_attr_setsolosched_np_nid_postfix(&attr, 1) == 0);
-    Require(scePthreadAttrGetsolosched(&attr, &solosched) == SCE_OK && solosched == 1);
     Require(scePthreadAttrDestroy(&attr) == SCE_OK);
-    Require(pthread_attr_setsolosched_np_nid_postfix(nullptr, 1) == GUEST_EINVAL);
-    PthreadAttr empty = nullptr;
-    Require(pthread_attr_setsolosched_np_nid_postfix(&empty, 1) == GUEST_EINVAL);
 
     release.set_value();
     Require(scePthreadJoin(thread, nullptr) == SCE_OK);

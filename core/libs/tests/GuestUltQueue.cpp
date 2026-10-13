@@ -47,16 +47,6 @@ static void Require(bool value, int line) {
 
 struct alignas(8) Object { std::array<std::uint8_t, 512> bytes{}; };
 
-template <typename TCall>
-static bool RejectsOptions(TCall call) {
-    try {
-        call();
-    } catch (const std::runtime_error& error) {
-        return std::strstr(error.what(), "option parameters are not implemented") != nullptr;
-    }
-    return false;
-}
-
 struct Fixture {
     Object pool;
     Object first;
@@ -112,11 +102,7 @@ static void Validation() {
     try { sceUltQueueDataResourcePoolGetWorkAreaSize(1, UINT64_MAX, 1); }
     catch (const std::out_of_range&) { overflow = true; }
     CHECK(overflow);
-    Object options;
-    CHECK(RejectsOptions([&] { sceUltQueueCreate(&extra, nullptr, 8, nullptr, &fixture.pool, &options, 0); }));
     CHECK(sceUltQueueTryPop(&extra, &value) == State);
-    CHECK(RejectsOptions([&] { sceUltQueueDataResourcePoolCreate(&extra, nullptr, 1, 8, 1, nullptr, nullptr, &options, 0); }));
-    CHECK(sceUltQueueCreate(&options, nullptr, 8, nullptr, &extra, nullptr, 0) == Invalid);
     overflow = false;
     try { sceUltQueueDataResourcePoolGetWorkAreaSize(UINT32_MAX, UINT64_MAX / 2, 1); }
     catch (const std::out_of_range&) { overflow = true; }
@@ -126,6 +112,14 @@ static void Validation() {
     CHECK(sceUltQueueDestroy(&fixture.first) == State);
     CHECK(sceUltQueueDataResourcePoolDestroy(&fixture.pool) == State);
     fixture.Create(1);
+    fixture.Destroy();
+    std::array<std::uint8_t, 128> optParam{};
+    optParam.fill(0x5A);
+    CHECK(sceUltQueueDataResourcePoolCreate(&fixture.pool, "pool", 1, 8, 1, nullptr, nullptr, optParam.data(), 0) == 0);
+    CHECK(sceUltQueueCreate(&fixture.first, "first", 8, nullptr, &fixture.pool, optParam.data(), 0) == 0);
+    std::uint64_t output = 0;
+    CHECK(sceUltQueuePush(&fixture.first, &value) == 0);
+    CHECK(sceUltQueuePop(&fixture.first, &output) == 0 && output == value);
     fixture.Destroy();
 }
 
@@ -253,13 +247,12 @@ static void Stress() {
 }
 
 static void Versioned() {
-    Object waiting, pool, queue, other, options;
+    Object waiting, pool, queue, other;
     CHECK(sceUltWaitingQueueResourcePoolCreate(&waiting, "waiting", 2, 2, nullptr, nullptr, BuildVersion) == 0);
     CHECK(_sceUltQueueDataResourcePoolCreate(nullptr, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == Null);
     CHECK(_sceUltQueueDataResourcePoolCreate(pool.bytes.data() + 4, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == Alignment);
     CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 0, 1, &waiting, nullptr, nullptr, BuildVersion) == Range);
     CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &other, nullptr, nullptr, BuildVersion) == Invalid);
-    CHECK(RejectsOptions([&] { _sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, nullptr, &options, BuildVersion); }));
     CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == 0);
     CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == State);
     CHECK(_sceUltQueueCreate(nullptr, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == Null);
@@ -268,7 +261,6 @@ static void Versioned() {
     CHECK(_sceUltQueueCreate(&queue, "queue", 9, &waiting, &pool, nullptr, BuildVersion) == Invalid);
     CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &other, nullptr, BuildVersion) == Invalid);
     CHECK(_sceUltQueueCreate(&queue, "queue", 4, nullptr, &pool, nullptr, BuildVersion) == Invalid);
-    CHECK(RejectsOptions([&] { _sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, &options, BuildVersion); }));
     CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == 0);
     CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == State);
     CHECK(_sceUltQueueCreate(&other, "other", 4, &waiting, &pool, nullptr, BuildVersion) == Again);

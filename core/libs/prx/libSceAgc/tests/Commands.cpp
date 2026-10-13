@@ -31,6 +31,12 @@ extern "C" std::uint32_t* APS5_VABI sceAgcCbSetShRegisterRangeDirect(CommandBuff
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbContextStateOp_0100(CommandBuffer* buf, std::uint32_t operation);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbPushMarker(CommandBuffer* buf, const char* str, std::uint32_t color);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbPopMarker(CommandBuffer* buf);
+extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetWorkloadComplete(CommandBuffer* buf, std::uint32_t stream_id, std::uint32_t workload_id);
+extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetWorkloadsActive(CommandBuffer* buf, std::uint32_t stream_id, const std::uint32_t* workload_ids, std::uint32_t workload_count);
+extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetWorkloadStreamInactive(CommandBuffer* buf, std::uint32_t streamId);
+extern "C" std::uint32_t* APS5_VABI sceAgcAcbSetWorkloadsActive(CommandBuffer* buf, std::uint32_t streamId, const std::uint32_t* workloadIds, std::uint32_t workloadCount);
+extern "C" std::uint32_t* APS5_VABI sceAgcAcbSetWorkloadComplete(CommandBuffer* buf, std::uint32_t streamId, std::uint32_t workloadId);
+extern "C" std::uint32_t* APS5_VABI sceAgcAcbSetWorkloadStreamInactive(CommandBuffer* buf, std::uint32_t streamId);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetMarker(CommandBuffer* buf, const char* str, std::uint32_t color);
 extern "C" std::uint32_t* APS5_VABI sceAgcAcbPushMarker(CommandBuffer* buf, const char* str, std::uint32_t color);
 extern "C" std::uint32_t* APS5_VABI sceAgcAcbPopMarker(CommandBuffer* buf);
@@ -42,8 +48,11 @@ extern "C" int APS5_VABI sceAgcAcquireMemSetEngine(std::uint32_t* cmd, std::uint
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetBaseIndirectArgs(CommandBuffer* buf, std::uint32_t shaderType, const volatile void* indirectBaseAddr);
 extern "C" std::uint32_t* APS5_VABI sceAgcSetNop(CommandBuffer* buf, std::uint32_t sizeDw);
 extern "C" int APS5_VABI sceAgcDebugRaiseException(std::uint32_t exceptionId);
+extern "C" std::uint32_t* APS5_VABI sceAgcAcbAtomicGds_0900(CommandBuffer* buf, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData);
 
 namespace {
+
+constexpr int SCE_AGC_ERROR_INVALID_ARGUMENT = static_cast<int>(0x80890001);
 
 void check(bool condition, const char* message) {
     if (!condition) {
@@ -211,6 +220,44 @@ void testMarkers() {
     expectFailure([] { sceAgcAcbSetMarker(nullptr, "frame", 0); });
 }
 
+void testWorkloadStreams() {
+    struct Vector {
+        std::uint32_t streamId;
+        std::uintptr_t workloadIds;
+        std::uint32_t workloadCount;
+        std::uint32_t workloadId;
+    };
+    const std::array<Vector, 3> vectors{{
+        {0x11111111u, 0x22222222u, 0x33333333u, 0x22222222u},
+        {1, 2, 3, 2},
+        {0x22222222u, static_cast<std::uintptr_t>(0x3333333344444444ull), 0, 0x44444444u}}};
+    for (const auto& vector : vectors) {
+        Storage storage;
+        storage.words.fill(0xdeadbeefu);
+        const auto before = storage.words;
+        const auto* ids = reinterpret_cast<const std::uint32_t*>(vector.workloadIds);
+        check(sceAgcDcbSetWorkloadsActive(&storage.buffer, vector.streamId, ids, vector.workloadCount) == nullptr, "DCB workloads active returned a packet for an unregistered stream");
+        check(sceAgcDcbSetWorkloadComplete(&storage.buffer, vector.streamId, vector.workloadId) == nullptr, "DCB workload complete returned a packet for an unregistered stream");
+        check(sceAgcDcbSetWorkloadStreamInactive(&storage.buffer, vector.streamId) == nullptr, "DCB workload stream inactive returned a packet for an unregistered stream");
+        check(sceAgcAcbSetWorkloadsActive(&storage.buffer, vector.streamId, ids, vector.workloadCount) == nullptr, "ACB workloads active returned a packet for an unregistered stream");
+        check(sceAgcAcbSetWorkloadComplete(&storage.buffer, vector.streamId, vector.workloadId) == nullptr, "ACB workload complete returned a packet for an unregistered stream");
+        check(sceAgcAcbSetWorkloadStreamInactive(&storage.buffer, vector.streamId) == nullptr, "ACB workload stream inactive returned a packet for an unregistered stream");
+        check(storage.words == before && storage.buffer.cursor_up == storage.words.data(), "a workload call for an unregistered stream wrote to the buffer");
+    }
+
+    const std::uint32_t ids[2] = {3, 4};
+    Storage exhausted;
+    exhausted.buffer.cursor_down = exhausted.words.data() + 3;
+    const auto before = exhausted.words;
+    check(sceAgcDcbSetWorkloadStreamInactive(&exhausted.buffer, 1) == nullptr && sceAgcAcbSetWorkloadsActive(&exhausted.buffer, 1, ids, 2) == nullptr &&
+        sceAgcAcbSetWorkloadComplete(&exhausted.buffer, 1, 3) == nullptr && sceAgcAcbSetWorkloadStreamInactive(&exhausted.buffer, 1) == nullptr,
+        "a workload call for an unregistered stream on an exhausted buffer returned a packet");
+    check(exhausted.words == before && exhausted.buffer.cursor_up == exhausted.words.data(), "a workload call for an unregistered stream modified an exhausted buffer");
+    check(sceAgcDcbSetWorkloadStreamInactive(nullptr, 1) == nullptr && sceAgcAcbSetWorkloadsActive(nullptr, 1, ids, 2) == nullptr &&
+        sceAgcAcbSetWorkloadComplete(nullptr, 1, 3) == nullptr && sceAgcAcbSetWorkloadStreamInactive(nullptr, 1) == nullptr,
+        "a workload call with a null command buffer returned a packet");
+}
+
 void testIndexBuffer() {
     Storage storage;
     alignas(4) std::uint16_t indices[2]{};
@@ -321,12 +368,21 @@ void testFlip() {
     exhausted.buffer.cursor_down = exhausted.words.data() + 5;
     expectFailure([&] { sceAgcDcbSetFlip(&exhausted.buffer, 1, 0, 1, 0); });
     check(exhausted.buffer.cursor_up == exhausted.words.data(), "failed flip allocation advanced cursor");
+    Storage acb;
+    acb.words.fill(0xdeadbeefu);
+    auto* wait = sceAgcAcbWaitUntilSafeForRendering(&acb.buffer, 0xfedcba98u, 2);
+    const std::array<std::uint32_t, 4> expectedWait{0xc0021018u, 0xfedcba98u, 2, 0};
+    check(wait == acb.words.data() && std::equal(expectedWait.begin(), expectedWait.end(), wait), "compute rendering wait packet mismatch");
+    check(acb.buffer.cursor_up == wait + 4 && wait[4] == 0xdeadbeefu, "compute rendering wait overran allocation");
+    expectFailure([] { sceAgcAcbWaitUntilSafeForRendering(nullptr, 1, 0); });
+    Storage full;
+    full.buffer.cursor_down = full.words.data() + 3;
+    expectFailure([&] { sceAgcAcbWaitUntilSafeForRendering(&full.buffer, 1, 0); });
+    check(full.buffer.cursor_up == full.words.data(), "failed compute rendering wait advanced cursor");
     Storage compute;
-    auto* wait = sceAgcAcbWaitUntilSafeForRendering(&compute.buffer, 0xfedcba98u, 3);
+    auto* computeWait = sceAgcAcbWaitUntilSafeForRendering(&compute.buffer, 0xfedcba98u, 3);
     auto* computeFlip = sceAgcAcbSetFlip(&compute.buffer, 0xfedcba98u, -2, 0x12345678u, -0x123456789abcdefLL);
-    const std::array<std::uint32_t, 4> expectedWait{0xc0021018u, 0xfedcba98u, 3, 0};
-    check(wait == compute.words.data() && std::equal(expectedWait.begin(), expectedWait.end(), wait), "ACB rendering wait packet mismatch");
-    check(computeFlip == wait + 4 && std::equal(expected.begin(), expected.end(), computeFlip), "ACB flip packet differs from the DCB flip");
+    check(computeFlip == computeWait + 4 && std::equal(expected.begin(), expected.end(), computeFlip), "ACB flip packet differs from the DCB flip");
     check(sceAgcSuspendPoint() == 0, "empty suspend failed");
 }
 
@@ -438,6 +494,101 @@ void testMemory() {
     check(acbAcquire[1] == 0u, "ACB acquire mem engine bit was not cleared to 0");
 }
 
+struct AtomicGdsAllocation {
+    Storage storage;
+    std::uint32_t capacity = 15;
+    std::uint32_t calls = 0;
+    bool accepted = true;
+};
+
+bool APS5_VABI growAtomicGds(CommandBuffer* buffer, std::uint32_t count, void* userData) {
+    auto& allocation = *static_cast<AtomicGdsAllocation*>(userData);
+    check(count == 15, "atomic GDS allocation omitted packet or reserved words");
+    ++allocation.calls;
+    if (!allocation.accepted) return false;
+    buffer->bottom = allocation.storage.words.data();
+    buffer->top = buffer->bottom + allocation.capacity;
+    buffer->cursor_up = buffer->bottom;
+    buffer->cursor_down = buffer->top;
+    return true;
+}
+
+void testAtomicGds() {
+    Storage storage;
+    storage.words.fill(0xdeadbeefu);
+    storage.buffer.cursor_up += 2;
+    auto* packet = sceAgcAcbAtomicGds_0900(&storage.buffer, 0xffffffffu, 1, 0xffffffffu, 0xffffffffu,
+        0xabcd, 0xfedc, 0x12345678u, 0x87654321u, 0xfedcba9876543210ull, 0x0123456789abcdefull);
+    const std::array<std::uint32_t, 11> expected{
+        0xc0091d00u, 0x001500ffu, 0x13fu, 0xabcdu, 0xfedcu, 0x00340078u,
+        0x87654321u, 0x76543210u, 0xfedcba98u, 0x89abcdefu, 0x01234567u};
+    check(packet == storage.words.data() + 2, "atomic GDS returned the wrong packet address");
+    check(std::equal(expected.begin(), expected.end(), packet), "atomic GDS packet or guest ABI mismatch");
+    check(storage.buffer.cursor_up == packet + expected.size(), "atomic GDS did not advance by eleven words");
+    check(storage.words[0] == 0xdeadbeefu && storage.words[1] == 0xdeadbeefu &&
+        std::all_of(storage.words.begin() + 13, storage.words.end(), [](auto word) { return word == 0xdeadbeefu; }),
+        "atomic GDS wrote outside its packet");
+
+    const std::array<std::array<std::uint32_t, 3>, 9> controls{{
+        {0, 0, 0}, {0, 1, 0x00020000u}, {0, 2, 0}, {0, 0xffffffffu, 0},
+        {0x20u, 1, 0x00040020u}, {0x40u, 1, 0x00120040u},
+        {0x200u, 1, 0x00030000u}, {0xfffffd00u, 0, 0}, {0xffu, 1, 0x001400ffu}}};
+    for (const auto& entry : controls) {
+        Storage controlStorage;
+        auto* controlPacket = sceAgcAcbAtomicGds_0900(&controlStorage.buffer, entry[0], entry[1],
+            0xfffffffeu, 0xffffffc0u, 0, 0, 0xff00ff00u, 0, 0, 0);
+        std::array<std::uint32_t, 11> controlExpected{};
+        controlExpected[0] = 0xc0091d00u;
+        controlExpected[1] = entry[2];
+        check(std::equal(controlExpected.begin(), controlExpected.end(), controlPacket), "atomic GDS control or field masking mismatch");
+    }
+
+    auto emit = [](CommandBuffer* buffer) {
+        return sceAgcAcbAtomicGds_0900(buffer, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    };
+    Storage exact;
+    exact.buffer.cursor_down = exact.words.data() + 15;
+    exact.buffer.reserved_dw = 4;
+    check(emit(&exact.buffer) == exact.words.data() && exact.buffer.cursor_up == exact.words.data() + 11,
+        "atomic GDS rejected an exact fit with reserved space");
+    const auto exactBefore = exact.words;
+    expectFailure([&] { emit(&exact.buffer); });
+    check(exact.words == exactBefore && exact.buffer.cursor_up == exact.words.data() + 11,
+        "atomic GDS overwrote reserved space");
+    Storage exhausted;
+    exhausted.buffer.cursor_down = exhausted.words.data() + 10;
+    const auto before = exhausted.words;
+    expectFailure([&] { emit(&exhausted.buffer); });
+    check(exhausted.words == before && exhausted.buffer.cursor_up == exhausted.words.data(),
+        "failed atomic GDS allocation modified the buffer");
+    expectFailure([&] { emit(nullptr); });
+
+    Storage noDown;
+    noDown.buffer.top = noDown.words.data() + 11;
+    noDown.buffer.cursor_down = nullptr;
+    check(emit(&noDown.buffer) == noDown.words.data() && noDown.buffer.cursor_up == noDown.buffer.top,
+        "atomic GDS did not honor a buffer with no down cursor");
+
+    AtomicGdsAllocation allocation;
+    CommandBuffer growing{nullptr, nullptr, nullptr, nullptr, growAtomicGds, &allocation, 4};
+    check(emit(&growing) == allocation.storage.words.data() && allocation.calls == 1 &&
+        growing.cursor_up == allocation.storage.words.data() + 11, "atomic GDS did not use the guest allocation callback");
+    const std::array<std::uint32_t, 11> zeroPacket{0xc0091d00u};
+    check(std::equal(zeroPacket.begin(), zeroPacket.end(), allocation.storage.words.begin()),
+        "atomic GDS callback allocation produced the wrong packet");
+    for (const bool accepted : {false, true}) {
+        AtomicGdsAllocation failure;
+        failure.accepted = accepted;
+        failure.capacity = 14;
+        const auto failureBefore = failure.storage.words;
+        CommandBuffer failed{nullptr, nullptr, nullptr, nullptr, growAtomicGds, &failure, 4};
+        expectFailure([&] { emit(&failed); });
+        check(failure.calls == 1 && failure.storage.words == failureBefore &&
+            failed.cursor_up == (accepted ? failure.storage.words.data() : nullptr),
+            "atomic GDS wrote a packet after failed or insufficient allocation");
+    }
+}
+
 void testDebugRaiseException() {
     int result = -1;
     try {
@@ -455,8 +606,10 @@ void testDefaults() {
     expectFailure([] { sceAgcInit_0090(nullptr, 8); });
     expectFailure([&] { sceAgcInit_0090(&state, 14); });
     check(sceAgcInit(8) == 0, "AGC version initialization failed");
-    expectFailure([] { sceAgcInit(14); });
-    expectFailure([] { sceAgcInit(0xffffffffu); });
+    check(sceAgcInit(13) == 0, "AGC version 13 initialization failed");
+    check(sceAgcInit(14) == SCE_AGC_ERROR_INVALID_ARGUMENT, "unsupported AGC version did not return invalid argument");
+    check(sceAgcInit(0xffffffffu) == SCE_AGC_ERROR_INVALID_ARGUMENT, "maximum AGC version did not return invalid argument");
+    check(sceAgcInit(0xffffc278u) == SCE_AGC_ERROR_INVALID_ARGUMENT, "pointer-valued AGC argument did not return invalid argument");
     for (std::uint32_t version = 0; version < 14; ++version) {
         for (const bool internal : {false, true}) {
             auto* first = Agc::Command::GetRegisterDefaults(version, internal, __func__);
@@ -485,6 +638,7 @@ int main(int argc, char** argv) {
         testClearState();
         testIndexedIndirectDraws();
         testMarkers();
+        testWorkloadStreams();
         testIndexBuffer();
         testIndirectBase();
         testContextState();
@@ -493,6 +647,7 @@ int main(int argc, char** argv) {
         testRegisterRange();
         testPacketPayloadAddress();
         testMemory();
+        testAtomicGds();
         testDebugRaiseException();
         testDefaults();
         LibcRunShutdown_nid_postfix();

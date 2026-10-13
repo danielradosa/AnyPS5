@@ -117,6 +117,8 @@ int main() {
     Require(sceNpSessionSignalingGetLocalNetInfo(netContextId, info) == Unavailable, "local net info without network");
     Require(std::memcmp(info, untouched, sizeof(info)) == 0, "failed query modified the info");
 
+    Require(sceNpSessionSignalingGetConnectionStatus(contextId, 1, &status, nullptr, nullptr) == ConnectionNotFound, "connection without peer outputs");
+    Require(status == 0x5a5a5a5a && peerAddress == 0xa5a5a5a5u && peerPort == 0xa5a5, "failed status query wrote an output");
     Require(sceNpSessionSignalingDestroyContext(contextId) == 0, "context destruction failed");
     Require(sceNpSessionSignalingGetConnectionStatus(contextId, 1, &status, nullptr, nullptr) == ContextNotFound, "status of destroyed context");
 

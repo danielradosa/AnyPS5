@@ -1,29 +1,41 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 #include "prx/libc/include/General.hpp"
 #include "Ngs2Internal.hpp"
 
-namespace {
+static constexpr float DEFAULT_SOUND_SPEED = 343.0f;
 
-constexpr float DefaultSoundSpeed = 343.0f;
-
+int Ngs2GeomCalcListener(const Ngs2GeomListenerParam* param, Ngs2GeomListenerWork* outWork, std::uint32_t flags) {
+    if (param == nullptr) APS5_INVALID_ARG_EX;
+    if (outWork == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    if (flags != 0) throw std::runtime_error("NGS2: listener coordinate flags are unsupported");
+    if (param->position.x != 0.0f || param->position.y != 0.0f || param->position.z != 0.0f)
+        throw std::runtime_error("NGS2: listener translation is unsupported");
+    if (param->orient_front.x != 0.0f || param->orient_front.y != 0.0f || param->orient_front.z != 1.0f ||
+        param->orient_up.x != 0.0f || param->orient_up.y != 1.0f || param->orient_up.z != 0.0f)
+        throw std::runtime_error("NGS2: non-default listener orientation is unsupported");
+    if (!std::isfinite(param->velocity.x) || !std::isfinite(param->velocity.y) || !std::isfinite(param->velocity.z)) APS5_INVALID_ARG_EX;
+    if (!std::isfinite(param->sound_speed) || param->sound_speed <= 0.0f) APS5_INVALID_ARG_EX;
+    Ngs2GeomListenerWork work{};
+    for (std::size_t i = 0; i < 4; i++) work.matrix[i][i] = 1.0f;
+    work.velocity = param->velocity;
+    work.sound_speed = param->sound_speed;
+    *outWork = work;
+    return SCE_NGS2_OK;
 }
 
-#pragma GCC visibility push(default)
-
-extern "C" {
-
-int APS5_VABI sceNgs2GeomResetListenerParam(Ngs2GeomListenerParam* out_listener_param) {
+int Ngs2GeomResetListenerParam(Ngs2GeomListenerParam* out_listener_param) {
     if (out_listener_param == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
     *out_listener_param = {};
     out_listener_param->orient_front.z = 1.0f;
     out_listener_param->orient_up.y = 1.0f;
-    out_listener_param->sound_speed = DefaultSoundSpeed;
+    out_listener_param->sound_speed = DEFAULT_SOUND_SPEED;
     return SCE_NGS2_OK;
 }
 
-int APS5_VABI sceNgs2GeomResetSourceParam(Ngs2GeomSourceParam* out_source_param) {
+int Ngs2GeomResetSourceParam(Ngs2GeomSourceParam* out_source_param) {
     if (out_source_param == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
     *out_source_param = {};
     out_source_param->direction.z = 1.0f;
@@ -43,16 +55,9 @@ int APS5_VABI sceNgs2GeomResetSourceParam(Ngs2GeomSourceParam* out_source_param)
     return SCE_NGS2_OK;
 }
 
-int APS5_VABI sceNgs2GeomCalcListener(const Ngs2GeomListenerParam* param, Ngs2GeomListenerWork* out_work, std::uint32_t flags) {
-    if (param == nullptr) APS5_INVALID_ARG_EX;
-    if (out_work == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
-    *out_work = {};
-    for (std::uint32_t index = 0; index < 4; index++) out_work->matrix[index][index] = 1.0f;
-    out_work->velocity = param->velocity;
-    out_work->sound_speed = param->sound_speed > 0.0f ? param->sound_speed : DefaultSoundSpeed;
-    out_work->coordinate = flags & 1u;
-    return SCE_NGS2_OK;
-}
+#pragma GCC visibility push(default)
+
+extern "C" {
 
 int APS5_VABI sceNgs2GeomApply(const Ngs2GeomListenerWork* listener, const Ngs2GeomSourceParam* source, Ngs2GeomAttribute* out_attrib, std::uint32_t flags) {
     (void)flags;

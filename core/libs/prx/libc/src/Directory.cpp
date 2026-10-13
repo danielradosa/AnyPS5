@@ -1,5 +1,6 @@
 #include "prx/libc/include/GuestDirectory.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/FilesystemError.hpp"
 #include <dirent.h>
 #include <cerrno>
 #include <cstring>
@@ -57,6 +58,8 @@ struct Directory {
     std::filesystem::path path;
     GuestDirectoryEntry entry{};
     std::mutex mutex;
+    int descriptor = -1;
+    int (APS5_VABI* closeDescriptor)(int) = nullptr;
     ~Directory() { if (native) CloseNative(native); }
 };
 std::uint8_t DirectoryType(const std::filesystem::path& path) {
@@ -105,7 +108,7 @@ void* APS5_VABI opendir_nid_postfix(const char* path) {
     if (!*path) { errno = 2; return nullptr; }
     try {
         auto directory = std::make_unique<Directory>();
-        directory->path = ResolvePath_nid_no_patch(path);
+        if (const int error = ResolvePathError_nid_no_patch(path, directory->path)) { errno = error; return nullptr; }
         directory->native = OpenNative(directory->path);
         if (!directory->native) { errno = DirectoryError(errno); return nullptr; }
         return directory.release();
@@ -141,9 +144,10 @@ int APS5_VABI readdir_r_nid_postfix(void* handle, GuestDirectoryEntry* entry, Gu
 int APS5_VABI closedir_nid_postfix(void* handle) {
     if (!handle) { errno = 9; return -1; }
     std::unique_ptr<Directory> directory(static_cast<Directory*>(handle));
-    const int result = CloseNative(directory->native);
+    int result = CloseNative(directory->native);
     directory->native = nullptr;
     if (result) errno = DirectoryError(errno);
+    if (directory->closeDescriptor && directory->closeDescriptor(directory->descriptor) != 0) result = -1;
     return result;
 }
 
@@ -152,5 +156,18 @@ void APS5_VABI rewinddir_nid_postfix(void* handle) {
     auto& directory = *static_cast<Directory*>(handle);
     std::lock_guard lock(directory.mutex);
     RewindNative(directory.native);
+}
+
+void* APS5_VABI OpenDescriptorDirectory_nid_no_patch(const char* hostPath, int descriptor, int (APS5_VABI* closeDescriptor)(int)) {
+    try {
+        auto directory = std::make_unique<Directory>();
+        directory->path = std::filesystem::path(reinterpret_cast<const char8_t*>(hostPath));
+        directory->native = OpenNative(directory->path);
+        if (!directory->native) { errno = DirectoryError(errno); return nullptr; }
+        directory->descriptor = descriptor;
+        directory->closeDescriptor = closeDescriptor;
+        return directory.release();
+    } catch (const std::bad_alloc&) { errno = 12; return nullptr; }
+      catch (const std::filesystem::filesystem_error&) { errno = 5; return nullptr; }
 }
 }

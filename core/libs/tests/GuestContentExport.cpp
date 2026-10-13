@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,8 +14,12 @@
 extern "C" int APS5_VABI sceContentExportInit2(const ContentExportInitParam2* init_param);
 extern "C" int APS5_VABI sceContentExportTerm(void);
 extern "C" int APS5_VABI sceContentExportStart(void);
-extern "C" int APS5_VABI sceContentExportFinish(int exportId);
+extern "C" int APS5_VABI sceContentExportFinish(std::int32_t expId);
+extern "C" int APS5_VABI sceContentExportGetProgress(std::int32_t expId);
+extern "C" int APS5_VABI sceContentExportCancel(std::int32_t expId);
 extern "C" int APS5_VABI sceContentExportFromData(int exportId, const ContentExportParam* param, std::size_t contentLength, ContentExportDataProvideFunction dataProvider, void* userData, char* path, std::size_t pathBufLen);
+extern "C" int APS5_VABI sceContentExportFromDataWithThumbnail(std::int32_t expId, const ContentExportParam* param, const ContentExportCallbackParam* contentCallbackParam,
+    const char* thumbnailType, const ContentExportCallbackParam* thumbnailCallbackParam, char* path, std::size_t pathBufferLength);
 extern "C" int APS5_VABI sceContentExportFromFile(int exportId, const ContentExportParam* param, const char* sourcePath, char* path, std::size_t pathBufLen);
 extern "C" int APS5_VABI sceContentExportFromFileWithThumbnail(int exportId, const ContentExportParam* param, const char* sourcePath, const char* thumbnailPath, char* path, std::size_t pathBufLen);
 
@@ -22,11 +27,11 @@ namespace {
 
 void Require(bool value) { if (!value) std::abort(); }
 
-template <typename TAction>
+template <typename TException = std::logic_error, typename TAction>
 bool Throws(TAction action) {
     try {
         action();
-    } catch (const std::logic_error&) {
+    } catch (const TException&) {
         return true;
     }
     return false;
@@ -88,6 +93,14 @@ void WriteAll(const std::filesystem::path& path, const std::string& content) {
 }
 
 int allocator = 0;
+char path[1024]{};
+
+void Export(std::int32_t expId) {
+    ContentExportParam param{};
+    ContentExportCallbackParam content{};
+    ContentExportCallbackParam thumbnail{};
+    sceContentExportFromDataWithThumbnail(expId, &param, &content, "image/png", &thumbnail, path, sizeof(path));
+}
 
 constexpr int ErrorFileNotFound = static_cast<int>(0x809D3011u);
 constexpr int ErrorNotSupportedFormat = static_cast<int>(0x809D3012u);
@@ -102,24 +115,7 @@ ContentExportParam MakeParam(const char* contentType) {
     return param;
 }
 
-}
-
-int main() {
-    ContentExportInitParam2 param{&allocator, &allocator, nullptr, 0x10000, 0, 0};
-    Require(Throws([] { sceContentExportInit2(nullptr); }));
-    Require(Throws([] { sceContentExportTerm(); }));
-    Require(Throws([] { sceContentExportStart(); }));
-    ContentExportInitParam2 missing = param;
-    missing.free_func = nullptr;
-    Require(Throws([&] { sceContentExportInit2(&missing); }));
-    ContentExportInitParam2 reserved = param;
-    reserved.reserved1 = 1;
-    Require(Throws([&] { sceContentExportInit2(&reserved); }));
-    Require(sceContentExportInit2(&param) == 0);
-    Require(Throws([&] { sceContentExportInit2(&param); }));
-    Require(sceContentExportTerm() == 0);
-    Require(Throws([] { sceContentExportTerm(); }));
-
+void ExportFromFilesAndData(const ContentExportInitParam2& param) {
     const std::filesystem::path source = ResolvePath_nid_no_patch("/content_export_test_source.bin");
     const std::filesystem::path thumbnail = ResolvePath_nid_no_patch("/content_export_test_thumbnail.png");
     const std::filesystem::path textThumbnail = ResolvePath_nid_no_patch("/content_export_test_thumbnail.txt");
@@ -210,6 +206,7 @@ int main() {
     Require(sceContentExportFinish(first) == 0);
     Require(Throws([&] { sceContentExportFinish(first); }));
     Require(Throws([&] { sceContentExportFromFile(first, &image, "/content_export_test_source.bin", path, sizeof(path)); }));
+    Require(sceContentExportFinish(second) == 0);
     Require(sceContentExportTerm() == 0);
     Require(sceContentExportInit2(&param) == 0);
     Require(Throws([&] { sceContentExportFromFile(second, &video, "/content_export_test_source.bin", path, sizeof(path)); }));
@@ -226,4 +223,57 @@ int main() {
     std::filesystem::remove(source, error);
     std::filesystem::remove(thumbnail, error);
     std::filesystem::remove(textThumbnail, error);
+}
+
+}
+
+int main() {
+    ContentExportInitParam2 param{&allocator, &allocator, nullptr, 0x10000, 0, 0};
+    Require(Throws([] { sceContentExportInit2(nullptr); }));
+    Require(Throws([] { sceContentExportTerm(); }));
+    Require(Throws([] { sceContentExportStart(); }));
+    Require(Throws([] { sceContentExportFinish(1); }));
+    ContentExportInitParam2 missing = param;
+    missing.free_func = nullptr;
+    Require(Throws([&] { sceContentExportInit2(&missing); }));
+    ContentExportInitParam2 reserved = param;
+    reserved.reserved1 = 1;
+    Require(Throws([&] { sceContentExportInit2(&reserved); }));
+    Require(sceContentExportInit2(&param) == 0);
+    Require(Throws([&] { sceContentExportInit2(&param); }));
+    Require(sceContentExportTerm() == 0);
+    Require(Throws([] { sceContentExportTerm(); }));
+
+    Require(sceContentExportInit2(&param) == 0);
+
+    std::set<int> sessions;
+    for (int i = 0; i < 10; ++i) {
+        int session = sceContentExportStart();
+        Require(session > 0);
+        Require(sessions.insert(session).second);
+    }
+    Require(Throws<std::runtime_error>([] { sceContentExportStart(); }));
+    Require(Throws<std::runtime_error>([] { sceContentExportTerm(); }));
+    int first = *sessions.begin();
+    Require(Throws<std::runtime_error>([&] { sceContentExportGetProgress(first); }));
+    Require(Throws<std::runtime_error>([&] { sceContentExportCancel(first); }));
+    Require(Throws<std::runtime_error>([&] { Export(first); }));
+    Require(path[0] == 0);
+    Require(sceContentExportFinish(first) == 0);
+    Require(Throws<std::invalid_argument>([&] { sceContentExportFinish(first); }));
+    Require(Throws<std::invalid_argument>([&] { sceContentExportGetProgress(first); }));
+    Require(Throws<std::invalid_argument>([&] { sceContentExportCancel(first); }));
+    Require(Throws<std::invalid_argument>([&] { Export(first); }));
+    Require(Throws<std::invalid_argument>([] { sceContentExportFinish(0); }));
+    Require(Throws<std::invalid_argument>([] { sceContentExportFinish(-1); }));
+    sessions.erase(first);
+    int reopened = sceContentExportStart();
+    Require(reopened > 0 && reopened != first);
+    Require(sessions.insert(reopened).second);
+    for (int session : sessions) Require(sceContentExportFinish(session) == 0);
+    Require(sceContentExportTerm() == 0);
+    Require(Throws([] { sceContentExportStart(); }));
+    Require(Throws([&] { sceContentExportFinish(reopened); }));
+
+    ExportFromFilesAndData(param);
 }

@@ -13,7 +13,7 @@ extern "C" {
 int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode);
 int APS5_VABI sceKernelClose(int d);
 std::int64_t APS5_VABI sceKernelWrite(int d, const void* buf, std::size_t nbytes);
-int APS5_VABI sceKernelFcntl(int d, int cmd, std::intptr_t arg);
+int APS5_VABI sceKernelFcntl(int d, int cmd, ...);
 int APS5_VABI open_nid_postfix(const char* path, int flags, int mode);
 int APS5_VABI close_nid_postfix(int d);
 int APS5_VABI pipe_nid_postfix(int* descriptors);
@@ -26,7 +26,7 @@ static void Require(bool value, int line) {
     }
 }
 #define Check(value) Require((value), __LINE__)
-static bool Throws(int d, int cmd, std::intptr_t arg) {
+static bool Throws(int d, int cmd, int arg) {
     try { sceKernelFcntl(d, cmd, arg); } catch (const std::runtime_error&) { return true; }
     return false;
 }
@@ -53,16 +53,26 @@ int main() {
     Check(sceKernelFcntl(fd, GetFl, 0) == (SCE_KERNEL_O_RDWR | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_NONBLOCK));
     Check(sceKernelFcntl(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT) == 0);
     Check(sceKernelFcntl(fd, GetFl, 0) == (SCE_KERNEL_O_RDWR | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT));
+#ifdef _WIN32
     Check(Throws(fd, SetFl, 0));
+#else
+    Check(sceKernelFcntl(fd, SetFl, 0) == 0);
+    Check(sceKernelFcntl(fd, GetFl, 0) == SCE_KERNEL_O_RDWR);
+    Check(sceKernelFcntl(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT) == 0);
+#endif
     Check(Throws(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_FSYNC));
-    Check(Throws(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_ASYNC));
     Check(sceKernelFcntl(fd, GetFl, 0) == (SCE_KERNEL_O_RDWR | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT));
-    Check(Throws(fd, 0, 0));
-    Check(Throws(fd, 11, 0));
+    Check(sceKernelFcntl(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_ASYNC) == 0);
+    Check(sceKernelFcntl(fd, GetFl, 0) == (SCE_KERNEL_O_RDWR | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_ASYNC));
+    const int duplicate = sceKernelFcntl(fd, 0, 0);
+    Check(duplicate >= 0);
+    Check(sceKernelFcntl(duplicate, GetFl, 0) == (SCE_KERNEL_O_RDWR | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_ASYNC));
+    Check(sceKernelClose(duplicate) == 0);
+    Check(sceKernelFcntl(fd, 11, nullptr) == SCE_KERNEL_ERROR_EFAULT);
     Check(sceKernelWrite(fd, "45", 2) == 2);
     Check(sceKernelClose(fd) == 0);
     Check(std::filesystem::file_size(file) == 6);
-    Check(Throws(fd, GetFl, 0));
+    Check(sceKernelFcntl(fd, GetFl, 0) == SCE_KERNEL_ERROR_EBADF);
 
     const int closeOnExec = sceKernelOpen(file.c_str(), SCE_KERNEL_O_RDONLY | SCE_KERNEL_O_CLOEXEC, 0);
     Check(closeOnExec >= 0);
@@ -74,7 +84,7 @@ int main() {
     Check(posix >= 0);
     Check(sceKernelFcntl(posix, GetFl, 0) == SCE_KERNEL_O_WRONLY);
     Check(close_nid_postfix(posix) == 0);
-    Check(Throws(posix, GetFl, 0));
+    Check(sceKernelFcntl(posix, GetFl, 0) == SCE_KERNEL_ERROR_EBADF);
 
     const int directory = sceKernelOpen(root.string().c_str(), SCE_KERNEL_O_RDONLY | SCE_KERNEL_O_DIRECTORY, 0);
     Check(directory >= 0);
@@ -83,7 +93,8 @@ int main() {
 
     int pipes[2] = {-1, -1};
     Check(pipe_nid_postfix(pipes) == 0);
-    Check(Throws(pipes[0], GetFl, 0));
+    Check(sceKernelFcntl(pipes[0], GetFl, 0) == SCE_KERNEL_O_RDONLY);
+    Check(sceKernelFcntl(pipes[1], GetFl, 0) == SCE_KERNEL_O_WRONLY);
     Check(close_nid_postfix(pipes[0]) == 0);
     Check(close_nid_postfix(pipes[1]) == 0);
 

@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -18,10 +19,11 @@
 #include <utility>
 
 namespace {
+constexpr std::size_t MaxExecution = 10;
 std::atomic<bool> g_initialized{false};
-std::mutex g_mutex;
+std::mutex g_sessionMutex;
 std::set<std::int32_t> g_sessions;
-std::int32_t g_nextSession = 1;
+std::int32_t g_lastSessionId = 0;
 std::uint64_t g_nextExport = 1;
 
 constexpr const char* ExportRoot = "/_ce";
@@ -57,9 +59,9 @@ bool IsRegularFile(const std::filesystem::path& path) {
     return std::filesystem::is_regular_file(path, error);
 }
 
-void CheckSession(const std::string& prefix, std::int32_t exportId) {
-    if (!g_initialized.load()) throw std::logic_error(prefix + "not initialized");
-    if (!g_sessions.contains(exportId)) throw std::invalid_argument(prefix + "unknown export session");
+void RequireSession(const char* function, std::int32_t expId) {
+    if (!g_initialized.load()) throw std::logic_error(std::string(function) + ": not initialized");
+    if (!g_sessions.contains(expId)) throw std::invalid_argument(std::string(function) + ": unknown export session");
 }
 
 int CheckParam(const ContentExportParam& param) {
@@ -123,8 +125,8 @@ private:
 int ExportFile(const char* funcName, std::int32_t exportId, const ContentExportParam* param, const char* sourcePath, const char* thumbnailPath, char* path, std::size_t pathBufLen) {
     const std::string prefix = std::string(funcName) + ": ";
     if (param == nullptr || sourcePath == nullptr || path == nullptr || pathBufLen == 0) throw std::invalid_argument(prefix + "invalid argument");
-    std::lock_guard lock(g_mutex);
-    CheckSession(prefix, exportId);
+    std::lock_guard lock(g_sessionMutex);
+    RequireSession(funcName, exportId);
     if (const int error = CheckParam(*param)) return error;
     const char* extension = ExtensionFor(param->content_type);
     const std::filesystem::path source = ResolvePath_nid_no_patch(sourcePath);
@@ -169,10 +171,10 @@ int APS5_VABI sceContentExportInit2(const ContentExportInitParam2* init_param) {
     return 0;
 }
 
-int APS5_VABI sceContentExportFinish(std::int32_t exportId) {
-    std::lock_guard lock(g_mutex);
-    if (!g_initialized.load()) throw std::logic_error(std::string(__func__) + ": not initialized");
-    if (g_sessions.erase(exportId) == 0) throw std::invalid_argument(std::string(__func__) + ": unknown export session");
+int APS5_VABI sceContentExportFinish(std::int32_t expId) {
+    std::lock_guard lock(g_sessionMutex);
+    RequireSession(__func__, expId);
+    g_sessions.erase(expId);
     return 0;
 }
 
@@ -184,8 +186,8 @@ int APS5_VABI sceContentExportFromData(std::int32_t exportId, const ContentExpor
     std::filesystem::path destination;
     std::string guestPath;
     {
-        std::lock_guard lock(g_mutex);
-        CheckSession(prefix, exportId);
+        std::lock_guard lock(g_sessionMutex);
+        RequireSession(__func__, exportId);
         if (const int error = CheckParam(*param)) return error;
         const char* extension = ExtensionFor(param->content_type);
         directory = ResolvePath_nid_no_patch(ExportRoot);
@@ -234,33 +236,38 @@ int APS5_VABI sceContentExportFromFileWithThumbnail(std::int32_t exportId, const
 }
 
 int APS5_VABI sceContentExportStart(void) {
-    std::lock_guard lock(g_mutex);
+    std::lock_guard lock(g_sessionMutex);
     if (!g_initialized.load()) throw std::logic_error(std::string(__func__) + ": not initialized");
-    const std::int32_t exportId = g_nextSession++;
-    g_sessions.insert(exportId);
-    return exportId;
+    if (g_sessions.size() >= MaxExecution) throw std::runtime_error(std::string(__func__) + ": behaviour beyond 10 live export sessions is unknown");
+    if (g_lastSessionId == std::numeric_limits<std::int32_t>::max()) throw std::runtime_error(std::string(__func__) + ": export session ids exhausted");
+    g_sessions.insert(++g_lastSessionId);
+    return g_lastSessionId;
 }
 
-int APS5_VABI sceContentExportGetProgress(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceContentExportGetProgress(std::int32_t expId) {
+    std::lock_guard lock(g_sessionMutex);
+    RequireSession(__func__, expId);
+    throw std::runtime_error(std::string(__func__) + ": progress of a session with no running export is unknown");
 }
 
-int APS5_VABI sceContentExportCancel(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceContentExportCancel(std::int32_t expId) {
+    std::lock_guard lock(g_sessionMutex);
+    RequireSession(__func__, expId);
+    throw std::runtime_error(std::string(__func__) + ": cancelling a session with no running export is unknown");
 }
 
-int APS5_VABI sceContentExportFromDataWithThumbnail(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceContentExportFromDataWithThumbnail(std::int32_t expId, const ContentExportParam* param, const ContentExportCallbackParam* contentCallbackParam,
+    const char* thumbnailType, const ContentExportCallbackParam* thumbnailCallbackParam, char* path, std::size_t pathBufferLength) {
+    std::lock_guard lock(g_sessionMutex);
+    RequireSession(__func__, expId);
+    throw std::runtime_error(std::string(__func__) + ": the host has no media library to export into");
 }
 
 int APS5_VABI sceContentExportTerm(void) {
-    std::lock_guard lock(g_mutex);
+    std::lock_guard lock(g_sessionMutex);
+    if (!g_sessions.empty()) throw std::runtime_error(std::string(__func__) + ": terminating with live export sessions is unknown");
     bool expected = true;
     if (!g_initialized.compare_exchange_strong(expected, false)) throw std::logic_error(std::string(__func__) + ": not initialized");
-    g_sessions.clear();
     return 0;
 }
 

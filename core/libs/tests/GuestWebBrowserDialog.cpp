@@ -8,12 +8,13 @@ extern "C" {
 int APS5_VABI sceWebBrowserDialogInitialize(void);
 int APS5_VABI sceWebBrowserDialogTerminate(void);
 int APS5_VABI sceWebBrowserDialogOpen(const void* param);
-int APS5_VABI sceWebBrowserDialogGetResult(void* result);
 int APS5_VABI sceWebBrowserDialogSetCookie(const void* param);
 int APS5_VABI sceWebBrowserDialogResetCookie(const void* param);
 int APS5_VABI sceWebBrowserDialogOpenForPredeterminedContent(const void* param, const void* contentParam);
+int APS5_VABI sceWebBrowserDialogClose(void);
 int APS5_VABI sceWebBrowserDialogGetStatus(void);
 int APS5_VABI sceWebBrowserDialogUpdateStatus(void);
+int APS5_VABI sceWebBrowserDialogGetResult(void* result);
 }
 
 namespace {
@@ -23,6 +24,7 @@ constexpr int COMMON_DIALOG_STATUS_INITIALIZED = 1;
 constexpr int COMMON_DIALOG_STATUS_FINISHED = 3;
 constexpr int COMMON_DIALOG_RESULT_USER_CANCELED = 1;
 constexpr int COMMON_DIALOG_ERROR_NOT_INITIALIZED = static_cast<int>(0x80B80003u);
+constexpr int COMMON_DIALOG_ERROR_NOT_FINISHED = static_cast<int>(0x80B80005u);
 constexpr int COMMON_DIALOG_ERROR_ARG_NULL = static_cast<int>(0x80B8000Du);
 
 struct SetCookieParam {
@@ -62,6 +64,7 @@ bool Throws(TFunction function) {
 
 int main() {
     std::uint8_t param[64] = {};
+    std::int32_t result = 0x5a5a5a5a;
     SetCookieParam validCookie = {};
     validCookie.size = sizeof(SetCookieParam);
     validCookie.url = "https://example.com/";
@@ -75,8 +78,16 @@ int main() {
     Require(sceWebBrowserDialogResetCookie(&validReset) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogOpenForPredeterminedContent(param, &content) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_NONE);
+    Require(sceWebBrowserDialogClose() == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
+    Require(sceWebBrowserDialogOpen(param) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
+    Require(sceWebBrowserDialogGetResult(&result) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
+    Require(result == 0x5a5a5a5a);
+
     Require(sceWebBrowserDialogInitialize() == 0);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_INITIALIZED);
+    Require(sceWebBrowserDialogUpdateStatus() == COMMON_DIALOG_STATUS_INITIALIZED);
+    Require(sceWebBrowserDialogGetResult(&result) == COMMON_DIALOG_ERROR_NOT_FINISHED);
+    Require(result == 0x5a5a5a5a);
     Require(sceWebBrowserDialogSetCookie(nullptr) == COMMON_DIALOG_ERROR_ARG_NULL);
     Require(sceWebBrowserDialogResetCookie(nullptr) == COMMON_DIALOG_ERROR_ARG_NULL);
     Require(sceWebBrowserDialogSetCookie(&validCookie) == 0);
@@ -106,7 +117,9 @@ int main() {
     Require(sceWebBrowserDialogSetCookie(&boundaryCookie) == 0);
     Require(sceWebBrowserDialogTerminate() == 0);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_NONE);
+
     Require(sceWebBrowserDialogInitialize() == 0);
+    Require(sceWebBrowserDialogOpen(nullptr) == COMMON_DIALOG_ERROR_ARG_NULL);
     Require(sceWebBrowserDialogOpen(param) == 0);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_FINISHED);
     Require(sceWebBrowserDialogUpdateStatus() == COMMON_DIALOG_STATUS_FINISHED);
@@ -114,9 +127,16 @@ int main() {
     Require(sceWebBrowserDialogOpenForPredeterminedContent(param, nullptr) == COMMON_DIALOG_ERROR_ARG_NULL);
     Require(sceWebBrowserDialogOpenForPredeterminedContent(param, &content) == 0);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_FINISHED);
-    std::int32_t result = 0;
+
+    Require(sceWebBrowserDialogGetResult(nullptr) == COMMON_DIALOG_ERROR_ARG_NULL);
     Require(sceWebBrowserDialogGetResult(&result) == 0);
     Require(result == COMMON_DIALOG_RESULT_USER_CANCELED);
     Require(sceWebBrowserDialogSetCookie(&validCookie) == 0);
     Require(sceWebBrowserDialogResetCookie(&validReset) == 0);
+
+    Require(sceWebBrowserDialogClose() == 0);
+    Require(sceWebBrowserDialogTerminate() == 0);
+    Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_NONE);
+
+    return 0;
 }

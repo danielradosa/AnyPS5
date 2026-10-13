@@ -11,5 +11,6 @@ bool WorkloadSlotTableCovers(std::uint64_t address, std::size_t bytes);
 }
 
 extern "C" std::uint64_t AgcDriverWorkloadStreamSlot_nid_no_patch(std::uint32_t streamId);
+extern "C" bool AgcDriverWorkloadStreamRegistered_nid_postfix(std::uint32_t streamId);
 
 #endif

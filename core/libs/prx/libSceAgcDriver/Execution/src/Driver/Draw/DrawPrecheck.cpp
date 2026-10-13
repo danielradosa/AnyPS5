@@ -34,6 +34,7 @@ std::optional<DrawVerdict> Driver::precheckDraw(const QueueState& queue, const S
 }
 
 std::optional<DrawVerdict> Driver::precheckRegisters(const QueueState& queue, const Pm4::DrawParameters& drawParameters, const std::function<bool()>& listRestart, std::string& rejected) {
+    if (Graphics::DepthResummarizeDrawsNothing(queue)) return DrawVerdict::Nothing;
     rejected = Graphics::DepthMaintenanceRejection(queue);
     if (!rejected.empty()) return DrawVerdict::Rejected;
     {

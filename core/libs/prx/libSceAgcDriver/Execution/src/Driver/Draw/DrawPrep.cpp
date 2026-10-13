@@ -362,7 +362,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
         for (std::size_t i = 0; i < programs.size(); ++i) {
             const auto& program = programs[i];
             if (program.binary.stage == Stage::Fragment || roles[i] == Role::GeometryBack) continue;
-            vertexInfos[i] = Graphics::DecodeVertexStageInfo(program.binary.header, program.binary.headerAddress, program.userData, &decodeReads[i], false, &prepRead);
+            vertexInfos[i] = Graphics::DecodeVertexStageInfo(program.binary.header, program.binary.headerAddress, program.userData, &decodeReads[i], false, 8u - program.firstUserSgpr, &prepRead);
         }
         drawPrep.capturing = true;
         ShaderMemory shaderMemory(memory, &prepPendingWrite, nullptr, nullptr, &prepRead);

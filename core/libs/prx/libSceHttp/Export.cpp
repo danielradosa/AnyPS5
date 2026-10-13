@@ -1,5 +1,9 @@
 #include <cstdint>
 #include <cstddef>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceHttp/src/HttpErrors.hpp"
@@ -12,6 +16,9 @@
 #include <mutex>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 // No network is emulated: contexts, templates and requests can be created, but any request
 // that would touch the network fails with the library's network error.
@@ -23,15 +30,92 @@ struct RequestStatusRegistration {
 };
 static std::mutex g_statusMutex;
 static std::map<int, RequestStatusRegistration> g_statusCallbacks;
+struct HttpsCaList {
+    void* certs;
+    int certsNum;
+};
+
+#ifdef _WIN32
+struct HostMutex {
+    SRWLOCK native = SRWLOCK_INIT;
+
+    HostMutex() = default;
+    HostMutex(const HostMutex&) = delete;
+    HostMutex& operator=(const HostMutex&) = delete;
+
+    void lock() { AcquireSRWLockExclusive(&native); }
+    void unlock() { ReleaseSRWLockExclusive(&native); }
+};
+#else
+using HostMutex = std::mutex;
+#endif
+
+class HostCondition {
+public:
+    HostCondition() = default;
+    HostCondition(const HostCondition&) = delete;
+    HostCondition& operator=(const HostCondition&) = delete;
+
+    void NotifyAll() {
+#ifdef _WIN32
+        WakeAllConditionVariable(&native);
+#else
+        native.notify_all();
+#endif
+    }
+
+    void Wait(std::unique_lock<HostMutex>& lock) {
+#ifdef _WIN32
+        if (!SleepConditionVariableSRW(&native, &lock.mutex()->native, INFINITE, 0))
+            throw std::runtime_error("libSceHttp: native condition wait failed");
+#else
+        native.wait(lock);
+#endif
+    }
+
+    void WaitUntil(std::unique_lock<HostMutex>& lock, std::chrono::steady_clock::time_point deadline) {
+#ifdef _WIN32
+        const auto now = std::chrono::steady_clock::now();
+        if (deadline <= now) return;
+        const auto milliseconds = std::chrono::ceil<std::chrono::milliseconds>(deadline - now).count();
+        if (!SleepConditionVariableSRW(&native, &lock.mutex()->native, static_cast<DWORD>(milliseconds), 0) &&
+            GetLastError() != ERROR_TIMEOUT)
+            throw std::runtime_error("libSceHttp: native condition wait failed");
+#else
+        native.wait_until(lock, deadline);
+#endif
+    }
+
+private:
+#ifdef _WIN32
+    CONDITION_VARIABLE native = CONDITION_VARIABLE_INIT;
+#else
+    std::condition_variable native;
+#endif
+};
 
 struct HttpEpoll {
-    std::condition_variable changed;
+    HostMutex mutex;
+    HostCondition wake;
     bool aborted = false;
     bool destroyed = false;
 };
-static std::mutex g_epollMutex;
+
+static std::mutex g_stateMutex;
+static std::unordered_set<int> g_contexts;
+static std::unordered_map<HttpEpollHandle, std::shared_ptr<HttpEpoll>> g_epolls;
 static std::uintptr_t g_nextEpoll = 0;
-static std::map<HttpEpollHandle, std::shared_ptr<HttpEpoll>> g_epolls;
+
+static std::shared_ptr<HttpEpoll> FindEpoll(HttpEpollHandle eh) {
+    const auto it = g_epolls.find(eh);
+    return it == g_epolls.end() ? nullptr : it->second;
+}
+
+static void MarkDestroyed(HttpEpoll& epoll) {
+    std::lock_guard lock(epoll.mutex);
+    epoll.destroyed = true;
+    epoll.wake.NotifyAll();
+}
 
 extern "C" {
 
@@ -65,9 +149,10 @@ int APS5_VABI sceHttpCreateConnectionWithURL(int tmpl_id, const char* url, int e
 }
 
 int APS5_VABI sceHttpCreateEpoll(int http_ctx_id, HttpEpollHandle* eh) {
-    (void)http_ctx_id;
+    std::lock_guard lock(g_stateMutex);
+    if (g_contexts.empty()) return ERROR_BEFORE_INIT;
+    if (!g_contexts.contains(http_ctx_id)) return ERROR_INVALID_ID;
     if (!eh) return ERROR_INVALID_VALUE;
-    std::lock_guard lock(g_epollMutex);
     const auto handle = reinterpret_cast<HttpEpollHandle>(++g_nextEpoll);
     g_epolls.emplace(handle, std::make_shared<HttpEpoll>());
     *eh = handle;
@@ -115,14 +200,17 @@ int APS5_VABI sceHttpDeleteTemplate(int tmpl_id) {
 }
 
 int APS5_VABI sceHttpDestroyEpoll(int http_ctx_id, HttpEpollHandle eh) {
-    (void)http_ctx_id;
-    if (!eh) return ERROR_INVALID_VALUE;
-    std::lock_guard lock(g_epollMutex);
-    const auto found = g_epolls.find(eh);
-    if (found == g_epolls.end()) return ERROR_INVALID_ID;
-    found->second->destroyed = true;
-    found->second->changed.notify_all();
-    g_epolls.erase(found);
+    std::shared_ptr<HttpEpoll> epoll;
+    {
+        std::lock_guard lock(g_stateMutex);
+        if (g_contexts.empty()) return ERROR_BEFORE_INIT;
+        if (!g_contexts.contains(http_ctx_id)) return ERROR_INVALID_ID;
+        if (!eh) return ERROR_INVALID_VALUE;
+        epoll = FindEpoll(eh);
+        if (!epoll) return ERROR_INVALID_ID;
+        g_epolls.erase(eh);
+    }
+    MarkDestroyed(*epoll);
     return 0;
 }
 
@@ -150,7 +238,10 @@ int APS5_VABI sceHttpInit_nid_postfix(int memid, int ssl_ctx_id, uint64_t pool_s
     (void)memid;
     (void)ssl_ctx_id;
     (void)pool_size;
-    return g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard lock(g_stateMutex);
+    g_contexts.insert(id);
+    return id;
 }
 
 int APS5_VABI sceHttpsDisableOption(int id, uint32_t ssl_flags) {
@@ -266,7 +357,16 @@ int APS5_VABI sceHttpsSetSslCallback(int id, HttpsCallback cbfunc, void* user_ar
 }
 
 int APS5_VABI sceHttpTerm_nid_postfix(int http_ctx_id) {
-    (void)http_ctx_id;
+    std::vector<std::shared_ptr<HttpEpoll>> epolls;
+    {
+        std::lock_guard lock(g_stateMutex);
+        if (g_contexts.empty()) return ERROR_BEFORE_INIT;
+        if (g_contexts.erase(http_ctx_id) == 0) return ERROR_INVALID_ID;
+        if (!g_contexts.empty()) return 0;
+        for (auto& [handle, epoll] : g_epolls) epolls.push_back(std::move(epoll));
+        g_epolls.clear();
+    }
+    for (const auto& epoll : epolls) MarkDestroyed(*epoll);
     return 0;
 }
 
@@ -276,14 +376,22 @@ int APS5_VABI sceHttpUnsetEpoll(int id) {
 }
 
 int APS5_VABI sceHttpWaitRequest(HttpEpollHandle eh, HttpNBEvent* nbev, int maxevents, int timeout) {
-    if (!eh || !nbev || maxevents <= 0) return ERROR_INVALID_VALUE;
-    std::unique_lock lock(g_epollMutex);
-    const auto found = g_epolls.find(eh);
-    if (found == g_epolls.end()) return ERROR_INVALID_ID;
-    const std::shared_ptr<HttpEpoll> epoll = found->second;
-    const auto woken = [&epoll] { return epoll->aborted || epoll->destroyed; };
-    if (timeout < 0) epoll->changed.wait(lock, woken);
-    else if (timeout > 0) epoll->changed.wait_for(lock, std::chrono::microseconds(timeout), woken);
+    std::shared_ptr<HttpEpoll> epoll;
+    {
+        std::lock_guard lock(g_stateMutex);
+        if (g_contexts.empty()) return ERROR_BEFORE_INIT;
+        if (!eh || !nbev || maxevents <= 0) return ERROR_INVALID_VALUE;
+        epoll = FindEpoll(eh);
+        if (!epoll) return ERROR_INVALID_ID;
+    }
+    std::unique_lock lock(epoll->mutex);
+    const auto woken = [&] { return epoll->aborted || epoll->destroyed; };
+    if (timeout < 0) {
+        while (!woken()) epoll->wake.Wait(lock);
+    } else {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(timeout);
+        while (!woken() && std::chrono::steady_clock::now() < deadline) epoll->wake.WaitUntil(lock, deadline);
+    }
     return epoll->aborted ? ERROR_ABORTED : 0;
 }
 
@@ -458,12 +566,33 @@ int APS5_VABI sceHttpSetRedirectCallback(int id, HttpRedirectCallback cbfunc, vo
 }
 
 int APS5_VABI sceHttpAbortWaitRequest(HttpEpollHandle eh) {
-    if (!eh) return ERROR_INVALID_VALUE;
-    std::lock_guard lock(g_epollMutex);
-    const auto found = g_epolls.find(eh);
-    if (found == g_epolls.end()) return ERROR_INVALID_ID;
-    found->second->aborted = true;
-    found->second->changed.notify_all();
+    std::shared_ptr<HttpEpoll> epoll;
+    {
+        std::lock_guard lock(g_stateMutex);
+        if (g_contexts.empty()) return ERROR_BEFORE_INIT;
+        if (!eh) return ERROR_INVALID_VALUE;
+        epoll = FindEpoll(eh);
+        if (!epoll) return ERROR_INVALID_ID;
+    }
+    std::lock_guard lock(epoll->mutex);
+    epoll->aborted = true;
+    epoll->wake.NotifyAll();
+    return 0;
+}
+
+int APS5_VABI sceHttpsGetCaList(int http_ctx_id, HttpsCaList* ca_list) {
+    (void)http_ctx_id;
+    if (!ca_list) return ERROR_INVALID_VALUE;
+    ca_list->certs = nullptr;
+    ca_list->certsNum = 0;
+    return 0;
+}
+
+int APS5_VABI sceHttpsFreeCaList(int http_ctx_id, HttpsCaList* ca_list) {
+    (void)http_ctx_id;
+    if (!ca_list) return ERROR_INVALID_VALUE;
+    ca_list->certs = nullptr;
+    ca_list->certsNum = 0;
     return 0;
 }
 }

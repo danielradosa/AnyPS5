@@ -1,85 +1,119 @@
 #include "SceShaders.hpp"
+#include "prx/libc/include/Shutdown.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "prx/libSceAgc/Shader/include/ShaderConstants.hpp"
 
 #include <array>
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
+#include <vector>
 
 extern "C" int APS5_VABI sceAgcGetGsPrimPayload(std::uint32_t* payload, const Shader* gs);
 
 namespace {
 
-constexpr std::uint32_t Untouched = 0xdeadbeefu;
+constexpr std::uint32_t Sentinel = 0xccccccccu;
 
 void check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
 template <typename TAction>
-void expectInvalid(TAction action) {
+void expectFailure(TAction action, const char* message) {
     try {
         action();
-    } catch (const std::invalid_argument&) {
+    } catch (const std::exception& error) {
+        check(error.what()[0] != '\0', "empty exception message");
         return;
     }
-    throw std::runtime_error("expected an invalid argument");
+    throw std::runtime_error(message);
 }
 
-Shader withRegisters(ShaderRegister* registers, std::uint8_t count) {
+Shader makeGs(std::vector<ShaderRegister>& cx) {
     Shader gs{};
-    gs.cx_registers = registers;
-    gs.num_cx_registers = count;
+    gs.cx_registers = cx.empty() ? nullptr : cx.data();
+    gs.num_cx_registers = static_cast<std::uint8_t>(cx.size());
     return gs;
 }
 
-std::uint32_t payloadOf(const Shader& gs) {
-    std::uint32_t payload = Untouched;
-    check(sceAgcGetGsPrimPayload(&payload, &gs) == 0, "payload query failed");
-    return payload;
+void expectPayload(const Shader& gs, std::uint32_t expected, const char* message) {
+    std::array<std::uint32_t, 2> out{Sentinel, Sentinel};
+    check(sceAgcGetGsPrimPayload(out.data(), &gs) == 0, message);
+    check(out[0] == expected, message);
+    check(out[1] == Sentinel, "the payload write went past four bytes");
 }
 
-void testPayload() {
-    check(payloadOf(withRegisters(nullptr, 0)) == 0, "a shader without CX registers has a payload");
-
-    std::array<ShaderRegister, 3> registers{{{0x1b1u, 2u}, {0x1c2u, 2u}, {0x1ffu, 2u}}};
-    check(payloadOf(withRegisters(registers.data(), 3)) == 8, "index format 2 does not give an 8-byte payload");
-    registers[1].value = 0x12u;
-    check(payloadOf(withRegisters(registers.data(), 3)) == 8, "bits above the index format change the payload");
-    registers[1].value = 4u;
-    check(payloadOf(withRegisters(registers.data(), 3)) == 0, "index format 4 gives a payload");
-    registers[1].value = 0u;
-    check(payloadOf(withRegisters(registers.data(), 3)) == 0, "index format 0 gives a payload");
-
-    std::array<ShaderRegister, 2> repeated{{{0x1c2u, 4u}, {0x1c2u, 2u}}};
-    check(payloadOf(withRegisters(repeated.data(), 2)) == 0, "a later index format register was read after the first");
-
-    std::array<ShaderRegister, 3> beyond{{{0x1b1u, 0u}, {0x1ffu, 0u}, {0x1c2u, 2u}}};
-    check(payloadOf(withRegisters(beyond.data(), 2)) == 0, "a register past the CX register count was read");
-    check(payloadOf(withRegisters(beyond.data(), 3)) == 8, "the last CX register was not read");
+void testNoRegisters() {
+    std::vector<ShaderRegister> cx;
+    expectPayload(makeGs(cx), 0, "a shader without context registers reported a payload");
 }
 
-void testInvalidArguments() {
-    std::array<ShaderRegister, 1> registers{{{0x1c2u, 2u}}};
-    const auto gs = withRegisters(registers.data(), 1);
-    std::uint32_t payload = Untouched;
-    expectInvalid([&] { sceAgcGetGsPrimPayload(nullptr, &gs); });
-    expectInvalid([&] { sceAgcGetGsPrimPayload(&payload, nullptr); });
-    check(payload == Untouched, "a null shader wrote the payload");
-    const auto missing = withRegisters(nullptr, 1);
-    expectInvalid([&] { sceAgcGetGsPrimPayload(&payload, &missing); });
+void testTwoComponentIndexFormat() {
+    std::vector<ShaderRegister> cx{{ShaderRegs::SPI_SHADER_IDX_FORMAT, 2u}};
+    expectPayload(makeGs(cx), 8, "a two-component index export did not report 8 bytes");
+}
+
+void testOnlyTheLowNibbleCounts() {
+    std::vector<ShaderRegister> high{{ShaderRegs::SPI_SHADER_IDX_FORMAT, 0xfffffff2u}};
+    expectPayload(makeGs(high), 8, "bits above IDX0_EXPORT_FORMAT changed the payload");
+    for (const std::uint32_t format : {0u, 1u, 3u, 4u, 0x20u}) {
+        std::vector<ShaderRegister> cx{{ShaderRegs::SPI_SHADER_IDX_FORMAT, format}};
+        expectPayload(makeGs(cx), 0, "an index export format other than two components reported a payload");
+    }
+}
+
+void testOtherRegistersAreIgnored() {
+    std::vector<ShaderRegister> cx{{ShaderRegs::SPI_VS_OUT_CONFIG, 2u}, {ShaderRegs::GE_MAX_OUTPUT_PER_SUBGROUP, 2u}};
+    expectPayload(makeGs(cx), 0, "a register other than SPI_SHADER_IDX_FORMAT reported a payload");
+}
+
+void testSearchContinuesPastAMismatch() {
+    std::vector<ShaderRegister> cx{
+        {ShaderRegs::SPI_VS_OUT_CONFIG, 0u},
+        {ShaderRegs::SPI_SHADER_IDX_FORMAT, 4u},
+        {ShaderRegs::SPI_SHADER_IDX_FORMAT, 2u},
+    };
+    expectPayload(makeGs(cx), 8, "a non-matching SPI_SHADER_IDX_FORMAT entry stopped the search");
+}
+
+void testCountBoundsTheSearch() {
+    std::vector<ShaderRegister> cx{{ShaderRegs::SPI_VS_OUT_CONFIG, 0u}, {ShaderRegs::SPI_SHADER_IDX_FORMAT, 2u}};
+    Shader gs = makeGs(cx);
+    gs.num_cx_registers = 1;
+    expectPayload(gs, 0, "an entry past num_cx_registers was read");
+}
+
+void testRejections() {
+    std::vector<ShaderRegister> cx{{ShaderRegs::SPI_SHADER_IDX_FORMAT, 2u}};
+    const Shader gs = makeGs(cx);
+    std::uint32_t out = Sentinel;
+    expectFailure([&] { sceAgcGetGsPrimPayload(nullptr, &gs); }, "a null payload pointer was accepted");
+    expectFailure([&] { sceAgcGetGsPrimPayload(&out, nullptr); }, "a null shader was accepted");
+    Shader missing{};
+    missing.num_cx_registers = 1;
+    expectFailure([&] { sceAgcGetGsPrimPayload(&out, &missing); }, "a register count without a register array was accepted");
+    check(out == Sentinel, "a rejected call wrote the payload");
 }
 
 }
 
 int main() {
     try {
-        testPayload();
-        testInvalidArguments();
+        testNoRegisters();
+        testTwoComponentIndexFormat();
+        testOnlyTheLowNibbleCounts();
+        testOtherRegistersAreIgnored();
+        testSearchContinuesPastAMismatch();
+        testCountBoundsTheSearch();
+        testRejections();
+        LibcRunShutdown_nid_postfix();
         std::puts("AGC GS primitive payload tests passed");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "%s\n", error.what());
+        try { LibcRunShutdown_nid_postfix(); }
+        catch (const std::exception& shutdown) { std::fprintf(stderr, "shutdown: %s\n", shutdown.what()); }
         return 1;
     }
 }

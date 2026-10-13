@@ -18,23 +18,12 @@ struct GuestItimerval {
 
 static_assert(sizeof(GuestItimerval) == 32 && offsetof(GuestItimerval, value) == 16);
 
-struct GuestSignalSet {
-    std::uint32_t bits[4];
-};
-
-struct GuestSigaction {
-    std::uintptr_t handler;
-    int flags;
-    GuestSignalSet mask;
-};
-
-static_assert(sizeof(GuestSigaction) == 32);
-
 extern "C" {
 int APS5_VABI getitimer_nid_postfix(int, GuestItimerval*);
 unsigned int APS5_VABI GuestAlarm_nid_no_patch(unsigned int);
 int* APS5_VABI __error_nid_postfix();
-int APS5_VABI sigaction_nid_postfix(int, const GuestSigaction*, GuestSigaction*);
+using Handler = void (APS5_VABI *)(int);
+Handler APS5_VABI signal_nid_postfix(int, Handler);
 }
 
 static void Require(bool value, const char* message) {
@@ -85,8 +74,8 @@ int main() {
         Require(threw && std::memcmp(&output, &saved, sizeof(output)) == 0, "unsupported CPU timer reported fabricated state");
     }
 
-    const GuestSigaction ignore{1, 0, {}};
-    Require(sigaction_nid_postfix(14, &ignore, nullptr) == 0, "SIGALRM could not be ignored");
+    const auto ignore = reinterpret_cast<Handler>(std::uintptr_t{1});
+    Require(signal_nid_postfix(14, ignore) == nullptr, "SIGALRM was not initially defaulted");
     Require(GuestAlarm_nid_no_patch(30) == 0, "alarm was already active");
     const auto first = ReadRemaining();
     Require(first > 0 && first <= 30000000, "armed alarm is not visible");
