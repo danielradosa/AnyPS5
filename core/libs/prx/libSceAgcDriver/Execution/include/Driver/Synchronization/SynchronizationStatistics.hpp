@@ -37,6 +37,10 @@ extern std::atomic<std::uint64_t> storesOnGpu, storesBehindCompletions, storesOn
 // (misaligned, over 64 KiB, a register destination, a refused copy).
 extern std::atomic<std::uint64_t> storeDrainReasons[4];
 
+// DMA_DATA whose source has recorded GPU writes pending: index destination (0 memory, 2 GDS, 4 nowhere) + source (0
+// memory, 1 GDS).
+extern std::atomic<std::uint64_t> pendingSourceDmas[6];
+
 extern std::map<std::uint32_t, std::uint64_t> drainCounts;
 
 extern std::uint64_t drainTotal;

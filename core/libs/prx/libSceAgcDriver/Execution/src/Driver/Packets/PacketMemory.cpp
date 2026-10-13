@@ -107,6 +107,18 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         }
     }
 
+    // Profile only: a DMA_DATA whose memory or GDS source has recorded GPU writes pending (its CPU read below or in
+    // Execute waits for them), by destination (memory, GDS, nowhere) and source (memory, GDS).
+    if (profile && opcode == 0x50 && Pm4::DmaSource(packet) != 2) {
+        const bool fromGds = Pm4::DmaSource(packet) == Pm4::DmaSelectGds;
+        const auto source = fromGds ? Pm4::GdsAddress() + packet[2] : packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u);
+        const auto pending = Graphics::Recorder::PendingWriteSnapshot();
+        if (Graphics::Recorder::SnapshotOverlaps(pending.get(), source, std::max<std::size_t>(packet[6] & 0x3ffffffu, 1))) {
+            const auto destination = Pm4::DmaDestination(packet);
+            ++pendingSourceDmas[(destination == Pm4::DmaSelectGds ? 2 : destination == 2 ? 4 : 0) + (fromGds ? 1 : 0)];
+        }
+    }
+
     static const bool cpuStores = std::getenv("APS5_CPU_STORES") != nullptr;
     if (!drainAll && !cpuStores && (opcode == 0x40 || opcode == 0x50 || opcode == 0x83)) {
         constexpr std::size_t gpuStoreLimit = 65536;
