@@ -461,14 +461,18 @@ const char* APS5_VABI sceAudio3dStrError(int error_code) {
     }
 }
 
-int APS5_VABI sceAudio3dPortGetState(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceAudio3dPortGetState(uint32_t port_id, void* state) {
+    (void)state;
+    std::lock_guard lock(g_mutex);
+    if (!PortIsOpen(port_id)) return AUDIO3D_ERROR_INVALID_PORT;
+    Unsupported(__func__, "debug state of an open port");
 }
 
-int APS5_VABI sceAudio3dPortGetStatus(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceAudio3dPortGetStatus(uint32_t port_id, void* status) {
+    (void)status;
+    std::lock_guard lock(g_mutex);
+    if (!PortIsOpen(port_id)) return AUDIO3D_ERROR_INVALID_PORT;
+    Unsupported(__func__, "status of an open port");
 }
 
 int APS5_VABI sceAudio3dPortGetBufferLevel(void) {
@@ -476,24 +480,34 @@ int APS5_VABI sceAudio3dPortGetBufferLevel(void) {
     return 0;
 }
 
-int APS5_VABI sceAudio3dPortCreate(void) {
+int APS5_VABI sceAudio3dPortCreate(uint32_t granularity, uint32_t rate, int64_t reserved, uint32_t* port_id) {
+    if (port_id == nullptr || reserved != 0) return AUDIO3D_ERROR_INVALID_PARAMETER;
+    Audio3dOpenParameters parameters{};
+    parameters.size_this = 0x10;
+    parameters.granularity = granularity;
+    parameters.rate = rate;
+    return sceAudio3dPortOpen(AUDIO3D_USER_ID_SYSTEM, &parameters, port_id);
+}
+
+int APS5_VABI sceAudio3dPortDestroy(uint32_t port_id) {
+    std::lock_guard lock(g_mutex);
+    if (!PortIsOpen(port_id)) return AUDIO3D_ERROR_INVALID_PORT;
+    Unsupported(__func__, "destroying a port opened by sceAudio3dPortOpen");
+}
+
+int APS5_VABI sceAudio3dPortFreeState(void* state) {
+    (void)state;
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI sceAudio3dPortDestroy(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAudio3dPortFreeState(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAudio3dPortQueryDebug(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceAudio3dPortQueryDebug(uint32_t port_id, uint32_t object_id, uint32_t query, void* buffer, size_t buffer_size) {
+    (void)object_id;
+    (void)buffer;
+    (void)buffer_size;
+    std::lock_guard lock(g_mutex);
+    if (!PortIsOpen(port_id)) return AUDIO3D_ERROR_INVALID_PORT;
+    Unsupported(__func__, "debug query " + std::to_string(query));
 }
 
 int APS5_VABI sceAudio3dPortOpenEx(void) {

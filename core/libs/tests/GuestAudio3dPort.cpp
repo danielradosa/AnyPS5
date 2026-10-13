@@ -30,7 +30,12 @@ int APS5_VABI sceAudio3dObjectSetAttribute(std::uint32_t port_id, std::uint32_t 
 int APS5_VABI sceAudio3dPortGetParameters(std::uint32_t port_id, Audio3dOpenParameters* out);
 const char* APS5_VABI sceAudio3dStrError(int error_code);
 int APS5_VABI sceAudio3dPortGetAttributesSupported(std::uint32_t port_id, std::uint32_t* capabilities, std::uint32_t* num_capabilities);
-int APS5_VABI sceAudio3dPortGetStatus(void);
+int APS5_VABI sceAudio3dPortGetStatus(std::uint32_t port_id, void* status);
+int APS5_VABI sceAudio3dPortGetState(std::uint32_t port_id, void* state);
+int APS5_VABI sceAudio3dPortFreeState(void* state);
+int APS5_VABI sceAudio3dPortQueryDebug(std::uint32_t port_id, std::uint32_t object_id, std::uint32_t query, void* buffer, std::size_t buffer_size);
+int APS5_VABI sceAudio3dPortCreate(std::uint32_t granularity, std::uint32_t rate, std::int64_t reserved, std::uint32_t* port_id);
+int APS5_VABI sceAudio3dPortDestroy(std::uint32_t port_id);
 }
 
 namespace {
@@ -93,6 +98,9 @@ void CheckBeforeInitialize() {
     Require(sceAudio3dPortPush(0, 0) == INVALID_PORT, "push needs an open port");
     float value = 0.0f;
     Require(sceAudio3dPortSetAttribute(0, 0x10001, &value, sizeof(value)) == INVALID_PORT, "set attribute needs an open port");
+    Require(sceAudio3dPortCreate(256, 0, 0, nullptr) == INVALID_PARAMETER, "create needs a port id");
+    Require(sceAudio3dPortCreate(256, 0, 1, &id) == INVALID_PARAMETER && id == 7, "create rejects a non-zero reserved value");
+    Require(sceAudio3dPortCreate(256, 0, 0, &id) == NOT_READY && id == 7, "create before initialize must be NOT_READY");
     Require(sceAudio3dInitialize(0) == 0, "initialize");
     RequireThrows([] { sceAudio3dInitialize(0); }, "repeated initialize must throw");
 }
@@ -128,6 +136,9 @@ void CheckOpenParameters() {
     throws([](auto& p) { p.size_this = 0x18; }, "0x18 parameters select buffer mode 1");
     throws([](auto& p) { p.buffer_mode = 1; }, "buffer mode 1");
     throws([](auto& p) { p.size_this = 0x28; p.num_beds = 3; }, "3 beds");
+    Require(sceAudio3dPortCreate(defaults.granularity, 0, 0, nullptr) == INVALID_PARAMETER, "create needs a port id");
+    Require(sceAudio3dPortCreate(defaults.granularity, 0, -1, &id) == INVALID_PARAMETER && id == 7, "create rejects a non-zero reserved value");
+    RequireThrows([&] { sceAudio3dPortCreate(defaults.granularity, 0, 0, &id); }, "create opens buffer mode 0");
 }
 
 void CheckOpenClose() {
@@ -144,6 +155,33 @@ void CheckOpenClose() {
     Require(sceAudio3dPortClose(0) == 0, "close");
     Require(sceAudio3dPortClose(0) == INVALID_PORT, "double close");
     Require(sceAudio3dPortGetQueueLevel(0, &level, nullptr) == INVALID_PORT, "closed port");
+}
+
+void CheckDebug() {
+    std::uint8_t buffer[64];
+    std::memset(buffer, 0xA5, sizeof(buffer));
+    std::uint8_t untouched[sizeof(buffer)];
+    std::memcpy(untouched, buffer, sizeof(buffer));
+    Require(sceAudio3dPortGetState(0, buffer) == INVALID_PORT, "debug state needs an open port");
+    Require(sceAudio3dPortGetStatus(0, buffer) == INVALID_PORT, "status needs an open port");
+    Require(sceAudio3dPortQueryDebug(0, 1, 0, buffer, sizeof(buffer)) == INVALID_PORT, "debug query needs an open port");
+    Require(sceAudio3dPortDestroy(0) == INVALID_PORT, "destroy needs an open port");
+    Audio3dOpenParameters parameters = Defaults();
+    std::uint32_t id = 7;
+    Require(Open(parameters, &id) == 0 && id == 0, "open");
+    Require(sceAudio3dPortGetState(1, buffer) == INVALID_PORT, "debug state of port 1");
+    Require(sceAudio3dPortGetStatus(1, buffer) == INVALID_PORT, "status of port 1");
+    Require(sceAudio3dPortQueryDebug(1, 1, 0, buffer, sizeof(buffer)) == INVALID_PORT, "debug query of port 1");
+    Require(sceAudio3dPortDestroy(1) == INVALID_PORT, "destroy of port 1");
+    Require(std::memcmp(buffer, untouched, sizeof(buffer)) == 0, "a rejected debug call must not write its output");
+    RequireThrows([&] { sceAudio3dPortGetState(0, buffer); }, "the debug state layout is unknown");
+    RequireThrows([&] { sceAudio3dPortGetStatus(0, buffer); }, "the status layout is unknown");
+    RequireThrows([&] { sceAudio3dPortQueryDebug(0, 1, 0, buffer, sizeof(buffer)); }, "the debug queries are unknown");
+    RequireThrows([&] { sceAudio3dPortFreeState(buffer); }, "no debug state is ever handed out");
+    RequireThrows([] { sceAudio3dPortDestroy(0); }, "destroy of a port opened by sceAudio3dPortOpen");
+    std::uint32_t level = 99;
+    Require(sceAudio3dPortGetQueueLevel(0, &level, nullptr) == 0, "a failed destroy keeps the port open");
+    Require(sceAudio3dPortClose(0) == 0, "close");
 }
 
 void CheckAttributes() {
@@ -373,7 +411,6 @@ void CheckRemainingExports() {
     Require(sceAudio3dPortGetAttributesSupported(1, &capabilities, &num_capabilities) == INVALID_PORT, "attributes supported on port 1");
     Require(sceAudio3dPortGetAttributesSupported(0, &capabilities, nullptr) == INVALID_PARAMETER, "attributes supported needs a count");
     Require(sceAudio3dPortGetAttributesSupported(0, nullptr, &num_capabilities) == 0 && num_capabilities == 0, "no object attribute capabilities");
-    RequireThrows([] { sceAudio3dPortGetStatus(); }, "an unimplemented export throws");
     Require(sceAudio3dPortClose(0) == 0, "close");
 }
 
@@ -383,6 +420,7 @@ int main() {
     CheckBeforeInitialize();
     CheckOpenParameters();
     CheckOpenClose();
+    CheckDebug();
     CheckObjects();
     CheckQueue();
     CheckMixAndPush();
