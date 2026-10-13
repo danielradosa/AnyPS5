@@ -5,7 +5,9 @@
 #include <atomic>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 // The PSN web API has no service behind it: handles can be created, but requests fail.
 static constexpr int SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT = static_cast<int>(0x80553402);
@@ -13,6 +15,7 @@ static constexpr int SCE_NP_WEBAPI2_ERROR_LIB_CONTEXT_NOT_FOUND = static_cast<in
 static constexpr int SCE_NP_WEBAPI2_ERROR_UNAVAILABLE = static_cast<int>(0x80553406);
 static constexpr int SCE_NP_WEBAPI2_ERROR_ABORTED = static_cast<int>(0x80553409);
 static constexpr int SCE_NP_WEBAPI2_ERROR_HANDLE_NOT_FOUND = static_cast<int>(0x8055340D);
+static constexpr int SCE_NP_WEBAPI2_ERROR_REQUEST_NOT_FOUND = static_cast<int>(0x80553406);
 static std::atomic<int> g_nextHandle{1};
 
 struct NpWebApi2MemoryPoolStats {
@@ -39,6 +42,9 @@ static int FindPushEventHandle(int libCtxId, int handleId, NpWebApi2PushEventHan
     return 0;
 }
 
+static std::mutex g_requestsMutex;
+static std::unordered_map<int64_t, std::vector<std::string>> g_requestTraceTags;
+
 extern "C" {
 
 int APS5_VABI sceNpWebApi2AbortRequest(int64_t request_id) {
@@ -53,8 +59,12 @@ int APS5_VABI sceNpWebApi2AddHttpRequestHeader(int64_t request_id, const char* f
     return 0;
 }
 
-int APS5_VABI sceNpWebApi2AddWebTraceTag() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceNpWebApi2AddWebTraceTag(int64_t request_id, const char* value) {
+    if (!value) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+    std::lock_guard lock(g_requestsMutex);
+    const auto request = g_requestTraceTags.find(request_id);
+    if (request == g_requestTraceTags.end()) return SCE_NP_WEBAPI2_ERROR_REQUEST_NOT_FOUND;
+    request->second.emplace_back(value);
     return 0;
 }
 
@@ -68,7 +78,12 @@ int APS5_VABI sceNpWebApi2CreateRequest(int user_context_id, const char* api_gro
     (void)method;
     (void)content_parameter;
     if (!request_id) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
-    *request_id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    const int64_t id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard lock(g_requestsMutex);
+        g_requestTraceTags[id];
+    }
+    *request_id = id;
     return 0;
 }
 
@@ -79,7 +94,8 @@ int APS5_VABI sceNpWebApi2CreateUserContext(int lib_ctx_id, int user_id) {
 }
 
 int APS5_VABI sceNpWebApi2DeleteRequest(int64_t request_id) {
-    (void)request_id;
+    std::lock_guard lock(g_requestsMutex);
+    g_requestTraceTags.erase(request_id);
     return 0;
 }
 
