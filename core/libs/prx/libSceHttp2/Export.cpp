@@ -8,6 +8,7 @@
 #include <deque>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -74,9 +75,8 @@ static void EraseCompletions(const std::vector<int>& ids) {
     for (const int id : ids) g_completions.erase(id);
 }
 
-static int CompleteAsync(const char* function, int req_id, const Http2AsyncOption* kqueue_option, const void* option) {
-    if (kqueue_option == nullptr) NotImplemented_nid_no_patch(function);
-    if (option != nullptr) NotImplemented_nid_no_patch(function);
+static int CompleteAsync(const char* function, int req_id, int result, const Http2AsyncOption* kqueue_option, const void* option) {
+    if (option != nullptr) throw std::invalid_argument(std::string(function) + ": the reserved option must be null");
     bool queued = false;
     {
         std::lock_guard handlesLock(g_handlesMutex);
@@ -84,19 +84,19 @@ static int CompleteAsync(const char* function, int req_id, const Http2AsyncOptio
             std::lock_guard completionsLock(g_completionsMutex);
             Http2AsyncResult completion{};
             completion.req_id = req_id;
-            completion.result = ERROR_NETWORK;
+            completion.result = result;
             g_completions[req_id].push_back(completion);
             queued = true;
         }
     }
     if (!queued) return ERROR_INVALID_ID;
-    if (EqueueTriggerEvent_nid_postfix(kqueue_option->equeue, static_cast<uintptr_t>(kqueue_option->user_event_id), EVFILT_USER, kqueue_option->user_data) != 0) {
-        {
-            std::lock_guard lock(g_completionsMutex);
-            const auto pending = g_completions.find(req_id);
-            if (pending != g_completions.end() && !pending->second.empty()) pending->second.pop_back();
-        }
-        NotImplemented_nid_no_patch(function);
+    if (kqueue_option == nullptr) return 0;
+    const int triggered = EqueueTriggerEvent_nid_postfix(kqueue_option->equeue, static_cast<uintptr_t>(kqueue_option->user_event_id), EVFILT_USER, kqueue_option->user_data);
+    if (triggered != 0) {
+        std::lock_guard lock(g_completionsMutex);
+        const auto pending = g_completions.find(req_id);
+        if (pending != g_completions.end() && !pending->second.empty()) pending->second.pop_back();
+        return triggered;
     }
     return 0;
 }
@@ -209,9 +209,7 @@ int APS5_VABI sceHttp2SendRequest(int req_id, const void* post_data, size_t size
 }
 
 int APS5_VABI sceHttp2SendRequestAsync(int req_id, const void* post_data, size_t size, Http2AsyncOption* kqueue_option, void* option) {
-    (void)post_data;
-    (void)size;
-    return CompleteAsync(__func__, req_id, kqueue_option, option);
+    return CompleteAsync(__func__, req_id, sceHttp2SendRequest(req_id, post_data, size), kqueue_option, option);
 }
 
 int APS5_VABI sceHttp2SetAuthEnabled(int id, int is_enable) {
@@ -317,10 +315,15 @@ int APS5_VABI sceHttp2Term(int lib_http2_ctx_id) {
 
 int APS5_VABI sceHttp2WaitAsync(int req_id, Http2AsyncResult* result, uint32_t* timeout, void* option) {
     (void)timeout;
-    if (result == nullptr || option != nullptr) NotImplemented_nid_no_patch(__func__);
+    if (option != nullptr) throw std::invalid_argument("sceHttp2WaitAsync: the reserved option must be null");
+    if (result == nullptr) return ERROR_NULL_POINTER;
+    {
+        std::lock_guard handlesLock(g_handlesMutex);
+        if (FindHandle(req_id, Http2Kind::Request) == nullptr) return ERROR_INVALID_ID;
+    }
     std::lock_guard lock(g_completionsMutex);
     const auto pending = g_completions.find(req_id);
-    if (pending == g_completions.end() || pending->second.empty()) NotImplemented_nid_no_patch("sceHttp2WaitAsync: waiting for an operation that has not completed");
+    if (pending == g_completions.end() || pending->second.empty()) throw std::logic_error("sceHttp2WaitAsync: no asynchronous operation of the request is pending");
     *result = pending->second.front();
     pending->second.pop_front();
     return 0;

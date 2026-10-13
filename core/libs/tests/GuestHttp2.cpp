@@ -46,6 +46,9 @@ int APS5_VABI sceHttp2WebSocketSetPingInterval();
 static void Require(bool value) { if (!value) std::abort(); }
 
 static constexpr int InvalidId = static_cast<int>(0x817B1100);
+static constexpr int NullPointer = static_cast<int>(0x817B1225);
+static constexpr int NetworkError = static_cast<int>(0x80436063);
+static constexpr int KernelNoEntry = static_cast<int>(0x80020002);
 
 static void RequireSslSetters(int id, int expected) {
     Require(sceHttp2SetMinSslVersion(id, 0) == expected);
@@ -151,12 +154,23 @@ int main() {
     Require(sceKernelGetEventId(&event) == static_cast<uintptr_t>(request));
     Require(sceKernelGetEventUserData(&event) == &tag);
     Http2AsyncResult result{};
+    Require(sceHttp2WaitAsync(request, nullptr, nullptr, nullptr) == NullPointer);
+    Require(sceHttp2WaitAsync(tmpl, &result, nullptr, nullptr) == InvalidId);
+    Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, &tag); }));
     Require(sceHttp2WaitAsync(request, &result, nullptr, nullptr) == 0);
-    Require(result.req_id == request && result.result == static_cast<int>(0x80436063));
+    Require(result.req_id == request && result.result == NetworkError);
     Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, nullptr); }));
-    Require(Throws([&] { sceHttp2SendRequestAsync(request, nullptr, 0, nullptr, nullptr); }));
+    Require(Throws([&] { sceHttp2SendRequestAsync(request, nullptr, 0, &option, &tag); }));
+    Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, nullptr); }));
+    Require(sceHttp2SendRequestAsync(request, nullptr, 0, nullptr, nullptr) == 0);
+    Require(sceHttp2SendRequestAsync(request, "body", 4, nullptr, nullptr) == 0);
+    result = {};
+    Require(sceHttp2WaitAsync(request, &result, nullptr, nullptr) == 0 && result.req_id == request && result.result == NetworkError);
+    result = {};
+    Require(sceHttp2WaitAsync(request, &result, nullptr, nullptr) == 0 && result.req_id == request && result.result == NetworkError);
+    Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, nullptr); }));
     Require(sceKernelDeleteUserEvent(eq, request) == 0);
-    Require(Throws([&] { sceHttp2SendRequestAsync(request, nullptr, 0, &option, nullptr); }));
+    Require(sceHttp2SendRequestAsync(request, nullptr, 0, &option, nullptr) == KernelNoEntry);
     Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, nullptr); }));
     Require(sceHttp2DeleteRequest(request) == 0);
     Require(sceKernelDeleteEqueue(eq) == 0);
@@ -181,9 +195,10 @@ int main() {
     int cascadeCount = 0;
     Require(sceKernelWaitEqueue(templateEqueue, &cascadeEvent, 1, &cascadeCount, &timeout) == 0 && cascadeCount == 1);
     Require(sceHttp2DeleteTemplate(cascadeTemplate) == 0);
-    Require(Throws([&] { sceHttp2WaitAsync(cascadeRequest, &result, nullptr, nullptr); }));
+    Require(sceHttp2WaitAsync(cascadeRequest, &result, nullptr, nullptr) == InvalidId);
     Require(sceHttp2SendRequestAsync(cascadeRequest, nullptr, 0, &cascadeOption, nullptr) == InvalidId);
-    Require(Throws([&] { sceHttp2WaitAsync(cascadeRequest, &result, nullptr, nullptr); }));
+    Require(sceHttp2SendRequestAsync(cascadeRequest, nullptr, 0, nullptr, nullptr) == InvalidId);
+    Require(sceHttp2WaitAsync(cascadeRequest, &result, nullptr, nullptr) == InvalidId);
     Require(sceHttp2DeleteRequest(cascadeRequest) == InvalidId);
     RequireSslSetters(cascadeRequest, InvalidId);
     Require(sceHttp2Term(cascadeContext) == 0);
@@ -209,7 +224,7 @@ int main() {
     Require(sceKernelWaitEqueue(termEqueue, &termEvent, 1, &termCount, &timeout) == 0 && termCount == 1);
     Require(sceHttp2Term(terminatedContext) == 0);
     Require(sceHttp2SendRequestAsync(terminatedRequest, nullptr, 0, &termOption, nullptr) == InvalidId);
-    Require(Throws([&] { sceHttp2WaitAsync(terminatedRequest, &result, nullptr, nullptr); }));
+    Require(sceHttp2WaitAsync(terminatedRequest, &result, nullptr, nullptr) == InvalidId);
     Require(sceHttp2DeleteRequest(terminatedRequest) == InvalidId);
     Require(sceHttp2DeleteTemplate(terminatedTemplate) == InvalidId);
     RequireSslSetters(terminatedContext, InvalidId);
