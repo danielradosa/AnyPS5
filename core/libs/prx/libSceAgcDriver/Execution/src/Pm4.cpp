@@ -116,7 +116,6 @@ std::vector<std::byte> copySource(std::uint64_t source, std::size_t bytes, bool 
     return data;
 }
 
-constexpr std::uint32_t DmaSelectGds = 1;
 constexpr std::uint32_t DmaSelectNowhere = 2;
 
 bool gdsRange(std::uint64_t offset, std::size_t bytes) {

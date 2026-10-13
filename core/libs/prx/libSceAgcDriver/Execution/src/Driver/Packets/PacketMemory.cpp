@@ -111,6 +111,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
     if (!drainAll && !cpuStores && (opcode == 0x40 || opcode == 0x50 || opcode == 0x83)) {
         constexpr std::size_t gpuStoreLimit = 65536;
         bool drained = true;
+        int storeReason = -1;
         if (const auto store = Pm4::ResolveStore(packet, queue, gpuStoreLimit)) {
             const auto bytes = store->Bytes();
             if (bytes.empty()) {
@@ -128,6 +129,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
                 recordDeferredLabels(localDevice.get(), submission.queue);
                 const auto stamp = ++eventSerial;
                 const auto reason = localDevice != nullptr ? localDevice->WriteLabelOnGpu(store->address, bytes, stamp, submission.queue) : 4;
+                storeReason = reason;
                 if (reason == 0 || reason == 1 || reason == 5) noteLabelStore(store->address, bytes, stamp, submission.queue);
                 if (reason == 0 || reason == 5) {
                     if (reason == 0) ++storesOnGpu;
@@ -164,7 +166,24 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
                 }
             }
         }
-        if (drained) ++storesDrained;
+        // A DMA_DATA into the emulated GDS: Pm4::Execute stores it on the CPU through GuestMemory::Write,
+        // whose flush hook waits for the recorded GPU work noted over the GDS. Every GDS binding notes
+        // the whole GDS as written (ShaderResources: AddWritable), readers included, so that work is
+        // every recorded GDS user of any queue: its copy-backs land before the store and its copy-ins
+        // read before it. Nothing else reaches the GDS (its address is the driver's own), so the device
+        // drain that waited for every queue's newest batch orders nothing more. Debug aid:
+        // APS5_GDS_DRAIN=1 drains as before.
+        static const bool gdsDrain = std::getenv("APS5_GDS_DRAIN") != nullptr;
+        const bool toGds = opcode == 0x50 && Pm4::DmaDestination(packet) == Pm4::DmaSelectGds;
+        if (drained && toGds && !gdsDrain) {
+            orderedAlready = true;
+            drained = false;
+            ++gdsStoresOrdered;
+        }
+        if (drained) {
+            ++storesDrained;
+            ++storeDrainReasons[toGds ? 0 : storeReason == 3 ? 1 : storeReason >= 0 ? 2 : 3];
+        }
     }
 
     static const bool drawDrain = std::getenv("APS5_DRAW_DRAIN") != nullptr;

@@ -30,7 +30,12 @@ enum TrySite { TryLabel = 0, TryFlush, TryReap, TryPoll, TryIdle, TryCapture, Tr
 
 extern std::atomic<std::uint64_t> triesFailed[TrySites];
 
-extern std::atomic<std::uint64_t> storesOnGpu, storesBehindCompletions, storesOnCpu, storesDrained, copiesToHostMemory;
+extern std::atomic<std::uint64_t> storesOnGpu, storesBehindCompletions, storesOnCpu, storesDrained, copiesToHostMemory, gdsStoresOrdered;
+
+// Drained stores by why they could not go on the GPU: 0 a DMA_DATA into the GDS (APS5_GDS_DRAIN=1), 1 a
+// destination without a host import, 2 another WriteLabelOnGpu refusal, 3 not resolvable as a store
+// (misaligned, over 64 KiB, a register destination, a refused copy).
+extern std::atomic<std::uint64_t> storeDrainReasons[4];
 
 extern std::map<std::uint32_t, std::uint64_t> drainCounts;
 
