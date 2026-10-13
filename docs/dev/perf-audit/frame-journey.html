@@ -1,0 +1,967 @@
+<title>AnyPS5 Frame Journey</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: control strip, then a row of pipeline stations over a guest-memory rail with a canvas overlay carrying the moving commands, then a profiler-style lane timeline, then the explainer beside the live log. */
+:root {
+  --bg: #edf1f5;
+  --panel: #ffffff;
+  --panel-2: #f5f7fa;
+  --ink: #15202b;
+  --muted: #586675;
+  --line: #cfd7df;
+  --accent: #2b55e6;
+  --game: #50627a;
+  --draw: #2b55e6;
+  --compute: #0b8f80;
+  --label: #b87304;
+  --flip: #cc3b71;
+  --gpu: #6a4bdc;
+  --lock: #d03a3a;
+  --wait: #b87304;
+  --ok: #1f9a54;
+  --font-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1319; --panel: #161d25; --panel-2: #1b232d; --ink: #e2e8ee; --muted: #8f9ba8; --line: #2b3541;
+    --accent: #7693ff; --game: #9fb0c4; --draw: #7693ff; --compute: #34c4af; --label: #f0b440; --flip: #f27aa5;
+    --gpu: #a690ff; --lock: #ff6b6b; --wait: #f0b440; --ok: #4fd08a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1319; --panel: #161d25; --panel-2: #1b232d; --ink: #e2e8ee; --muted: #8f9ba8; --line: #2b3541;
+  --accent: #7693ff; --game: #9fb0c4; --draw: #7693ff; --compute: #34c4af; --label: #f0b440; --flip: #f27aa5;
+  --gpu: #a690ff; --lock: #ff6b6b; --wait: #f0b440; --ok: #4fd08a; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-inline: clamp(16px, 3vw, 32px); padding-block: 20px 48px; display: grid; gap: 18px; }
+
+.top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
+.top h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(30px, 4.4vw, 44px); line-height: 1; letter-spacing: .01em; margin: 0; text-wrap: balance; }
+.top p { margin: 6px 0 0; color: var(--muted); max-width: 64ch; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btn { font: 500 13px/1 var(--font-body); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; cursor: pointer; }
+.btn:hover { border-color: var(--muted); }
+.btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn:focus-visible, .station:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg .btn { border: 0; border-radius: 0; padding: 9px 10px; font-family: var(--font-mono); }
+.seg .btn + .btn { border-left: 1px solid var(--line); }
+.play { min-width: 84px; }
+
+.stage { position: relative; display: grid; gap: 12px; }
+.pipeline { display: grid; gap: 10px; grid-template-columns: repeat(8, minmax(0, 1fr)) minmax(0, 1.55fr); }
+.overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+
+.station { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; min-height: 118px; text-align: left; color: inherit; font: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px 12px; cursor: pointer; }
+.station:hover { border-color: var(--muted); }
+.station[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.num { font: 500 11px/1 var(--font-mono); color: var(--muted); letter-spacing: .04em; }
+.name { font-family: var(--font-display); font-weight: 600; font-size: 19px; line-height: 1.05; letter-spacing: .015em; }
+.status { font: 400 11.5px/1.35 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.status b { color: var(--ink); font-weight: 500; }
+.light { position: absolute; top: 11px; right: 11px; width: 9px; height: 9px; border-radius: 50%; background: var(--line); transition: background .15s; }
+.light.busy { background: var(--ok); }
+.light.blocked { background: var(--lock); }
+.light.waiting { background: var(--wait); }
+.row { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.row .light { position: static; flex: none; width: 8px; height: 8px; transform: translateY(1px); }
+.row .status { min-width: 0; }
+
+.lockbox { display: flex; align-items: center; gap: 8px; }
+.padlock { width: 28px; height: 28px; flex: none; color: var(--ok); transition: color .15s; }
+.padlock .shackle { transition: transform .15s; transform: translateY(-3px); }
+.held .padlock { color: var(--lock); }
+.held .padlock .shackle { transform: none; }
+.station.lock { border-width: 2px; padding: 9px 10px 11px; }
+.station.lock.held { border-color: var(--lock); }
+
+.screen { cursor: pointer; }
+.screen canvas { display: block; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; background: #0b1020; margin-top: 4px; }
+
+.memory { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-height: 58px; text-align: left; color: inherit; font: inherit; background: var(--panel-2); border: 1px dashed var(--line); border-radius: 10px; padding: 10px 14px; cursor: pointer; }
+.memory .name { font-size: 18px; }
+.memory[aria-pressed="true"] { border-style: solid; border-color: var(--accent); }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 16px; min-width: 0; }
+.panel h2 { font-family: var(--font-display); font-weight: 600; font-size: 21px; letter-spacing: .015em; line-height: 1.1; margin: 0 0 4px; }
+.panel .sub { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.timeline canvas { display: block; width: 100%; height: 190px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 18px; height: 10px; border-radius: 2px; display: inline-block; }
+.sw.work { background: linear-gradient(90deg, var(--draw) 0 33%, var(--compute) 33% 66%, var(--gpu) 66%); }
+.sw.prep { background: var(--draw); opacity: .4; }
+.sw.lockw { background: repeating-linear-gradient(135deg, var(--lock) 0 2px, transparent 2px 5px); border: 1px solid var(--lock); }
+.sw.waitw { background: repeating-linear-gradient(135deg, var(--wait) 0 2px, transparent 2px 5px); border: 1px solid var(--wait); }
+.sw.idle { height: 2px; background: var(--line); }
+
+.lower { display: grid; gap: 12px; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; }
+.explain p { margin: 0 0 10px; max-width: 68ch; }
+.explain .code { margin-top: 6px; display: grid; gap: 4px; }
+.explain .code div { font: 12px/1.4 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.eyebrow { font: 500 11px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 12px 0 2px; }
+.keys { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.stat { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.stat .v { font: 600 22px/1.1 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.stat .k { font-size: 11.5px; color: var(--muted); line-height: 1.3; }
+.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font: 12px/1.4 var(--font-mono); }
+.log li { display: grid; grid-template-columns: 68px 78px minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.log li:last-child { border-bottom: 0; }
+.log .t { color: var(--muted); font-variant-numeric: tabular-nums; }
+.log .who { font-weight: 500; }
+.log .what { overflow-wrap: anywhere; }
+.note { font-size: 12.5px; color: var(--muted); margin: 0; }
+
+@media (max-width: 1180px) {
+  .pipeline { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 860px) {
+  .lower { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pipeline .screen { grid-column: 1 / -1; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .log li { grid-template-columns: max-content minmax(0, 1fr); }
+  .log .t { white-space: nowrap; }
+  .log .what { grid-column: 1 / -1; }
+  .station { min-height: 104px; }
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>AnyPS5 Frame Journey</h1>
+      <p>Watch commands from a PS5 game travel through AnyPS5 until a frame lands on your screen. Each dot is a command. A real frame has thousands of draws; this model uses 12 draws and 3 compute dispatches per frame so you can follow them.</p>
+    </div>
+    <div class="controls" role="group" aria-label="Playback">
+      <button class="btn play" id="play" type="button" aria-pressed="true">Pause</button>
+      <div class="seg" role="group" aria-label="Speed">
+        <button class="btn" type="button" data-speed="0.5" aria-pressed="false">0.5×</button>
+        <button class="btn" type="button" data-speed="1" aria-pressed="true">1×</button>
+        <button class="btn" type="button" data-speed="2" aria-pressed="false">2×</button>
+        <button class="btn" type="button" data-speed="4" aria-pressed="false">4×</button>
+      </div>
+      <button class="btn" id="restart" type="button">Restart</button>
+    </div>
+  </header>
+
+  <section class="stage" id="stage" aria-label="Pipeline">
+    <div class="pipeline">
+      <button class="station" type="button" data-st="game" id="st-game" aria-pressed="false">
+        <span class="light" id="l-game"></span>
+        <span class="num">01</span><span class="name">Game thread</span>
+        <span class="status" id="s-game">starting</span>
+      </button>
+      <button class="station" type="button" data-st="submit" id="st-submit" aria-pressed="false">
+        <span class="light" id="l-submit"></span>
+        <span class="num">02</span><span class="name">Submit</span>
+        <span class="status" id="s-submit">no flips queued</span>
+      </button>
+      <button class="station" type="button" data-st="workers" id="st-workers" aria-pressed="false">
+        <span class="num">03</span><span class="name">Queue workers</span>
+        <span class="row"><span class="light" id="l-q0"></span><span class="status" id="s-q0"><b>q0</b> idle</span></span>
+        <span class="row"><span class="light" id="l-q20"></span><span class="status" id="s-q20"><b>q20</b> idle</span></span>
+      </button>
+      <button class="station" type="button" data-st="prepare" id="st-prepare" aria-pressed="false">
+        <span class="light" id="l-prepare"></span>
+        <span class="num">04</span><span class="name">Prepare draw</span>
+        <span class="status" id="s-prepare">idle</span>
+      </button>
+      <button class="station lock" type="button" data-st="lock" id="st-lock" aria-pressed="true">
+        <span class="num">05</span><span class="name">GPU lock</span>
+        <span class="lockbox">
+          <svg class="padlock" viewBox="0 0 24 24" aria-hidden="true"><path class="shackle" d="M7.5 11V8a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><rect x="5" y="11" width="14" height="10" rx="2.2" fill="currentColor"/></svg>
+          <span class="status" id="s-lock-holder"><b>free</b></span>
+        </span>
+        <span class="status" id="s-lock-wait">nobody waiting</span>
+      </button>
+      <button class="station" type="button" data-st="record" id="st-record" aria-pressed="false">
+        <span class="light" id="l-record"></span>
+        <span class="num">06</span><span class="name">Record Vulkan</span>
+        <span class="status" id="s-record">batch empty</span>
+      </button>
+      <button class="station" type="button" data-st="gpu" id="st-gpu" aria-pressed="false">
+        <span class="light" id="l-gpu"></span>
+        <span class="num">07</span><span class="name">GPU</span>
+        <span class="status" id="s-gpu">idle</span>
+      </button>
+      <button class="station" type="button" data-st="present" id="st-present" aria-pressed="false">
+        <span class="light" id="l-present"></span>
+        <span class="num">08</span><span class="name">Presenter</span>
+        <span class="status" id="s-present">waiting for a flip</span>
+      </button>
+      <button class="station screen" type="button" data-st="screen" id="st-screen" aria-pressed="false">
+        <span class="num">09</span><span class="name">Your screen</span>
+        <canvas id="screen" width="320" height="180" aria-label="Last presented frame"></canvas>
+        <span class="status" id="s-screen">no frame yet</span>
+      </button>
+    </div>
+    <button class="memory" type="button" data-st="memory" id="st-memory" aria-pressed="false">
+      <span class="name">Guest memory</span>
+      <span class="status" id="s-memory">the game's RAM, shared by the game, the workers and the GPU copies</span>
+    </button>
+    <canvas class="overlay" id="overlay" aria-hidden="true"></canvas>
+  </section>
+
+  <section class="panel timeline">
+    <h2>Who is busy right now</h2>
+    <p class="sub">A scrolling trace of each thread and the GPU, newest on the right. Faint vertical lines are monitor refreshes (vsync).</p>
+    <canvas id="lanes" aria-label="Thread activity timeline"></canvas>
+    <div class="legend">
+      <span><i class="sw work"></i>working</span>
+      <span><i class="sw prep"></i>preparing a draw without the lock</span>
+      <span><i class="sw lockw"></i>waiting for the GPU lock</span>
+      <span><i class="sw waitw"></i>waiting for the GPU, memory, vsync or flip room</span>
+      <span><i class="sw idle"></i>nothing to do</span>
+    </div>
+  </section>
+
+  <section class="lower">
+    <div class="panel explain" id="explain" aria-live="polite"></div>
+    <div class="panel">
+      <h2>Live feed</h2>
+      <div class="stats">
+        <div class="stat"><div class="v" id="k-frames">0</div><div class="k">frames on screen</div></div>
+        <div class="stat"><div class="v" id="k-draws">0</div><div class="k">draws recorded</div></div>
+        <div class="stat"><div class="v" id="k-batches">0</div><div class="k">GPU batches submitted</div></div>
+        <div class="stat"><div class="v" id="k-waits">0</div><div class="k">times a thread queued for the lock</div></div>
+      </div>
+      <ul class="log" id="log"></ul>
+    </div>
+  </section>
+
+  <p class="note">This is a model. The order of the steps, the threads, and the single GPU lock they share follow the code in core/libs/prx/libSceAgcDriver. The durations are illustrative and were not measured on Astro Bot.</p>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const RATE = 22;
+  const WINDOW = 110;
+  const VSYNC = 1000 / 60;
+  const FLIP_ROOM = 2;
+  const STEP = 0.25;
+
+  const EXPLAIN = {
+    intro: {
+      title: "What you are watching",
+      body: [
+        "A PS5 game talks to its GPU by writing command lists. AnyPS5 has no PS5 GPU, so its driver reads those lists on ordinary CPU threads, turns each draw into Vulkan commands for your graphics card, and finally shows the frame in a window.",
+        "Follow the dots from left to right. The padlock is the most important part of the picture: it is a single lock, and every thread that wants to talk to Vulkan has to take it first.",
+        "Select any stage to see what it does and where it lives in the code."
+      ],
+      keys: true,
+      code: []
+    },
+    game: {
+      title: "01 Game thread",
+      body: [
+        "The game builds command lists with libSceAgc calls: register writes, draws, compute dispatches, label writes, memory waits, and a flip at the end of each frame. On a PS5 the GPU reads these lists directly. Here they are handed to AnyPS5's driver.",
+        "When the display already has two frames queued, the game's submit call waits. In the trace this shows as amber on the Game lane: the game thread is ready but has nowhere to put its next frame."
+      ],
+      code: ["core/libs/prx/libSceAgc (command building)", "core/libs/prx/libSceAgcDriver/Submit/src/Dcb.cpp, Acb.cpp"]
+    },
+    submit: {
+      title: "02 Submit",
+      body: [
+        "Driver::Submit copies the command list out of game memory, validates it, reads indirect register lists and, when the list contains a flip, waits until the display has room for another frame. It then appends the copy to that queue's worker and wakes it.",
+        "This all runs on the game's own thread, before any GPU work starts."
+      ],
+      code: ["libSceAgcDriver/Execution/src/Driver/Queues/Submission.cpp:189 Driver::Submit", "Submission.cpp:119 waitForFlipRoom", "Submission.cpp:292 enqueue"]
+    },
+    workers: {
+      title: "03 Queue workers",
+      body: [
+        "Each GPU queue gets its own host thread: q0 for graphics, q20 and up for compute. A worker takes the next command list and walks its packets strictly in order. Register writes are cheap. Draws and dispatches go through steps 04 to 06.",
+        "A WAIT_REG_MEM packet makes the worker poll guest memory, sleeping briefly between checks, until a value appears. Usually that value is a label that finished GPU work writes, so the worker sits idle until the GPU gets there."
+      ],
+      code: ["libSceAgcDriver/Execution/src/Driver/Queues/QueueWorker.cpp Driver::run", "Execution/src/Driver/Packets/PacketExecution.cpp Driver::execute", "Execution/src/Driver/Synchronization/WaitMemory.cpp (polling)"]
+    },
+    prepare: {
+      title: "04 Prepare draw",
+      body: [
+        "Before touching Vulkan, the worker decodes the draw's registers, looks up its shaders in a cache, and works out which guest-memory regions those shaders read. If a shader variant is new, it is recompiled from the PS5's RDNA code to SPIR-V. That is slow, but happens once per variant and is then cached in memory and on disk.",
+        "This step runs without the GPU lock, so q0 and q20 can prepare at the same time."
+      ],
+      code: ["libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:11 Driver::draw", "Execution/src/Driver/Draw/DrawLookup.cpp, DrawDecode.cpp", "core/shader/recompiler/Recompiler.cpp, ShaderDiskCache.cpp"]
+    },
+    lock: {
+      title: "05 GPU lock",
+      body: [
+        "GuestMemory::GpuMutex() is one lock for the whole process. A worker takes it right before recording a draw and holds it until the draw is recorded. Dispatches, label flushes, buffer copies, texture work and the presenter take the same lock, from 59 places in the driver.",
+        "So however many CPU cores you have, only one thread records GPU work at any moment. Red hatching in the trace is time a thread spent waiting here."
+      ],
+      code: ["libSceAgcDriver/Execution/src/GuestMemory.cpp:1692 GpuMutex()", "Execution/src/Driver/Draw/Draw.cpp:260 lockForDraw", "Execution/src/Driver/Presentation.cpp:54, 86, 120"]
+    },
+    record: {
+      title: "06 Record Vulkan",
+      body: [
+        "With the lock held, the draw is turned into Vulkan work: the guest memory it reads is brought into GPU buffers, textures and render targets are made resident, a pipeline is picked, and the draw command is written into the current batch. Consecutive draws into the same targets keep one render pass open.",
+        "The batch is shared by all workers. It is sent to the GPU with vkQueueSubmit at a flip, at the end of a command list, before a memory wait, or when labels must be flushed."
+      ],
+      code: ["libSceAgcDriver/Graphics/src/Draw.cpp (recording a draw)", "Graphics/src/Recorder.cpp (batches, submits, render passes)", "Graphics/src/GuestBufferMemory.cpp, Texture.cpp, ShaderResources.cpp"]
+    },
+    gpu: {
+      title: "07 GPU",
+      body: [
+        "Your graphics card runs each submitted batch. When a batch finishes, any labels in it are written back into guest memory. That is the moment a polling worker, or the game itself, can continue.",
+        "Watch the GPU lane: while workers are preparing and recording, the GPU often has nothing queued."
+      ],
+      code: ["libSceAgcDriver/Graphics/src/Recorder.cpp (vkQueueSubmit, timeline waits)", "Execution/src/Driver/Synchronization/DeferredLabels.cpp"]
+    },
+    present: {
+      title: "08 Presenter",
+      body: [
+        "A flip hands the frame's display buffer to the presenter thread. It takes the GPU lock, acquires a swapchain image and blits the display buffer straight from the render target still on the GPU. It then waits for the frame's GPU work and presents.",
+        "The swapchain uses FIFO mode, so a present lines up with the next monitor refresh."
+      ],
+      code: ["libSceAgcDriver/Execution/src/Driver/Presentation.cpp:26 Driver::Present", "Execution/src/VulkanDevice.cpp:2013 PresentDisplayBuffer", "VulkanDevice.cpp:1830 VK_PRESENT_MODE_FIFO_KHR"]
+    },
+    screen: {
+      title: "09 Your screen",
+      body: [
+        "The frame you finally see. The picture only changes when the presenter puts a new frame on screen, so a slow pipeline shows up here as a choppy image even though the monitor refreshes 60 times a second."
+      ],
+      code: []
+    },
+    memory: {
+      title: "Guest memory",
+      body: [
+        "The game's RAM. The game, the queue workers and the driver all read and write it. Draw preparation reads it to find shader inputs, recording copies what each draw reads into GPU buffers, finished GPU work writes labels and results back into it, and waiting workers poll it.",
+        "On a PS5 the CPU and GPU share this memory directly. Here every crossing between guest memory and the graphics card is a copy or a check that the driver has to do."
+      ],
+      code: ["libSceAgcDriver/Execution/src/GuestMemory.cpp", "Graphics/src/GuestBufferMemory.cpp", "Execution/src/ShaderMemory.cpp"]
+    }
+  };
+
+  const LANES = [
+    { id: "game", name: "Game thread", tone: "game" },
+    { id: "q0", name: "Worker q0 · graphics", tone: "draw" },
+    { id: "q20", name: "Worker q20 · compute", tone: "compute" },
+    { id: "present", name: "Presenter", tone: "flip" },
+    { id: "gpu", name: "GPU", tone: "gpu" }
+  ];
+  const WHO = { game: "game", q0: "q0", q20: "q20", present: "present", gpu: "gpu" };
+
+  let C = {};
+  const MONO = getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() || "monospace";
+  const hatchCache = new Map();
+  function readColors() {
+    const cs = getComputedStyle(document.documentElement);
+    for (const k of ["bg", "panel", "panel-2", "ink", "muted", "line", "accent", "game", "draw", "compute", "label", "flip", "gpu", "lock", "wait", "ok"]) C[k] = cs.getPropertyValue("--" + k).trim();
+    hatchCache.clear();
+    if (sim) drawScreen(sim.shown);
+  }
+
+  let sim = null;
+  let actors = [];
+  let silent = false;
+  let speed = 1;
+  let playing = !reduceMotion;
+  const tokens = [];
+  const logLines = [];
+  let logDirty = true;
+
+  function newSim() {
+    return {
+      t: 0,
+      lock: { holder: null, queue: [] },
+      batch: { draws: 0, dispatches: 0, labels: [], flip: 0 },
+      gpuQueue: [], gpuDone: new Set(), labels: new Set(), labelOrder: [],
+      flipsPending: 0, presentQueue: [],
+      q: { q0: [], q20: [] },
+      seenShaders: new Set(),
+      stats: { frames: 0, draws: 0, batches: 0, lockWaits: 0 },
+      shown: 0,
+      lanes: Object.fromEntries(LANES.map((l) => [l.id, { segs: [], cur: null }]))
+    };
+  }
+
+  const work = (ms, text, tone, where) => ({ op: "work", ms, text, tone, where });
+  const lock = () => ({ op: "lock" });
+  const unlock = () => ({ op: "unlock" });
+  const wait = (cond, text, where) => ({ op: "wait", cond, text, where, why: "wait" });
+  const idle = (cond, text) => ({ op: "wait", cond, text, why: "idle" });
+
+  function addActor(id, name, gen) {
+    const a = { id, name, state: { kind: "start" }, kind: "idle", text: "idle", where: "", tone: "", polling: false };
+    a.it = gen(a);
+    actors.push(a);
+    return a;
+  }
+
+  function setActivity(a, kind, text, tone, where) {
+    a.kind = kind;
+    a.text = text;
+    a.tone = tone || a.tone;
+    a.where = where || "";
+    const lane = sim.lanes[a.id];
+    if (!lane) return;
+    if (lane.cur) lane.cur.end = sim.t;
+    lane.cur = { start: sim.t, end: null, kind, tone: tone || "", where: where || "" };
+    lane.segs.push(lane.cur);
+    const cutoff = sim.t - WINDOW - 40;
+    while (lane.segs.length && lane.segs[0].end !== null && lane.segs[0].end < cutoff) lane.segs.shift();
+  }
+
+  function log(who, text, tone) {
+    logLines.unshift({ t: sim.t, who, text, tone: tone || "" });
+    if (logLines.length > 40) logLines.length = 40;
+    logDirty = true;
+  }
+
+  function takeLock(a, waited, behind) {
+    sim.lock.holder = a;
+    if (waited) log(a.id, `got the GPU lock after waiting ${(sim.t - a.lockWaitStart).toFixed(1)} ms behind ${behind}`, "lock");
+  }
+
+  function releaseLock(a) {
+    sim.lock.holder = null;
+    if (sim.lock.queue.length) takeLock(sim.lock.queue.shift(), true, a.name);
+  }
+
+  function advance(a) {
+    for (let guard = 0; guard < 64; guard++) {
+      const s = a.state;
+      if (s.kind === "work" && sim.t < s.until) return;
+      if (s.kind === "lockwait" && sim.lock.holder !== a) return;
+      if (s.kind === "wait" && !s.cond()) return;
+      const r = a.it.next();
+      if (r.done) { a.state = { kind: "done" }; return; }
+      const c = r.value;
+      if (c.op === "work") {
+        a.state = { kind: "work", until: sim.t + c.ms };
+        setActivity(a, "work", c.text, c.tone, c.where);
+      } else if (c.op === "lock") {
+        if (sim.lock.holder === null && sim.lock.queue.length === 0) {
+          takeLock(a, false);
+          a.state = { kind: "ready" };
+        } else {
+          sim.lock.queue.push(a);
+          sim.stats.lockWaits++;
+          a.lockWaitStart = sim.t;
+          a.state = { kind: "lockwait" };
+          setActivity(a, "lock", "waiting for the GPU lock", a.tone, "lock");
+        }
+      } else if (c.op === "unlock") {
+        releaseLock(a);
+        a.state = { kind: "ready" };
+      } else if (c.op === "wait") {
+        a.state = { kind: "wait", cond: c.cond };
+        setActivity(a, c.why === "idle" ? "idle" : "wait", c.text, a.tone, c.where);
+      }
+    }
+  }
+
+  function step(dt) {
+    let left = dt;
+    while (left > 0) {
+      const d = Math.min(STEP, left);
+      sim.t += d;
+      left -= d;
+      for (const a of actors) advance(a);
+    }
+  }
+
+  function graphicsList(f) {
+    const packets = [];
+    const draw = (i) => {
+      let shader = "g" + (i % 8);
+      if (f % 4 === 0 && i === 9) shader = "g-new-" + f;
+      packets.push({ k: "draw", i, shader });
+    };
+    for (let i = 1; i <= 3; i++) draw(i);
+    packets.push({ k: "label", label: "G" + f });
+    packets.push({ k: "wait", label: "C" + f });
+    for (let i = 4; i <= 12; i++) draw(i);
+    packets.push({ k: "flip", f });
+    return { frame: f, packets };
+  }
+
+  function computeList(f) {
+    const packets = [{ k: "wait", label: "G" + f }];
+    for (let i = 1; i <= 3; i++) packets.push({ k: "dispatch", i, shader: "c" + i });
+    packets.push({ k: "label", label: "C" + f });
+    return { frame: f, packets };
+  }
+
+  function batchHasWork() {
+    const b = sim.batch;
+    return b.draws + b.dispatches > 0 || b.labels.length > 0 || b.flip > 0;
+  }
+
+  function submitBatch(by) {
+    if (!batchHasWork()) return;
+    const b = sim.batch;
+    sim.gpuQueue.push({ draws: b.draws, dispatches: b.dispatches, labels: b.labels.slice(), flip: b.flip, cost: 0.3 + b.draws * 0.8 + b.dispatches * 1.4 });
+    sim.stats.batches++;
+    const parts = [];
+    if (b.draws) parts.push(`${b.draws} draw${b.draws > 1 ? "s" : ""}`);
+    if (b.dispatches) parts.push(`${b.dispatches} dispatch${b.dispatches > 1 ? "es" : ""}`);
+    if (b.labels.length) parts.push(`label ${b.labels.join(", ")}`);
+    if (b.flip) parts.push(`frame ${b.flip} flip`);
+    log(by, `vkQueueSubmit: batch with ${parts.join(", ")}`, "gpu");
+    token(["record", "gpu"], C.gpu, 6.5);
+    sim.batch = { draws: 0, dispatches: 0, labels: [], flip: 0 };
+  }
+
+  function* gameGen(a) {
+    let f = 0;
+    for (;;) {
+      f++;
+      a.frame = f;
+      yield work(9, `building frame ${f}`, "game", "game");
+      token(["game", "submit"], C.game, 5.5);
+      yield work(1.2, `Submit: copying frame ${f}`, "game", "submit");
+      if (sim.flipsPending >= FLIP_ROOM) log("game", `frame ${f} waits: ${FLIP_ROOM} frames already queued for display`, "wait");
+      yield wait(() => sim.flipsPending < FLIP_ROOM, `frame ${f}: waiting for flip room`, "submit");
+      sim.flipsPending++;
+      sim.q.q0.push(graphicsList(f));
+      sim.q.q20.push(computeList(f));
+      token(["submit", "workers"], C.draw, 5.5);
+      token(["submit", "workers"], C.compute, 5.5);
+      log("game", `submitted frame ${f}: 12 draws to q0, 3 dispatches to q20`);
+    }
+  }
+
+  function* workerGen(a) {
+    for (;;) {
+      yield idle(() => sim.q[a.id].length > 0, "waiting for commands");
+      const list = sim.q[a.id].shift();
+      a.frame = list.frame;
+      for (const p of list.packets) {
+        if (p.k === "draw" || p.k === "dispatch") {
+          const isDraw = p.k === "draw";
+          const tone = isDraw ? "draw" : "compute";
+          const n = isDraw ? `draw ${p.i}/12` : `dispatch ${p.i}/3`;
+          const miss = !sim.seenShaders.has(p.shader);
+          if (miss) {
+            sim.seenShaders.add(p.shader);
+            log(a.id, `frame ${list.frame} ${n}: new shader, recompiling RDNA to SPIR-V`, "wait");
+          }
+          token(["workers", "prepare"], C[tone], 4.5);
+          memParticle("prepare", "up", C[tone]);
+          yield work((isDraw ? 1.6 : 1.0) + (miss ? 9 : 0), miss ? `${n}: recompiling shader` : `${n}: decode + shader lookup`, tone, "prepare");
+          yield lock();
+          token(["prepare", "lock", "record"], C[tone], 4.5);
+          memParticle("record", "up", C[tone]);
+          yield work(isDraw ? 1.8 : 1.2, `${n}: recording`, tone, "record");
+          if (isDraw) { sim.batch.draws++; sim.stats.draws++; } else sim.batch.dispatches++;
+          yield unlock();
+        } else if (p.k === "label") {
+          yield lock();
+          yield work(0.5, `label ${p.label}: record and submit`, "label", "record");
+          sim.batch.labels.push(p.label);
+          submitBatch(a.id);
+          yield unlock();
+        } else if (p.k === "wait") {
+          if (batchHasWork()) {
+            yield lock();
+            yield work(0.4, "submitting recorded work before the wait", "draw", "record");
+            submitBatch(a.id);
+            yield unlock();
+          }
+          if (!sim.labels.has(p.label)) {
+            log(a.id, `WAIT_REG_MEM: polling guest memory for label ${p.label}`, "wait");
+            a.polling = true;
+            a.waitStart = sim.t;
+            yield wait(() => sim.labels.has(p.label), `polling memory for label ${p.label}`, "workers");
+            a.polling = false;
+            log(a.id, `label ${p.label} arrived after ${(sim.t - a.waitStart).toFixed(1)} ms of polling`);
+          }
+        } else if (p.k === "flip") {
+          yield lock();
+          yield work(0.6, `flip frame ${p.f}: submit the batch`, "flip", "record");
+          sim.batch.flip = p.f;
+          submitBatch(a.id);
+          yield unlock();
+          sim.presentQueue.push(p.f);
+          token(["workers", "present"], C.flip, 6);
+          log(a.id, `flip: frame ${p.f} handed to the presenter`, "flip");
+        }
+      }
+    }
+  }
+
+  function* gpuGen(a) {
+    for (;;) {
+      yield idle(() => sim.gpuQueue.length > 0, "idle, nothing submitted");
+      const b = sim.gpuQueue.shift();
+      const parts = [];
+      if (b.draws) parts.push(`${b.draws} draws`);
+      if (b.dispatches) parts.push(`${b.dispatches} dispatches`);
+      yield work(b.cost, `running batch${parts.length ? ": " + parts.join(", ") : ""}`, "gpu", "gpu");
+      for (const l of b.labels) {
+        sim.labels.add(l);
+        sim.labelOrder.push(l);
+        if (sim.labelOrder.length > 3) sim.labelOrder.shift();
+        memParticle("gpu", "down", C.label);
+        log("gpu", `wrote label ${l} back to guest memory`, "label");
+      }
+      if (b.flip) sim.gpuDone.add(b.flip);
+    }
+  }
+
+  function* presenterGen(a) {
+    for (;;) {
+      yield idle(() => sim.presentQueue.length > 0, "waiting for a flip");
+      const f = sim.presentQueue.shift();
+      yield lock();
+      yield work(0.8, `frame ${f}: acquire image, blit`, "flip", "present");
+      yield unlock();
+      yield wait(() => sim.gpuDone.has(f), `frame ${f}: waiting for its GPU work`, "present");
+      const next = Math.ceil(sim.t / VSYNC) * VSYNC;
+      yield wait(() => sim.t >= next, `frame ${f}: waiting for vsync`, "present");
+      yield lock();
+      yield work(0.3, `frame ${f}: present`, "flip", "present");
+      yield unlock();
+      sim.flipsPending--;
+      sim.gpuDone.delete(f);
+      sim.shown = f;
+      sim.stats.frames++;
+      token(["present", "screen"], C.flip, 6);
+      drawScreen(f);
+      log("present", `frame ${f} is on screen`, "flip");
+    }
+  }
+
+  function reset() {
+    sim = newSim();
+    actors = [];
+    tokens.length = 0;
+    logLines.length = 0;
+    addActor("game", "Game", gameGen);
+    const q0 = addActor("q0", "q0", workerGen);
+    const q20 = addActor("q20", "q20", workerGen);
+    q0.tone = "draw";
+    q20.tone = "compute";
+    addActor("present", "Presenter", presenterGen);
+    addActor("gpu", "GPU", gpuGen);
+    silent = true;
+    drawScreen(0);
+    step(260);
+    silent = false;
+    logDirty = true;
+    updateDom(true);
+  }
+
+  // Moving dots
+  let stageBox = null;
+  const rects = {};
+  const stage = $("stage");
+  const overlay = $("overlay");
+  const octx = overlay.getContext("2d");
+  function measure() {
+    stageBox = stage.getBoundingClientRect();
+    for (const el of stage.querySelectorAll("[data-st]")) {
+      const r = el.getBoundingClientRect();
+      rects[el.dataset.st] = { x: r.left - stageBox.left, y: r.top - stageBox.top, w: r.width, h: r.height };
+    }
+    const dpr = window.devicePixelRatio || 1;
+    overlay.width = Math.round(stageBox.width * dpr);
+    overlay.height = Math.round(stageBox.height * dpr);
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  const center = (id) => { const r = rects[id]; return r ? { x: r.x + r.w / 2, y: r.y + r.h / 2 } : { x: 0, y: 0 }; };
+  const hopMs = () => Math.max(180, Math.min(1000, 640 / speed));
+
+  function token(path, color, size) {
+    if (silent || reduceMotion) return;
+    tokens.push({ path, color, size: size || 5, born: performance.now(), dur: hopMs() * (path.length - 1) });
+  }
+  function memParticle(station, dir, color) {
+    if (silent || reduceMotion) return;
+    tokens.push({ mem: station, dir, color, size: 3.5, born: performance.now(), dur: hopMs() * 0.9 });
+  }
+
+  function pointAlong(t) {
+    if (t.mem) {
+      const s = rects[t.mem], m = rects.memory;
+      if (!s || !m) return null;
+      const x = s.x + s.w / 2;
+      const a = { x, y: m.y + m.h / 2 }, b = { x, y: s.y + s.h - 8 };
+      return t.dir === "up" ? [a, b] : [b, a];
+    }
+    return t.path.map(center);
+  }
+
+  function drawTokens(now) {
+    if (!stageBox) return;
+    octx.clearRect(0, 0, stageBox.width, stageBox.height);
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i];
+      const p = (now - t.born) / t.dur;
+      if (p >= 1) { tokens.splice(i, 1); continue; }
+      const pts = pointAlong(t);
+      if (!pts) continue;
+      for (let k = 0; k < 4; k++) {
+        const q = Math.max(0, p - k * 0.035);
+        const pos = interp(pts, ease(q));
+        octx.globalAlpha = k === 0 ? 1 : 0.32 - k * 0.07;
+        octx.beginPath();
+        octx.arc(pos.x, pos.y, Math.max(1.5, t.size - k * 0.9), 0, Math.PI * 2);
+        octx.fillStyle = t.color;
+        octx.fill();
+      }
+      octx.globalAlpha = 1;
+    }
+  }
+  const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+  function interp(pts, p) {
+    if (pts.length === 1) return pts[0];
+    const seg = Math.min(pts.length - 2, Math.floor(p * (pts.length - 1)));
+    const local = p * (pts.length - 1) - seg;
+    const a = pts[seg], b = pts[seg + 1];
+    return { x: a.x + (b.x - a.x) * local, y: a.y + (b.y - a.y) * local };
+  }
+
+  // Lane timeline
+  const lanes = $("lanes");
+  const lctx = lanes.getContext("2d");
+  const LANE_H = 34, TOP = 4, AXIS = 22;
+  function sizeLanes() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = lanes.clientWidth;
+    const h = TOP + LANE_H * LANES.length + AXIS;
+    lanes.style.height = h + "px";
+    lanes.width = Math.round(w * dpr);
+    lanes.height = Math.round(h * dpr);
+    lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  function hatch(color) {
+    if (hatchCache.has(color)) return hatchCache.get(color);
+    const c = document.createElement("canvas");
+    c.width = 6; c.height = 6;
+    const g = c.getContext("2d");
+    g.strokeStyle = color;
+    g.lineWidth = 1.6;
+    g.beginPath(); g.moveTo(-1, 7); g.lineTo(7, -1); g.stroke();
+    g.beginPath(); g.moveTo(-1, 1); g.lineTo(1, -1); g.stroke();
+    g.beginPath(); g.moveTo(5, 7); g.lineTo(7, 5); g.stroke();
+    const pat = lctx.createPattern(c, "repeat");
+    hatchCache.set(color, pat);
+    return pat;
+  }
+  function drawLanes() {
+    const w = lanes.clientWidth;
+    const h = TOP + LANE_H * LANES.length + AXIS;
+    lctx.clearRect(0, 0, w, h);
+    const t0 = sim.t - WINDOW;
+    const x = (t) => ((t - t0) / WINDOW) * w;
+    lctx.strokeStyle = C.line;
+    lctx.lineWidth = 1;
+    for (let k = Math.ceil(t0 / VSYNC); k * VSYNC <= sim.t; k++) {
+      const vx = Math.round(x(k * VSYNC)) + 0.5;
+      lctx.globalAlpha = 0.7;
+      lctx.beginPath(); lctx.moveTo(vx, TOP); lctx.lineTo(vx, TOP + LANE_H * LANES.length); lctx.stroke();
+      lctx.globalAlpha = 1;
+    }
+    LANES.forEach((lane, i) => {
+      const y = TOP + i * LANE_H;
+      lctx.fillStyle = C.muted;
+      lctx.font = "500 11px " + MONO;
+      lctx.textBaseline = "top";
+      lctx.fillText(lane.name, 2, y + 1);
+      const by = y + 16, bh = 12;
+      lctx.fillStyle = C.line;
+      lctx.fillRect(0, by + bh / 2 - 0.5, w, 1);
+      for (const s of sim.lanes[lane.id].segs) {
+        const end = s.end === null ? sim.t : s.end;
+        if (end < t0 || s.kind === "idle") continue;
+        const x0 = Math.max(0, x(s.start)), x1 = Math.min(w, x(end));
+        if (x1 - x0 < 0.5) continue;
+        if (s.kind === "work") {
+          lctx.fillStyle = C[s.tone] || C[lane.tone];
+          lctx.globalAlpha = s.where === "prepare" ? 0.4 : 1;
+          lctx.fillRect(x0, by, x1 - x0, bh);
+          lctx.globalAlpha = 1;
+        } else {
+          const col = s.kind === "lock" ? C.lock : C.wait;
+          lctx.fillStyle = hatch(col);
+          lctx.fillRect(x0, by, x1 - x0, bh);
+          lctx.strokeStyle = col;
+          lctx.strokeRect(x0 + 0.5, by + 0.5, Math.max(0, x1 - x0 - 1), bh - 1);
+        }
+      }
+    });
+    const ay = TOP + LANE_H * LANES.length + 6;
+    lctx.fillStyle = C.muted;
+    lctx.textBaseline = "top";
+    lctx.fillText(`last ${WINDOW} ms of simulated time`, 2, ay);
+    const label = "now";
+    lctx.fillText(label, w - lctx.measureText(label).width - 2, ay);
+  }
+
+  // Screen
+  const scr = $("screen").getContext("2d");
+  const stars = Array.from({ length: 28 }, (_, i) => ({ x: (i * 97) % 320, y: (i * 53) % 110, r: (i % 3) * 0.4 + 0.6 }));
+  function drawScreen(f) {
+    const w = 320, h = 180;
+    const g = scr.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, "#0b1022");
+    g.addColorStop(1, "#22305a");
+    scr.fillStyle = g;
+    scr.fillRect(0, 0, w, h);
+    scr.fillStyle = "#c9d6ff";
+    for (const s of stars) { scr.globalAlpha = 0.5; scr.beginPath(); scr.arc(s.x, s.y, s.r, 0, Math.PI * 2); scr.fill(); }
+    scr.globalAlpha = 1;
+    if (!f) {
+      scr.fillStyle = "#c9d6ff";
+      scr.font = "500 13px " + getComputedStyle(document.body).getPropertyValue("--font-mono");
+      scr.textBaseline = "middle";
+      scr.fillText("waiting for the first frame", 70, h / 2);
+      return;
+    }
+    scr.fillStyle = "#2f8f6a";
+    scr.fillRect(0, 138, w, 42);
+    scr.fillStyle = "#3fae82";
+    for (let i = 0; i < 8; i++) scr.fillRect(((i * 47 - f * 9) % (w + 40) + w + 40) % (w + 40) - 20, 138, 18, 4);
+    const px = ((f * 13) % (w + 60)) - 30;
+    const py = 116 - Math.abs(Math.sin(f * 0.7)) * 48;
+    scr.fillStyle = "rgba(0,0,0,.25)";
+    scr.beginPath(); scr.ellipse(px + 12, 140, 14, 3, 0, 0, Math.PI * 2); scr.fill();
+    scr.fillStyle = "#eef2ff";
+    roundRect(scr, px, py, 24, 22, 6); scr.fill();
+    scr.fillStyle = "#1a2550";
+    roundRect(scr, px + 4, py + 5, 16, 8, 3); scr.fill();
+    scr.fillStyle = "#7fd6ff";
+    scr.fillRect(px + 7, py + 8, 3, 3); scr.fillRect(px + 14, py + 8, 3, 3);
+    scr.fillStyle = "#eef2ff";
+    scr.font = "500 12px " + getComputedStyle(document.body).getPropertyValue("--font-mono");
+    scr.textBaseline = "top";
+    scr.fillText("frame " + f, 8, 8);
+  }
+  function roundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+  }
+
+  // DOM status
+  const byId = (id) => actors.find((a) => a.id === id);
+  const lightClass = (a) => a.kind === "work" ? "light busy" : a.kind === "lock" ? "light blocked" : a.kind === "wait" ? "light waiting" : "light";
+  function setText(id, html) { const el = $(id); if (el.innerHTML !== html) el.innerHTML = html; }
+  function setClass(id, cls) { const el = $(id); if (el.className !== cls) el.className = cls; }
+  const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  let lastDom = 0;
+  function updateDom(force) {
+    const now = performance.now();
+    if (!force && now - lastDom < 100) return;
+    lastDom = now;
+    const game = byId("game"), q0 = byId("q0"), q20 = byId("q20"), pr = byId("present"), gpu = byId("gpu");
+    setText("s-game", esc(game.text));
+    setClass("l-game", lightClass(game));
+    const submitting = game.where === "submit";
+    setClass("l-submit", submitting ? lightClass(game) : "light");
+    setText("s-submit", `${submitting ? `<b>${esc(game.text)}</b><br>` : ""}${sim.flipsPending} of ${FLIP_ROOM} display slots used`);
+    for (const w of [q0, q20]) {
+      setText("s-" + w.id, `<b>${w.id}</b> ${esc(w.text)}`);
+      setClass("l-" + w.id, lightClass(w));
+    }
+    const preparing = [q0, q20].filter((w) => w.kind === "work" && w.where === "prepare");
+    setText("s-prepare", preparing.length ? preparing.map((w) => `<b>${w.id}</b> ${esc(w.text)}`).join("<br>") : "idle");
+    setClass("l-prepare", preparing.length ? "light busy" : "light");
+    const holder = sim.lock.holder;
+    $("st-lock").classList.toggle("held", !!holder);
+    setText("s-lock-holder", holder ? `held by <b>${esc(holder.name)}</b>` : "<b>free</b>");
+    setText("s-lock-wait", sim.lock.queue.length ? "waiting: " + sim.lock.queue.map((a) => esc(a.name)).join(", ") : "nobody waiting");
+    const recorder = actors.find((a) => a.kind === "work" && a.where === "record");
+    const b = sim.batch;
+    setText("s-record", `${recorder ? `<b>${recorder.id}</b> ${esc(recorder.text)}<br>` : ""}open batch: ${b.draws} draws, ${b.dispatches} dispatches`);
+    setClass("l-record", recorder ? "light busy" : "light");
+    setText("s-gpu", `${esc(gpu.text)}<br>${sim.gpuQueue.length} batch${sim.gpuQueue.length === 1 ? "" : "es"} queued`);
+    setClass("l-gpu", gpu.kind === "work" ? "light busy" : "light");
+    setText("s-present", esc(pr.text));
+    setClass("l-present", lightClass(pr));
+    setText("s-screen", sim.shown ? `showing frame <b>${sim.shown}</b>` : "no frame yet");
+    const pollers = [q0, q20].filter((w) => w.polling).map((w) => w.id);
+    setText("s-memory", `labels written by the GPU: <b>${sim.labelOrder.length ? sim.labelOrder.map(esc).join(" ") : "none yet"}</b>${pollers.length ? ` · being polled by <b>${pollers.join(", ")}</b>` : ""}`);
+    setText("k-frames", String(sim.stats.frames));
+    setText("k-draws", String(sim.stats.draws));
+    setText("k-batches", String(sim.stats.batches));
+    setText("k-waits", String(sim.stats.lockWaits));
+    if (logDirty) {
+      logDirty = false;
+      $("log").innerHTML = logLines.slice(0, 9).map((l) => {
+        const tone = l.tone || LANES.find((x) => x.id === l.who)?.tone || "ink";
+        return `<li><span class="t">+${l.t.toFixed(1)} ms</span><span class="who" style="color:var(--${tone})">${esc(WHO[l.who] || l.who)}</span><span class="what">${esc(l.text)}</span></li>`;
+      }).join("");
+    }
+  }
+
+  // Explanation panel
+  function showExplain(id) {
+    const e = EXPLAIN[id] || EXPLAIN.intro;
+    const keys = e.keys ? `<p class="eyebrow">Dot colours</p><div class="keys"><span><i class="dot" style="background:var(--draw)"></i>draw</span><span><i class="dot" style="background:var(--compute)"></i>compute dispatch</span><span><i class="dot" style="background:var(--gpu)"></i>GPU batch</span><span><i class="dot" style="background:var(--label)"></i>label written back</span><span><i class="dot" style="background:var(--flip)"></i>flip / present</span><span><i class="dot" style="background:var(--game)"></i>command list</span></div>` : "";
+    const code = e.code.length ? `<p class="eyebrow">Where in the code</p><div class="code">${e.code.map((c) => `<div>${esc(c)}</div>`).join("")}</div>` : "";
+    $("explain").innerHTML = `<h2>${esc(e.title)}</h2>${e.body.map((p) => `<p>${esc(p)}</p>`).join("")}${keys}${code}`;
+    for (const el of document.querySelectorAll("[data-st]")) el.setAttribute("aria-pressed", String(el.dataset.st === id));
+  }
+  let selected = "intro";
+  for (const el of document.querySelectorAll("[data-st]")) {
+    el.addEventListener("click", () => {
+      selected = selected === el.dataset.st ? "intro" : el.dataset.st;
+      showExplain(selected);
+    });
+  }
+
+  // Controls
+  const playBtn = $("play");
+  function setPlaying(p) {
+    playing = p;
+    playBtn.textContent = p ? "Pause" : "Play";
+    playBtn.setAttribute("aria-pressed", String(p));
+  }
+  playBtn.addEventListener("click", () => setPlaying(!playing));
+  for (const b of document.querySelectorAll("[data-speed]")) {
+    b.addEventListener("click", () => {
+      speed = parseFloat(b.dataset.speed);
+      for (const o of document.querySelectorAll("[data-speed]")) o.setAttribute("aria-pressed", String(o === b));
+    });
+  }
+  $("restart").addEventListener("click", () => { reset(); drawLanes(); });
+
+  // Theme
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  if (mq.addEventListener) mq.addEventListener("change", readColors);
+  new MutationObserver(readColors).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+
+  // Boot
+  readColors();
+  sizeLanes();
+  measure();
+  reset();
+  showExplain("intro");
+  setPlaying(playing);
+  drawLanes();
+  new ResizeObserver(() => { measure(); sizeLanes(); drawLanes(); }).observe(stage);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { measure(); sizeLanes(); drawLanes(); });
+
+  let last = performance.now();
+  function frame(now) {
+    const dtReal = Math.min(100, now - last);
+    last = now;
+    if (playing) {
+      step((dtReal / 1000) * RATE * speed);
+      updateDom(false);
+      drawLanes();
+    }
+    drawTokens(now);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
