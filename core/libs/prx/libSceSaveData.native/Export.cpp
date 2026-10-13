@@ -188,6 +188,75 @@ int traceLimit() {
             std::fflush(stderr); \
         } \
     } while (0)
+
+constexpr char TRANSACTION_DIR[] = "_sd_txn";
+
+struct Transaction {
+    bool updating = false;
+    bool cancellable = false;
+    bool hadParam = false;
+    std::string realPath;
+};
+
+std::map<std::int32_t, Transaction> g_transactions;
+
+std::filesystem::path snapshot_path(std::int32_t resource) {
+    return std::filesystem::path(TRANSACTION_DIR) / std::to_string(resource);
+}
+
+std::filesystem::path snapshot_param_path(std::int32_t resource) {
+    return std::filesystem::path(TRANSACTION_DIR) / (std::to_string(resource) + ".param");
+}
+
+void take_snapshot(std::int32_t resource, Transaction& transaction) {
+    const std::filesystem::path snapshot = snapshot_path(resource);
+    std::filesystem::remove_all(snapshot);
+    std::filesystem::create_directories(snapshot.parent_path());
+    std::filesystem::copy(transaction.realPath, snapshot, std::filesystem::copy_options::recursive);
+    const std::filesystem::path param = param_path(transaction.realPath);
+    transaction.hadParam = std::filesystem::exists(param);
+    if (transaction.hadParam) {
+        std::filesystem::copy_file(param, snapshot_param_path(resource), std::filesystem::copy_options::overwrite_existing);
+    }
+}
+
+void discard_snapshot(std::int32_t resource) {
+    std::filesystem::remove_all(snapshot_path(resource));
+    std::filesystem::remove(snapshot_param_path(resource));
+}
+
+bool is_in_use(const std::error_code& ec) {
+    return ec == std::errc::permission_denied || ec == std::errc::device_or_resource_busy || ec == std::errc::text_file_busy;
+}
+
+int restore_snapshot(std::int32_t resource, const Transaction& transaction) {
+    const std::filesystem::path snapshot = snapshot_path(resource);
+    const std::filesystem::path discarded = std::filesystem::path(TRANSACTION_DIR) / (std::to_string(resource) + ".discarded");
+    std::error_code ec;
+    std::filesystem::remove_all(discarded, ec);
+    std::filesystem::rename(transaction.realPath, discarded, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory) {
+        if (is_in_use(ec)) {
+            return SAVE_DATA_ERROR_BUSY;
+        }
+        throw std::filesystem::filesystem_error("sceSaveDataCancel: cannot set the updated save aside", transaction.realPath, discarded, ec);
+    }
+    std::filesystem::rename(snapshot, transaction.realPath, ec);
+    if (ec) {
+        std::error_code restoreError;
+        std::filesystem::rename(discarded, transaction.realPath, restoreError);
+        throw std::filesystem::filesystem_error("sceSaveDataCancel: cannot restore the save from its snapshot", snapshot, transaction.realPath, ec);
+    }
+    const std::filesystem::path param = param_path(transaction.realPath);
+    if (transaction.hadParam) {
+        std::filesystem::copy_file(snapshot_param_path(resource), param, std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::remove(snapshot_param_path(resource));
+    } else {
+        std::filesystem::remove(param);
+    }
+    std::filesystem::remove_all(discarded, ec);
+    return SAVE_DATA_OK;
+}
 }  // namespace
 
 extern "C" {
@@ -209,14 +278,43 @@ int APS5_VABI sceSaveDataBackup(const SaveDataBackup* backup) {
     return SAVE_DATA_OK;
 }
 
-int APS5_VABI sceSaveDataCommit(const SaveDataCommitParam* param) {
-    (void)param;
+static int commit(const SaveDataCommitParam* param) {
+    if (param == nullptr) {
+        return SAVE_DATA_ERROR_PARAMETER;
+    }
+    std::lock_guard lock(g_slots_mutex);
+    if (g_initializations == 0) {
+        return SAVE_DATA_ERROR_NOT_INITIALIZED;
+    }
+    const auto found = g_transactions.find(param->resource);
+    if (found == g_transactions.end() || !found->second.updating) {
+        return SAVE_DATA_ERROR_RESOURCE_INVALID;
+    }
+    if (found->second.cancellable) {
+        discard_snapshot(param->resource);
+    }
+    found->second = Transaction{};
     return SAVE_DATA_OK;
+}
+
+int APS5_VABI sceSaveDataCommit(const SaveDataCommitParam* param) {
+    const int rc = commit(param);
+    SAVEDATA_TRACE("commit resource=%d -> 0x%08x", param != nullptr ? param->resource : -1, static_cast<unsigned>(rc));
+    return rc;
 }
 
 int APS5_VABI sceSaveDataCreateTransactionResource(uint32_t size) {
     (void)size;
-    return g_transaction_counter.fetch_add(1);
+    std::lock_guard lock(g_slots_mutex);
+    if (g_initializations == 0) {
+        return SAVE_DATA_ERROR_NOT_INITIALIZED;
+    }
+    if (g_transactions.size() >= SAVE_DATA_MOUNT_SLOTS) {
+        return SAVE_DATA_ERROR_RESOURCE_FULL;
+    }
+    const std::int32_t resource = g_transaction_counter.fetch_add(1);
+    g_transactions.emplace(resource, Transaction{});
+    return resource;
 }
 
 static int deleteSave(const SaveDataDelete* del) {
@@ -264,7 +362,18 @@ int APS5_VABI sceSaveDataDelete(const SaveDataDelete* del) {
 }
 
 int APS5_VABI sceSaveDataDeleteTransactionResource(int32_t resource) {
-    (void)resource;
+    std::lock_guard lock(g_slots_mutex);
+    if (g_initializations == 0) {
+        return SAVE_DATA_ERROR_NOT_INITIALIZED;
+    }
+    const auto found = g_transactions.find(resource);
+    if (found == g_transactions.end()) {
+        return SAVE_DATA_ERROR_RESOURCE_INVALID;
+    }
+    if (found->second.updating) {
+        return SAVE_DATA_ERROR_RESOURCE_BUSY;
+    }
+    g_transactions.erase(found);
     return SAVE_DATA_OK;
 }
 
@@ -507,6 +616,7 @@ static int mount3(const SaveDataMount3* mount, SaveDataMountResult* mount_result
     const std::string mountPoint = "/savedata" + std::to_string(slot);
     AddPathAlias_nid_no_patch(mountPoint.c_str(), std::filesystem::absolute(real_path).string().c_str());
     g_slots[slot].used = true;
+    g_slots[slot].writable = rdwr || create || create2;
     g_slots[slot].mount_point = mountPoint;
     g_slots[slot].real_path = real_path;
     std::memcpy(mount_result->mount_point.data, mountPoint.c_str(), mountPoint.size() + 1);
@@ -521,10 +631,54 @@ int APS5_VABI sceSaveDataMount3(const SaveDataMount3* mount, SaveDataMountResult
     return rc;
 }
 
-int APS5_VABI sceSaveDataPrepare(const SaveDataMountPoint* mount_point, const SaveDataPrepareParam* param) {
-    (void)mount_point;
-    (void)param;
+static int prepare(const SaveDataMountPoint* mount_point, const SaveDataPrepareParam* param) {
+    if (mount_point == nullptr || param == nullptr) {
+        return SAVE_DATA_ERROR_PARAMETER;
+    }
+    const std::uint32_t mode = param->prepare_mode;
+    const std::uint32_t knownModes = SAVE_DATA_PREPARE_MODE_ENABLE_CANCEL | SAVE_DATA_PREPARE_MODE_DEBUG_IGNORE_CANCEL_ON_HOST;
+    const bool cancellable = (mode & SAVE_DATA_PREPARE_MODE_ENABLE_CANCEL) != 0;
+    if ((mode & ~knownModes) != 0 || ((mode & SAVE_DATA_PREPARE_MODE_DEBUG_IGNORE_CANCEL_ON_HOST) != 0 && !cancellable)) {
+        return SAVE_DATA_ERROR_PARAMETER;
+    }
+    std::lock_guard lock(g_slots_mutex);
+    if (g_initializations == 0) {
+        return SAVE_DATA_ERROR_NOT_INITIALIZED;
+    }
+    const auto found = g_transactions.find(param->resource);
+    if (found == g_transactions.end()) {
+        return SAVE_DATA_ERROR_RESOURCE_INVALID;
+    }
+    const int slot = find_slot_by_mount_point(mount_point->data);
+    if (slot == -1) {
+        return SAVE_DATA_ERROR_NOT_MOUNTED;
+    }
+    if (!g_slots[slot].writable) {
+        return SAVE_DATA_ERROR_BAD_MOUNTED;
+    }
+    for (const auto& entry : g_transactions) {
+        if (entry.second.updating && entry.second.realPath == g_slots[slot].real_path) {
+            return SAVE_DATA_ERROR_BUSY;
+        }
+    }
+    if (found->second.updating) {
+        return SAVE_DATA_ERROR_RESOURCE_BUSY;
+    }
+    Transaction transaction;
+    transaction.updating = true;
+    transaction.cancellable = cancellable;
+    transaction.realPath = g_slots[slot].real_path;
+    if (cancellable) {
+        take_snapshot(param->resource, transaction);
+    }
+    found->second = transaction;
     return SAVE_DATA_OK;
+}
+
+int APS5_VABI sceSaveDataPrepare(const SaveDataMountPoint* mount_point, const SaveDataPrepareParam* param) {
+    const int rc = prepare(mount_point, param);
+    SAVEDATA_TRACE("prepare point=%s resource=%d mode=0x%x -> 0x%08x", mount_point != nullptr ? mount_point->data : "(null)", param != nullptr ? param->resource : -1, param != nullptr ? param->prepare_mode : 0u, static_cast<unsigned>(rc));
+    return rc;
 }
 
 int APS5_VABI sceSaveDataSaveIcon(const SaveDataMountPoint* mount_point, const SaveDataIcon* icon) {
@@ -719,6 +873,12 @@ int APS5_VABI sceSaveDataTerminate(void) {
     --g_initializations;
     if (g_initializations == 0) {
         g_convertProgress = 0.0f;
+        for (const auto& entry : g_transactions) {
+            if (entry.second.cancellable) {
+                discard_snapshot(entry.first);
+            }
+        }
+        g_transactions.clear();
     }
     return SAVE_DATA_OK;
 }
@@ -823,9 +983,26 @@ int APS5_VABI sceSaveDataGetConvertProgress(float* progress) {
     return rc;
 }
 
-int APS5_VABI sceSaveDataCancel() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+static int cancel(std::int32_t resource) {
+    std::lock_guard lock(g_slots_mutex);
+    if (g_initializations == 0) {
+        return SAVE_DATA_ERROR_NOT_INITIALIZED;
+    }
+    const auto found = g_transactions.find(resource);
+    if (found == g_transactions.end() || !found->second.updating || !found->second.cancellable) {
+        return SAVE_DATA_ERROR_RESOURCE_INVALID;
+    }
+    const int rc = restore_snapshot(resource, found->second);
+    if (rc == SAVE_DATA_OK) {
+        found->second = Transaction{};
+    }
+    return rc;
+}
+
+int APS5_VABI sceSaveDataCancel(std::int32_t resource) {
+    const int rc = cancel(resource);
+    SAVEDATA_TRACE("cancel resource=%d -> 0x%08x", resource, static_cast<unsigned>(rc));
+    return rc;
 }
 
 int APS5_VABI sceSaveDataDirNameSearch2(const SaveDataDirNameSearchCond* cond, SaveDataDirNameSearchResult* result) {
