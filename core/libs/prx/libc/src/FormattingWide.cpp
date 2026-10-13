@@ -433,6 +433,23 @@ int APS5_VABI swscanf_s_nid_postfix(const char16_t* buffer, const char16_t* form
     return result;
 }
 
+int APS5_VABI swscanf_nid_postfix(const char16_t* buffer, const char16_t* format, ...) {
+    if (buffer == nullptr || format == nullptr) throw std::invalid_argument("swscanf: null buffer or format");
+    APS5_VA_BEGIN(format);
+    const auto nextPointer = [&] {
+#ifdef _WIN32
+        void* const target = __builtin_va_arg(args, void*);
+#else
+        void* const target = va_arg(args, void*);
+#endif
+        if (target == nullptr) throw std::invalid_argument("swscanf: null receiving pointer");
+        return target;
+    };
+    const int result = ScanWide(buffer, format, nextPointer, [] { return std::size_t{SIZE_MAX}; });
+    APS5_VA_END();
+    return result;
+}
+
 int APS5_VABI wprintf_nid_postfix(const char16_t* format, ...) {
     APS5_VA_BEGIN(format);
     int result = -1;
