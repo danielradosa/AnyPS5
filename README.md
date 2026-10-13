@@ -8,11 +8,11 @@ Includes a [relinker](core/relinker) that converts executable to the target syst
 
 ## Status
 
-[![libraries](https://boykopovar.github.io/AnyPS5/badge-libraries.svg)](https://boykopovar.github.io/AnyPS5/) [![shaders](https://boykopovar.github.io/AnyPS5/badge-shaders.svg)](https://boykopovar.github.io/AnyPS5/)
+[![libraries](https://danielradosa.github.io/AnyPS5/badge-libraries.svg)](https://danielradosa.github.io/AnyPS5/) [![shaders](https://danielradosa.github.io/AnyPS5/badge-shaders.svg)](https://danielradosa.github.io/AnyPS5/)
 
-[![progress map](https://boykopovar.github.io/AnyPS5/progress.svg)](https://boykopovar.github.io/AnyPS5/)
+[![progress map](https://danielradosa.github.io/AnyPS5/progress.svg)](https://danielradosa.github.io/AnyPS5/)
 
-[![progress history](https://boykopovar.github.io/AnyPS5/history.svg)](https://boykopovar.github.io/AnyPS5/history.html)
+[![progress history](https://danielradosa.github.io/AnyPS5/history.svg)](https://danielradosa.github.io/AnyPS5/history.html)
 
 <sub>* System libraries: percentage of the functions known to the project so far (declared in [core/libs/prx](core/libs/prx)), not of every PS5 system function. The total grows as more functions are declared.</sub>
 
