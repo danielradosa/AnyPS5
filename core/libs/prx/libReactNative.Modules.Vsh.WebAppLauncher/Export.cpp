@@ -193,16 +193,17 @@ int APS5_VABI SystemServiceParamGetString(
     }
 
     if (paramId != SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME) {
-        NotImplemented_nid_no_patch(
-            "SystemServiceParamGetString: unsupported parameter");
-    }
-
-    if (bufSize < SYSTEM_SERVICE_MAX_SYSTEM_NAME_LENGTH) {
-        NotImplemented_nid_no_patch(
-            "SystemServiceParamGetString: buffer shorter than 65 bytes");
+        throw std::runtime_error(
+            "SystemServiceParamGetString: parameter " + std::to_string(paramId) +
+            " is not a string parameter");
     }
 
     constexpr char systemName[] = "PS5";
+
+    if (bufSize < sizeof(systemName)) {
+        return SYSTEM_SERVICE_ERROR_PARAMETER;
+    }
+
     std::memcpy(buf, systemName, sizeof(systemName));
 
     return SYSTEM_SERVICE_OK;

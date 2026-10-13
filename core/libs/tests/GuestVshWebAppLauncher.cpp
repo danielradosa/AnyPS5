@@ -78,19 +78,28 @@ int main() {
             "get system name");
     Require(std::strcmp(systemName, "PS5") == 0, "system name value");
 
-    char shortBuffer[SYSTEM_SERVICE_MAX_SYSTEM_NAME_LENGTH - 1];
+    Require(SystemServiceParamGetString(SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME,
+                                        nullptr, sizeof(systemName)) == SYSTEM_SERVICE_ERROR_PARAMETER,
+            "null string buffer");
+    Require(SystemServiceParamGetString(SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME,
+                                        systemName, 0) == SYSTEM_SERVICE_ERROR_PARAMETER,
+            "empty string buffer");
+
+    char shortBuffer[3];
     std::memset(shortBuffer, 'x', sizeof(shortBuffer));
-    bool threw = false;
-    try {
-        SystemServiceParamGetString(SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME,
-                                    shortBuffer, sizeof(shortBuffer));
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    Require(threw, "short string buffer should be reported");
+    Require(SystemServiceParamGetString(SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME,
+                                        shortBuffer, sizeof(shortBuffer)) == SYSTEM_SERVICE_ERROR_PARAMETER,
+            "a buffer without room for the terminator");
     Require(shortBuffer[0] == 'x', "short buffer should remain unchanged");
 
-    threw = false;
+    char exactBuffer[4];
+    std::memset(exactBuffer, 'x', sizeof(exactBuffer));
+    Require(SystemServiceParamGetString(SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME,
+                                        exactBuffer, sizeof(exactBuffer)) == 0,
+            "a buffer that holds the name and its terminator");
+    Require(std::memcmp(exactBuffer, "PS5", sizeof(exactBuffer)) == 0, "exact buffer holds the name");
+
+    bool threw = false;
     try {
         SystemServiceParamGetString(SYSTEM_SERVICE_PARAM_ID_LANG,
                                     systemName, sizeof(systemName));
