@@ -274,6 +274,18 @@ bool GuestThreadIsLive(const PthreadPrivate* thread) {
     return false;
 }
 
+bool SetGuestThreadAffinityIfLive(PthreadPrivate* thread, KernelCpumask mask) {
+    auto& registry = CpuClocks();
+    std::lock_guard lock(registry.lock);
+    for (const auto& [id, live] : registry.threads) {
+        if (live != thread) continue;
+        if (live->_finished.load(std::memory_order_acquire)) return false;
+        live->affinity.store(mask, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
 bool GuestThreadCpuNanos(int cpuClockThread, std::uint64_t* nanos) {
     auto& registry = CpuClocks();
     std::lock_guard lock(registry.lock);
