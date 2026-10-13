@@ -160,11 +160,8 @@ int APS5_VABI scePadOpenExt(int userId, int type, int index, const void* param) 
  if (!ValidPort(userId, type, index) || param == nullptr) {
   return PAD_ERROR_INVALID_ARG;
  }
- if (type != PAD_PORT_TYPE_SPECIAL) NotImplemented_nid_no_patch(__func__);
- return PAD_ERROR_DEVICE_NOT_CONNECTED;
+ return scePadOpen_nid_postfix(userId, type, index, param);
 }
-
-int APS5_VABI scePadReadExt() { NotImplemented_nid_no_patch(__func__); return 0; }
 
 int APS5_VABI scePadGetFeatureReport() { NotImplemented_nid_no_patch(__func__); return 0; }
 
@@ -176,6 +173,10 @@ int APS5_VABI scePadRead_nid_postfix(int handle, PadData* data, int num) {
  if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
  if (data == nullptr || num <= 0) APS5_INVALID_ARG_EX;
  return Pad::Read(data, num);
+}
+
+int APS5_VABI scePadReadExt(int handle, PadData* data, int num) {
+ return scePadRead_nid_postfix(handle, data, num);
 }
 
 int APS5_VABI scePadReadState(int handle, PadData* data) {

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <thread>
 
 extern "C" {
@@ -18,6 +19,7 @@ int APS5_VABI scePadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse(bool);
 int APS5_VABI scePadSetVibrationMode(int, int);
 int APS5_VABI scePadInit_nid_postfix(void);
 int APS5_VABI scePadRead_nid_postfix(int, PadData*, int);
+int APS5_VABI scePadReadExt(int, PadData*, int);
 int APS5_VABI scePadReadState(int, PadData*);
 int APS5_VABI scePadSetTiltCorrectionState(int, bool);
 int APS5_VABI scePadResetOrientation(int);
@@ -194,6 +196,58 @@ static void CheckReadQueue(int handle) {
     Require(data[0].buttons == 0);
 }
 
+static void CheckOpenExtStandard(int user, const unsigned char* param) {
+    constexpr int noHandle = static_cast<int>(0x80920008);
+    Require(scePadOpenExt(user, PAD_PORT_TYPE_STANDARD, 0, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadOpenExt(user, PAD_PORT_TYPE_STANDARD, 1, param) == PAD_ERROR_INVALID_ARG);
+    Require(scePadOpenExt(user, 3, 0, param) == PAD_ERROR_INVALID_ARG);
+    Require(scePadOpenExt(user, PAD_PORT_TYPE_REMOTE, 0, param) == PAD_ERROR_INVALID_ARG);
+    Require(scePadGetHandle(user, PAD_PORT_TYPE_STANDARD, 0) == noHandle);
+    const int handle = scePadOpenExt(user, PAD_PORT_TYPE_STANDARD, 0, param);
+    Require(handle > 0);
+    Require(scePadGetHandle(user, PAD_PORT_TYPE_STANDARD, 0) == handle);
+    Require(scePadOpen_nid_postfix(user, PAD_PORT_TYPE_STANDARD, 0, nullptr) == handle);
+    Require(scePadOpenExt(PAD_USER_ID_SYSTEM, PAD_PORT_TYPE_REMOTE, 0, param) == handle);
+    Require(scePadOpenExt(user, PAD_PORT_TYPE_SPECIAL, 0, param) == static_cast<int>(0x80920007));
+    Require(scePadGetHandle(user, PAD_PORT_TYPE_SPECIAL, 0) == noHandle);
+    Require(scePadSetAngularVelocityBiasCorrectionState(handle, false) == PAD_OK);
+    Require(scePadSetAngularVelocityBiasCorrectionState(handle, true) == PAD_OK);
+    Require(scePadClose_nid_postfix(handle) == PAD_OK);
+    Require(scePadGetHandle(user, PAD_PORT_TYPE_STANDARD, 0) == noHandle);
+}
+
+static void CheckReadExt(int handle) {
+    PadData data[4]{};
+    Require(scePadReadExt(0, data, 1) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadReadExt(handle + 1, data, 1) == PAD_ERROR_INVALID_HANDLE);
+    bool nullThrew = false;
+    try { scePadReadExt(handle, nullptr, 1); } catch (const std::invalid_argument&) { nullThrew = true; }
+    Require(nullThrew);
+    bool countThrew = false;
+    try { scePadReadExt(handle, data, 0); } catch (const std::invalid_argument&) { countThrew = true; }
+    Require(countThrew);
+    PadInputState pressed;
+    pressed.buttons = static_cast<std::uint32_t>(Pad::PadButton::Cross);
+    PadPublishInput_nid_postfix(pressed);
+    PadPublishInput_nid_postfix(PadInputState{});
+    Require(scePadReadExt(handle, data, 1) == 1);
+    Require((data[0].buttons & pressed.buttons) != 0 && data[0].connected);
+    Require(scePadRead_nid_postfix(handle, data, 4) == 1);
+    Require(data[0].buttons == 0);
+    Require(scePadReadExt(handle, data, 4) == 1);
+    Require(data[0].buttons == 0 && data[0].connected);
+    PadInputState moving;
+    moving.hasMotion = true;
+    moving.gyro = {0.01f, 0.0175f, -0.017f};
+    Require(scePadSetAngularVelocityDeadbandState(handle, true) == PAD_OK);
+    PadPublishInput_nid_postfix(moving);
+    Require(scePadReadExt(handle, data, 4) == 1);
+    Require(data[0].angular_velocity_x == 0.0f && data[0].angular_velocity_y == 0.0175f && data[0].angular_velocity_z == 0.0f);
+    Require(scePadSetAngularVelocityDeadbandState(handle, false) == PAD_OK);
+    PadPublishInput_nid_postfix(PadInputState{});
+    Require(scePadReadExt(handle, data, 4) == 1);
+}
+
 static void CheckReadStateHandle(int handle) {
     PadData data{};
     Require(scePadReadState(0, &data) == PAD_ERROR_INVALID_HANDLE);
@@ -280,6 +334,7 @@ int main() {
     Require(scePadGetHandle(user, 0, 0) == noHandle);
     Require(scePadOpen_nid_postfix(user, PAD_PORT_TYPE_SPECIAL, 0, nullptr) == static_cast<int>(0x80920007));
     Require(scePadGetHandle(user, 0, 0) == noHandle);
+    CheckOpenExtStandard(user, wheel);
     const int handle = scePadOpen_nid_postfix(user, 0, 0, nullptr);
     Require(handle > 0);
     Require(scePadGetHandle(user, 0, 0) == handle);
@@ -291,6 +346,7 @@ int main() {
     CheckTouchContact();
     CheckPartialTrigger();
     CheckReadQueue(handle);
+    CheckReadExt(handle);
     CheckReadStateHandle(handle);
     CheckRemoteController(handle);
     CheckInjectedState(path);
