@@ -123,6 +123,9 @@ int MakeDescriptorEvent(int descriptor, int16_t filter, uint16_t flags, uint32_t
 void SetDescriptorWatch(KernelEqueueEvent& event, uint32_t fflags, int64_t data);
 void SetVnodeNotes(KernelEqueueEvent& event, uint32_t fflags);
 int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, uint32_t fflags, uint16_t flags, void* udata, bool disabled);
+void VnodeOpened(int descriptor);
+void VnodeRead(int descriptor);
+void VnodeClosing(int descriptor);
 extern "C" {
 
 KernelEqueueRef EqueuePin_nid_postfix(KernelEqueue eq);

@@ -4,10 +4,13 @@
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -40,6 +43,10 @@ constexpr std::uint32_t NOTE_EXTEND = 0x0004;
 constexpr std::uint32_t NOTE_ATTRIB = 0x0008;
 constexpr std::uint32_t NOTE_LINK = 0x0010;
 constexpr std::uint32_t NOTE_RENAME = 0x0020;
+constexpr std::uint32_t NOTE_OPEN = 0x0080;
+constexpr std::uint32_t NOTE_CLOSE = 0x0100;
+constexpr std::uint32_t NOTE_CLOSE_WRITE = 0x0200;
+constexpr std::uint32_t NOTE_READ = 0x0400;
 
 class VnodeWatch {
 public:
@@ -558,8 +565,133 @@ void TriggerVnode(KernelEqueueEvent* event, void* data) {
     event->triggered = event->event.fflags != 0;
 }
 
+struct FileIdentity {
+    std::uint64_t volume = 0;
+    std::uint64_t index = 0;
+
+    bool operator==(const FileIdentity&) const = default;
+};
+
+struct AccessWatch {
+    FileIdentity identity;
+    std::uintptr_t ident = 0;
+    std::weak_ptr<VnodeWatch> watch;
+    const VnodeWatch* key = nullptr;
+};
+
+std::mutex g_accessLock;
+std::vector<AccessWatch> g_accessWatches;
+std::atomic<std::size_t> g_accessWatchCount{0};
+
+#ifdef _WIN32
+std::optional<FileIdentity> HandleIdentity(HANDLE handle) {
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!::GetFileInformationByHandle(handle, &information)) {
+        return std::nullopt;
+    }
+    return FileIdentity{information.dwVolumeSerialNumber, (static_cast<std::uint64_t>(information.nFileIndexHigh) << 32) | information.nFileIndexLow};
+}
+
+std::optional<FileIdentity> DescriptorIdentity(int descriptor) {
+    if (!DescriptorIsOpen_nid_no_patch(descriptor)) {
+        return std::nullopt;
+    }
+    if (const auto directory = File::DirectoryDescriptorPath(descriptor)) {
+        const HANDLE handle = ::CreateFileW(directory->wstring().c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) {
+            return std::nullopt;
+        }
+        const auto identity = HandleIdentity(handle);
+        ::CloseHandle(handle);
+        return identity;
+    }
+    const auto handle = reinterpret_cast<HANDLE>(::_get_osfhandle(descriptor));
+    if (handle == INVALID_HANDLE_VALUE || ::GetFileType(handle) != FILE_TYPE_DISK) {
+        return std::nullopt;
+    }
+    return HandleIdentity(handle);
+}
+
+bool OpenedForWriting(int descriptor) {
+    struct IoStatus {
+        void* status;
+        ULONG_PTR information;
+    };
+    using QueryInformationFile = LONG(NTAPI*)(HANDLE, IoStatus*, void*, ULONG, int);
+    constexpr int FileAccessInformationClass = 8;
+    static const auto query = reinterpret_cast<QueryInformationFile>(
+        reinterpret_cast<void*>(::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationFile")));
+    if (query == nullptr || !DescriptorIsOpen_nid_no_patch(descriptor) || File::DirectoryDescriptorPath(descriptor)) {
+        return false;
+    }
+    IoStatus status{};
+    ACCESS_MASK access = 0;
+    const auto handle = reinterpret_cast<HANDLE>(::_get_osfhandle(descriptor));
+    return query(handle, &status, &access, sizeof(access), FileAccessInformationClass) >= 0 && (access & (FILE_WRITE_DATA | FILE_APPEND_DATA)) != 0;
+}
+#else
+std::optional<FileIdentity> DescriptorIdentity(int descriptor) {
+    struct stat status {};
+    if (::fstat(descriptor, &status) != 0 || (!S_ISREG(status.st_mode) && !S_ISDIR(status.st_mode))) {
+        return std::nullopt;
+    }
+    return FileIdentity{static_cast<std::uint64_t>(status.st_dev), static_cast<std::uint64_t>(status.st_ino)};
+}
+
+bool OpenedForWriting(int descriptor) {
+    const int flags = ::fcntl(descriptor, F_GETFL);
+    return flags >= 0 && (flags & O_ACCMODE) != O_RDONLY;
+}
+#endif
+
+void DeliverAccess(int descriptor, std::uint32_t hint, bool skipOwn) {
+    if (g_accessWatchCount.load() == 0) {
+        return;
+    }
+    const auto identity = DescriptorIdentity(descriptor);
+    if (!identity) {
+        return;
+    }
+    std::vector<std::shared_ptr<VnodeWatch>> targets;
+    {
+        std::lock_guard lock(g_accessLock);
+        for (const auto& entry : g_accessWatches) {
+            if (!(entry.identity == *identity) || (skipOwn && entry.ident == static_cast<std::uintptr_t>(descriptor))) {
+                continue;
+            }
+            if (auto watch = entry.watch.lock()) {
+                targets.push_back(std::move(watch));
+            }
+        }
+    }
+    for (const auto& watch : targets) {
+        watch->Deliver(hint);
+    }
+}
+
+void RememberAccessWatch(int descriptor, const std::shared_ptr<VnodeWatch>& watch) {
+    const auto identity = DescriptorIdentity(descriptor);
+    if (!identity) {
+        return;
+    }
+    std::lock_guard lock(g_accessLock);
+    g_accessWatches.push_back({*identity, static_cast<std::uintptr_t>(descriptor), watch, watch.get()});
+    g_accessWatchCount.store(g_accessWatches.size());
+}
+
+void ForgetAccessWatch(const VnodeWatch* watch) {
+    std::lock_guard lock(g_accessLock);
+    std::erase_if(g_accessWatches, [watch](const AccessWatch& entry) {
+        return entry.key == watch;
+    });
+    g_accessWatchCount.store(g_accessWatches.size());
+}
+
 void StopVnode(KernelEqueue, KernelEqueueEvent* event) {
-    static_cast<VnodeWatch*>(event->filter.data)->Stop();
+    auto* watch = static_cast<VnodeWatch*>(event->filter.data);
+    watch->Stop();
+    ForgetAccessWatch(watch);
 }
 
 int VnodeDescriptorError(int descriptor) {
@@ -620,8 +752,24 @@ int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, std::uint32_t ff
         CloseHostWatch(host);
         return result == EQUEUE_OK ? 0 : result & 0xffff;
     }
+    RememberAccessWatch(descriptor, watch);
     std::thread(RunHostWatch, watch, std::move(host)).detach();
     return 0;
+}
+
+void VnodeOpened(int descriptor) {
+    DeliverAccess(descriptor, NOTE_OPEN, false);
+}
+
+void VnodeRead(int descriptor) {
+    DeliverAccess(descriptor, NOTE_READ, false);
+}
+
+void VnodeClosing(int descriptor) {
+    if (g_accessWatchCount.load() == 0) {
+        return;
+    }
+    DeliverAccess(descriptor, OpenedForWriting(descriptor) ? NOTE_CLOSE_WRITE : NOTE_CLOSE, true);
 }
 
 extern "C" {

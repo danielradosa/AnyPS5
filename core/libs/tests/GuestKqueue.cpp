@@ -81,6 +81,8 @@ static constexpr std::uint32_t NoteLowat = 0x0001;
 static constexpr std::uint32_t NoteFilePoll = 0x0002;
 static constexpr std::uint32_t NoteNseconds = 0x0008;
 static constexpr std::uint32_t NoteOpen = 0x0080;
+static constexpr std::uint32_t NoteClose = 0x0100;
+static constexpr std::uint32_t NoteCloseWrite = 0x0200;
 static constexpr std::uint32_t NoteRead = 0x0400;
 static constexpr int SigUsr1 = 30;
 static constexpr std::uint32_t NoteTrigger = 0x01000000;
@@ -350,11 +352,25 @@ static void FilesAndDirectories() {
     Require(Poll(kq, events, 4) == 1 && events[0].filter == EvfiltWrite && events[0].data == 0);
     Require(Poll(kq, events, 4) == 0);
 
-    Require(Apply(kq, Change(ident, EvfiltVnode, EvAdd | EvClear, NoteOpen | NoteRead | 0x00100000)) == 0);
+    Require(Apply(kq, Change(ident, EvfiltVnode, EvAdd | EvClear, NoteOpen | NoteRead | NoteClose | NoteCloseWrite | 0x00100000)) == 0);
     Require(write_nid_postfix(file, "x", 1) == 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     Require(Poll(kq, events, 4) == 0);
+    const int reader = open_nid_postfix(filePath.c_str(), 0, 0);
+    Require(reader >= 0);
+    Require(Poll(kq, events, 4) == 1 && events[0].ident == ident && events[0].filter == EvfiltVnode && events[0].fflags == NoteOpen);
+    char bytes[4]{};
+    Require(read_nid_postfix(reader, bytes, sizeof(bytes)) == 4);
+    Require(Poll(kq, events, 4) == 1 && events[0].fflags == NoteRead);
+    Require(close_nid_postfix(reader) == 0);
+    Require(Poll(kq, events, 4) == 1 && events[0].fflags == NoteClose);
+    const int writer = open_nid_postfix(filePath.c_str(), ReadWrite, 0);
+    Require(writer >= 0 && close_nid_postfix(writer) == 0);
+    Require(Poll(kq, events, 4) == 1 && events[0].fflags == (NoteOpen | NoteCloseWrite));
     Require(Apply(kq, Change(ident, EvfiltVnode, EvDelete)) == 0);
+    const int unwatched = open_nid_postfix(filePath.c_str(), 0, 0);
+    Require(unwatched >= 0 && close_nid_postfix(unwatched) == 0);
+    Require(Poll(kq, events, 4) == 0);
     Require(close_nid_postfix(file) == 0);
 
     const int directory = open_nid_postfix(path.c_str(), Directory, 0);
