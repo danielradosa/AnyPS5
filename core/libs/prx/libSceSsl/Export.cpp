@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+extern "C" int APS5_VABI sceNetGetpeername(int s, void* addr, std::uint32_t* addrlen);
+
 namespace {
 
 constexpr int ErrorNotFound = static_cast<int>(0x8095f004);
@@ -175,9 +177,20 @@ struct Context {
     explicit Context(std::size_t size) : pool{size} {}
 };
 
+using VerifyCallback = int(APS5_VABI*)(int, unsigned int, void**, int, void*);
+
+struct Connection {
+    int context;
+    int socket;
+    std::string host;
+    VerifyCallback verifyCallback;
+    void* verifyArgument;
+};
+
 struct Runtime {
     std::mutex mutex;
     std::unordered_map<int, std::unique_ptr<Context>> contexts;
+    std::unordered_map<int, Connection> connections;
     unsigned nextHandle = 1;
     Runtime() {
         if (mbedtls_platform_set_calloc_free(PoolCalloc, PoolFree) != 0)
@@ -194,6 +207,37 @@ Context& GetContext(int handle) {
     const auto found = State().contexts.find(handle);
     if (found == State().contexts.end()) throw std::invalid_argument("Invalid SSL context");
     return *found->second;
+}
+
+int AllocateHandle(Runtime& state) {
+    if (state.nextHandle > static_cast<unsigned>(std::numeric_limits<int>::max())) throw std::overflow_error("SSL handles exhausted");
+    return static_cast<int>(state.nextHandle++);
+}
+
+Connection& RequireConnection(const char* function, int connectionId) {
+    auto& state = State();
+    const auto connection = state.connections.find(connectionId);
+    if (connection == state.connections.end()) throw std::invalid_argument(std::string(function) + ": unknown connection");
+    if (!state.contexts.contains(connection->second.context))
+        throw std::invalid_argument(std::string(function) + ": the connection's context was terminated");
+    return connection->second;
+}
+
+std::string Endpoint(const Connection& connection) {
+    std::uint8_t address[28]{};
+    std::uint32_t length = sizeof(address);
+    if (sceNetGetpeername(connection.socket, address, &length) != 0 || length < 4)
+        return connection.host + " (socket " + std::to_string(connection.socket) + " has no peer)";
+    return connection.host + ":" + std::to_string((address[2] << 8) | address[3]);
+}
+
+[[noreturn]] void ThrowNoTransport(const char* function, int connectionId, const char* operation) {
+    Connection connection;
+    {
+        std::lock_guard lock(State().mutex);
+        connection = RequireConnection(function, connectionId);
+    }
+    throw std::runtime_error(std::string(function) + ": no TLS transport for " + operation + " with " + Endpoint(connection));
 }
 
 std::pair<std::shared_ptr<CertificateChain>, const mbedtls_x509_crt*> GetCertificate(Context& context, void* handle) {
@@ -297,10 +341,8 @@ int APS5_VABI sceSslInit_nid_postfix(std::uint64_t poolSize) {
     if (!poolSize) return ErrorInvalidArg;
     auto& state = State();
     std::lock_guard lock(state.mutex);
-    if (state.nextHandle > static_cast<unsigned>(std::numeric_limits<int>::max())) throw std::overflow_error("SSL context handles exhausted");
-    const auto handle = static_cast<int>(state.nextHandle);
+    const auto handle = AllocateHandle(state);
     state.contexts.emplace(handle, std::make_unique<Context>(poolSize));
-    ++state.nextHandle;
     return handle;
 }
 
@@ -310,6 +352,49 @@ int APS5_VABI sceSslTerm_nid_postfix(int sslCtxId) {
     GetContext(sslCtxId);
     state.contexts.erase(sslCtxId);
     return 0;
+}
+
+int APS5_VABI sceSslCreateConnection(int sslCtxId, int sockId, const char* host) {
+    if (!host) throw std::invalid_argument("sceSslCreateConnection: null host");
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    if (!state.contexts.contains(sslCtxId)) return ErrorInvalidId;
+    const auto id = AllocateHandle(state);
+    state.connections[id] = {sslCtxId, sockId, host, nullptr, nullptr};
+    return id;
+}
+
+int APS5_VABI sceSslDeleteConnection(int sslConnectionId) {
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    if (!state.connections.erase(sslConnectionId)) throw std::invalid_argument("sceSslDeleteConnection: unknown connection");
+    return 0;
+}
+
+int APS5_VABI sceSslSetVerifyCallback(int sslConnectionId, VerifyCallback cbfunc, void* userArg) {
+    std::lock_guard lock(State().mutex);
+    auto& connection = RequireConnection(__func__, sslConnectionId);
+    connection.verifyCallback = cbfunc;
+    connection.verifyArgument = userArg;
+    return 0;
+}
+
+int APS5_VABI sceSslConnect(int sslConnectionId) {
+    ThrowNoTransport(__func__, sslConnectionId, "the handshake");
+}
+
+int APS5_VABI sceSslRead(int sslConnectionId, void* buf, std::size_t len, int flags) {
+    (void)buf;
+    (void)len;
+    (void)flags;
+    ThrowNoTransport(__func__, sslConnectionId, "reading");
+}
+
+int APS5_VABI sceSslWrite(int sslConnectionId, void* buf, std::size_t len, int flags) {
+    (void)buf;
+    (void)len;
+    (void)flags;
+    ThrowNoTransport(__func__, sslConnectionId, "writing");
 }
 
 int APS5_VABI sceSslGetMemoryPoolStats(int sslCtxId, SceSsl::MemoryPoolStats* stats) {
@@ -547,32 +632,7 @@ int APS5_VABI sceSslGetPem() {
     return 0;
 }
 
-int APS5_VABI sceSslCreateConnection(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslDeleteConnection(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceSslEnableVerifyOption(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslConnect(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslRead(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslWrite(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
