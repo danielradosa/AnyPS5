@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdio>
 #include <typeinfo>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <csignal>
 #include <pthread.h>
 #include <sys/wait.h>
@@ -33,6 +35,8 @@ extern "C" _Unwind_Reason_Code _Unwind_Backtrace_nid_postfix(_Unwind_Trace_Fn, v
 extern "C" _Unwind_Reason_Code _Unwind_ForcedUnwind_nid_postfix(_Unwind_Exception*, _Unwind_Stop_Fn, void*);
 extern "C" std::uintptr_t _Unwind_GetIP_nid_postfix(_Unwind_Context*);
 extern "C" std::uintptr_t _Unwind_GetGR_nid_postfix(_Unwind_Context*, int);
+extern "C" std::uintptr_t _Unwind_GetRegionStart_nid_postfix(_Unwind_Context*);
+extern "C" std::uintptr_t _Unwind_GetLanguageSpecificData_nid_postfix(_Unwind_Context*);
 extern "C" void (*_ZSt13set_terminatePFvvE_nid_postfix(void(*)()))();
 
 thread_local int destroyed = 0;
@@ -184,7 +188,22 @@ void CheckDefaultTerminateMessage() {
     assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
     assert(output.find("  what():  " + message + "\n") != std::string::npos);
 }
-void CheckUnsupportedRegisterAborts(_Unwind_Context* context, bool write) {
+const std::uintptr_t* CursorSlots(_Unwind_Context* context) {
+    return *reinterpret_cast<const std::uintptr_t* const*>(context);
+}
+struct CursorProcInfo {
+    std::uintptr_t startIp, endIp, lsda, handler, gp, flags;
+    std::uint32_t format, unwindInfoSize;
+    std::uintptr_t unwindInfo, extra;
+};
+static_assert(sizeof(CursorProcInfo) == 72);
+CursorProcInfo CursorInfo(_Unwind_Context* context) {
+    CursorProcInfo info;
+    std::memset(&info, 0xcc, sizeof(info));
+    reinterpret_cast<void (*)(_Unwind_Context*, CursorProcInfo*)>(CursorSlots(context)[9])(context, &info);
+    return info;
+}
+std::string AbortOutput(const std::function<void()>& action) {
     int channel[2];
     assert(pipe(channel) == 0);
     pid_t child = fork();
@@ -192,9 +211,7 @@ void CheckUnsupportedRegisterAborts(_Unwind_Context* context, bool write) {
     if (child == 0) {
         close(channel[0]);
         dup2(channel[1], 2);
-        const auto* slots = *reinterpret_cast<const std::uintptr_t* const*>(context);
-        if (write) reinterpret_cast<void (*)(_Unwind_Context*, int, std::uintptr_t)>(slots[4])(context, 17, 0);
-        else reinterpret_cast<std::uintptr_t (*)(_Unwind_Context*, int)>(slots[3])(context, -3);
+        action();
         _exit(0);
     }
     close(channel[1]);
@@ -205,7 +222,108 @@ void CheckUnsupportedRegisterAborts(_Unwind_Context* context, bool write) {
     int status;
     assert(waitpid(child, &status, 0) == child);
     assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    return output;
+}
+void CheckUnsupportedRegisterAborts(_Unwind_Context* context, bool write) {
+    const auto* slots = CursorSlots(context);
+    const auto output = AbortOutput([&] {
+        if (write) reinterpret_cast<void (*)(_Unwind_Context*, int, std::uintptr_t)>(slots[4])(context, 17, 0);
+        else reinterpret_cast<std::uintptr_t (*)(_Unwind_Context*, int)>(slots[3])(context, -3);
+    });
     assert(output == (write ? "libunwind: setRegister - unsupported x86_64 register 17\n" : "libunwind: getRegister - unsupported x86_64 register -3\n"));
+}
+void CheckFloatRegisterAborts(_Unwind_Context* context, bool write) {
+    const auto* slots = CursorSlots(context);
+    const auto output = AbortOutput([&] {
+        if (write) reinterpret_cast<void (*)(_Unwind_Context*, int, double)>(slots[7])(context, 17, 1.0);
+        else reinterpret_cast<double (*)(_Unwind_Context*, int)>(slots[6])(context, 17);
+    });
+    assert(output == (write ? "libunwind: setFloatRegister - no x86_64 float registers\n" : "libunwind: getFloatRegister - no x86_64 float registers\n"));
+}
+void CheckCursorNames(_Unwind_Context* context) {
+    const auto name = [&](int number) { return std::string(reinterpret_cast<const char* (*)(_Unwind_Context*, int)>(CursorSlots(context)[14])(context, number)); };
+    assert(name(-1) == "rip" && name(-2) == "rsp" && name(0) == "rax" && name(1) == "rdx" && name(7) == "rsp");
+    assert(name(15) == "r15" && name(16) == "rip" && name(17) == "xmm0" && name(32) == "xmm15");
+    assert(name(33) == "unknown register" && name(-3) == "unknown register");
+}
+void CheckCursorInfo(_Unwind_Context* context) {
+    const auto ip = _Unwind_GetIP_nid_postfix(context);
+    const auto info = CursorInfo(context);
+    assert(info.startIp == _Unwind_GetRegionStart_nid_postfix(context) && info.lsda == _Unwind_GetLanguageSpecificData_nid_postfix(context));
+    assert(info.startIp != 0 && info.startIp <= ip - 1 && ip - 1 < info.endIp);
+    assert(info.flags == 0 && info.format == 0x04000000u && info.unwindInfo != 0 && info.unwindInfoSize >= 8);
+    assert(info.extra != 0 && info.extra <= info.startIp);
+    try {
+        reinterpret_cast<void (*)(_Unwind_Context*, CursorProcInfo*)>(CursorSlots(context)[9])(context, nullptr);
+        assert(false);
+    } catch (const std::invalid_argument&) {}
+}
+void CheckCursorSetInfo(_Unwind_Context* context) {
+    const auto* slots = CursorSlots(context);
+    const auto setRegister = reinterpret_cast<void (*)(_Unwind_Context*, int, std::uintptr_t)>(slots[4]);
+    const auto setInfo = reinterpret_cast<void (*)(_Unwind_Context*, bool)>(slots[13]);
+    const auto ip = _Unwind_GetIP_nid_postfix(context);
+    const auto start = _Unwind_GetRegionStart_nid_postfix(context);
+    const auto target = reinterpret_cast<std::uintptr_t>(&ThrowInt);
+    setRegister(context, -1, target);
+    setInfo(context, false);
+    auto info = CursorInfo(context);
+    assert(info.startIp == target && info.endIp > target && info.lsda != 0 && _Unwind_GetRegionStart_nid_postfix(context) == target);
+    setRegister(context, -1, target + 1);
+    setInfo(context, true);
+    assert(CursorInfo(context).startIp == target);
+    setRegister(context, -1, 0);
+    setInfo(context, true);
+    info = CursorInfo(context);
+    const auto* bytes = reinterpret_cast<const unsigned char*>(&info);
+    assert(std::all_of(bytes, bytes + sizeof(info), [](unsigned char byte) { return byte == 0; }) && _Unwind_GetRegionStart_nid_postfix(context) == 0);
+    setRegister(context, -1, ip);
+    setInfo(context, true);
+    assert(_Unwind_GetRegionStart_nid_postfix(context) == start && CursorInfo(context).startIp == start);
+}
+void CheckCursorFunctionNameThrows(_Unwind_Context* context) {
+    char name[64];
+    std::uintptr_t offset = 0;
+    try {
+        reinterpret_cast<bool (*)(_Unwind_Context*, char*, std::size_t, std::uintptr_t*)>(CursorSlots(context)[12])(context, name, sizeof(name), &offset);
+        assert(false);
+    } catch (const std::runtime_error& error) {
+        assert(std::string(error.what()).find("getFunctionName") != std::string::npos);
+    }
+}
+void CheckCursorSteps() {
+    std::vector<std::uintptr_t> traced;
+    auto result = _Unwind_Backtrace_nid_postfix([](_Unwind_Context* context, void* argument) {
+        static_cast<std::vector<std::uintptr_t>*>(argument)->push_back(_Unwind_GetIP_nid_postfix(context));
+        return _URC_NO_REASON;
+    }, &traced);
+    assert(result == _URC_END_OF_STACK && traced.size() >= 2);
+    std::vector<std::uintptr_t> stepped;
+    result = _Unwind_Backtrace_nid_postfix([](_Unwind_Context* context, void* argument) {
+        auto& ips = *static_cast<std::vector<std::uintptr_t>*>(argument);
+        const auto step = reinterpret_cast<int (*)(_Unwind_Context*, bool)>(CursorSlots(context)[8]);
+        ips.push_back(_Unwind_GetIP_nid_postfix(context));
+        int stepResult;
+        while ((stepResult = step(context, false)) == 1 && ips.size() < 4096) {
+            ips.push_back(_Unwind_GetIP_nid_postfix(context));
+            CheckCursorInfo(context);
+        }
+        assert(stepResult == 0);
+        return _URC_NORMAL_STOP;
+    }, &stepped);
+    assert(result == _URC_NORMAL_STOP && stepped.size() == traced.size());
+    assert(std::equal(stepped.begin() + 1, stepped.end(), traced.begin() + 1));
+}
+volatile bool jumped = false;
+[[gnu::noinline]] void CheckCursorJumpTo() {
+    jumped = false;
+    _Unwind_Backtrace_nid_postfix([](_Unwind_Context* context, void*) {
+        jumped = true;
+        reinterpret_cast<void (*)(_Unwind_Context*)>(CursorSlots(context)[10])(context);
+        std::abort();
+        return _URC_NO_REASON;
+    }, nullptr);
+    assert(jumped);
 }
 struct ForcedGuard { ~ForcedGuard() { ++destroyed; } };
 [[gnu::noinline]] void ForceUnwind() {
@@ -303,13 +421,24 @@ int main() {
         assert(_Unwind_GetGR_nid_postfix(context, 3) == rbx + 1);
         setRegister(context, 3, rbx);
         assert(!validFloatRegister(context, 17) && !isSignalFrame(context));
+        reinterpret_cast<void (*)(_Unwind_Context*)>(slots[0])(context);
+        reinterpret_cast<void (*)(_Unwind_Context*)>(slots[1])(context);
+        assert(getRegister(context, 3) == rbx && getRegister(context, -1) == _Unwind_GetIP_nid_postfix(context));
+        CheckCursorInfo(context);
         if (*static_cast<int*>(argument) == 0) {
             CheckUnsupportedRegisterAborts(context, false);
             CheckUnsupportedRegisterAborts(context, true);
+            CheckFloatRegisterAborts(context, false);
+            CheckFloatRegisterAborts(context, true);
+            CheckCursorNames(context);
+            CheckCursorFunctionNameThrows(context);
+            CheckCursorSetInfo(context);
         }
         ++*static_cast<int*>(argument);
         return _URC_NO_REASON;
     }, &frames);
     assert(backtrace == _URC_END_OF_STACK && frames >= 2);
+    CheckCursorSteps();
+    CheckCursorJumpTo();
     std::puts("exception runtime tests passed");
 }

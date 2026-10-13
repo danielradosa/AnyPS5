@@ -23,6 +23,11 @@ struct _Unwind_Context {
     std::uintptr_t textBase {};
     std::uintptr_t dataBase {};
     std::uintptr_t personality {};
+    std::uintptr_t regionEnd {};
+    std::uintptr_t fde {};
+    std::uintptr_t fdeEnd {};
+    std::uintptr_t argsSize {};
+    std::uintptr_t imageBase {};
     bool signalFrame {};
 };
 
@@ -99,7 +104,7 @@ inline unsigned EncodingSize(Byte encoding) {
     }
 }
 
-struct Lookup { Word pc; const Byte* fde {}; Word text {}; Word data {}; };
+struct Lookup { Word pc; const Byte* fde {}; Word text {}; Word data {}; Word image {}; };
 
 struct Frame {
     const Byte* cieBegin {};
@@ -172,7 +177,7 @@ constexpr unsigned RuleCount = 33;
 constexpr unsigned RuleCount = 17;
 #endif
 
-struct Rules { Rule registers[RuleCount] {}; unsigned cfaRegister {7}; std::intptr_t cfaOffset {}; const Byte* cfaExpression {}; };
+struct Rules { Rule registers[RuleCount] {}; unsigned cfaRegister {7}; std::intptr_t cfaOffset {}; const Byte* cfaExpression {}; Word argsSize {}; };
 
 inline bool Instructions(const Byte* p, const Byte* end, const Frame& frame, Word target, Rules& state, const Rules& initial) {
     Word location = frame.start;
@@ -221,7 +226,7 @@ inline bool Instructions(const Byte* p, const Byte* end, const Frame& frame, Wor
             if (reg < RuleCount) state.registers[reg] = {unsigned(opcode == 16 ? 3 : 6), 0, expr};
             break;
         }
-        case 46: Uleb(p); break;
+        case 46: state.argsSize = Uleb(p); break;
         default: return false;
         }
     }

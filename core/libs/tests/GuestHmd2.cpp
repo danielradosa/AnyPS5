@@ -4,7 +4,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <initializer_list>
+
+struct Hmd2SizeAlign {
+    std::uint64_t size;
+    std::uint64_t align;
+};
 
 extern "C" {
 std::int32_t APS5_VABI sceHmd2Initialize(const void* param);
@@ -34,6 +40,11 @@ std::int32_t APS5_VABI sceHmd2ReprojectionSetTiming();
 std::int32_t APS5_VABI sceHmd2ReprojectionSetMirroringOption(const void* option);
 std::int32_t APS5_VABI sceHmd2ReprojectionEnableMirroring(const void* param);
 std::int32_t APS5_VABI sceHmd2ReprojectionDisableMirroring();
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQueryBufferSizeAlign();
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQueryDisplayBufferSizeAlign();
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign();
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign();
+Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign();
 }
 
 namespace {
@@ -47,6 +58,25 @@ void Require(bool condition, const char* message) {
         std::fprintf(stderr, "HMD2: %s\n", message);
         std::abort();
     }
+}
+
+template <typename F>
+void RequireThrows(F f, const char* message) {
+    bool threw = false;
+    try {
+        f();
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    Require(threw, message);
+}
+
+void CheckSizeQueries() {
+    RequireThrows([] { sceHmd2ReprojectionQueryBufferSizeAlign(); }, "reprojection buffer size");
+    RequireThrows([] { sceHmd2ReprojectionQueryDisplayBufferSizeAlign(); }, "display buffer size");
+    RequireThrows([] { sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign(); }, "see-through buffer size");
+    RequireThrows([] { sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign(); }, "mirroring work memory size");
+    RequireThrows([] { sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign(); }, "mirroring display buffer size");
 }
 
 void CheckUninitialized() {
@@ -89,6 +119,7 @@ void CheckUninitialized() {
     Require(sceHmd2ReprojectionDisableVrMode() == NotInitialized, "disable VR mode");
     Require(sceHmd2ReprojectionTerminate() == NotInitialized, "reprojection terminate");
     Require(sceHmd2Terminate() == NotInitialized, "terminate");
+    CheckSizeQueries();
 }
 
 }

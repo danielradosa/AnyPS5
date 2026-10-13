@@ -99,7 +99,7 @@ static void CheckScanning() {
     Require(Scan("\xc3\xa9\xc3\xa8", "%ls", accented) == 1 && std::u16string(accented) == u"\u00e9\u00e8", "wide accented");
     char16_t emoji[8] = {};
     Require(Scan("\xf0\x9f\x98\x80!", "%ls", emoji) == 1, "wide surrogate scan");
-    Require(emoji[0] == 0xD83D && emoji[1] == 0xDE00 && emoji[2] == 0, "wide surrogate value");
+    Require(emoji[0] == 0xD83D && emoji[1] == 0xDE00 && emoji[2] == u'!' && emoji[3] == 0, "wide surrogate value");
 #endif
 }
 

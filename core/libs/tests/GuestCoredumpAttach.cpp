@@ -13,6 +13,7 @@ int APS5_VABI sceCoredumpUnregisterCoredumpHandler(void);
 int APS5_VABI sceCoredumpAttachMemoryRegion(uint32_t userValue, const void* mem, size_t size);
 int APS5_VABI sceCoredumpAttachUserMemoryFile(uint32_t userValue, const void* mem, size_t size);
 int APS5_VABI sceCoredumpGetStopInfoCpu(void* info, size_t size);
+int APS5_VABI sceCoredumpGetStopInfoGpu_Agc(void* info, size_t size);
 int APS5_VABI sceCoredumpGetThreadContextInfo(void* threadContextInfo, size_t threadContextInfoSize);
 }
 
@@ -46,6 +47,7 @@ int main() {
     Require(sceCoredumpAttachMemoryRegion(1, region.data(), region.size()) == NotInCoredumpHandler);
     Require(sceCoredumpAttachUserMemoryFile(UserFileTruncateIfExceedLimit | 2, region.data(), region.size()) == NotInCoredumpHandler);
     Require(sceCoredumpGetStopInfoCpu(region.data() + 16, 16) == NotInCoredumpHandler);
+    Require(sceCoredumpGetStopInfoGpu_Agc(region.data() + 40, 8) == NotInCoredumpHandler);
     Require(sceCoredumpGetThreadContextInfo(region.data() + 8, ThreadContextInfoSize) == NotInCoredumpHandler);
     Require(region == original);
 
@@ -57,6 +59,9 @@ int main() {
     std::thread([&] { fromThread = sceCoredumpAttachMemoryRegion(3, region.data(), region.size()); }).join();
     Require(fromThread == NotInCoredumpHandler);
     std::thread([&] { fromThread = sceCoredumpGetStopInfoCpu(region.data() + 16, 16); }).join();
+    Require(fromThread == NotInCoredumpHandler);
+    Require(sceCoredumpGetStopInfoGpu_Agc(region.data() + 8, 8) == NotInCoredumpHandler);
+    std::thread([&] { fromThread = sceCoredumpGetStopInfoGpu_Agc(region.data() + 152, 8); }).join();
     Require(fromThread == NotInCoredumpHandler);
     Require(sceCoredumpGetThreadContextInfo(region.data(), ThreadContextInfoSize) == NotInCoredumpHandler);
     std::thread([&] { fromThread = sceCoredumpGetThreadContextInfo(region.data() + 16, ThreadContextInfoSize); }).join();
@@ -75,6 +80,11 @@ int main() {
     Require(Throws([&] { sceCoredumpGetStopInfoCpu(reinterpret_cast<void*>(UINTPTR_MAX - 7u), 16); }, "sceCoredumpGetStopInfoCpu"));
     for (const size_t size : {size_t{0}, size_t{1}, size_t{15}, size_t{17}, SIZE_MAX})
         Require(Throws([&] { sceCoredumpGetStopInfoCpu(region.data() + 16, size); }, "sceCoredumpGetStopInfoCpu"));
+    Require(Throws([&] { sceCoredumpGetStopInfoGpu_Agc(nullptr, 8); }, "sceCoredumpGetStopInfoGpu_Agc"));
+    Require(Throws([&] { sceCoredumpGetStopInfoGpu_Agc(region.data() + 4, 8); }, "sceCoredumpGetStopInfoGpu_Agc"));
+    Require(Throws([&] { sceCoredumpGetStopInfoGpu_Agc(reinterpret_cast<void*>(UINTPTR_MAX - 7u), 8); }, "sceCoredumpGetStopInfoGpu_Agc"));
+    for (const size_t size : {size_t{0}, size_t{1}, size_t{7}, size_t{9}, size_t{16}, SIZE_MAX})
+        Require(Throws([&] { sceCoredumpGetStopInfoGpu_Agc(region.data() + 8, size); }, "sceCoredumpGetStopInfoGpu_Agc"));
     Require(Throws([&] { sceCoredumpGetThreadContextInfo(nullptr, ThreadContextInfoSize); }, "sceCoredumpGetThreadContextInfo"));
     Require(Throws([&] { sceCoredumpGetThreadContextInfo(region.data() + 4, ThreadContextInfoSize); }, "sceCoredumpGetThreadContextInfo"));
     Require(Throws([&] { sceCoredumpGetThreadContextInfo(reinterpret_cast<void*>(UINTPTR_MAX - 63u), ThreadContextInfoSize); }, "sceCoredumpGetThreadContextInfo"));
@@ -86,6 +96,7 @@ int main() {
     Require(sceCoredumpAttachMemoryRegion(1, region.data(), region.size()) == NotInCoredumpHandler);
     Require(sceCoredumpAttachUserMemoryFile(1, region.data(), region.size()) == NotInCoredumpHandler);
     Require(sceCoredumpGetStopInfoCpu(region.data() + 16, 16) == NotInCoredumpHandler);
+    Require(sceCoredumpGetStopInfoGpu_Agc(region.data() + 16, 8) == NotInCoredumpHandler);
     Require(sceCoredumpGetThreadContextInfo(region.data(), ThreadContextInfoSize) == NotInCoredumpHandler);
     Require(region == original);
     Require(!handlerRan);

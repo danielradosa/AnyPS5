@@ -16,6 +16,7 @@ extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetFlip(CommandBuffer* buf, std::ui
 extern "C" std::uint32_t* APS5_VABI sceAgcAcbSetFlip(CommandBuffer* buf, std::uint32_t handle, std::int32_t index, std::uint32_t mode, std::int64_t argument);
 extern "C" std::uint32_t* APS5_VABI sceAgcAcbWaitUntilSafeForRendering(CommandBuffer* buf, std::uint32_t handle, std::uint32_t index);
 extern "C" int APS5_VABI sceAgcSuspendPoint();
+extern "C" int APS5_VABI sceAgcSetSubmitMode(std::uint32_t mode);
 extern "C" int APS5_VABI sceAgcInit(std::uint32_t version);
 extern "C" void* APS5_VABI sceAgcGetRegisterDefaults();
 extern "C" void* APS5_VABI sceAgcGetRegisterDefaultsInternal();
@@ -387,6 +388,8 @@ void testFlip() {
     auto* computeFlip = sceAgcAcbSetFlip(&compute.buffer, 0xfedcba98u, -2, 0x12345678u, -0x123456789abcdefLL);
     check(computeFlip == computeWait + 4 && std::equal(expected.begin(), expected.end(), computeFlip), "ACB flip packet differs from the DCB flip");
     check(sceAgcSuspendPoint() == 0, "empty suspend failed");
+    check(sceAgcSetSubmitMode(0) == 0, "submit mode 0 failed");
+    expectFailure([] { sceAgcSetSubmitMode(1); });
 }
 
 void testRegisters() {

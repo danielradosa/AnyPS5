@@ -28,6 +28,28 @@ namespace {
 constexpr int CursorInstructionRegister = -1;
 constexpr int CursorStackRegister = -2;
 constexpr int CursorRegisterCount = 17;
+constexpr int CursorStepSuccess = 1;
+constexpr int CursorStepEnd = 0;
+constexpr int CursorBadFrame = -6546;
+constexpr std::uint32_t CursorDwarfFormat = 0x04000000u;
+
+constexpr const char* CursorRegisterNames[] = {
+    "rax", "rdx", "rcx", "rbx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip",
+    "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15"};
+
+struct CursorProcInfo {
+    std::uintptr_t startIp;
+    std::uintptr_t endIp;
+    std::uintptr_t lsda;
+    std::uintptr_t handler;
+    std::uintptr_t gp;
+    std::uintptr_t flags;
+    std::uint32_t format;
+    std::uint32_t unwindInfoSize;
+    std::uintptr_t unwindInfo;
+    std::uintptr_t extra;
+};
+static_assert(sizeof(CursorProcInfo) == 72);
 
 std::uintptr_t* CursorRegister(_Unwind_Context* context, int number) {
     if (number == CursorInstructionRegister) return &context->registers[16];
@@ -41,6 +63,14 @@ std::uintptr_t* CursorRegister(_Unwind_Context* context, int number) {
     std::fflush(stderr);
     std::abort();
 }
+
+[[noreturn]] void AbortFloatRegister(const char* operation) {
+    std::fprintf(stderr, "libunwind: %s - no x86_64 float registers\n", operation);
+    std::fflush(stderr);
+    std::abort();
+}
+
+void APS5_VABI CursorDestroy(_Unwind_Context*) {}
 
 bool APS5_VABI CursorValidRegister(_Unwind_Context* context, int number) {
     return CursorRegister(context, number) != nullptr;
@@ -62,39 +92,48 @@ bool APS5_VABI CursorValidFloatRegister(_Unwind_Context*, int) {
     return false;
 }
 
+double APS5_VABI CursorGetFloatRegister(_Unwind_Context*, int) {
+    AbortFloatRegister("getFloatRegister");
+}
+
+void APS5_VABI CursorSetFloatRegister(_Unwind_Context*, int, double) {
+    AbortFloatRegister("setFloatRegister");
+}
+
+void APS5_VABI CursorGetInfo(_Unwind_Context* context, CursorProcInfo* info) {
+    if (info == nullptr) throw std::invalid_argument("libunwind cursor: getInfo with a null unw_proc_info_t");
+    *info = {};
+    if (context->fde == 0) return;
+    info->startIp = context->region;
+    info->endIp = context->regionEnd;
+    info->lsda = context->lsda;
+    info->handler = context->personality;
+    info->gp = context->argsSize;
+    info->format = CursorDwarfFormat;
+    info->unwindInfoSize = static_cast<std::uint32_t>(context->fdeEnd - context->fde);
+    info->unwindInfo = context->fde;
+    info->extra = context->imageBase;
+}
+
+void APS5_VABI CursorJumpTo(_Unwind_Context* context) {
+    LibcRestoreRegisters(context->registers);
+}
+
 bool APS5_VABI CursorIsSignalFrame(_Unwind_Context* context) {
     return context->signalFrame;
 }
 
-void APS5_VABI CursorUnsupported(_Unwind_Context*) {
-    NotImplemented_nid_no_patch("libunwind cursor: operation other than register access or isSignalFrame");
+bool APS5_VABI CursorGetFunctionName(_Unwind_Context*, char*, std::size_t, std::uintptr_t*) {
+    NotImplemented_nid_no_patch("libunwind cursor: getFunctionName");
+    return false;
 }
 
-template<class Function> std::uintptr_t Slot(Function function) {
-    return reinterpret_cast<std::uintptr_t>(function);
+const char* APS5_VABI CursorGetRegisterName(_Unwind_Context*, int number) {
+    if (number == CursorInstructionRegister) return "rip";
+    if (number == CursorStackRegister) return "rsp";
+    if (number >= 0 && number < static_cast<int>(std::size(CursorRegisterNames))) return CursorRegisterNames[number];
+    return "unknown register";
 }
-
-const std::uintptr_t CursorSlots[] = {
-    Slot(&CursorUnsupported),
-    Slot(&CursorUnsupported),
-    Slot(&CursorValidRegister),
-    Slot(&CursorGetRegister),
-    Slot(&CursorSetRegister),
-    Slot(&CursorValidFloatRegister),
-    Slot(&CursorUnsupported),
-    Slot(&CursorUnsupported),
-    Slot(&CursorUnsupported),
-    Slot(&CursorUnsupported),
-    Slot(&CursorUnsupported),
-    Slot(&CursorIsSignalFrame),
-    Slot(&CursorUnsupported),
-    Slot(&CursorUnsupported),
-    Slot(&CursorUnsupported),
-};
-}
-
-const std::uintptr_t* UnwindCursorSlots_nid_no_patch() {
-    return CursorSlots;
 }
 
 #if defined(__linux__) || defined(_WIN32) || defined(__APPLE__)
@@ -126,7 +165,10 @@ int FindFrame(dl_phdr_info* info, std::size_t, void* argument) {
     for (unsigned i = 0; i < info->dlpi_phnum; ++i) {
         const auto& ph = info->dlpi_phdr[i];
         Word start = info->dlpi_addr + ph.p_vaddr;
-        if (ph.p_type == PT_LOAD && query.pc >= start && query.pc - start < ph.p_memsz) contains = true;
+        if (ph.p_type == PT_LOAD && query.pc >= start && query.pc - start < ph.p_memsz) {
+            contains = true;
+            query.image = start;
+        }
         if (ph.p_type == PT_GNU_EH_FRAME) header = reinterpret_cast<const Byte*>(start);
         if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X)) query.text = start;
         if (ph.p_type == PT_LOAD && (ph.p_flags & PF_W)) query.data = start;
@@ -172,6 +214,11 @@ bool DecodeCandidate(_Unwind_Context& context, Frame& frame, const Lookup& query
     context.personality = frame.personality;
     context.textBase = query.text;
     context.dataBase = query.data;
+    context.regionEnd = frame.start + frame.length;
+    context.fde = Word(query.fde);
+    context.fdeEnd = Word(frame.end);
+    context.argsSize = 0;
+    context.imageBase = query.image;
     return true;
 }
 
@@ -244,14 +291,15 @@ bool VirtualUnwind(const _Unwind_Context& context, _Unwind_Context& caller) {
 }
 #endif
 
-bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
-    Lookup query {context.registers[16] - !context.signalFrame};
+bool DecodeFrame(_Unwind_Context& context, Frame& frame, Word pc) {
+    Lookup query {pc};
 #if defined(__linux__) || defined(__APPLE__)
     dl_iterate_phdr(FindFrame, &query);
 #ifdef __APPLE__
     if (!query.fde) {
         Dl_info image {};
         if (!dladdr(reinterpret_cast<void*>(query.pc), &image) || !image.dli_fbase) return false;
+        query.image = Word(image.dli_fbase);
         unsigned long size = 0;
         const Byte* p = getsectiondata(static_cast<const mach_header_64*>(image.dli_fbase), "__TEXT", "__eh_frame", &size);
         if (!p) return false;
@@ -299,6 +347,7 @@ bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
             if (!lo) return false;
             p = table + (lo - 1) * width * 2 + width;
             query.fde = reinterpret_cast<const Byte*>(Encoded(p, header[3], Word(header)));
+            query.image = Word(base);
             return DecodeCandidate(context, frame, query);
         }
         if (std::memcmp(section.Name, ".ehfram", 8) != 0) continue;
@@ -308,6 +357,7 @@ bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
         auto found = std::upper_bound(index.begin(), index.end(), query.pc, [](Word pc, const std::pair<Word, const Byte*>& entry) { return pc < entry.first; });
         if (found == index.begin()) continue;
         query.fde = std::prev(found)->second;
+        query.image = Word(base);
         frame = {};
         if (DecodeCandidate(context, frame, query)) return true;
     }
@@ -399,12 +449,13 @@ bool NativeRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
     context.region = frame.start;
     context.lsda = 0;
     context.personality = 0;
+    context.regionEnd = context.fde = context.fdeEnd = context.argsSize = context.imageBase = 0;
     return true;
 }
 #endif
 
-bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
-    if (!DecodeFrame(context, frame)) {
+bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules, Word pc) {
+    if (!DecodeFrame(context, frame, pc)) {
 #ifdef _WIN32
         if (NativeRules(context, frame, rules)) return true;
         frame = {};
@@ -412,6 +463,7 @@ bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
         frame.foreign = true;
         context.cfa = frame.caller.registers[7];
         context.region = context.lsda = context.personality = context.textBase = context.dataBase = 0;
+        context.regionEnd = context.fde = context.fdeEnd = context.argsSize = context.imageBase = 0;
         return true;
 #else
         return false;
@@ -427,25 +479,26 @@ bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
     }
 #endif
     rules = initial;
-    if (!Instructions(frame.begin, frame.end, frame, context.registers[16] - !context.signalFrame, rules, initial)) return false;
+    if (!Instructions(frame.begin, frame.end, frame, pc, rules, initial)) return false;
+    context.argsSize = rules.argsSize;
     if (rules.cfaExpression) return Expression(rules.cfaExpression, context, 0, context.cfa);
     if (rules.cfaRegister >= 17) return false;
     context.cfa = context.registers[rules.cfaRegister] + rules.cfaOffset;
     return true;
 }
 
-bool Step(_Unwind_Context& context) {
-    Frame frame; Rules rules;
-    if (!GetRules(context, frame, rules)) return false;
+bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
+    return GetRules(context, frame, rules, context.registers[16] - !context.signalFrame);
+}
+
+bool Apply(const _Unwind_Context& context, const Frame& frame, const Rules& rules, _Unwind_Context& next) {
 #ifdef _WIN32
     if (frame.foreign) {
-        const auto& next = frame.caller;
-        if (!next.registers[16] || (next.registers[7] == context.registers[7] && next.registers[16] == context.registers[16])) return false;
-        context = next;
+        next = frame.caller;
         return true;
     }
 #endif
-    _Unwind_Context next = context;
+    next = context;
     for (unsigned i = 0; i < 17; ++i) {
         const auto& rule = rules.registers[i];
         Word value;
@@ -480,9 +533,46 @@ bool Step(_Unwind_Context& context) {
     next.registers[7] = context.cfa;
     next.registers[16] = next.registers[frame.returnRegister];
     next.signalFrame = frame.signal;
+    return true;
+}
+
+bool Step(_Unwind_Context& context) {
+    Frame frame; Rules rules;
+    if (!GetRules(context, frame, rules)) return false;
+    _Unwind_Context next;
+    if (!Apply(context, frame, rules, next)) return false;
     if (!next.registers[16] || (next.registers[7] == context.registers[7] && next.registers[16] == context.registers[16])) return false;
     context = next;
     return true;
+}
+
+void ClearFrameInfo(_Unwind_Context& context) {
+    context.region = context.regionEnd = context.lsda = context.personality = context.textBase = context.dataBase = 0;
+    context.fde = context.fdeEnd = context.argsSize = context.imageBase = 0;
+}
+
+int APS5_VABI CursorStep(_Unwind_Context* context, bool) {
+    Frame frame; Rules rules;
+    _Unwind_Context current = *context;
+    if (!GetRules(current, frame, rules)) return CursorStepEnd;
+    _Unwind_Context next;
+    if (!Apply(current, frame, rules, next)) return CursorBadFrame;
+    Frame nextFrame; Rules nextRules;
+    const bool found = next.registers[16] != 0 && GetRules(next, nextFrame, nextRules);
+    if (!found) ClearFrameInfo(next);
+    *context = next;
+    return found ? CursorStepSuccess : CursorStepEnd;
+}
+
+void APS5_VABI CursorSetInfoBasedOnIPRegister(_Unwind_Context* context, bool isReturnAddress) {
+    Frame frame; Rules rules;
+    _Unwind_Context probe = *context;
+    const Word pc = context->registers[16];
+    if (pc == 0 || !GetRules(probe, frame, rules, pc - isReturnAddress)) {
+        ClearFrameInfo(*context);
+        return;
+    }
+    *context = probe;
 }
 
 _Unwind_Reason_Code PhaseTwo(_Unwind_Context context, _Unwind_Exception* exception) {
@@ -613,6 +703,11 @@ _Unwind_Reason_Code APS5_VABI _Unwind_Backtrace_nid_postfix(_Unwind_Trace_Fn tra
 
 #else
 
+namespace LibcUnwind {
+int APS5_VABI CursorStep(_Unwind_Context*, bool) { std::abort(); }
+void APS5_VABI CursorSetInfoBasedOnIPRegister(_Unwind_Context*, bool) { std::abort(); }
+}
+
 extern "C" {
 _Unwind_Reason_Code APS5_VABI _Unwind_RaiseException_nid_postfix(_Unwind_Exception*) { std::abort(); }
 [[noreturn]] void APS5_VABI _Unwind_Resume_nid_postfix(_Unwind_Exception*) { std::abort(); }
@@ -633,3 +728,31 @@ _Unwind_Reason_Code APS5_VABI _Unwind_Backtrace_nid_postfix(_Unwind_Trace_Fn, vo
 }
 
 #endif
+
+namespace {
+template<class Function> std::uintptr_t Slot(Function function) {
+    return reinterpret_cast<std::uintptr_t>(function);
+}
+
+const std::uintptr_t CursorSlots[] = {
+    Slot(&CursorDestroy),
+    Slot(&CursorDestroy),
+    Slot(&CursorValidRegister),
+    Slot(&CursorGetRegister),
+    Slot(&CursorSetRegister),
+    Slot(&CursorValidFloatRegister),
+    Slot(&CursorGetFloatRegister),
+    Slot(&CursorSetFloatRegister),
+    Slot(&LibcUnwind::CursorStep),
+    Slot(&CursorGetInfo),
+    Slot(&CursorJumpTo),
+    Slot(&CursorIsSignalFrame),
+    Slot(&CursorGetFunctionName),
+    Slot(&LibcUnwind::CursorSetInfoBasedOnIPRegister),
+    Slot(&CursorGetRegisterName),
+};
+}
+
+const std::uintptr_t* UnwindCursorSlots_nid_no_patch() {
+    return CursorSlots;
+}
