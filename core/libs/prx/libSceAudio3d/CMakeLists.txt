@@ -28,4 +28,8 @@ if(BUILD_TESTING)
     target_link_libraries(guest_audio3d_mixer_tests PRIVATE libc)
     configure_windows_unwind(guest_audio3d_mixer_tests)
     add_test(NAME guest_audio3d_mixer COMMAND guest_audio3d_mixer_tests)
+    if(WIN32)
+        set_tests_properties(guest_audio3d_mixer PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
 endif()
