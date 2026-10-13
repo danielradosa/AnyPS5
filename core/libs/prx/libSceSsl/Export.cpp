@@ -11,6 +11,7 @@
 #include <mbedtls/x509_crt.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -30,6 +31,8 @@ constexpr int ErrorNotFound = static_cast<int>(0x8095f004);
 constexpr int ErrorInvalidId = static_cast<int>(0x8095f006);
 constexpr int ErrorInvalidValue = static_cast<int>(0x8095f007);
 constexpr int ErrorInvalidArg = static_cast<int>(0x8095177a);
+constexpr int SslVersionTls12 = 5;
+constexpr std::size_t MaxAlpnSize = 0xffff;
 
 struct Pool {
     std::size_t size, current = 0, peak = 0;
@@ -185,6 +188,11 @@ struct Connection {
     std::string host;
     VerifyCallback verifyCallback;
     void* verifyArgument;
+    std::uint32_t enabledVerifyOptions = 0;
+    std::uint32_t disabledVerifyOptions = 0;
+    int minimumVersion = 0;
+    std::string alpn;
+    bool closed = false;
 };
 
 struct Runtime {
@@ -231,13 +239,42 @@ std::string Endpoint(const Connection& connection) {
     return connection.host + ":" + std::to_string((address[2] << 8) | address[3]);
 }
 
+bool ValidAlpn(const char* protocols) {
+    const auto* bytes = reinterpret_cast<const unsigned char*>(protocols);
+    const auto size = std::strlen(protocols);
+    if (size == 0 || size > MaxAlpnSize) return false;
+    for (std::size_t offset = 0; offset < size; offset += 1 + bytes[offset])
+        if (bytes[offset] > size - offset - 1) return false;
+    return true;
+}
+
+std::string AlpnNames(const std::string& protocols) {
+    if (protocols.empty()) return "none";
+    std::string names;
+    for (std::size_t offset = 0; offset < protocols.size(); offset += 1 + static_cast<unsigned char>(protocols[offset])) {
+        if (!names.empty()) names += ',';
+        names.append(protocols, offset + 1, static_cast<unsigned char>(protocols[offset]));
+    }
+    return names;
+}
+
+std::string Settings(const Connection& connection) {
+    char options[96];
+    std::snprintf(options, sizeof(options), "verify options enabled 0x%x, disabled 0x%x, minimum version %d",
+        connection.enabledVerifyOptions, connection.disabledVerifyOptions, connection.minimumVersion);
+    return std::string(options) + ", ALPN " + AlpnNames(connection.alpn);
+}
+
 [[noreturn]] void ThrowNoTransport(const char* function, int connectionId, const char* operation) {
     Connection connection;
     {
         std::lock_guard lock(State().mutex);
         connection = RequireConnection(function, connectionId);
     }
-    throw std::runtime_error(std::string(function) + ": no TLS transport for " + operation + " with " + Endpoint(connection));
+    if (connection.closed)
+        throw std::runtime_error(std::string(function) + ": the connection with " + Endpoint(connection) + " was closed with sceSslClose");
+    throw std::runtime_error(std::string(function) + ": no TLS transport for " + operation + " with " + Endpoint(connection) + " (" +
+        Settings(connection) + ")");
 }
 
 std::pair<std::shared_ptr<CertificateChain>, const mbedtls_x509_crt*> GetCertificate(Context& context, void* handle) {
@@ -602,37 +639,51 @@ int APS5_VABI sceSslGetSerialNumber(int sslCtxId, void* certificate, std::uint8_
     return 0;
 }
 
-int APS5_VABI sceSslClose() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslClose(int sslConnectionId) {
+    std::lock_guard lock(State().mutex);
+    RequireConnection(__func__, sslConnectionId).closed = true;
     return 0;
 }
 
-int APS5_VABI sceSslDisableVerifyOption(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslEnableVerifyOption(int sslConnectionId, std::uint32_t option) {
+    std::lock_guard lock(State().mutex);
+    auto& connection = RequireConnection(__func__, sslConnectionId);
+    connection.enabledVerifyOptions |= option;
+    connection.disabledVerifyOptions &= ~option;
     return 0;
 }
 
-int APS5_VABI sceSslGetAlpnSelected(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslDisableVerifyOption(int sslConnectionId, std::uint32_t option) {
+    std::lock_guard lock(State().mutex);
+    auto& connection = RequireConnection(__func__, sslConnectionId);
+    connection.disabledVerifyOptions |= option;
+    connection.enabledVerifyOptions &= ~option;
     return 0;
 }
 
-int APS5_VABI sceSslSetAlpn(void) {
-    NotImplemented_nid_no_patch(__func__);
+const std::uint8_t* APS5_VABI sceSslGetAlpnSelected(int sslConnectionId) {
+    std::lock_guard lock(State().mutex);
+    RequireConnection(__func__, sslConnectionId);
+    return nullptr;
+}
+
+int APS5_VABI sceSslSetAlpn(int sslConnectionId, const char* protocols) {
+    std::lock_guard lock(State().mutex);
+    auto& connection = RequireConnection(__func__, sslConnectionId);
+    if (!protocols || !ValidAlpn(protocols)) return ErrorInvalidValue;
+    connection.alpn = protocols;
     return 0;
 }
 
-int APS5_VABI sceSslSetMinSslVersion(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslSetMinSslVersion(int sslConnectionId, int version) {
+    std::lock_guard lock(State().mutex);
+    auto& connection = RequireConnection(__func__, sslConnectionId);
+    if (version < 0 || version > SslVersionTls12) return ErrorInvalidValue;
+    connection.minimumVersion = version;
     return 0;
 }
 
 int APS5_VABI sceSslGetPem() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSslEnableVerifyOption(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

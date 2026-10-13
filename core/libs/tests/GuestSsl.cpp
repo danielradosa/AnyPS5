@@ -20,6 +20,12 @@ int APS5_VABI sceSslSetVerifyCallback(int, int (APS5_VABI *)(int, unsigned int, 
 int APS5_VABI sceSslConnect(int);
 int APS5_VABI sceSslRead(int, void*, std::size_t, int);
 int APS5_VABI sceSslWrite(int, void*, std::size_t, int);
+int APS5_VABI sceSslClose(int);
+int APS5_VABI sceSslEnableVerifyOption(int, std::uint32_t);
+int APS5_VABI sceSslDisableVerifyOption(int, std::uint32_t);
+int APS5_VABI sceSslSetMinSslVersion(int, int);
+int APS5_VABI sceSslSetAlpn(int, const char*);
+const std::uint8_t* APS5_VABI sceSslGetAlpnSelected(int);
 int APS5_VABI sceNetSocket(const char*, int, int, int);
 int APS5_VABI sceNetBind_nid_postfix(int, const void*, std::uint32_t);
 int APS5_VABI sceNetListen(int, int);
@@ -139,6 +145,28 @@ int main() {
     Require(ThrowsWith([&] { sceSslConnect(connection); }, endpoint));
     Require(ThrowsWith([&] { sceSslRead(connection, buffer, sizeof(buffer), 0); }, endpoint));
     Require(ThrowsWith([&] { sceSslWrite(connection, buffer, sizeof(buffer), 0); }, endpoint));
+    Require(ThrowsWith([&] { sceSslConnect(connection); }, "verify options enabled 0x0, disabled 0x0, minimum version 0, ALPN none"));
+
+    constexpr int invalidValue = static_cast<int>(0x8095F007);
+    Require(sceSslEnableVerifyOption(connection, 0x25) == 0);
+    Require(sceSslDisableVerifyOption(connection, 0x2005) == 0);
+    Require(sceSslSetMinSslVersion(connection, 4) == 0);
+    Require(sceSslSetMinSslVersion(connection, 6) == invalidValue);
+    Require(sceSslSetMinSslVersion(connection, -1) == invalidValue);
+    Require(sceSslSetAlpn(connection, nullptr) == invalidValue);
+    Require(sceSslSetAlpn(connection, "") == invalidValue);
+    Require(sceSslSetAlpn(connection, "\x05h2") == invalidValue);
+    Require(sceSslSetAlpn(connection, "\x02h2\x09http/1.1") == invalidValue);
+    Require(sceSslSetAlpn(connection, "\x02h2\x08http/1.1") == 0);
+    Require(sceSslGetAlpnSelected(connection) == nullptr);
+    Require(ThrowsWith([&] { sceSslConnect(connection); },
+        endpoint + " (verify options enabled 0x20, disabled 0x2005, minimum version 4, ALPN h2,http/1.1)"));
+    Require(sceSslEnableVerifyOption(connection, 0x4) == 0);
+    Require(ThrowsWith([&] { sceSslRead(connection, buffer, sizeof(buffer), 0); }, "enabled 0x24, disabled 0x2001"));
+    Require(sceSslClose(connection) == 0);
+    Require(sceSslClose(connection) == 0);
+    Require(ThrowsWith([&] { sceSslRead(connection, buffer, sizeof(buffer), 0); }, endpoint + " was closed with sceSslClose"));
+    Require(ThrowsWith([&] { sceSslWrite(connection, buffer, sizeof(buffer), 0); }, "closed with sceSslClose"));
 
     const int unconnected = sceSslCreateConnection(context, idle, "example.com");
     Require(unconnected > 0 && unconnected != connection);
@@ -151,11 +179,20 @@ int main() {
     Require(ThrowsWith([&] { sceSslRead(unknown, buffer, sizeof(buffer), 0); }, "unknown connection"));
     Require(ThrowsWith([&] { sceSslWrite(unknown, buffer, sizeof(buffer), 0); }, "unknown connection"));
     Require(Throws([&] { sceSslDeleteConnection(unknown); }));
+    Require(ThrowsWith([&] { sceSslClose(unknown); }, "unknown connection"));
+    Require(ThrowsWith([&] { sceSslEnableVerifyOption(unknown, 1); }, "unknown connection"));
+    Require(ThrowsWith([&] { sceSslDisableVerifyOption(unknown, 1); }, "unknown connection"));
+    Require(ThrowsWith([&] { sceSslSetMinSslVersion(unknown, 5); }, "unknown connection"));
+    Require(ThrowsWith([&] { sceSslSetAlpn(unknown, "\x02h2"); }, "unknown connection"));
+    Require(ThrowsWith([&] { sceSslGetAlpnSelected(unknown); }, "unknown connection"));
     Require(Throws([&] { sceSslConnect(unconnected); }));
 
     Require(sceSslTerm_nid_postfix(context) == 0);
     Require(Throws([&] { sceSslSetVerifyCallback(connection, nullptr, nullptr); }));
     Require(ThrowsWith([&] { sceSslConnect(connection); }, "terminated"));
+    Require(ThrowsWith([&] { sceSslClose(connection); }, "terminated"));
+    Require(ThrowsWith([&] { sceSslSetAlpn(connection, "\x02h2"); }, "terminated"));
+    Require(ThrowsWith([&] { sceSslGetAlpnSelected(connection); }, "terminated"));
     Require(sceSslCreateConnection(context, client, "example.com") == invalidId);
     Require(sceSslDeleteConnection(connection) == 0);
     Require(Throws([&] { sceSslDeleteConnection(connection); }));
