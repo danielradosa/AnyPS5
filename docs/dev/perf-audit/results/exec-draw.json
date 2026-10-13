@@ -1,0 +1,276 @@
+{
+ "subsystem": "Execution-side draw path (Execution/src/Driver/Draw/*)",
+ "howItWorks": "The queue worker calls Driver::draw once per DRAW_* packet (PacketExecution.cpp:235-287). The draw runs these steps in order:\n1. Pm4::ResolveDraw (Pm4.cpp:706-733).\n2. precheckDraw (DrawPrecheck.cpp:14-67). It checks for metadata passes, depth maintenance, draws with no color writes, primitive restart, and the DrawRejection register rules.\n3. Loads the device without a lock.\n4. drawRegisterKey (DrawRegisterKey.cpp:9-57). This is an FNV hash over every present register in the 45 DrawKeyRegisters ranges, including each stage's RSRC2-counted user-data words and the program snapshot identities. The key is looked up in drawCache under drawCacheMutex.\n5. resolveDrawDecode. The full decodeDraw runs only when no entry exists.\n6. Copies decode->programs, builds memory/linked, and constructs a ShaderMemory.\n7. lookupDraw validates each stage's 4 or fewer variants against live guest memory with validateVariant. That function covers pending-write syncs, the StorageTexture and shadow checks, and CompareMapped on every captured run.\n8. Outcome:\n   - Full hit: the cached compiled results and vertex infos are used.\n   - Otherwise: compileDrawStage runs for every stage (SourceHandleFor memo, then ShaderMemory::Capture SRT walk, then the Recompile memo, then a deep copy). cacheDrawStages then builds variants and calls insertDrawEntry (LRU, 4096 entries).\n9. Checks for deferred-label overlap, which can restart the whole draw. Then rect-list and snapshots.\n10. Either the CPU indirect path (patch, recompile and Graphics::Draw per record), or findDrawRecipe followed by KnownDrawRejection.\n11. lockForDraw (takes GpuMutex and records labels), then noteDrawWriters.\n12. DrawFromRecipe or Graphics::Draw, then attachDrawRecipe.\n\nDefaults:\n- Draw entries, the register key and recipes are ON.\n- Verify, trace and dump switches are all opt-in: APS5_VERIFY_DRAW_ENTRIES, APS5_VERIFY_DRAW_RECIPE, APS5_DUMP_DRAW_SHADERS, APS5_DUMP_DRAW_SLOT1, APS5_TRACE_INDIRECT_DRAWS, APS5_TRACE_CAPSYNC, APS5_TRACE_DRAWS, APS5_CAPTURE_TRACE, APS5_PROFILE_DRAW and APS5_LOCKED_DRAW_PREPARE.\n- APS5_LOG_OUT_DEBUG compiles to (void)0.",
+ "threadingAndLocks": "Draws run on one thread: the graphics queue's worker. All per-draw work is serial in PM4 order.\n\nOutside GpuMutex by default (APS5_LOCKED_DRAW_PREPARE unset): precheck, key, decode, validation, capture and recompile.\n\ndrawCacheMutex (one std::mutex shared by all workers): taken 3-4 times per hit (Draw.cpp:72, DrawLookup.cpp:118, DrawCache.cpp:113 and 128) and on every insert (DrawCache.cpp:59). The holds are short.\n\nGuestMemory::GpuMutex (recursive, process-wide):\n- lockForDraw (Draw.cpp:260-276) takes it and holds it until the function returns. That covers recording deferred labels, noteDrawWriters, all of Graphics::Draw or DrawFromRecipe, and attachDrawRecipe.\n- Graphics::Draw includes the target refresh, the resource cache, the ShaderResources build, CachedPipeline (vkCreateGraphicsPipelines on a miss), command recording, and recorder->Sync for waited draws.\n- In the CPU-indirect loop it stays held while later records are recompiled.\n- It is also taken briefly by recordQueuedLabelsAfterCapture's try_lock (every draw while labels are queued).\n- The flush hook takes it whenever validation, capture or argument reads overlap pending GPU writes (Recorder.cpp:1010-1020). SyncThrough there blocks the worker until the GPU finishes.\n\nOther locks per draw:\n- StorageTexture's pending mutex and the unit-shadow registry mutex (once per run) in validateVariant.\n- writtenBuffersMutex.\n- validationMutex.\n- On misses: the snapshot handle-memo mutex and the recompiler's source mutex.",
+ "findings": [
+  {
+   "id": "exec-draw-1",
+   "title": "Draw-cache key hashes volatile user-data words (SRT and constant-ring pointers), so draws likely miss with 'no entry' every frame and take the most expensive path",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawRegisterKey.cpp:9-57; Draw.cpp:69-83,197-222; DrawCache.cpp:39-46,99-107",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "The register key mixes the value of every present register in the DrawKeyRegisters ranges. That includes the user-data words each stage reads (PS 0x00c.., GS/VS 0x08c.., HS 0x10c..). Those words hold the per-draw SRT, constant and vertex-table pointers. A title that takes them from a per-frame ring gets a new key for the same draw every frame. When the key is absent, the draw runs the full path:\n- DecodeState + DecodePixelStageInfo + program prepare.\n- DecodeVertexStageInfo: 2 GuestMemory::Read calls and 2 vector allocations per vertex semantic.\n- Per stage: SourceHandleFor, then ShaderMemory::Capture (SRT walk, a 4 KiB node allocated and copied per page), then Recompile (result memo), then a deep copy.\n- A new DispatchVariant per stage (words copy and stable_sort).\n- insertDrawEntry under drawCacheMutex, with an O(words) compare against existing variants and LRU eviction.\n- No draw recipe, because a recipe is only looked up after drawHit.\nWith 4096 entries (the default) and more than about 1,500 draws per frame across 2-3 buffered frames, entries keep being evicted.",
+   "evidence": "- DrawRegisterKey.cpp:16-22: userEnd = base + RSRC2 user count. Lines 28-37 mix every present register in each range and skip only shader registers past that count, so the user-word values are hashed.\n- State.hpp:168: shader ranges {0x008,0x24}, {0x08a,0x22}, {0x10b,0x21} cover the 32 user words of each stage.\n- Draw.cpp:69-83: drawCache.find(drawKey) and ++absent on a miss.\n- DrawDecode.cpp:106-112: decodeDraw when decode==nullptr.\n- Draw.cpp:164-180: decodeVertexInfo for every non-hit stage. ShaderInputState.cpp:198-215 does 2 Reads and 2 DecodeRead vector allocations per semantic.\n- Draw.cpp:201-210: compileDrawStage for every stage when !drawHit.\n- DrawCapture.cpp:25-40,79-80: capture, Regions() rebuild, Recompile and copy.\n- DrawCapture.cpp:92-123: variant build and insertDrawEntry.\n- DrawCache.cpp:39-46: APS5_DRAW_CACHE_ENTRIES unset gives 4096. Lines 99-107 evict.\n- Draw.cpp:360: recipe only if drawHit.\n- Defaults: drawEntries ON (DrawCache.cpp:19-22: APS5_NO_DRAW_SRT_ENTRIES and APS5_DISPATCH_STAMP_VALIDATE unset). registerKeyEnabled ON (DrawCache.cpp:29-32: APS5_NO_DRAW_KEY unset). APS5_DRAW_KEY_ALL_USER_WORDS is opt-in and only makes the key stricter.\n- Commit d9632d55 states that PPSA21564 uses a per-draw constant ring that later frames rewrite, so these pointers rotate.",
+   "onDefaultPath": true,
+   "impact": "critical",
+   "whyImpact": "A miss costs the decode, the capture walk, materialization, roughly 100 heap allocations for the copy, and the variant build and insert, on every draw. Estimate: tens to hundreds of \u00b5s per draw, against a few \u00b5s for a hit. If most of about 1,000-3,000 draws per frame miss, that alone can explain a queue-0 frame time above 100 ms (8-9 FPS), with only one thread busy.",
+   "proposal": "Use a two-level key in Draw.cpp/DrawRegisterKey.cpp:\n(a) A structural key: drawRegisterKey without the user-word values, keeping the RSRC2 counts, program snapshot and offset. It maps to a cached DrawDecode template. When the exact key is absent but the structural key hits, copy the template and reload only program.userData from queue.shader (the loop at DrawDecode.cpp:42-45 and initializeMerged's pointer words). This skips DecodeState, DecodePixelStageInfo and ExportMappings.\n(b) Store each stage's userData words in its DispatchVariant and compare them before memory validation. A draw whose ring addresses recur then hits under the structural entry, without depending on LRU size.\n(c) Keep a per-structural-key volatility counter. After K consecutive absent or Differing outcomes, skip validation and variant insertion for the next M draws and go straight to capture. This stops LRU churn and wasted validation.\n(d) Interim: raise the default drawCacheEntries (for example to 16384) if the counters show evictions.",
+   "effort": "L",
+   "risk": "Medium. The decode must be a pure function of the registers excluding user-word values (decodeDraw only copies them into program.userData). Check this with the existing facade log under APS5_VERIFY_DRAW_RECIPE=1 (DrawDecode.cpp:113-131) and sameDecode.",
+   "howToMeasure": "Set APS5_PROFILE_DRAW=1 and read these lines:\n- '[draw-cache] N lookups (10 s): N no entry, N validated ... N hits ... misses by reason ...; N entries ..., N evictions in total' and '[draw-cache] register key (10 s): N lookups, N hits, key build X us each; decode skipped N, partial N' (DrawCacheStatistics.cpp:16-17).\n- '[draw] driver phases ... us per packet: decode, program prepare, capture, recompile, key/lookup/validate' (DrawTiming.cpp:30).\nThe hit rate is registerKeyHits divided by registerKeyLookups."
+  },
+  {
+   "id": "exec-draw-2",
+   "title": "GpuMutex is held across all of Graphics::Draw (resource build, pipeline creation, recording); draws have no unlocked prepare stage like dispatch's PrepareDispatch",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:42,260-276,343-346,370-387",
+   "category": "global-lock-serialization",
+   "mechanism": "lockForDraw takes the process-wide recursive GpuMutex through a unique_lock declared at function scope. Nothing releases it before return. So noteDrawWriters, DrawFromRecipe or Graphics::Draw, and attachDrawRecipe all run while every other queue worker, the presenter and the flush hook are locked out. Graphics::Draw does the following under the lock:\n- Resident-target refresh: FlushPending, CollectWrites and the DCC key scan.\n- resolveDrawResources: DrawResourceKey, Find/Revalidate, or a full ShaderResources build.\n- CachedPipeline, which calls vkCreateGraphicsPipelines on a miss.\n- Recording.\n- recorder->Sync() for waited draws.\nThe dispatch path runs PrepareDispatch (stage A) before it takes the lock. The draw path has no equivalent.",
+   "evidence": "- Draw.cpp:42: std::unique_lock gpuLock(GpuMutex(), defer_lock). Lines 260-276: lockForDraw does gpuLock.lock() and recordLabelsForPacket. Lines 370-385: noteDrawWriters, Draw/DrawFromRecipe and attachDrawRecipe, all still locked.\n- Graphics/src/Draw.cpp:1562 refreshResidentTarget, 1615 resolveDrawResources (992 make_shared<ShaderResources>), 1740 CachedPipeline. Pipeline.cpp:248 calls vkCreateGraphicsPipelines. Draw.cpp:1441-1447 calls recorder->Sync() for waited draws.\n- Dispatch.cpp:288-313: PrepareDispatch runs before std::lock_guard gpuLock. VulkanDevice.hpp:219 (PrepareDispatch) and :249 (PrepareRecipe) are dispatch-only. A grep for PrepareDraw finds none.\n- GuestMemory.hpp:118-123: 'the graphics worker's frame is mostly spent waiting for this lock behind the compute workers'.\n- Default: APS5_LOCKED_DRAW_PREPARE unset (Draw.cpp:41), so the lock is first taken at lockForDraw, but it still covers all of Graphics::Draw.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Every draw's Graphics::Draw time (resource builds, a pipeline compile on a miss, the recorder sync) blocks every compute-queue worker and the flush hook. This is why extra CPU threads do not help: queues take turns on one mutex, and with queue 0 issuing thousands of draws per frame the lock is held for most of the frame.",
+   "proposal": "(1) Effort S, in Draw.cpp:\n- Call noteDrawWriters (which takes only writtenBuffersMutex) and KnownDrawRejection before lockForDraw.\n- Call gpuLock.unlock() right after localDevice->Draw or DrawFromRecipe returns, before attachDrawRecipe (which needs only drawCacheMutex) and before drawn().\n- In the indirect loop, unlock after each record's Draw.\n(2) Effort L: add VulkanDevice::PrepareDraw that mirrors PrepareDispatch. Run these without the lock: DrawResourceKey, SharedResourceCache Find/Revalidate, ShaderResources stage A, ValidationKey, and the pipeline lookup. Create missing pipelines outside GpuMutex, synchronized only on the VkPipelineCache. Keep only target refresh, the label record and command recording under the lock. Add a draw PrepareRecipe for DrawFromRecipe's prechecks.",
+   "effort": "L",
+   "risk": "Medium-high for (2). ShaderResources, StorageTexture refresh and the recorder assume GpuMutex, so follow the split already proven for dispatch. (1) is low risk.",
+   "howToMeasure": "Set APS5_PROFILE_DRAW=1 (GPU-lock profiling is on unless APS5_NO_LOCK_PROFILE is set) and read:\n- '[lock] queue 0x.. waited X ms ... held X ms in total, by site (holds, held, max): draw ...' and 'waited behind (holder/site ms)' for the compute queues (GuestMemory.cpp:1617-1645).\n- '[draw] driver phases ... lock wait, labels, Graphics::Draw'."
+  },
+  {
+   "id": "exec-draw-3",
+   "title": "Draws have no 'data hits': any changed flattened-SRT constant makes a stage Differing and forces capture + materialize + a new variant",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawLookup.cpp:93-110; DrawCapture.cpp:85-123",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "lookupDraw calls validateVariant without the `live` output, so masked=false and any differing captured dword is a miss. Draw variants are built without dataPositions or flatBinding. Per-object constants that the shader reads through the SRT end up in the captured runs; when they change each frame, every stage that reads them misses. The miss then:\n- recaptures and rematerializes (a new snapshot means a result-memo miss);\n- deep-copies the result;\n- inserts a variant (maximum 4 per stage), evicting older ones.\nDispatch handles the same case with EqualData: it patches the FlattenedSrt binding words into a copy of the cached result.",
+   "evidence": "- DrawLookup.cpp:100: validateVariant(programs[i].binary.codeAddress, submission.queue, *variant, regions, imagesFlushed, runsSynced, sampling), with no live pointer.\n- VariantValidation.cpp:72: masked = live != nullptr && ...\n- DrawCapture.cpp:92-121: the variant gets compiled, shader, forgetSerial, pushOffset, runs and words; dataPositions stays empty.\n- Dispatch counterpart: DispatchLookup.cpp:43 passes &liveData, :120-135 patches guestDescriptor. DispatchInsert.cpp:29-36 runs DataWordPositions on capture->readTrace.\n- dataHits() is ON by default (DispatchCache.cpp:12-15; APS5_NO_DATA_HITS unset; TemplateDataRefresh ON because APS5_NO_TEMPLATE_DATA_REFRESH is unset, VulkanDevice.cpp:2555).\n- Variant cap: dispatchVariants() defaults to 4 (DispatchCache.cpp:22-29) and is used by DrawCache.cpp:83.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Even when register keys hit, every draw whose SRT-read constants change each frame (transforms, animation and material parameters) pays the full miss cost from exec-draw-1. A level frame of a 3D action game has many such draws.",
+   "proposal": "Port data hits to draws:\n- Keep the shared_ptr<ResourceCapture> from compileDrawStage in StageCapture.\n- In cacheDrawStages, set variant->flatBinding and dataPositions/dataSlots with DataWordPositions over the stage's runs and the FlattenedSrt binding (as in insertDispatch).\n- In lookupDraw, pass a per-stage liveData vector and accept EqualData.\n- On EqualData, build a patched RecompileResult (copy-on-write of that one binding's guestDescriptor) and set programResults[i] to it. Mark the draw as non-recipe.\n- In Graphics, extend template data refresh to draw templates so the resource cache also hits.",
+   "effort": "M",
+   "risk": "Medium. DataWordPositions already excludes aliased and other reads. Verify with an APS5_VERIFY_DATA_HITS-style mode for draws.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- '[draw-cache] ... misses by reason: front stage differing N, fragment differing N, other stage differing N'. Compare them against hits.\n- '[capture] N captures ...' rate (ShaderMemory.cpp:244).\n- '[draw] driver phases' capture and recompile \u00b5s per packet."
+  },
+  {
+   "id": "exec-draw-4",
+   "title": "A draw with one differing stage re-captures and re-materializes every stage, including stages whose variant validated Equal",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawLookup.cpp:87; Draw.cpp:197-210",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Validation stops at the first stage that misses, so later stages are never validated. The compile loop then calls compileDrawStage for every stage whenever drawHit is false. For example, when the front (vertex/mesh) stage's constants differ, the pixel stage is still recaptured, rematerialized and deep-copied. cacheDrawStages then builds a fresh variant for it, and insertDrawEntry finds it 'present' only after comparing runs and words element by element.",
+   "evidence": "- DrawLookup.cpp:87: for (...; !miss && i < programs.size(); ++i).\n- Draw.cpp:201-210: if (drawHit) {...} else { results.push_back(compileDrawStage(...)) } for every stage.\n- DrawCapture.cpp:42-46: matched regions are only merged when drawHit.\n- DrawCache.cpp:74-79: find_if comparing pushOffset, runs and words, then ++present.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Most draws have 2 stages (vertex/NGG front plus pixel), or 3 with the geometry back stage. Reusing the matched stages cuts the miss cost by about half when one stage differs, which is the common 'front stage differing' case.",
+   "proposal": "In lookupDraw, keep validating the remaining stages after a miss (still with a running push cursor). In Draw.cpp's compile loop, reuse a stage when matched[i] != nullptr && matched[i]->pushOffset == pushCursorBytes: set programResults[i] = matched[i]->compiled.get() and append matchedRegions[i] to memory. Compile only the stages that differ. Leave fresh[i] null for reused stages. For recipeStages, use matched[i] where fresh[i] is null.",
+   "effort": "S",
+   "risk": "Low-medium. LinkedProgram carries only binaries and user-data spans (Recompiler.hpp:222-228), so a reused stage's compile inputs are unchanged. The push-offset check guards the layout.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- '[draw-cache] ... N stage validations (N equal ...)' and the miss reasons.\n- '[draw] driver phases' capture and recompile \u00b5s per packet before and after.\n- '[capture] N captures'."
+  },
+  {
+   "id": "exec-draw-5",
+   "title": "Every compiled draw stage deep-copies the shared, immutable RecompileResult",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawCapture.cpp:79-82; Draw.cpp:207-209,282-290",
+   "category": "allocation-copy",
+   "mechanism": "compileDrawStage gets a shared_ptr<const RecompileResult> from the result memo and returns `RecompileResult result = *stageCapture.compiled;` by value. That copies spirv (shared), the bindings vector, and for each DescriptorBinding up to 12 vectors (guestDescriptor and several vector<bool>), plus pushConstants, vertexAttributes, parameterExports and fragmentParameters. On CPU-indirect hits, Draw.cpp copies every stage's result again.",
+   "evidence": "- DrawCapture.cpp:79-80: stageCapture.compiled = Recompile(request, *capture); then ShaderRecompiler::RecompileResult result = *stageCapture.compiled.\n- Recompiler.hpp:402-424: RecompileResult fields. Recompiler.hpp:312-340: DescriptorBinding, with 12 vector members.\n- Recompiler.cpp:569-575: a memo hit returns the shared result, so the copy is pure overhead.\n- Draw.cpp:285: results.push_back(RecompileResult(*programResults[i])) for indirect CPU draws that hit.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "A material pixel shader with 10-20 bindings means about 50-200 heap allocations plus descriptor word copies per stage per miss. That multiplies the miss cost from exec-draw-1 and exec-draw-3.",
+   "proposal": "Make compileDrawStage return the shared_ptr (stageCapture.compiled) and set programResults[i] = stageCapture.compiled.get(), as the hit path does with matched[i]->compiled.get(). Keep the `results` vector only for rect-list stages and for the indirect-CPU patch path, and copy only on a real patch. Rect-list already uses its own results slots.",
+   "effort": "S",
+   "risk": "Low. Lifetimes are held by stageCaptures until the draw returns.",
+   "howToMeasure": "'[draw] driver phases ... recompile' \u00b5s per packet with APS5_PROFILE_DRAW=1, or a heap profiler / perf on the queue-0 worker."
+  },
+  {
+   "id": "exec-draw-6",
+   "title": "Fixed overhead on the hit path: about 25-35 heap allocations, an unconditional ShaderMemory construction and 3-4 drawCacheMutex acquisitions per draw",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:72,89,122-159,195-196,253-258,353-361; DrawLookup.cpp:78,118-156",
+   "category": "allocation-copy",
+   "mechanism": "A full cache hit still does the following:\n- Copies decode->programs: 1 + P allocations, P userData copies, P shared_ptr refcount operations.\n- Grows the memory and linked vectors.\n- Allocates about 12 per-draw vectors: vertexInfos (about 900 B per program), decodeReads, results.reserve, stages, programResults, stageCaptures, matched, matchedRegions plus P inner vectors, fresh, recompiled, ranks, pushOffsets, resultIndex, snapshots, recipeStages.\n- Constructs a ShaderMemory that is never used on a hit. Its constructor copies and sorts the regions and creates 2P std::map nodes.\n- Takes drawCacheMutex 3-4 times: key lookup, the counters/rotate step, findDrawRecipe and attachDrawRecipe.\n- On a rank>0 hit, rebuilds the DrawEntry (make_shared plus a copy of every stage's variant vector) under the mutex.\n- KnownDrawRejection builds a vector key and takes a global mutex.",
+   "evidence": "- Draw.cpp:89: std::vector<DrawProgram> programs = decode->programs.\n- Draw.cpp:122-128: memory and linked. Lines 132-133, 145-159, 195-196: per-draw vectors.\n- Draw.cpp:144: ShaderMemory shaderMemory(memory, ...). ShaderMemory.cpp:90-95 builds RequestMemoryView (RequestMemoryView.cpp:19-37: copy and sort) and does initial.emplace into a std::map.\n- Draw.cpp:253-258: snapshots. Lines 353-356: recipeStages.\n- Draw.cpp:72, DrawLookup.cpp:118, DrawCache.cpp:113 and 128: drawCacheMutex.\n- DrawLookup.cpp:136-150: rotated entry copy.\n- Graphics/src/Draw.cpp:1485-1491: KnownValidationFailure (vector key plus validationMutex). It runs per draw without a recipe (Draw.cpp:365).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Estimated 2-5 \u00b5s per draw. At 1,000-3,000 draws per frame that is 2-15 ms on the single queue-0 thread. It matters once misses are fixed.",
+   "proposal": "- Use thread_local scratch vectors through the existing ShaderRecompiler::ThreadOwned pattern (as CaptureValidation.cpp:18-19,63-64 does), or fixed std::array storage, since programs are at most 5 (DrawDecode.cpp:53).\n- Construct ShaderMemory lazily (std::optional, built on the first compileDrawStage).\n- Use a const reference to decode->programs unless the draw is mesh or CPU-indirect, which are the only paths that mutate userData.\n- Take drawCacheMutex once: return the entry and its recipes snapshot together from the key lookup, and fold the counters into thread-local tallies flushed with the profile report.\n- Replace the rotate-on-hit copy with a per-stage atomic preferred-rank hint.",
+   "effort": "M",
+   "risk": "Low.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- '[draw] driver phases ... vectors, program prepare, decode' \u00b5s per packet on a hit-heavy scene.\n- '[draw-cache] ... validated in X us each'."
+  },
+  {
+   "id": "exec-draw-7",
+   "title": "CPU indirect draws: a GPU wait to read the arguments, then per record a recompile and a full Graphics::Draw, with records 2..N recompiled under GpuMutex",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:277-351; IndirectDraw.cpp:15-58",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "classifyIndirectDraw sends these draws to the CPU path:\n- every multi or count-indirect draw on a non-vertex path (NGG mesh, tessellation), because the mesh GPU-side path requires count==1, no countIndirect and no base-vertex or start-instance location;\n- draws whose drawIndex is in an SGPR;\n- draws that fail on feature gaps.\nThe CPU path then:\n- reads the count and records through GuestMemory::Read. That goes through the flush hook, which submits and waits for the GPU when compute culling has just written them.\n- for each record: allocates a std::set, patches the user words, and runs compileDrawStage (capture, Recompile and copy) for each patched program. It then runs fold, a rect-list rebuild, snapshot(), KnownDrawRejection and one full Graphics::Draw.\n- takes lockForDraw at the first record and never releases it, so later records' captures and recompiles run under GpuMutex.",
+   "evidence": "- IndirectDraw.cpp:23-25: meshGpuSide = meshPath && indexed && count==1 && !countIndirect && no base or start location; otherwise fail(NonVertexPath). Line 26: DrawIndex.\n- Draw.cpp:292-296: recordQueuedLabelsBeforeRead and Pm4::ReadDrawCount/ReadDrawArguments. Pm4.cpp:688-704 calls GuestMemory::Read, which calls FlushGpuWrites (GuestMemory.cpp:1717-1719). Recorder.cpp:1010-1020 then takes GpuMutex and calls SyncThrough.\n- Draw.cpp:305: std::set per record. Lines 328-335: compileDrawStage per patched program. Line 343: lockForDraw inside the loop; the unique_lock persists. Line 346: localDevice->Draw per record.\n- Commit fb55cb2c records that PPSA21564's indirect mesh draws had caused about 170 GPU waits per 10 s, and only the count==1 case moved to the GPU.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "For GPU-driven multi-draw-indirect on the NGG path, one packet becomes a GPU drain (the CPU and GPU take turns, so both sit partly idle) plus N recompiles plus N Graphics::Draw calls, all serialized under GpuMutex.",
+   "proposal": "(a) Fold-only fast path: when every patched word is the front program's vertexOffsetSgpr or instanceOffsetSgpr and the result reports neither shared nor conflict (RecompileResult fields), skip compileDrawStage and apply fold() to `direct`. This is already how direct draws treat those SGPRs (Draw.cpp:184-192).\n(b) Run all records' compiles and snapshots before the first lockForDraw, or unlock between records.\n(c) Pass all records to one Graphics::Draw that records several vkCmdDraw* calls.\n(d) In Graphics, extend the MeshArguments compute expansion to count>1 and countIndirect, so mesh MDI stays on the GPU.",
+   "effort": "M",
+   "risk": "Medium. (a) needs the analyzer's vertexOffsetShared/Conflict flags to be exact. (d) is a shader-side change.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- '[draws] ... indirect: gpu-side N (N rewritten), cpu-side N (non-vertex path N, draw index N ...), argument reads X ms' (Graphics/src/Draw.cpp:395-401).\n- '[hooksync]' attribution for the IndirectArguments read site.\nFor per-packet decisions, run briefly with APS5_TRACE_INDIRECT_DRAWS=1 (IndirectDraw.cpp:51-56)."
+  },
+  {
+   "id": "exec-draw-8",
+   "title": "A queued label that overlaps a capture restarts the whole draw after a stale variant was already inserted into the cache",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:222-229; Driver/Synchronization/DeferredLabels.cpp:162-183",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "cacheDrawStages inserts the freshly captured variants before recordQueuedLabelsAfterCapture checks whether a deferred label (RELEASE_MEM or WRITE_DATA) overlaps the captured memory. On overlap, the labels are recorded and Driver::draw recurses from the start, redoing key, decode, validation and capture. The stale variant takes one of the stage's 4 slots. On the retry, the label-written runs classify as Sync (syncedLabel), which costs a GPU wait. Separately, every draw while labels are queued try_locks GpuMutex just to record them.",
+   "evidence": "- Draw.cpp:222: cacheDrawStages(...). Line 229: if (recordQueuedLabelsAfterCapture(submission.queue, memory)) return draw(queue, packet, submission, rejected).\n- DeferredLabels.cpp:165-171: overlap check, then recordQueuedLabelsBeforeRead and ++captureRetries. Lines 174-182: try_lock on GpuMutex.\n- VariantValidation.cpp:93-97: validation already detects QueuedLabel (counted as a Gate miss).\n- WriteEvidence.cpp:168-177: a label in range gives Policy::Sync.\n- Default: DeferLabels() ON (DeferredLabels.cpp:15-19; APS5_LABEL_LOCK_EACH and APS5_DRAIN_COMPLETION_LABELS unset).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "It wastes a full miss plus one GPU sync per affected draw, and pollutes the variant slots. It matters only for draws that read label-written memory; the counters show how often that happens.",
+   "proposal": "- When lookupDraw reports EntryOutcome::QueuedLabel for any stage, or before the first compileDrawStage, call recordQueuedLabelsBeforeRead and then capture.\n- Move the overlap check ahead of cacheDrawStages so a restart never inserts.\n- On restart, reuse the already-resolved decode instead of recursing into Driver::draw.",
+   "effort": "S",
+   "risk": "Low.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1: '[labels] ... after a capture: N groups recorded by a try, N packets redone for a queued label over the capture' (PacketFlush.cpp:102), and the '[draw-cache]' gate misses."
+  },
+  {
+   "id": "exec-draw-9",
+   "title": "Validation can wait on the GPU before the cheap compare, once per variant, and draw-written buffers always force a sync",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Dispatch/VariantValidation.cpp:20-111; Driver/Memory/WrittenBuffers.cpp:39-43; Draw.cpp:344,371",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "validateVariant first runs syncPendingRuns over the regions that overlap pending GPU writes. When the raw bytes match, it calls FlushGpuWrites (the flush hook submits and waits on the GPU) before it compares the variant's other runs. A variant whose non-pending runs differ still pays that sync, and lookupDraw repeats this for up to 4 variants per stage. noteDrawWriters registers every buffer a draw writes as a foreign writer (program 0), so classifyPendingWrite returns Sync (syncedForeign) for any later read of draw-written memory. The evidence and known-value skips never apply to it. With write evidence on, each synced region also allocates and memcpys a `before` copy.",
+   "evidence": "- VariantValidation.cpp:76 calls syncPendingRuns before validateCaptured at :106. Lines 24-45: pending overlap, classify, CompareMapped, then GuestMemory::FlushGpuWrites. Lines 37-41: `before` allocation.\n- DrawLookup.cpp:93-110: loops over the variants, calling validateVariant each time.\n- WrittenBuffers.cpp:39-43: noteForeignWriter(begin, end, queue), with program=0. WriteEvidence.cpp:158-161: writer->program == 0 gives syncedForeign and Sync.\n- Recorder.cpp:1010-1020: the hook takes GpuMutex and calls SyncThrough.\n- Defaults (WriteEvidence.cpp:34-67): APS5_NO_WRITE_EVIDENCE, APS5_NO_FOREIGN_WRITERS and APS5_NO_VALIDATE_SKIP are all unset, so all three features are ON.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Each sync is a submit plus a wait for GPU completion on the single draw thread. The CPU then stalls and the GPU drains, which matches the reported under-use of both. The frequency depends on how many SRT reads overlap pending GPU writes.",
+   "proposal": "(a) In validateVariant, call CompareMapped on all non-pending regions first and return Differing before any syncPendingRuns.\n(b) In lookupDraw, choose the candidate variant by comparing non-pending runs across all variants, then sync once for that one.\n(c) Record draw-written buffers with a program identity: call noteWrittenBuffers with the pixel or front program's codeAddress instead of noteForeignWriter, so the writer-keyed evidence and known-value policies can skip syncs.",
+   "effort": "M",
+   "risk": "(a) and (b): low, the order changes but the outcome does not. (c): medium, because the evidence model must hold for raster-order writes. Keep the streak threshold.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- '[draw] driver phases ... validate GPU wait, capture hook waits'.\n- '[validate] ... synced N waiting X ms (... foreign writer N, label N ...)' (CaptureDiagnostics.cpp:34).\n- '[hooksync] N pending-write syncs waited X ms' attribution for the DrawCache site."
+  },
+  {
+   "id": "exec-draw-10",
+   "title": "Draws that throw are never negatively cached, so they redo decode, capture and recompile every frame and build diagnostic strings",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:246-285; Draw.cpp:30-388",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "An exception from decode, compile or Graphics::Draw unwinds Driver::draw without inserting anything. The same key misses again next frame and repeats all the work before the throw. Each failure also builds what+suffix strings, inserts into a static std::set<pair<uint64,string>> (a string compare), and runs reportSkip (a global mutex, a string hash and a set insert). Only source-resolve failures are memoized (FailureMemo, ShaderRegistry.cpp:81-84,131-138); validation failures are memoized inside Graphics::Draw (KnownValidationFailure).",
+   "evidence": "- PacketExecution.cpp:281-284: catch, skipped(error.what()), CountDrawSkip(Thrown). Lines 246-266: string building, dumpedTargets.insert, reportSkip.\n- ShaderDiagnostics.cpp:17-27: lock, then std::hash<std::string> and an insert.\n- No drawCache insert on a throw (Draw.cpp:222 is never reached).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "The cost scales with the number of thrown draws per frame, which is unknown and visible in the [draws] line. Each one costs a full miss (tens of \u00b5s or more) plus about 1-3 \u00b5s of string work.",
+   "proposal": "When the throw happens before any guest-memory-dependent step (that is, in decodeDraw or Graphics::DecodeState, which are pure functions of key-covered registers), store the message in a small map keyed by drawKey under drawCacheMutex. Check it right after the key lookup (Draw.cpp:76) and return DrawVerdict::Rejected. Cache only those failures, not capture or Graphics failures that depend on memory.",
+   "effort": "S",
+   "risk": "Low when limited to register-only failures.",
+   "howToMeasure": "'[draws] ... skipped packets: nothing N in X ms, prechecked N in X ms, thrown N in X ms' (Graphics/src/Draw.cpp:403-406), and the '[draw] driver phases ... skipped' row, with APS5_PROFILE_DRAW=1."
+  },
+  {
+   "id": "exec-draw-11",
+   "title": "Per-draw precheck and register-key hashing redo pure register work that the cache entry could carry",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPrecheck.cpp:14-67; DrawRegisterKey.cpp:9-57",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Before the key lookup, each draw runs DecodeColorMetadataPass, DepthMaintenanceRejection, ColorWriteMask, the restart checks and Graphics::DrawRejection (about 30 register finds with std::string returns). drawRegisterKey then mixes up to about 390 registers, two serial 64-bit multiplies each (offset, then value). For every shader-bank register it runs an any_of over 3 user ranges, then does 5 ShaderRegistry upper_bound walks. All of this is a pure function of registers the key already covers.",
+   "evidence": "- DrawPrecheck.cpp:16, 26, 32-41, 42-61, 62-65.\n- State.cpp:824-882 (DrawRejection).\n- DrawRegisterKey.cpp:24-26 (unread any_of), 33-36 (mix(it->first); mix(it->second)), 39-55 (registry walks).\n- State.hpp:154-171: 45 ranges, about 390 registers.\n- Default: drawPrecheck ON (APS5_NO_DRAW_PRECHECK unset, DrawPrecheck.cpp:9-12).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "Estimated 1-3 \u00b5s per draw, which is 1-9 ms per frame at 1,000-3,000 draws on the critical thread.",
+   "proposal": "- Mix (offset << 32 | value) as one word, which halves the serial multiply chain.\n- Precompute per-bank masks of the hashed user words once per draw instead of calling any_of per register.\n- Store the precheck verdict, or the fact that it passed, in DrawEntry and skip DrawRejection on a register-key hit. Keep the cheap DecodeColorMetadataPass and indexCount checks.",
+   "effort": "S",
+   "risk": "Low. The precheck reads only registers that DrawKeyRegisters covers (the facade test exists in tests/Graphics.cpp:198-211).",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1: '[draw-cache] register key ... key build X us each', and the 'precheck' row of '[draw] driver phases'."
+  },
+  {
+   "id": "exec-draw-12",
+   "title": "Global locks per run in variant validation: the StorageTexture pending registry and the unit-shadow registry",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Dispatch/VariantValidation.cpp:81-90; Graphics/src/Texture.cpp:2433-2450; Graphics/src/UnitShadow.cpp:483-505",
+   "category": "global-lock-serialization",
+   "mechanism": "For each validated variant of each stage, validateVariant calls StorageTexture::AnyPendingOverlaps(variant.runs) and AnyShadowedOverlaps(variant.runs):\n- The first takes the global pending mutex and scans every pending or flushing texture against every run, which is O(T x R).\n- The second takes the shadow registry mutex once per run.\nA stage with 50 captured runs means about 50 mutex acquisitions per validation, contended with compute workers and the flush hook that use the same registries.",
+   "evidence": "- VariantValidation.cpp:81.\n- Texture.cpp:2436: std::lock_guard lock(pending.mutex), then loops over pending.textures and pending.flushing.\n- UnitShadow.cpp:499-503: AnyShadowedOverlaps(span) calls AnyShadowedOverlaps(begin, bytes) per run. Line 487 locks registry.mutex each time.\n- Default: UnitShadowEnabled ON when write-watch is available (UnitShadow.cpp:418-420; APS5_NO_UNIT_SHADOW unset).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "A few \u00b5s per draw, plus lock contention with other queue workers. It grows with the number of captured runs and pending textures.",
+   "proposal": "- Add a batch AnyShadowedOverlaps(ranges) that takes the registry lock once.\n- Short-circuit both checks on a lock-free generation or count: skip them when no texture is pending and no shadow unit is live (PendingSerial and a live-unit counter).",
+   "effort": "S",
+   "risk": "Low.",
+   "howToMeasure": "'[draw] driver phases ... key/lookup/validate' \u00b5s per packet, and '[draw-cache] ... validated in X us each', with APS5_PROFILE_DRAW=1. Run perf on the worker to see the mutex time."
+  },
+  {
+   "id": "exec-draw-13",
+   "title": "The capture word reader always increments shared atomic profile counters, even with profiling off",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/ShaderMemory.cpp:101,123,137",
+   "category": "logging-debug-overhead",
+   "mechanism": "ShaderMemory::read runs `++CaptureTotals().reads` (a sequentially consistent locked RMW) for every SRT word the capture walk reads, and page() runs `++CaptureTotals().pages`. Neither is gated on CaptureProfiled(). All counters share one static struct and its cache lines across every queue worker that captures (draw misses and dispatch misses), so the lines bounce between cores.",
+   "evidence": "- ShaderMemory.cpp:123: ++CaptureTotals().reads; executes unconditionally.\n- ShaderMemory.cpp:101: ++CaptureTotals().pages;\n- CaptureProfile, ShaderMemory.cpp:20-53: about 20 adjacent std::atomic counters.\n- CaptureProfiled() is APS5_PROFILE_DRAW (ShaderMemory.cpp:63-66). The other timers are gated on it; these two counters are not.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "Hundreds of locked increments per captured stage, with false sharing when queues capture at the same time. Small, but on the miss path that dominates in exec-draw-1.",
+   "proposal": "Gate both increments on CaptureProfiled(), or keep thread-local tallies and flush them in the 500-capture report (the wordsKnown counters that the [copy] line needs can stay unconditional).",
+   "effort": "S",
+   "risk": "None.",
+   "howToMeasure": "perf annotate on ShaderMemory::read, and the '[draw] driver phases ... capture' row with APS5_PROFILE_DRAW=1 before and after."
+  }
+ ],
+ "incompleteOrStubbed": [
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/IndirectDraw.cpp:23-28",
+   "what": "The GPU-side indirect path covers only vertex-path draws and the single-record mesh case: indexed, count==1, no countIndirect, no base-vertex, start-instance or drawIndex location. All other cases fall back to the CPU path: NGG/mesh or tessellation multi and count-indirect draws, drawIndex in an SGPR, and feature gaps.",
+   "perfRelevance": "The CPU path waits on the GPU to read the arguments, then recompiles and runs a full Graphics::Draw per record under GpuMutex (see exec-draw-7). This is a major cost for GPU-driven rendering."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1770; Execution/src/Driver/Draw/Draw.cpp:354-363",
+   "what": "Draw recipes (the fast record path) are built only for direct, cacheable, non-waited draws without a depth target (`!state.depth`), and are only looked up after a full draw-cache hit.",
+   "perfRelevance": "Depth-tested 3D geometry, the bulk of a frame, never uses the recipe path. Each such draw also pays a findDrawRecipe that misses plus KnownDrawRejection, then a full Graphics::Draw under GpuMutex."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp:219,249 (dispatch only)",
+   "what": "There is no draw counterpart to PrepareDispatch (the unlocked stage A of the resource build) or PrepareRecipe (the unlocked recipe prechecks).",
+   "perfRelevance": "The whole draw resource build, pipeline lookup and creation, and recipe proof run under the process-wide GpuMutex (exec-draw-2)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawLookup.cpp:100; DrawCapture.cpp:92-121",
+   "what": "Draw variants lack the dispatch path's data-hit support (dataPositions, flatBinding, EqualData).",
+   "perfRelevance": "Any change in a flattened-SRT constant forces a full capture, materialize and variant insert per draw (exec-draw-3)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/DrawPrecheck.cpp:16-25,35-39,42-60",
+   "what": "Rejected or limited cases:\n- CB metadata passes (eliminate fast clear, DCC decompress) run synchronously under GpuMutex at precheck, and indirect ones are unsupported.\n- Depth/stencil-only draws on a queue that never set a pixel program address are rejected as 'not implemented'.\n- Primitive restart works only for strips, or for lists with VK_EXT_primitive_topology_list_restart, and only with an all-ones index.",
+   "perfRelevance": "Rejected draws skip their GPU work but pay the skip and report path. Metadata passes read DCC keys on the CPU and can wait for pending key writes while holding GpuMutex."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketExecution.cpp:281-285",
+   "what": "Draws that throw (unsupported state, recompiler failures) have no negative cache keyed by the draw key.",
+   "perfRelevance": "They repeat decode, capture and recompile every frame before failing again (exec-draw-10)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:41-54",
+   "what": "The legacy APS5_LOCKED_DRAW_PREPARE mode (opt-in) takes GpuMutex at the start of the draw and holds it through decode, validation, capture and recompile.",
+   "perfRelevance": "Off by default. Setting it would serialize all prepare work against the other queues, so it should not be used for performance."
+  }
+ ],
+ "quickExperiments": [
+  {
+   "setting": "APS5_PROFILE_DRAW=1 (optionally with APS5_NO_HOLD_PROFILE=1 to lower its overhead)",
+   "expectedEffect": "No speedup. It prints every 10 s: '[draw-cache]' hit, no-entry and miss reasons; '[draw] driver phases' \u00b5s per packet; '[lock]' waits and holds per site; '[hooksync]'; '[capture]'; '[draws]' with indirect CPU/GPU counts and thrown draws; '[labels]'; '[validate]'. These show whether misses (exec-draw-1/3), GPU syncs (exec-draw-7/9) or GpuMutex holds (exec-draw-2) dominate.",
+   "risk": "Adds clock reads, lock-profiling overhead and stderr output, so FPS drops somewhat while it is on."
+  },
+  {
+   "setting": "APS5_DRAW_CACHE_ENTRIES=32768",
+   "expectedEffect": "If '[draw-cache]' shows many 'no entry' lookups and evictions, a larger LRU can keep entries across a 2-3 frame SRT/constant ring, so a draw's key repeats before it is evicted. This raises register-key hits and cuts decode, capture and recompile time.",
+   "risk": "More memory, because each entry holds a decode and up to 4 variants of captured words per stage. Hits stay unchanged if the pointers never repeat."
+  },
+  {
+   "setting": "APS5_DISPATCH_VARIANTS=8",
+   "expectedEffect": "Draw entries keep up to 8 variants per stage (DrawCache.cpp:83 uses dispatchVariants()), so draws that alternate among more than 4 constant sets under one key can hit.",
+   "risk": "Each miss validates up to 8 variants, each of which may sync on pending writes. It also changes the dispatch cache (8 variants per entry, 8192 entries)."
+  },
+  {
+   "setting": "APS5_BATCH_CAP=256 (A/B against the default 64, and against 32)",
+   "expectedEffect": "Fewer SubmitRecorded/vkQueueSubmit calls under GpuMutex per frame (PacketFlush.cpp:46 caps at 64 recorded works per submit by default), so less lock-held submit time on queue 0.",
+   "risk": "Larger batches can start GPU work later and reduce CPU/GPU overlap. Measure FPS and the '[lock]' Flush site."
+  },
+  {
+   "setting": "APS5_WORKER_AFFINITY=1 (Windows on hybrid Intel CPUs only)",
+   "expectedEffect": "Pins the queue workers and the presenter to P-cores (WorkerAffinity.cpp:13-17). Linux already does this by default on hybrid CPUs. This avoids the single-threaded queue-0 draw path running on an E-core.",
+   "risk": "Minimal. No effect on non-hybrid CPUs."
+  },
+  {
+   "setting": "APS5_WRITE_EVIDENCE_AFTER=2",
+   "expectedEffect": "The write-evidence streak needed to skip a sync drops from 4 to 2 (WriteEvidence.cpp:87), so fewer validation and capture syncs on pending GPU writes ('validate GPU wait' and 'capture hook waits').",
+   "risk": "Higher chance of reading stale data from a GPU writer that changes its output, which shows up as rendering glitches."
+  },
+  {
+   "setting": "APS5_TRACE_INDIRECT_DRAWS=1 (short run only)",
+   "expectedEffect": "No speedup. It logs each indirect draw's CPU-or-GPU decision and the reason (IndirectDraw.cpp:51-56, DrawPrecheck.cpp:28-30), which shows whether Astro Bot's NGG multi-draws take the CPU path.",
+   "risk": "One stderr line per indirect draw packet, which is slow."
+  }
+ ]
+}

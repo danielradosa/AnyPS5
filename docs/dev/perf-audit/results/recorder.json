@@ -1,0 +1,316 @@
+{
+ "subsystem": "Command recording, submission and pipelines (Recorder, Pipeline, PipelineCache)",
+ "howItWorks": "Every guest queue records into one Recorder: one open batch, one in-flight deque, and one VkQueue that present also uses. A worker holding GuestMemory::GpuMutex calls Commands(). ensureOpen reuses a spare command buffer and fence (vkBeginCommandBuffer ONE_TIME) and ends any open render pass.\nDispatch: a leading ALL->COMPUTE barrier unless the previous trailing barrier covered SHADER_R/W, then bind, push and dispatch. An unconditional COMPUTE->ALL|HOST trailing barrier follows, then NotePendingReads/Writes, which re-sorts and republishes the lock-free pending-write snapshot when a range is new.\nDraw: CachedPipeline builds a byte-vector key, FNV-hashes it and looks it up in a global LRU of 256. A miss synchronously creates shader modules, a layout, a render pass and the pipeline via vkCreateGraphicsPipelines with a disk-persisted VkPipelineCache. AcquireFramebuffer uses a per-pipeline LRU of 8. The draw either continues the open pass (same views and extent, previous draw wrote no memory, nothing recorded since) or ends it (vkCmdEndRenderPass + ALL->ALL barrier) and begins a new LOAD/STORE pass in GENERAL layout after an ALL->graphics barrier. Then descriptor bind, 128 B push constants and the draw. The pass is left open, and objects are kept until the fence.\nLabels are queued vkCmdUpdateBuffer stores, recorded as one run with a barrier pair at Submit. A label table lets WAIT_REG_MEM read recorded values without the GPU.\nSubmit (vkEndCommandBuffer + vkQueueSubmit signalling a fence and a timeline serial) happens after 64 draws/dispatches (APS5_BATCH_CAP), 1 ms after the first label, at CPU access to pending ranges, drains, flips and submission ends.\nBatches retire via Reap (fence poll on queue 0), Sync/SyncThrough (fence waits) or WaitSerial+FinishUpTo (unlocked timeline wait). Completions (CPU write-backs) run under the mutex; kept objects are freed on a release thread. The CPU runs ahead of the GPU except at those waits.",
+ "threadingAndLocks": "Each guest queue has a worker thread. Decode, recompile lookup and capture run unlocked. Resource build, CachedPipeline (any vkCreate*Pipelines also holds PipelineStore::mutex), command recording, Submit/vkQueueSubmit, Reap/finish completions and snapshot rebuilds all run under the one recursive GuestMemory::GpuMutex (depth 1 in the draw/dispatch hold).\nOther users of the mutex: label record/flush between packets (try_lock, but blocking on queue 0 for cap/deadline), drains, the presenter (PresentDisplayBuffer and QueuePresent on the same VkQueue), and game/HLE threads through the flush hook when the lock-free snapshot overlaps.\nUnlocked GPU waits exist only for WaitSerial (drains, dispatch presync) and the hook's syncThroughUnlocked, at depth 1 with a timeline. These wait for fences WHILE HOLDING the mutex, stalling every other queue worker, hooked game thread and the presenter's locked steps ([lock] 'locked GPU waits'):\n- nested hooks (depth >= 2 inside a draw/dispatch hold)\n- Sync() and locked SyncThrough\n- FinishUpTo without a prior wait (lease waiter)\n- BoundKeptBytes\n- SamplesTotal (WAIT_BIT)\n- CommandBatch::Wait\nKept objects are destroyed on a release thread after the outermost unlock by default (APS5_RELEASE_UNDER_LOCK=1 or APS5_RELEASE_ON_UNLOCK=1 change this). labelTableMutex and completedMutex are small leaf locks. Net: GPU command recording is effectively single-threaded.",
+ "findings": [
+  {
+   "id": "recorder-barriers-1",
+   "title": "Full-pipeline barriers between almost every pair of commands serialize GPU execution",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:3287-3311; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1368,1395-1396; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:1384-1395,1765-1768,1780-1821",
+   "category": "gpu-side-efficiency",
+   "mechanism": "Barriers are emitted per command, not per hazard:\n- Every dispatch ends with a COMPUTE->ALL_COMMANDS|HOST barrier (SHADER_WRITE -> SHADER_R/W|TRANSFER_R/W|HOST_READ).\n- Its leading ALL_COMMANDS|HOST->COMPUTE barrier is skipped only when the previous command's trailing barrier covered SHADER_R/W.\n- Every draw that cannot continue the open render pass records a leading ALL_COMMANDS->(COLOR_ATTACHMENT_OUTPUT|EARLY/LATE_FRAGMENT|VERTEX_INPUT|shader stages) barrier.\n- Every pass end records vkCmdEndRenderPass plus an ALL_COMMANDS->ALL_COMMANDS barrier.\nDraws never use the covered mask. So dispatch->dispatch costs 1 barrier, draw->dispatch 1, and dispatch->draw or draw->new-pass draw 2, whether or not the two commands touch the same memory.\nOn AMD and NVIDIA drivers, a barrier with an ALL_COMMANDS/COMPUTE source stage and SHADER/ATTACHMENT write access is a wait-for-idle plus cache flush/invalidate. Independent dispatches and draws therefore never overlap, and the GPU drains and refills between them.",
+   "evidence": "VulkanDevice.cpp:3307-3311:\n  constexpr VkAccessFlags dispatchedAccess = ...|VK_ACCESS_HOST_READ_BIT;\n  RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_SHADER_WRITE_BIT, dispatchedAccess); ... recorder.MarkCovered(dispatchedAccess);\n  No condition guards the trailing barrier.\n- Leading barrier elision only at 3287: if ((covered & shaderAccess) == shaderAccess && barrierElision).\n- Draw.cpp:1368: recorder->Commands() is called with no coveredAccess pointer, so a draw never elides. Draw.cpp:1395-1396 records vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, ...COLOR_ATTACHMENT_OUTPUT|EARLY/LATE_FRAGMENT|VERTEX_INPUT|inputs.shaderStages...) for each non-continued draw.\n- Recorder.cpp:1386-1389 (endOpenRenderPass): cmdEndRenderPass, then recordBarrier(ALL_COMMANDS, ALL_COMMANDS, SHADER_WRITE|COLOR_ATTACHMENT_WRITE|DEPTH_STENCIL_ATTACHMENT_WRITE|TRANSFER_WRITE, ...).\n\nDefaults:\n- Recorder::MergeBarriers() (1765-1768) is ON unless APS5_FULL_BARRIERS or APS5_NO_BARRIER_ELISION is set.\n- The hazard tracker NoteAccess (1780-1821) runs only with APS5_BARRIER_VALIDATE (opt-in) and only counts. Recorder.hpp:439-446 says 'the real barriers are recorded as before'.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "A frame has hundreds of dispatches and thousands of draws, so this means roughly one GPU drain per dispatch plus two per render-pass break. Small dispatches and short passes become dominated by drain and fill bubbles, which matches the observed under-utilized GPU. Async compute overlap is impossible. The gain is largest once the CPU side stops being the only limiter. The [present] line's GPU busy/idle split shows whether the GPU is currently the bound.",
+   "proposal": "Make barriers hazard-driven, reusing the existing tracker:\n1. Replace the per-command trailing barrier with a pending source scope on the open batch (Batch::coveredAccess already exists): accumulate the src stage/access of commands recorded since the last barrier.\n2. Before each command, run the NoteAccess checks (RAW/WAW/WAR on guest ranges via imports, image written, or conservative for address-based, BDA and lease builds). Record one merged barrier (accumulated src -> this command's dst stages/access) only on a hazard, then clear the tracker as NoteAccess already does.\n3. Keep host visibility as one ALL_COMMANDS->HOST barrier at Submit (the hostReadOwed path at Recorder.cpp:2778-2783).\n4. Let draws pass &covered to Commands() at Draw.cpp:1368, and widen endOpenRenderPass's dst access to attachment, index, vertex and uniform reads, so the leading draw barrier can be elided after a pass end or a dispatch.\nRoll out behind a switch (e.g. APS5_HAZARD_BARRIERS=1), first for dispatch->dispatch only, then draws.",
+   "effort": "L",
+   "risk": "High correctness risk if a hazard is missed:\n- one guest range aliased through different VkBuffers or imports (compare guest addresses, not handles)\n- storage images in GENERAL layout\n- BDA or address-based builds, which must stay conservative\n- render-pass attachment feedback\nCounting mode can validate first: APS5_BARRIER_VALIDATE=1 already reports what would be skipped.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [barriers] 'N recorded (10 s) by class' (dispatch-lead, dispatch-trail, draw) and the 'merged' count.\n- Adding APS5_BARRIER_VALIDATE=1 appends 'validate: would emit X ... would skip Y' (the upper bound of the saving).\n- [present] 'GPU busy / idle gaps' per present.\n- APS5_PROFILE_GPU=1 gives [gputime] per-class times. Note its BOTTOM_OF_PIPE timestamps add serialization of their own."
+  },
+  {
+   "id": "recorder-pipeline-compile-1",
+   "title": "Graphics and compute pipeline creation runs synchronously under GpuMutex (and the pipeline store mutex) on every cache miss",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:514-562,94-254; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1740; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:260-276,370,383; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:3504-3536",
+   "category": "shader-pipeline-compile",
+   "mechanism": "CachedPipeline takes the global PipelineStore::mutex. On a miss it constructs a Pipeline, which calls:\n- vkCreateShaderModule per stage\n- vkCreatePipelineLayout\n- vkCreateRenderPass\n- vkCreateGraphicsPipelines(context.pipelineCache)\nThis runs inside Graphics::Draw, which Driver::draw reaches only after lockForDraw() took GuestMemory::GpuMutex. Dispatch pipelines are likewise created in VulkanDevice::dispatch under the hold.\nThe whole driver compile (milliseconds to hundreds of ms on a driver-cache miss, typically sub-ms on a VkPipelineCache hit) blocks every other queue worker, label flush, presenter step and flush-hooked game thread. Recording effectively stops for all queues.",
+   "evidence": "- Pipeline.cpp:517-518: auto& store = Pipelines(); std::lock_guard lock(store.mutex);\n- Pipeline.cpp:549: auto pipeline = std::make_shared<Pipeline>(...)\n- Pipeline constructor: vkCreateShaderModule (126), vkCreatePipelineLayout (142), vkCreateRenderPass (181), vkCreateGraphicsPipelines (248).\n- Execution/src/Driver/Draw/Draw.cpp:264 gpuLock.lock() inside lockForDraw; 370 lockForDraw(); 383 localDevice->Draw(...) -> VulkanDevice::Draw -> Graphics::Draw -> Draw.cpp:1740 CachedPipeline(...).\n- Compute: VulkanDevice.cpp:3517 vkCreateShaderModule, 3526 vkCreatePipelineLayout, 3530 vkCreateComputePipelines, all inside dispatch() (the 'held here, by every Dispatch caller' comment near 3169).\n\nDefaults: APS5_NO_PIPELINE_CACHE (Pipeline.cpp:515) is opt-in, so the store is on. The VkPipelineCache is persisted to <exe dir>/shader_cache/vk-pipelines-<vendor>-<device>-<driver>-<uuid>.bin (PipelineCache.cpp:33-61; ShaderDiskCache.cpp:34-58, also on _WIN32). It is saved every 10 s by a background thread (PipelineCache.cpp:125-132) and disabled only by ANYPS5_NO_SHADER_CACHE. So only first-time (driver-cache-miss) compiles are long, but every miss still runs under the lock.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Each miss freezes the whole emulated GPU front end, not just the drawing queue. During first play, or after LRU evictions (recorder-pipeline-lru-1), this shows up as stutter and as threads blocked in [lock]. Even cache hits cost object creation (modules, layout, render pass, pipeline) under the lock.",
+   "proposal": "S: share sub-objects across pipelines.\n- Cache the VkRenderPass per (attachment formats, export map, attachmentLayout).\n- Cache the VkPipelineLayout per (set layout, push stages).\n- Cache the VkShaderModule per variantId, or skip modules via VK_KHR_maintenance5 (VkShaderModuleCreateInfo in the stage pNext).\nA miss then only pays vkCreateGraphicsPipelines.\n\nM: create or look up the pipeline before lockForDraw in Execution/src/Driver/Draw/Draw.cpp. The decoded State, stage variants and vertex input are known there, and the descriptor layout key comes from the binding plan. Hold only the store mutex, use a per-key in-progress future so concurrent misses don't double-compile, and pass the shared_ptr into Draw. Fall back to the in-lock path when the masked state or proxied formats differ.\n\nL: async compilation on a thread pool. Either skip the draw until the pipeline is ready (behind a switch), or use VK_EXT_graphics_pipeline_library with a fast-linked pipeline while the optimized one compiles.",
+   "effort": "M",
+   "risk": "The pre-lock key must equal what Draw computes (masked blend state, proxied formats, fragment outputs), so keep the in-lock path as a fallback. Async skipping causes visible pop-in.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [pipecache] 'N lookups: hits, misses, private, evicted, cached'.\n- [draws] 'pipeline=X ms' phase total and 'longest phase of any draw: pipeline Y'.\n- [lock] 'held ... by site (holds, held, max)' for Draw and Dispatch.\nOn first versus second run, look for the '[pipeline-cache] loaded N KiB' message at startup."
+  },
+  {
+   "id": "recorder-pipeline-lru-1",
+   "title": "Pipeline store capped at 256 entries: evicted pipelines are destroyed and recreated, and their draw recipes fall back to the slow path",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:549-561; core/libs/prx/libSceAgcDriver/Execution/include/Recipe.hpp:76-77; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:2109-2112",
+   "category": "shader-pipeline-compile",
+   "mechanism": "After each insertion over 256 entries, the least recently used entry that no in-flight batch references is erased. Its destructor destroys the VkPipeline, VkRenderPass, VkPipelineLayout and VkShaderModules synchronously under GpuMutex.\nWhen the configuration comes back, the full creation repeats: object creation plus a driver VkPipelineCache lookup or compile.\nDraw recipes keep only a weak_ptr to the pipeline, so an eviction also turns every recipe hit for that configuration into a miss (ObjectsGone). Those draws fall back to the full Graphics::Draw path: resource resolution, key building and CachedPipeline.\nA frame with more than 256 distinct pipeline configurations (shader pairs \u00d7 blend/depth/stencil/raster permutations; see recorder-dynamic-state-1) thrashes every frame.",
+   "evidence": "- Pipeline.cpp:552-560: constexpr std::size_t bound = 256; while (store.entries.size() > bound) { const auto victim = std::find_if(..., use_count() == 1); ... store.entries.erase(victim); ++store.evicted; }\n- Pipeline::~Pipeline -> release() (260-272): vkDestroyPipeline, vkDestroyRenderPass, vkDestroyPipelineLayout, vkDestroyShaderModule.\n- Recipe.hpp:76: std::weak_ptr<Graphics::Pipeline> pipeline;\n- Draw.cpp:2109-2110: auto pipeline = recipe.pipeline.lock(); if (pipeline == nullptr) return miss(DrawRecipeMiss::ObjectsGone);\n\nDefault: bound is a compile-time constant with no env override.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "If the working set exceeds 256, each frame pays N pipeline creations plus N slow-path draws under the global lock. That is plausible for an AAA title, but it needs confirming with the [pipecache] evicted count.",
+   "proposal": "- Raise the bound (e.g. 4096) or make it configurable (APS5_PIPELINE_ENTRIES, defaulting high). Pipelines are small; memory is dominated by driver code objects of tens of KB each.\n- Optionally bound by bytes or age (evict only entries unused for K presents, using Recorder::Presents()) instead of count.\n- Reduce key diversity (recorder-dynamic-state-1) so fewer entries are needed.",
+   "effort": "S",
+   "risk": "Higher memory use. No correctness risk: eviction semantics are unchanged.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, in steady gameplay:\n- [pipecache] 'evicted' and 'misses' per 10 s should be about 0.\n- [draws] 'recipe hits N, misses by reason: ... objects gone M'."
+  },
+  {
+   "id": "recorder-locked-waits-1",
+   "title": "Several default-path GPU waits block while holding GpuMutex, stalling every other queue and hooked thread",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2902-2915,2955-2961,3044-3048,3216-3259,1057,1895-1907; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:122-124,1635-1638; core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:735-738,999-1007; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1431,1711,1715,3171-3176",
+   "category": "cpu-gpu-sync-stall",
+   "mechanism": "Only two waits release the mutex: WaitSerial (drains, dispatch presync) and the flush hook's syncThroughUnlocked. The latter refuses unless the mutex depth is exactly 1 and a timeline exists.\nEverything else ends in finish(wait=true), i.e. vkWaitForFences while the caller holds GpuMutex. That covers Sync(), SyncThrough without waitUnlocked, FinishUpTo without a prior WaitSerial, nested hooks, and hooks inside completions. When the target is the open batch, Sync() submits and waits for every in-flight batch: a full GPU drain.\nThe common nested case: a draw or dispatch already holds the mutex at depth 1, and its resource build or CPU-read indirect arguments read guest memory. The flush hook then runs at depth 2 and waits locked.\nMeanwhile all other queue workers, label flushes, the presenter's locked steps and game threads hitting the hook queue behind a thread that is only waiting for the GPU. CPU threads and the GPU are then idle at the same time.",
+   "evidence": "Recorder.cpp:\n- 3048: if (HookLockedWait() || timeline == VK_NULL_HANDLE || GuestMemory::GpuMutex().DepthOnThisThread() != 1) return false;\n- 2955-2961: if (!SyncThroughEnabled() || (open != nullptr && overlaps(*open, address, end))) { ... Sync(); return; }\n- 3253-3254: waitFences(context.device, 1, &batch->fence, VK_TRUE, ...) inside finish, which runs under the hold (3241 NoteLockedGpuWait).\n- 1057: if (HookFullSync() || completionDepth != 0) recorder->Sync();\n- 1895-1907: SamplesTotal calls vkGetQueryPoolResults(..., VK_QUERY_RESULT_WAIT_BIT) on segments that may still be in flight. It is called under GpuMutex from PacketMemory.cpp:219-223 (dumpSampleCounters fallback) and is not counted as a sync.\n\nDefault-path callers:\n- Draw.cpp:1637-1638: CountSync(2); recorder->Sync() for indirect args with pending storage writes.\n- Draw.cpp:124: SyncThrough for DCC keys.\n- GuestBufferMemory.cpp:738: Sync() on mirror refresh.\n- GuestBufferMemory.cpp:1001-1002: Submit(); FinishUpTo(target) with no prior unlocked wait (lease waiter).\n- VulkanDevice.cpp:1431 (fill), 1711/1715 (copy) and 3175 (indirect-dispatch args): locked waits.\n\nDispatches already have an unlocked presync (VulkanDevice.cpp:3005-3034); draws have none.\nDefaults: APS5_HOOK_LOCKED_WAIT is opt-in, so unlocked hook waits are ON at depth 1. APS5_NO_TIMELINE is opt-in, so timeline semaphores are used when available.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "A locked wait of N ms costs N ms of every other queue's recording and of any game thread reading guest memory through the hook. This convoy is the most direct explanation for 'threads and GPU both under-used' within this subsystem.",
+   "proposal": "1. Add a draw presync that mirrors VulkanDevice::presync. Before lockForDraw in Execution/src/Driver/Draw/Draw.cpp, test the ranges the draw will read (ShaderMemory regions, the index range, indirect args and count) against Recorder::SnapshotWriteOverlaps. On a hit, take the lock briefly, SubmitAndEpoch for the newest overlapping batch, release, and WaitRecorded(serial) unlocked. Nested hook waits inside the draw then find their target already signaled.\n2. Replace Sync() with a targeted SyncThrough(range) where only one range matters: Draw.cpp:1638 (args->arguments, RangeBytes), VulkanDevice.cpp:3175 (arguments, 12), GuestBufferMemory.cpp:738 (address, bytes).\n3. For the lease waiter (GuestBufferMemory.cpp:999-1007), SubmitAndEpoch under the lock, release, WaitSerial, then relock and FinishUpTo, as the drain does.\n4. In SamplesTotal, only read segments whose batch finished (store the serial per segment, Reap first). Otherwise submit and WaitSerial unlocked before taking the lock.",
+   "effort": "M",
+   "risk": "The presync result can be stale by the time the lock is taken, but the in-lock check remains as a correct fallback. Releasing the lock mid-operation must not happen inside a hold (keep depth-1 only).",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [lock] 'locked GPU waits N / X ms' per queue, plus 'waited behind (holder/site ms)'.\n- [recorder] 'fence waits by thread', 'top sync sites (source@caller ...)', 'hook waits unlocked ... locked N'.\n- [draws] 'hook waits inside draws X ms'.\n- [presync] line for the dispatch equivalent."
+  },
+  {
+   "id": "recorder-dynamic-state-1",
+   "title": "Only viewport/scissor/depth bounds/depth bias are dynamic; stencil reference/masks, blend constants and depth/raster state multiply pipelines",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:199-204,338-345,396-424; core/libs/prx/libSceAgcDriver/Graphics/src/State.cpp:146-191,236-241,668",
+   "category": "shader-pipeline-compile",
+   "mechanism": "pipelineKey includes:\n- each VkStencilOpState, which carries reference, compareMask and writeMask decoded per draw from DB_STENCILREFMASK\n- the four blend constants, read from CB_BLEND_RGBA for any slot with blending enabled, even when no CONSTANT factor is used\n- depthTest/Write/Compare, cullMode, frontFace, topology and primitiveRestart\nEach distinct value (e.g. a per-material stencil reference) creates a new pipeline: a new driver compile or cache lookup and a new store entry, which feeds the 256-entry LRU thrash.\nVulkan 1.0 core already offers VK_DYNAMIC_STATE_BLEND_CONSTANTS, STENCIL_COMPARE_MASK, STENCIL_WRITE_MASK and STENCIL_REFERENCE, with no extension needed.",
+   "evidence": "- Pipeline.cpp:199-201: std::vector<VkDynamicState> dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}; if (depthBounds) ...DEPTH_BOUNDS; if (depthBias) ...DEPTH_BIAS;\n- Key: Pipeline.cpp:407 for (const auto value : state.blendConstants) append(key, value); and 422-423 append(key, state.stencilFront); append(key, state.stencilBack);\n- State.cpp:149-150 face.compareMask/writeMask from refMask; 191 face.reference = reference; 239-240 stencilFace(..., read(cx, 0x10c) / 0x10d ...).\n- State.cpp:668: for (i < 4) result.blendConstants[i] = readFloat(cx, 0x105 + i); inside the blending-enabled branch.\n- Pipeline::Continue (338-345) only sets viewport, scissor, depth bias and depth bounds.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "It multiplies the number of pipelines, and so the synchronous compiles under the lock and the LRU evictions. The size of the effect depends on how much the title varies stencil reference and blend constants per draw.",
+   "proposal": "S:\n- Add VK_DYNAMIC_STATE_BLEND_CONSTANTS, STENCIL_COMPARE_MASK, STENCIL_WRITE_MASK and STENCIL_REFERENCE to every pipeline.\n- Hash only compareOp/failOp/passOp/depthFailOp of the stencil faces, and drop blendConstants from pipelineKey.\n- Set the values in Pipeline::Begin and Continue (add cmdSetBlendConstants and cmdSetStencilCompareMask/WriteMask/Reference to DeviceFunctions and FillDeviceFunctions).\nM: where VK_EXT_extended_dynamic_state/2 is available, make cull mode, front face, depth test/write/compare, stencil ops and primitive restart dynamic too.",
+   "effort": "S",
+   "risk": "Low for the core dynamic states. They must be set on every draw, including continued passes and recipe draws (DrawWithRecipe uses the same Begin/Continue).",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, compare [pipecache] 'misses' and 'cached' before and after over the same scene."
+  },
+  {
+   "id": "recorder-snapshot-rebuild-1",
+   "title": "Pending-write snapshot fully re-sorted under the mutex for every finished batch and every new written range",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2336-2356,3197-3214,2265-2283,3174-3192,2902-2915,2886-2900,2979-2983",
+   "category": "global-lock-serialization",
+   "mechanism": "publishPendingWrites:\n- allocates a new vector\n- copies every noted range of the open batch, every in-flight batch and every finishing batch\n- runs std::sort (O(N log N)) and merges\n- stores the result into the atomic shared_ptr\nThe Finishing scope destructor in finish() calls it unconditionally for each retired batch. Reap, Sync, SyncThrough and FinishUpTo retire batches one at a time, so k batches cost k full rebuilds. Every draw or dispatch whose written ranges are not already covered triggers another (noteWrite returns true).\nWith 64 work items per batch, each noting several ranges, and a few batches in flight, N reaches thousands of ranges. That is tens of \u00b5s per rebuild, all under GpuMutex.",
+   "evidence": "- Recorder.cpp:2341-2352: auto merged = std::make_shared<WriteRanges>(); ... insert(open->writes); for (inFlight) insert; for (finishing) insert; std::sort(merged->begin(), merged->end()); ... pendingWrites.store(std::move(merged)).\n- Recorder.cpp:3209-3212: try { recorder.publishPendingWrites(); } catch (...) {} in ~Finishing, for every batch.\n- Recorder.cpp:3178-3184: Reap loops finish(..., false, 4) per signaled batch.\n- Recorder.cpp:2278-2282: noteWrite skips the rebuild only if SnapshotCovers(address, end).\n- Recorder.cpp:3206-3208: the code itself notes that a stale snapshot is 'a superset (a stale entry only causes a false hit, never a miss)'.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Per frame this is about 50-100 batch retirements plus every uncovered note, each paying a full sort under the global lock. The [recorder] line reports the exact total.",
+   "proposal": "S: in the retire loops (Reap, Sync, SyncThrough, FinishUpTo, syncThroughUnlocked, BoundKeptBytes), suppress the per-batch publish in ~Finishing (e.g. a deferPublish flag on Recorder) and publish once after the loop. This is safe: in between, the snapshot is a superset.\nM: publish incrementally.\n- Add: copy the current merged snapshot, binary-search the insertion point and merge neighbours, O(N_merged) with no sort.\n- Remove: keep each batch's ranges pre-sorted and pre-merged at Submit, and rebuild by k-way merging the remaining batches' vectors.",
+   "effort": "S",
+   "risk": "Low: superset semantics only cause extra hook syncs. Make sure the deferred publish also runs on exception paths (keep the try/catch).",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1, the [recorder] line field 'snapshot N rebuilds X ms, M notes covered'."
+  },
+  {
+   "id": "recorder-linear-scan-1",
+   "title": "PendingWriteOverlaps and related queries scan every pending range linearly, several times per draw",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2358-2391,2393-2425; core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2767,2801; core/libs/prx/libSceAgcDriver/Graphics/src/GuestBufferMemory.cpp:735,2355; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1418,1640,1648",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "These queries iterate batch.writes of the open batch and of every in-flight batch: O(total pending ranges) per call.\n- PendingWriteOverlaps\n- PendingWriteSettled (which also makes a vkGetFenceStatus call per overlapping batch)\n- NewestWriteNote\n- PendingWritesOver\nPrepareDrawBindings calls PendingWriteOverlaps once per bound buffer item of every recorded draw, and resource builds, fills and copies call it again. Yet a sorted, merged union of exactly these ranges is maintained for the flush hook and searchable in O(log n).",
+   "evidence": "- Recorder.cpp:2358-2363: for (const auto& [begin, finish] : batch.writes) if (address < finish && begin < end) return true;\n- Recorder.cpp:2365-2372: open first, then for (const auto& batch : inFlight).\n- ShaderResources.cpp:2801: if (!direct || recorder.PendingWriteOverlaps(item.address, item.size)) continue; (per item, in PrepareDrawBindings).\n- Snapshot search: Recorder.cpp:635-640 (std::partition_point over the merged ranges).\n- 20 call sites outside Recorder.cpp (grep).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "The cost scales with draws \u00d7 bindings \u00d7 pending ranges, and all of it runs inside the draw hold under GpuMutex.",
+   "proposal": "Fast-path each query (when activeRecorder == this) with: auto snapshot = pendingWrites.load(); if (!SnapshotOverlaps(snapshot.get(), address, bytes)) return false;\nRun the per-batch scan only on a hit, since the hit still needs the target serial. The snapshot is a superset (open + inFlight + finishing), so a miss is exact.\nOptionally, also keep per-batch [min,max] bounds so the scan can skip whole batches.",
+   "effort": "S",
+   "risk": "None if the snapshot superset invariant holds; it does, since it is rebuilt under the same mutex at every note and finish.",
+   "howToMeasure": "There is no dedicated counter.\n- Linux: perf record on the queue-0 worker, looking at the overlaps/PendingWriteOverlaps symbols.\n- Windows: APS5_SAMPLE_WORKER=<file> (the built-in sampler).\n- With APS5_PROFILE_DRAW=1: the [draws] 'resources' and 'record' phase totals."
+  },
+  {
+   "id": "recorder-renderpass-1",
+   "title": "Render-pass continuation is fragile; every break costs end/begin plus two full barriers, with attachments in GENERAL layout",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1337-1368,1388-1409,1437,1740; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:1347-1357,1363-1396; core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:144-175",
+   "category": "gpu-side-efficiency",
+   "mechanism": "A draw continues the open pass only if all of these hold:\n- same attachment views and extent\n- the previous draw wrote no memory (continuable = !WritesMemory())\n- it does not sample its own targets\n- it is not a GPU-indirect or mesh-indirect draw\n- nothing was recorded through Commands() since; every Commands() call ends the pass. That includes resource-build uploads and copies, FlushStores/FlushKeyStores, texture refreshes and dispatches.\nEvery break costs vkCmdEndRenderPass, an ALL->ALL barrier, the next draw's ALL->graphics barrier and vkCmdBeginRenderPass with LOAD/STORE on every attachment. On AMD, color and depth attachment writes in the source scope imply CB/DB cache flushes per break.\nRecorded ('lean') draws render color in VK_IMAGE_LAYOUT_GENERAL, and depth is always GENERAL. Some drivers keep less compression (DCC/HTILE) in GENERAL; this is driver-dependent.",
+   "evidence": "- Draw.cpp:1365: const bool continued = !capture && !readsTarget && !gpuIndirect && !meshIndirect && recorder->ContinuesRenderPass(passKey);\n- Draw.cpp:1437: recorder->LeaveRenderPassOpen(passKey, drawTiming, !resources.WritesMemory(), ...).\n- Recorder.cpp:1352: if (open->renderPass.open) endOpenRenderPass(); in every Commands().\n- Recorder.cpp:1364: open->renderPass.continuable && key == key.\n- Pipeline.cpp:149-150 / 167-170: loadOp LOAD, storeOp STORE; 162: depthReference VK_IMAGE_LAYOUT_GENERAL.\n- Draw.cpp:1740: lean ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL.\n\nDefault: APS5_DRAW_TRANSITIONS is opt-in, so the lean path is on.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Each broken pass adds GPU drains and attachment cache flushes. If many draws begin new passes (the [draws] line shows begun versus continued), GPU time per draw grows sharply.",
+   "proposal": "- Record a draw's resource-build uploads into the batch before the pass is (re)opened, using a per-batch 'prologue' list. Do this only when their destinations are freshly allocated staging or snapshot buffers that no earlier command in the batch reads (no WAR possible). Uploads then stop ending the pass.\n- Let a GPU-indirect draw continue when its argument range has no pending write in the open batch (OpenWriteOverlaps false), so the argument barrier can be skipped.\n- Medium term: VK_KHR_dynamic_rendering (core in 1.3) to drop VkRenderPass/VkFramebuffer objects. Consider ATTACHMENT_OPTIMAL layouts for targets not bound as storage or sampled concurrently.",
+   "effort": "M",
+   "risk": "The upload ordering must be proven safe (fresh destinations only). Layout changes need correct transitions.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [draws] 'render passes N begun, M draws continued one'.\n- [barriers] 'draw' class count.\n- APS5_PROFILE_GPU=1: [gputime] 'draw' class time."
+  },
+  {
+   "id": "recorder-submit-1",
+   "title": "vkQueueSubmit, reaps and completion write-backs run inside the GpuMutex hold; queue 0 blocks on the lock for capped flushes",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2764-2827,3174-3192,3290-3302; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Packets/PacketFlush.cpp:42-87; core/libs/prx/libSceAgcDriver/Execution/src/Driver/Synchronization/DeferredLabels.cpp:59-64,82-88; core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:1232-1241",
+   "category": "global-lock-serialization",
+   "mechanism": "A batch is submitted after 64 recorded draws/dispatches (APS5_BATCH_CAP default 64), or 1000 \u00b5s after its first label (APS5_LABEL_FLUSH_US default with label batch submit on), or at waits, drains, flips and submission ends. That is roughly (draws+dispatches)/64 submits per frame, plus label-driven ones.\nEach submit runs vkEndCommandBuffer and vkQueueSubmit (fence + timeline signal) while holding GpuMutex. On queue 0, a capped or deadline flush takes the lock outright (blocking), and SubmitRecorded first Reaps. That Reap runs every finished batch's completions (CPU write-backs of copied buffers) and snapshot rebuild inside the same hold.\nThe GPU also cannot start a batch before it is submitted, so with slow recording it idles until the cap or deadline.",
+   "evidence": "- Recorder.cpp:2771: AssertGpuLockHeld(\"Recorder::Submit\").\n- Recorder.cpp:2792: endCommandBuffer.\n- Recorder.cpp:2808: queueSubmit(context.queue, 1, &submission, batch->fence).\n- PacketFlush.cpp:46: const bool capped = ... batchCap() != 0 && work >= batchCap();\n- PacketFlush.cpp:64-68: else if (deferredDue || (queue == 0 && (capped || ...))) outright = true; ... gpuLock.lock();\n- PacketFlush.cpp:85: localDevice->SubmitRecorded(queue == 0);\n- VulkanDevice.cpp:1239-1240: if (reapFirst && OpportunisticReap()) state->recorder->Reap(); state->recorder->Submit();\n- DeferredLabels.cpp:86: : 64ull; DeferredLabels.cpp:62: (LabelBatchSubmit() ? 1000 : 250).\n- Recorder.cpp:3295-3301: for (auto& action : batch->completions) action(); inside finish (under the hold).\n\nDefaults: APS5_NO_OPPORTUNISTIC_REAP, APS5_NO_LABEL_BATCH_SUBMIT and APS5_BATCH_CAP are all unset.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "About 50 or more submits per frame at 20-200 \u00b5s each (higher on some Windows drivers), plus write-back memcpys, all extend the global hold that every other queue waits behind.",
+   "proposal": "S:\n- Tune APS5_BATCH_CAP from [recorder] submit timings.\n- Move the Reap in SubmitRecorded after vkQueueSubmit, so the GPU gets the batch before the CPU spends time on completions.\nM: add a dedicated submit thread owning a queue mutex. Submit() under GpuMutex ends the command buffer and enqueues {cmd, fence, serial}. The thread calls vkQueueSubmit in FIFO order. The presenter's vkQueueSubmit and vkQueuePresentKHR take the same queue mutex and preserve order by enqueueing too.\n- Timeline WaitSerial is wait-before-signal safe.\n- finish(wait) must first wait until the batch was handed to the driver (a per-serial 'submitted' atomic).",
+   "effort": "M",
+   "risk": "Submission order between the recorder and the presenter must remain FIFO. A fence waited on before its submission would block until the thread submits it, which is fine as long as the thread never needs GpuMutex.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [recorder] 'submits N, vkQueueSubmit mean X us, max Y us'.\n- [recorder] 'reaps (with work) retired N batches in X ms' and 'completions ran X ms'.\n- [labels] 'N at the next packet, N by deadline, N by size cap'.\n- [present] 'per flip: N batches recorded'."
+  },
+  {
+   "id": "recorder-single-queue-1",
+   "title": "One VkQueue and one recorder for all guest rings: no async-compute overlap, and every wait waits for other queues' batches too",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:919-926,1110,1130,2293,2414; core/libs/prx/libSceAgcDriver/Graphics/include/Recorder.hpp:735-736; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:1490,3087-3094",
+   "category": "gpu-side-efficiency",
+   "mechanism": "The device is created with queueCount = 1. The recorder, the CommandBatch path and the presenter all submit to that single queue.\nThere is one open batch for the whole process, tagged by whichever worker opened it, so graphics and async-compute rings are interleaved in one in-order stream separated by full barriers. The PS5's graphics/compute overlap is lost.\nA CPU wait for one queue's producer (hook SyncThrough, drains via WaitSerial(newest)) is a wait for every batch submitted before it, from any queue. A wait on a range in the open batch submits it and waits for the whole timeline.",
+   "evidence": "- VulkanDevice.cpp:920-926: queueInfo.queueCount = 1; ... deviceInfo.queueCreateInfoCount = 1.\n- VulkanDevice.cpp:1110: vkGetDeviceQueue(state->device, family, 0, &state->queue).\n- VulkanDevice.cpp:1130: one std::make_unique<Graphics::Recorder>.\n- Recorder.hpp:735-736: std::unique_ptr<Batch> open; std::deque<std::unique_ptr<Batch>> inFlight;\n- Recorder.cpp:1490: batch->queue = GuestMemory::GpuLockThreadTag();\n- Recorder.cpp:3053-3055: open target -> Submit(); targetSerial = submissions; (newest).\n- Recorder.cpp:3087-3094 and 3144: the [syncwait] 'batches ahead by queue' counter exists precisely because of this.\n- Presenter vkQueueSubmit and vkQueuePresentKHR on state->queue: VulkanDevice.cpp:2293, 2414.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "It caps GPU parallelism and lengthens every CPU-GPU sync. Combined with the global recording lock, it serializes the whole graphics pipeline.",
+   "proposal": "Use per-guest-queue (or per-class: graphics vs compute) Recorder instances, each with its own open batch, command pool and timeline. Submit them to separate VkQueues: a second queue of the same family, or a compute-only family.\n- Express cross-queue ordering only where the guest does (labels and WAIT_REG_MEM), via timeline semaphore waits in VkTimelineSemaphoreSubmitInfo.\n- Split GpuMutex per recorder for recording, keeping shared caches (imports, texture cache, pipeline store) behind finer locks.\nThis is the 'best possible' architecture step and the largest effort.",
+   "effort": "XL",
+   "risk": "High: cross-queue hazards on shared images and buffers (VK_SHARING_MODE_CONCURRENT or ownership transfers), label table semantics, completion ordering (see the 'Known gap' at Recorder.cpp:2931).",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1:\n- [syncwait] 'batches ahead by queue' and 'avg batches up to the target'.\n- [lock] per-queue 'waited ... ms'.\n- [present] GPU busy versus idle."
+  },
+  {
+   "id": "recorder-pipelinekey-1",
+   "title": "Per-draw pipeline key built as a growing heap vector and FNV-hashed byte by byte under the store mutex",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:354-359,365-447,449-456,514-534; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1740,1770",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Every draw on the full path rebuilds the pipeline key:\n- dozens of std::vector::insert calls with no reserve, so several reallocations for roughly 300-800 bytes covering shaders, bindings, attributes, LayoutKey words, blend states, formats, depth/stencil and mesh/tess fields\n- a one-byte-at-a-time FNV-1a hash\n- a full byte compare against the stored key\nall under PipelineStore::mutex inside the GpuMutex hold.\nThe full path covers every depth-tested draw (recipes require !state.depth) and every indirect draw. AcquireFramebuffer then scans the pipeline's framebuffer list. Estimated 1-4 \u00b5s per draw.",
+   "evidence": "- Pipeline.cpp:357-358: const auto bytes = std::as_bytes(std::span(&value, 1)); key.insert(key.end(), bytes.begin(), bytes.end());\n- Pipeline.cpp:451-454: for (const auto byte : key) { hash ^= ...; hash *= 1099511628211ull; }\n- Pipeline.cpp:520: key built after std::lock_guard lock(store.mutex) at 518.\n- Pipeline.cpp:528: if (it->key == key).\n- Draw.cpp:1770: recipe creation requires ... && !state.depth && ... (depth draws never get recipes).\n- Draw.cpp:1740: CachedPipeline(...) per full-path draw.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "A few \u00b5s \u00d7 thousands of non-recipe draws comes to several ms per frame inside the global hold. That is modest next to other costs but cheap to remove.",
+   "proposal": "- Build the key into a reserved, thread_local buffer (reserve 1024).\n- Hash word-at-a-time (e.g. reuse ShaderRecompiler::HashBytes or an XXH3/wyhash-style mixer), and compute the key before taking store.mutex.\n- Better: cache a weak_ptr<Pipeline> in the driver's DrawEntry (Execution draw cache), keyed by decode + variant ids + layout key, so hits skip key building entirely.\n- Consider allowing recipes for depth draws.",
+   "effort": "S",
+   "risk": "Low (a hash change only). The cached weak_ptr must be revalidated on device replacement (alive()).",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1: [draws] 'pipeline=X ms' phase total per 10 s, and the [draws] per-kind averages."
+  },
+  {
+   "id": "recorder-framebuffer-1",
+   "title": "Framebuffers are cached per Pipeline with an LRU of 8, so pipelines used on many targets recreate them every frame",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:291-327,63-75; core/libs/prx/libSceAgcDriver/Graphics/include/Pipeline.hpp:56-72; core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:2111-2112",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Each Pipeline object owns its own framebuffer list, capped at 8. N pipelines drawing to the same targets each create a separate VkFramebuffer.\nA pipeline used against more than 8 target sets per frame (full-screen blits, post-process chains, mip or shadow cascades) evicts and recreates framebuffers every frame. Each is a vkCreateFramebuffer, with the destroy later, under GpuMutex.\nA recipe whose weak framebuffer was evicted falls into AcquireFramebuffer again. Non-resident targets get a fresh framebuffer per draw.",
+   "evidence": "- Pipeline.cpp:314-319: constexpr std::size_t bound = 8; while (framebuffers.size() >= bound) { victim = find_if(use_count() == 1); framebuffers.erase(victim); }\n- Pipeline.cpp:311: std::make_shared<Framebuffer>(context, renderPass, targets, extent) -> vkCreateFramebuffer at 74.\n- Pipeline.cpp:312: if (!resident) return framebuffer; (no caching).\n- Pipeline.hpp:72: std::vector<CachedFramebuffer> framebuffers; (a per-pipeline member).\n- Draw.cpp:2111-2112: recipe framebuffer weak lock, then AcquireFramebuffer.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "Each vkCreateFramebuffer is small (\u00b5s-scale), but there are potentially hundreds per frame for post-processing-heavy titles, all under the global lock.",
+   "proposal": "Move the framebuffer cache to the device. Key it by (render-pass compatibility key: formats + attachmentLayout + attachment count, views, extent), and share it across pipelines, which works once render passes are shared (recorder-pipeline-compile-1). Use an LRU sized in the hundreds, evicting only unreferenced entries. VK_KHR_dynamic_rendering removes framebuffers altogether.",
+   "effort": "S",
+   "risk": "Low. The views-recycling guard (owners weak_ptr identity) must be kept.",
+   "howToMeasure": "No counter exists. Add framebuffer creations per 10 s to the [pipecache] line (APS5_PROFILE_DRAW), or use perf to sample vkCreateFramebuffer."
+  },
+  {
+   "id": "recorder-atomic-snapshot-1",
+   "title": "Lock-free snapshot read is an atomic<shared_ptr> load (internal spinlock plus refcount RMW) on every flush-hook call",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:627,642-654,1010,2278,2301; core/libs/prx/libSceAgcDriver/Execution/src/GuestMemory.cpp:1713-1714",
+   "category": "global-lock-serialization",
+   "mechanism": "FlushForAccess runs on every driver or HLE guest-memory access made through GuestMemory Read/Write, from workers and game threads alike. It calls SnapshotOverlaps, which does pendingWrites.load(). noteWrite calls SnapshotCovers, which loads again.\nstd::atomic<std::shared_ptr> is not lock-free in libstdc++ or MSVC. A load takes an internal lock bit or spinlock and increments and decrements the control-block refcount: two or more contended RMWs on cache lines that all threads share.\nThe code already keeps a publishGeneration counter, bumped after every store, that would allow per-thread caching.",
+   "evidence": "- Recorder.cpp:627: std::atomic<std::shared_ptr<const WriteRanges>> pendingWrites;\n- Recorder.cpp:644: const auto snapshot = pendingWrites.load(std::memory_order_acquire);\n- Recorder.cpp:1010: if (!HookSnapshotEnabled() || SnapshotOverlaps(address, bytes)) in FlushForAccess.\n- GuestMemory.cpp:1714: FlushGpuWrites calls the hook, from every Read/Write at 1719, 1735, 1748, 1806, 1841.\n- Recorder.cpp:2353: publishGeneration.fetch_add(1, release) after each store.\n- Default: APS5_NO_HOOK_SNAPSHOT is opt-in, so the snapshot path is on.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "It scales with the hook call rate across all threads. It is cheap per call but a shared-cacheline hotspot under multi-threaded access.",
+   "proposal": "Use a thread_local cached std::shared_ptr<const WriteRanges> plus the cached publishGeneration value. On each check, do a relaxed/acquire load of publishGeneration; reload the shared_ptr only when it changed.\nThe race window is the same as today: the generation moves after the store, and a reader that sees the old generation could equally have loaded the old pointer.",
+   "effort": "S",
+   "risk": "Low: identical visibility semantics. The thread_local copy keeps one stale snapshot alive per thread (memory only).",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1: [recorder] 'hook N calls, M locked' gives the call rate. Linux perf: look for contention in _Sp_atomic::load / __atomic_wait."
+  },
+  {
+   "id": "recorder-host-barrier-1",
+   "title": "Every dispatch's trailing barrier includes HOST stage/HOST_READ, although Submit already provides batch-end host visibility",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/VulkanDevice.cpp:3307-3308; core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:1394,2776-2783,1610,1627-1630",
+   "category": "gpu-side-efficiency",
+   "mechanism": "Host visibility only matters once the batch's fence is observed. Draws already defer it: endOpenRenderPass sets hostReadOwed, and Submit records one ALL_COMMANDS->HOST barrier. Label runs at Submit also include HOST.\nDispatches still put VK_PIPELINE_STAGE_HOST_BIT and VK_ACCESS_HOST_READ_BIT in every trailing barrier. That widens each barrier's destination scope, and on some drivers it can add per-barrier cache write-back work. This is driver-dependent.",
+   "evidence": "- VulkanDevice.cpp:3307: dispatchedAccess = ...|VK_ACCESS_HOST_READ_BIT;\n- VulkanDevice.cpp:3308: ..., VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, ...\n- Recorder.cpp:1394: open->hostReadOwed = true; (draws).\n- Recorder.cpp:2778-2781: if (open->hostReadOwed && !hostReadCovered) recordBarrier(..., ALL_COMMANDS, HOST, ..., HOST_READ).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "The benefit is driver-dependent. It is cheap to remove and is a natural first step of recorder-barriers-1.",
+   "proposal": "Drop HOST from the dispatch trailing barrier and its covered mask. Set hostReadOwed on the open batch (add Recorder::OweHostRead(), or let MarkCovered set it) so Submit records the single host barrier.\nAudit the covered-mask consumers (fill, copy, unit shadow, storage write-back) that test HOST_READ coverage; the fill/copy/shadow checks test only TRANSFER/SHADER bits.",
+   "effort": "S",
+   "risk": "Low: one host barrier before the fence is the Vulkan-correct pattern. Check that no CPU read happens between a dispatch and its batch's Submit without going through Submit+fence (all syncs submit first).",
+   "howToMeasure": "APS5_PROFILE_GPU=1: [gputime] 'dispatch-trail' class time. Also the [present] GPU busy per present."
+  },
+  {
+   "id": "recorder-proc-lookup-1",
+   "title": "vkGetDeviceProcAddr name lookups on default wait paths and per-batch query reads",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2878,3076,2087,1876,1883,3225; core/libs/prx/libSceAgcDriver/Graphics/include/Context.hpp:147-154",
+   "category": "other",
+   "mechanism": "Context::Function resolves the entry point by name on every call; the header notes this goes through the loader's lookup, which takes a mutex.\nThe constructor's table (Recorder.cpp:1072-1088) omits several hot entries:\n- vkWaitSemaphoresKHR: resolved on every WaitSerial (drains, dispatch presync) and every unlocked hook wait.\n- vkGetQueryPoolResults: per finished batch once occlusion counting starts on the no-BDA path.\n- vkCmdWriteTimestamp: per timed range, profiling only.\n- vkGetFenceStatus: per waited batch, profiling only.",
+   "evidence": "- Recorder.cpp:2878: context.Function<PFN_vkWaitSemaphoresKHR>(\"vkWaitSemaphoresKHR\") in WaitSerial.\n- Recorder.cpp:3076: same in syncThroughUnlocked.\n- Recorder.cpp:2087: context.Function<PFN_vkGetQueryPoolResults>(...) in readSamples.\n- Context.hpp:150-151: ++DeviceProcLookups(); deviceProc(device, name).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "Roughly 0.1-1 \u00b5s plus loader mutex contention per wait. It is small but on the default path, and trivially fixed.",
+   "proposal": "Resolve vkWaitSemaphoresKHR (when timeline), vkGetQueryPoolResults and vkCmdWriteTimestamp once in the Recorder constructor alongside the existing PFN members, and use them via function(...).",
+   "effort": "S",
+   "risk": "None.",
+   "howToMeasure": "With APS5_PROFILE_DRAW=1: the [vk] 'deviceProc lookups inside the device call' line, and DeviceProcLookups()."
+  }
+ ],
+ "incompleteOrStubbed": [
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/include/Context.hpp:20-22,110-112",
+   "what": "RenderCache, DrawQueue and GraphicsPipelineCache are forward-declared, and Context has renderCache/drawQueue/graphicsPipelines members. No definition or assignment exists anywhere in core (grep finds none).",
+   "perfRelevance": "These are planned async-draw-queue and dedicated graphics-pipeline-cache hooks that were never built. Pipelines are still created synchronously in CachedPipeline under GpuMutex, and recording is single-threaded."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:1775-1821; Graphics/include/Recorder.hpp:439-446",
+   "what": "The hazard tracker (NoteAccess) only counts: 'the real barriers are recorded as before'. It runs only with APS5_BARRIER_VALIDATE=1.",
+   "perfRelevance": "The infrastructure for hazard-driven barrier elision exists but does not drive barriers. Every dispatch and pass boundary still gets a full barrier (recorder-barriers-1)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:2929-2933",
+   "what": "Known gap: a later batch writing the same range GPU-direct in place is not ordered against an earlier batch's completion write-back ('went from deterministically stale to racy').",
+   "perfRelevance": "This limits moving completions out of the GpuMutex or onto other threads or queues. Any async-completion or multi-queue work must close it first."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Pipeline.cpp:199-204",
+   "what": "Pipelines use only VIEWPORT, SCISSOR, DEPTH_BOUNDS and DEPTH_BIAS as dynamic state. There is no use of the core stencil/blend-constant dynamic states, extended dynamic state, graphics pipeline libraries or dynamic rendering.",
+   "perfRelevance": "This multiplies pipeline count and synchronous compiles (recorder-dynamic-state-1, recorder-pipeline-lru-1)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Recorder.cpp:1895-1907,1960-1992",
+   "what": "SamplesTotal memcpy-reads the GPU sample counter buffer that a recorded fold dispatch may still be writing, and waits with VK_QUERY_RESULT_WAIT_BIT on in-flight segments.",
+   "perfRelevance": "It is a hidden locked GPU wait (not counted in the [recorder] sync table) on the ZPASS_DONE fallback path, plus a possible stale value (correctness)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/include/Draw.hpp:89-103 vs Graphics/src/Draw.cpp:1697,1711",
+   "what": "The header says draws with copied writes are recorded and waited for 'until' APS5_RECORD_COPIED_DRAWS. The code lists them without waiting by default (APS5_NO_RECORD_COPIED_DRAWS unset).",
+   "perfRelevance": "The documentation is stale. The default path does not wait, which is the faster behaviour, so the comment misleads anyone tuning sync behaviour."
+  }
+ ],
+ "quickExperiments": [
+  {
+   "setting": "APS5_PROFILE_DRAW=1",
+   "expectedEffect": "No speedup. Every 10 s it prints [recorder] (syncs by source/site/thread, snapshot rebuilds, submits and vkQueueSubmit mean/max, reaps, completions), [lock] (per-queue waits, holds by site, locked GPU waits), [draws] (render passes begun/continued, pipeline phase, recipe misses), [pipecache] (hits/misses/evicted), [barriers], [present] (GPU busy vs idle gaps per present) and [syncwait]. This is the baseline needed to rank the findings.",
+   "risk": "Profiling overhead: clock reads, per-batch timestamp queries, fence-status queries in finish."
+  },
+  {
+   "setting": "APS5_PROFILE_DRAW=1 APS5_BARRIER_VALIDATE=1",
+   "expectedEffect": "Adds 'validate: would emit X (...) + Y batch ends, would skip Z' to [barriers]. This quantifies how many barriers hazard-driven recording could remove; behaviour is unchanged.",
+   "risk": "Extra CPU per command (range bookkeeping). Diagnostics only."
+  },
+  {
+   "setting": "APS5_BATCH_CAP=256 (default 64; 0 disables the cap)",
+   "expectedEffect": "Roughly 4x fewer vkQueueSubmit calls and queue-0 reaps per frame, which shortens GpuMutex holds when [recorder] shows a high submit mean.",
+   "risk": "The GPU starts each batch later. Cross-queue waits on labels in the open batch rely on the 1 ms deadline or a wait-triggered submit. It could lower FPS if the GPU is starved."
+  },
+  {
+   "setting": "APS5_BATCH_CAP=16",
+   "expectedEffect": "The GPU starts work sooner and CPU/GPU overlap improves when [present] shows large GPU idle gaps while the CPU records.",
+   "risk": "More submits and reaps under the lock."
+  },
+  {
+   "setting": "APS5_LABEL_FLUSH_US=250 (default 1000 with label batch submit)",
+   "expectedEffect": "Label-carrying batches are submitted after 250 \u00b5s, reducing the latency of cross-queue WAIT_REG_MEM polls and drains.",
+   "risk": "More submits ([labels] 'by deadline' grows)."
+  },
+  {
+   "setting": "ANYPS5_SHADER_CACHE_DIR=<persistent fast path>, and make sure ANYPS5_NO_SHADER_CACHE is unset",
+   "expectedEffect": "The SPIR-V disk cache and the vk-pipelines-*.bin VkPipelineCache persist across runs. A second run of the same area avoids driver compiles during the synchronous in-lock pipeline creation, so stutter drops.",
+   "risk": "None: caches are validated by header, UUID and checksum and are rejected when stale."
+  },
+  {
+   "setting": "APS5_RELEASE_QUEUE_MAX=1024 (default 256)",
+   "expectedEffect": "Avoids inline destruction of kept objects on worker threads when the release thread falls behind (see [recorder] 'batches over the queue bound').",
+   "risk": "Higher peak memory from deferred objects."
+  },
+  {
+   "setting": "APS5_PROFILE_GPU=1",
+   "expectedEffect": "[gputime] per-class GPU time (dispatch-lead, dispatch-trail, draw, label-run, copy and so on), the untimed share and the batch span. This shows how much GPU time barriers and passes consume.",
+   "risk": "BOTTOM_OF_PIPE timestamps around each range serialize the GPU further, and only 512 ranges per batch are timed. Treat absolute numbers as inflated."
+  },
+  {
+   "setting": "APS5_FULL_BARRIERS=1",
+   "expectedEffect": "A negative control: records every leading barrier. The FPS delta against default shows how sensitive this title is to barrier count, and so the upside of recorder-barriers-1.",
+   "risk": "Slower. Diagnostic only."
+  },
+  {
+   "setting": "APS5_HOOK_LOCKED_WAIT=1",
+   "expectedEffect": "A negative control: flush-hook waits stay under GpuMutex. An FPS drop confirms lock-held GPU waits are a major limiter, and so the upside of recorder-locked-waits-1.",
+   "risk": "Slower. Diagnostic only."
+  }
+ ]
+}

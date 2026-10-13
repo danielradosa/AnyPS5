@@ -1,0 +1,291 @@
+{
+ "subsystem": "Shader resource binding: descriptors, samplers, validation (ShaderResources, DescriptorCache, ResourceCache, texture/sampler caches, ShaderValidation memo, bindless tables)",
+ "howItWorks": "Per draw, Graphics::Draw (under GuestMemory::GpuMutex, taken by Driver::draw lockForDraw) gets fragment outputs from CachedFragmentOutputs (ValidateShaders memoized by variant/state key; recipe hits skip it). resolveDrawResources then, for recordable draws whose stages have variant ids, builds DrawResourceKey (marker + device + each stage's ShaderResources::ContentKey: binding headers and every T#/S#/written-V# word; read-only V# bases and ShaderData/FlattenedSrt words are masked by moved-buffer templates) and probes the process-wide ResourceCache (LRU of 1024 entries shared with dispatches). A hit is proven by Revalidate (fastRevalidate: per-element CollectWrites and DCC key proofs, one ScanPending, UnchangedSinceAll, StorageImagesCached; else a full re-lookup walk) plus MovedReadOnlyBuffers. A miss constructs ShaderResources: buildPrepare (binding plan, SamplerCache::Get per S#, one pooled host Buffer per data binding, precollectImages = per image element decode + DescribeSurface + CollectWrites + DCC key scan + texture-cache probe, GuestBufferMemory::UploadPrepare, DescriptorCache::Layout and Allocate) and buildComplete (fastTexture or cachedTexture/cachedStorageTexture per element, UploadFinish, one vkUpdateDescriptorSets for the whole set, noteReusable). DrawWithRecipe skips key/Find but runs ProveCurrent. Every recorded draw then runs PrepareDrawBindings: each read-only guest buffer read in place is memcpy'd into a host Buffer (unless the recorder's snapshot is reusable), moved data words get new Buffers, a second descriptor set is allocated from the pool chain, every binding is VkCopyDescriptorSet'd from the template and the snapshot elements rewritten, and that set is bound. Dispatches reuse the same objects but run key/Find/stage A/presync off the lock and refresh template data via vkCmdUpdateBuffer.",
+ "threadingAndLocks": "One worker thread per AGC queue interprets PM4. A draw takes GpuMutex (process-wide, recursive) in Execution/src/Driver/Draw/Draw.cpp lockForDraw before VulkanDevice::Draw and holds it through key build, Find, Revalidate, the complete two-stage build, PrepareDrawBindings and command recording, so draws of all queues serialize. Dispatches run key/Find/stage A/precollect/presync unlocked in VulkanDevice::PrepareDispatch and lock only for stage B. Nested under GpuMutex this subsystem takes: ResourceCache::mutex (Find/Insert/Touch; the draw-path Insert destroys LRU victims inside it), DescriptorCache::mutex (layout map, every Allocate incl. failing vkAllocateDescriptorSets on full pools, every Free from the release thread), SamplerCache::mutex, TextureCache::mutex (held across snapshot reads, flush-hook waits and Texture creation), StorageTextureCache::mutex (Refresh under it), the GuestMemory write-tracker mutex (collect-memo misses, UnchangedSince), the pending-image registry, BufferPool::mutex (each data/snapshot Buffer take and put) and validationMutex. Unlocked dispatch stage A on other threads contends on the same self-locking caches; flush-hook waits for recorded GPU work inside lookups stall every queue while holding GpuMutex.",
+ "findings": [
+  {
+   "id": "shader-resources-draw-build-under-gpumutex",
+   "title": "Draw resource resolution (key, Find, Revalidate, full two-stage build, no presync) runs entirely under GpuMutex, unlike dispatches",
+   "location": "core/libs/prx/libSceAgcDriver/Execution/src/Driver/Draw/Draw.cpp:260-383",
+   "category": "global-lock-serialization",
+   "mechanism": "Driver::draw locks GpuMutex (lockForDraw) before VulkanDevice::Draw; Graphics::Draw -> resolveDrawResources then builds the content key, probes the shared cache, revalidates, or constructs ShaderResources whose draw constructor runs build() = buildPrepare + buildComplete. So stage A (binding plan, sampler cache, data Buffer allocation, precollectImages: decode + DescribeSurface + write-watch CollectWrites walk + DCC key scan + texture-cache probe per image element, UploadPrepare, layout/set allocation) runs under the process-wide lock, and there is no unlocked presync, so any flush-hook wait inside a draw's texture/buffer lookups (EqualsCommitted, ReadTextureSurface, FlushPending) blocks every queue while the GPU drains. The dispatch path already has the machinery to avoid all of this.",
+   "evidence": "Execution/src/Driver/Draw/Draw.cpp:42 'std::unique_lock gpuLock(GuestMemory::GpuMutex(), std::defer_lock)'; :260-275 lockForDraw locks it; :370 'lockForDraw();' then :383 'localDevice->Draw(graphics, drawParameters, stages, snapshots, ...)' (also :343/:346 for CPU-read indirect records). Graphics/src/Draw.cpp:1615 resolveDrawResources -> :968-970 DrawResourceKey + SharedResourceCache().Find + Revalidate, :992 'std::make_shared<ShaderResources>(context, shaders, state.color, ...)'. ShaderResources.cpp:745-748 draw ctor = prepareAddressBindings + build(); :804-807 build = buildPrepare + buildComplete. Contrast: ShaderResources.cpp:762-783 deferred compute ctor runs only stage A ('unlockedPrepare = true'); Execution/src/VulkanDevice.cpp:3040-3092 PrepareDispatch does key (:3061), Find (:3062), stage A (:3068), PrecollectSurfaces (:3072) and the unlocked presync (:3085-3089) before the mutex. ShaderResources.cpp:2477-2481: the CollectWrites walk 'is most of the lookups' time under the lock'. PresyncSurfaces/PrecollectSurfaces are only called from VulkanDevice.cpp (3072, 3087, 3117, 3128, 3609), never from the draw path. The only draw lock switch, APS5_LOCKED_DRAW_PREPARE (Execution Draw.cpp:41), is opt-in and locks earlier.",
+   "onDefaultPath": true,
+   "impact": "critical",
+   "whyImpact": "Draws are the bulk of a frame (thousands vs hundreds of dispatches). Holding the single GpuMutex across per-draw resource work serializes all queue workers onto one core and turns every producer wait into a whole-process stall, which is exactly the observed under-use of both host threads and the GPU.",
+   "proposal": "Mirror PreparedDispatch for draws. Add a deferred draw constructor ShaderResources(context, shaders, target, indexAddress, indexBytes, snapshots, deferred) following the compute one (lockedBuild when any stage has a BdaPagetable binding). In Execution/src/Driver/Draw/Draw.cpp before lockForDraw (line 370): compute DrawResourceKey and SharedResourceCache().Find (self-locking); if found call PrecollectSurfaces on it, else run stage A unlocked; then call PresyncSurfaces() and VulkanDevice::presync() so producer batches are waited for without the lock (as PrepareDispatch :3085-3089). Carry a PreparedDraw {key, cached, resources, presyncSerial} into VulkanDevice::Draw -> Graphics::Draw -> resolveDrawResources, which under the lock only does ReapRecorded(presyncSerial), Revalidate (hit) or Complete() (miss). For DrawWithRecipe do the template's PrecollectSurfaces + presync before locking. Discard the prepared object if lockForDraw detects a replaced device (Draw.cpp:268-272); a non-recordable draw can still Complete() it as a normal build.",
+   "effort": "L",
+   "risk": "Stage A already runs unlocked for dispatches, so GuestBufferMemory::UploadPrepare and the sampler/descriptor/texture caches are exercised thread-safely today; draw-specific inputs (alias checks against target/index) are pure. Hazards: device replacement between prepare and lock; a found cache object invalidated before the lock (Revalidate under the lock stays authoritative; use pointer-conditional Remove as dispatch does); address-based (BDA) draws must stay fully locked.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1: [lock] lines (GuestMemory.cpp:1644-1645) per site acquisitions/waits and waited ms for the Draw site vs Dispatch; [draws] phase totals lookup= and resources= (bindings/upload/descriptors/other) and 'hook waits inside draws'; [resources] phase totals (stage A, precollect, images). After the change the draw stage-A time should move out of the lock like the dispatch 'resources: A unlocked' row."
+  },
+  {
+   "id": "shader-resources-per-draw-descriptor-set",
+   "title": "Every recorded draw allocates a second descriptor set, copies the whole set and memcpy-snapshots read-only buffers (PrepareDrawBindings), even on cache and recipe hits",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2775-2859",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Because draws are batched and the guest may rewrite constant memory before the batch runs, each read-only guest buffer read in place (and each moved buffer / moved data-word block) is copied into a fresh host Buffer, then a new descriptor set is allocated from the global pool chain, the template set is copied binding by binding (including every image and sampler array) and the snapshot elements are rewritten. The template's own set (fully written by buildComplete) is not bound when this happens. The set is freed on the release thread when the batch completes.",
+   "evidence": "Draw.cpp:1362 'const auto drawBindings = resources.PrepareDrawBindings(*recorder, record.moved);' in recordDraw, used by the normal path (Draw.cpp:1765) and DrawWithRecipe (Draw.cpp:2124). ShaderResources.cpp:2780-2816: per selected allocation 'recorder.ReusableDrawSnapshot(begin, bytes)' else 'std::make_shared<Buffer>(context, bytes, ...)' + 'std::memcpy(..., begin, bytes)' with no size cap (Recorder only retains <=256 MiB, Recorder.hpp:94); moved data words: make_shared<Buffer> + memcpy (:2784-2788). :2817 returns {} only when nothing was selected. :2818-2856: std::map counts, sizes vector, DescriptorCache::Allocate (mutexed pool chain), vkUpdateDescriptorSets with one VkCopyDescriptorSet per binding, a second vkUpdateDescriptorSets with per-element writes, recorder.Keep(result). Draw.cpp:1411-1416 binds this set instead of the template's _set, so a miss writes the whole set (ShaderResources.cpp:1052-1094) and then copies it. ~DrawBindings (:2723-2725) -> DescriptorCache::Free (mutex + vkFreeDescriptorSets). The dispatch path avoids per-use sets with vkCmdUpdateBuffer into the template's data buffers (RefreshData :2357-2398), which cannot be recorded inside the render pass a draw continues.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Nearly every PS5 draw reads constants or structured data through read-only V#s, so this runs for almost every draw: at ~3000 draws/frame that is ~3000 set allocate/free pairs, ~6000 vkUpdateDescriptorSets calls, tens of thousands of descriptor copies, ~8 heap allocations and one or more BufferPool take/put (global mutex) per draw, all under GpuMutex. It turns template and recipe hits, designed to be nearly free, back into a per-draw descriptor build.",
+   "proposal": "Stage 1: persist the VkDescriptorBufferInfo/VkDescriptorImageInfo arrays built in buildComplete; create one VkDescriptorUpdateTemplate per cached set layout (store it in DescriptorCache next to the layout); PrepareDrawBindings patches a thread_local copy of the infos for the selected elements and issues a single vkUpdateDescriptorSetWithTemplate (no VkCopyDescriptorSet, no std::map/vectors). Stage 2: give the Recorder per-batch transient descriptor pools (no FREE bit, vkResetDescriptorPool when the batch fence signals) and a per-batch linear upload arena (persistently mapped, bump-allocated at minStorageBufferOffsetAlignment) for snapshots and moved data words, replacing make_shared<Buffer>/BufferPool and DescriptorCache::Allocate/Free per draw. Stage 3: declare ShaderData/FlattenedSrt (and snapshotted read-only elements while within maxDescriptorSetStorageBuffersDynamic) as VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC into the arena, so a template or recipe hit binds the cached set with new dynamic offsets and allocates/updates nothing (SPIR-V is identical for dynamic storage buffers); or VK_KHR_push_descriptor for sets within maxPushDescriptors.",
+   "effort": "M",
+   "risk": "Arena and transient-pool memory must outlive the batch (tie them to the Recorder batch as recorder.Keep does). Dynamic-offset layouts change the pipeline layout key (pipelines rebuilt once). Template infos stay valid for the object's lifetime because Revalidate never swaps objects (it fails instead).",
+   "howToMeasure": "APS5_PROFILE_DRAW=1: [draws] record= phase (PrepareDrawBindings runs in recordDraw); [descriptors] line (ShaderResources.cpp:1189) sets/pools growth per 10 s; [bufferpool] small-tier hits/misses; [lock] Draw-site hold. Add counters for PrepareDrawBindings sets and snapshot bytes memcpy'd per 10 s (none exist)."
+  },
+  {
+   "id": "shader-resources-rescache-lru-capacity",
+   "title": "Shared resource-cache LRU of 1024 entries (dispatch + draw) is likely smaller than one gameplay frame's distinct draw contents, giving cyclic thrash and near-zero template hits",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2029-2051",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Insert adds at the front and pops from the back while entries.size() > capacity. With capacity 1024 shared by dispatches and draws, a frame touching more distinct (variant, T#/S#/written-V#) contents than that in roughly the same order every frame evicts each entry before its next-frame reuse; every draw then pays the full build plus an eviction.",
+   "evidence": "ShaderResources.cpp:2041-2045 'const auto parsed = value ? std::strtoull(value, nullptr, 10) : 1024ull;'; :2046-2050 eviction loop; ShaderResources.hpp:462-463 'One LRU bound covers dispatch and draw entries together (APS5_RESOURCE_CACHE_ENTRIES, default 1024)'; the sizing comment at :2038-2040 ('covers several frames of distinct dispatch and draw content') came from the menu stage (Draw.cpp:575-577). Draw.cpp:1719 inserts every reusable recorded draw build; VulkanDevice.cpp:3396-3442 inserts dispatch builds into the same SharedResourceCache. noteMiss (ShaderResources.cpp:1987-1988) counts misses whose key equals the variant's previous key as 'same key (not inserted or evicted)'.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "A template hit costs stamp proofs; a miss costs dozens of texture lookups, data-buffer allocations, descriptor writes and a set allocation under GpuMutex. With thousands of draws per frame in a dense gameplay scene, an LRU smaller than the per-frame working set collapses the hit rate exactly where it matters.",
+   "proposal": "Raise the default (e.g. 8192) and bound by pinned bytes (sum of GuestBytes of textures/storage images each entry holds) rather than entry count; partition draw and dispatch entries so one cannot flush the other; use a scan-resistant policy (2Q / segmented LRU: insert into probation, promote on second hit) so one-shot contents do not evict hot templates.",
+   "effort": "S",
+   "risk": "Entries pin textures/storage images past the 2 GiB texture-cache budgets and hold one descriptor set each, so a bigger cache raises RAM/VRAM and descriptor-pool memory; correctness is unaffected because every hit is still proved by Revalidate.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1: '[rescache] draws: H hits, M misses, I invalidated, U uncacheable' (Draw.cpp:413), '[rescache] miss churn (draws) ... same key S (not inserted or evicted)' (ShaderResources.cpp:2021; a large S means LRU eviction) and the VulkanDevice '[rescache] ... N entries' line pinned at 1024. A/B with APS5_RESOURCE_CACHE_ENTRIES=8192."
+  },
+  {
+   "id": "shader-resources-draw-insert-inline-eviction",
+   "title": "Draw-path cache Insert destroys evicted ShaderResources inline, inside ResourceCache::mutex and under GpuMutex (dispatch path defers this to the recorder)",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:1719",
+   "category": "global-lock-serialization",
+   "mechanism": "The draw path calls Insert without an evicted vector, so the LRU victim (and a replaced same-key entry) is destroyed while ResourceCache::mutex is held, under GpuMutex: descriptor set free, data Buffers returned to the pool, GuestBufferMemory teardown, and texture/storage-image destruction when the texture caches already dropped them.",
+   "evidence": "Draw.cpp:1719 'SharedResourceCache().Insert(contentKey, resources);' (no evicted vector). ShaderResources.cpp:2030 lock_guard, :2031-2035 replaced entry erased, :2046-2050 'entries.pop_back()' run the destructor inside it; ~ShaderResources -> release() (:2708-2717) -> DescriptorCache::Free (mutex + vkFreeDescriptorSets), unique_ptr<Buffer> -> BufferPool::Put (mutex). VulkanDevice.cpp:3396-3404 dispatch Insert passes '&evicted' and 'state->recorder->Keep(std::move(object))' so destruction 'runs on the release thread once the batch completed, not here under the mutex' (APS5_NO_DEFERRED_EVICTION). Draw.cpp:983 Remove on invalidation likewise drops the node under the cache mutex and the object at scope end under GpuMutex, whereas VulkanDevice.cpp:3456-3462 hands it to the recorder.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Once the LRU is full, every draw miss evicts and destroys one object under two locks; ResourceCache::mutex is also taken by PrepareDispatch's unlocked Find (VulkanDevice.cpp:3062) on other queues, which then wait behind Vulkan destroy calls.",
+   "proposal": "At Draw.cpp:1719 pass a local std::vector<std::shared_ptr<ShaderResources>> evicted and hand each to Recorder::Active()->Keep(...) exactly as VulkanDevice.cpp:3402-3403; at Draw.cpp:983 use Remove(key, cached.get()) and recorder->Keep(std::move(cached)) as the dispatch invalidation path does.",
+   "effort": "S",
+   "risk": "Evicted objects live until the open batch completes (slightly higher peak memory); identical to the proven dispatch behavior.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1: the insert lands in the [draws] pipeline= phase (Draw.cpp:1719 precedes timer.phase(PhasePipeline) at :1747); [lock] Draw-site waits; the dispatch 'resources: insert' row for comparison."
+  },
+  {
+   "id": "shader-resources-bindless-padding-lookups",
+   "title": "Bindless image tables are padded to 16 slots with copies of one T#, and every padded copy gets its own decode, collect, DCC scan, cache probe, lookup and revalidation",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2586-2617",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "The materializer resizes every table to BindlessSlots() entries, padding unused slots with the first usable T#, and appends them to the stage's sampled-image array. ShaderResources treats each element independently, so a table with k keys costs 16 image lookups per build and 16 per-element proofs per Revalidate, and puts 16x8 words into the content key. Storage images have a dedupe for identical consecutive elements; sampled images have none.",
+   "evidence": "core/shader/recompiler/Optimization/src/ResourceMaterializer.cpp:412-422 'const auto pad = candidates[...]; ... resolution.slots.resize(slots, pad);' with slots = BindlessSlots() default 16 (:1027-1034, APS5_BINDLESS_SLOTS clamp 1..48); :649-652 appends slots 1..C-1 as extra images; DescriptorBindingBuilder.cpp Populate builds one binding per kind with count = resources.size(). ShaderResources.cpp precollectImages :2496-2526 (DecodeTextureResource, DescribeSurface, CollectWrites, TextureClearKeys, Textures().mutex probe per element), resolveImageBinding :2593-2617 (fastTexture or cachedTexture per element), fastRevalidate :1453-1502 per element, ContentKey :1224 copies all descriptor words. Storage dedupe only: StorageDedupeEnabled :726-739, :2638, fastRevalidate skip :1505. Bindless is on by default (ResourceTracker.cpp:742 APS5_NO_BINDLESS_IMAGES opt-out).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "E.g. a 3-key table does 13 redundant lookups per build and 13 redundant proofs per hit, each several global-lock acquisitions (texture cache, write tracker, pending registry, storage cache) under GpuMutex; padding also inflates per-set sampled-image counts (faster descriptor-pool exhaustion) and the number of surfaces per build toward the 64-entry per-thread collect memo (GuestMemory.cpp:995-999).",
+   "proposal": "In resolveImageBinding and precollectImages keep a small per-binding table keyed by the element's 8 words + imageDepthCompare + imageUnnormalized + imageSamplers bits mapping to the first element's texture index; for a repeat push the same shared_ptr into textures/textureFirstLayer/describedRanges and skip the record and the lookup (mirror StorageDedupeEnabled with an APS5_NO_SAMPLED_DEDUPE kill switch). In fastRevalidate and fullWalk skip an element whose texture equals an earlier one (as :1505 does for storage). Descriptor writes still fill every slot with the same view, so the SPIR-V contract is unchanged.",
+   "effort": "S",
+   "risk": "Elements with equal words but different per-element flags must not share; the dedupe key must include the flags. captureValidation keys records by object, so duplicates correctly share one record.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1: [bindless] line (ResourceMaterializer.cpp:267: tables bound, slots, keys avg); [textures] 'stage-A records N: fast hits / full lookups' and [resources] images/precollect phase totals should fall by roughly (slots - keys)/slots of the table elements."
+  },
+  {
+   "id": "shader-resources-linux-write-watch",
+   "title": "On Linux all stamp-based validation depends on userfaultfd WP_ASYNC + PAGEMAP_SCAN (kernel >= 6.7 and matching build headers); without it every texture and snapshot check degrades to byte compares and full lookups",
+   "location": "core/libs/prx/libc/src/GuestWriteWatch.cpp:28-158",
+   "category": "build-config",
+   "mechanism": "The write watch is compiled only if the build host's kernel headers define PAGEMAP_SCAN and UFFD_FEATURE_WP_ASYNC, and enabled only if userfaultfd is permitted and a PAGEMAP_SCAN probe works. Otherwise CollectWrites returns 0 and UnchangedSince is always false, which disables every fast path in ShaderResources: snapshot texture hits do a full-surface memcmp, the stage-B fast proof and fastRevalidate always fail into full lookups, DCC key proofs never hold, and draw snapshots are never reused.",
+   "evidence": "GuestWriteWatch.cpp:28 '#if defined(__linux__) && defined(PAGEMAP_SCAN) && defined(UFFD_FEATURE_WP_ASYNC)' (else GuestWriteWatchAvailable returns false, :257-263); :137-149 userfaultfd (EPERM unless vm.unprivileged_userfaultfd or UFFD_USER_MODE_ONLY), UFFD_FEATURE_WP_ASYNC|WP_UNPOPULATED, PAGEMAP_SCAN probe; :153-158 prints '[memory] write watch unavailable ... guest memory is compared instead'. GuestMemory.hpp:58-59 'Without write watching CollectWrites returns 0 and UnchangedSince is always false'. Effects: ShaderResources.cpp:407-412 snapshot hit -> GuestMemory::EqualsCommitted(address, it->bytes) over the whole surface; :2551 fastTexture returns null; :1459 fastRevalidate fails with FastFail::Collect so every hit runs fullWalk (:1715-1751); DccMetadata.cpp:597-600 ProvedClearKeys never proves; Recorder.cpp:2240 KeepDrawSnapshot ignores generation 0 so PrepareDrawBindings memcpy's every read-only buffer every draw. Windows uses GetWriteWatch (GuestMemory.cpp _WIN32 branches) and is unaffected.",
+   "onDefaultPath": true,
+   "impact": "high",
+   "whyImpact": "Applies to the default build on Linux hosts with older kernels, older build headers or restricted userfaultfd. Then each block-compressed texture revalidation is an O(surface bytes) memcmp under GpuMutex (MBs per texture, several textures per draw, thousands of draws per frame), enough on its own to hold a game at single-digit FPS. Not applicable on Windows.",
+   "proposal": "Declare the PAGEMAP_SCAN ioctl/struct and UFFD_FEATURE_WP_ASYNC/WP_UNPOPULATED constants locally when the headers lack them so a binary built on an older distro still uses the feature on a new kernel; surface the fallback prominently (repeat the warning every 10 s under APS5_PROFILE_DRAW); for older kernels add a cheaper tracker (mprotect-based dirty tracking of the guest arena, or soft-dirty bits via /proc/self/clear_refs + pagemap) instead of whole-surface compares.",
+   "effort": "M",
+   "risk": "Local ioctl definitions must match the kernel ABI (stable since 6.7); an mprotect fallback adds a fault per first write per page per epoch.",
+   "howToMeasure": "Startup stderr '[memory] write watch unavailable: ...'; APS5_PROFILE_DRAW=1 '[rescache] revalidate ... fast-fail by reason: collect N', [textures] 'snapshot reads over recorded writes', and [hooksync] TextureCompare read-site waits."
+  },
+  {
+   "id": "shader-resources-texture-log-fflush",
+   "title": "Unconditional stdout logging with fflush for every created texture and each of its mips, on the lookup path under GpuMutex and the texture-cache mutex",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Texture.cpp:246-248",
+   "category": "logging-debug-overhead",
+   "mechanism": "APS5_LOG_OUT is not compiled out (only the *_DEBUG macros are): it is fprintf(stdout) followed by fflush(stdout). The snapshot Texture constructor prints one line plus one per mip, the storage-view constructor one line, and StorageTexture one line, all reached from cachedTexture/cachedStorageTexture while Textures().mutex (and for draws GpuMutex) is held.",
+   "evidence": "Texture.cpp:246 'APS5_LOG_OUT(\"Texture address=0x%llx ...\")' and :248 'for (const auto& mip : mips) APS5_LOG_OUT(\"  mip ...\")'; :462 storage-view texture; :688 StorageTexture; :1696-1698 and :3679-3681 upload/writeback submit lines. LogMacros.hpp:31-40 '_APS5_LOG_IMPL' = fprintf + fflush(stream). Callers: ShaderResources.cpp:428 (view) and :440 (snapshot) inside the lock_guard at :388. VulkanDevice.cpp:2532-2535 records that 'Two stdout lines per draw cost ~1.3 ms per frame of the queue-0 worker (part of it under the GPU mutex)' and gated those behind APS5_TRACE_DRAWS.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Each new sampled texture emits 1 + mipCount flushed lines (about 13 for a 4K chain) under two global locks; on a Windows console a flushed line costs roughly 0.1-1 ms. In streaming or texture-cache churn this adds milliseconds of fully serialized time per frame.",
+   "proposal": "Gate these sites behind the existing APS5_TRACE_TEXTURES switch (ShaderResources.cpp:434) or switch them to APS5_LOG_OUT_DEBUG, as was done for the per-draw lines at VulkanDevice.cpp:2534.",
+   "effort": "S",
+   "risk": "None (diagnostic output only).",
+   "howToMeasure": "Count 'Texture address=' lines in stdout per 10 s against the [textures] 'sampled created' counters (APS5_PROFILE_DRAW=1); A/B with stdout redirected to /dev/null (Linux) or NUL (Windows)."
+  },
+  {
+   "id": "shader-resources-host-memory-bindings",
+   "title": "Shader-read data buffers and per-draw buffer snapshots live in host system memory, so every draw's constant/structured reads cross PCIe on discrete GPUs",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2312-2323",
+   "category": "gpu-side-efficiency",
+   "mechanism": "addDataBuffer and PrepareDrawBindings create Buffers with the default HOST_VISIBLE|HOST_COHERENT properties, which Buffer resolves to HOST_CACHED system memory. These buffers are written once by the CPU and read many times by shaders; on a discrete GPU each L2 miss on them is a PCIe round trip. In-place guest buffers are host imports, also system memory. No BAR/ReBAR (DEVICE_LOCAL|HOST_VISIBLE) memory type is used anywhere in the driver.",
+   "evidence": "ShaderResources.cpp:2316 'std::make_unique<Buffer>(context, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | ...)'; :2784 and :2809 'std::make_shared<Buffer>(context, ..., VK_BUFFER_USAGE_STORAGE_BUFFER_BIT ...)'; Resources.hpp:11 default 'VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT'; Resources.cpp:39-45 prefers HOST_CACHED 'because the CPU reads most of these buffers back'. The only CPU read of a data buffer is the memcmp fallback at ShaderResources.cpp:2740 when dataWords is empty. GuestBufferMemory::Descriptor (GuestBufferMemory.cpp:2480-2498) binds region.direct->buffer (the host import). grep finds no DEVICE_LOCAL|HOST_VISIBLE use in libSceAgcDriver. GuestBufferMemory.cpp:1766-1769 documents 2.8 ms per dispatch for scattered PCIe stores and moved written elements to device-local staging, but read-only draw inputs were left in host memory.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "Consistent with a GPU that is busy waiting rather than computing: pixel and vertex waves stall on PCIe latency for constants and structured data. The effect is large on discrete GPUs without ReBAR-aware placement and absent on APUs.",
+   "proposal": "Allocate data buffers and draw snapshots with DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT when such a type exists (ReBAR, or the 256 MiB BAR heap under a budget via VK_EXT_memory_budget), falling back to the current type; always keep dataWords so no CPU read touches write-combined memory. For large read-only guest buffers unchanged across frames (UnchangedSince), extend GuestBufferMemory's device-local staging to read-only elements: one vkCmdCopyBuffer per change, then bind the VRAM copy.",
+   "effort": "M",
+   "risk": "BAR heap is small without ReBAR; CPU reads from write-combined memory are very slow (Describe(), the :2740 memcmp); staging read-only data adds a copy per change and needs stamp-based invalidation.",
+   "howToMeasure": "APS5_PROFILE_GPU=1 [gputime] Draw class and per-program GPU ms (Recorder.cpp:2154); an external GPU profiler (Nsight Graphics / RGP) for PCIe read throughput and shader stall reasons."
+  },
+  {
+   "id": "shader-resources-descriptor-pool-chain",
+   "title": "DescriptorCache pool chain: fixed 1024-set pools with only 1024 sampled images, a newest-first retry loop of failing vkAllocateDescriptorSets under one mutex, pools never freed",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2139-2213",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Chain pools are created with ratios of 4 storage buffers and 1 sampled image per set. Image-heavy draw sets exhaust a pool's image budget long before its set budget, so the chain grows; each Allocate holds the cache mutex and walks pools from the newest, paying one failing driver call per full pool, before creating another. Sets above a pool's per-type capacity get a dedicated pool created and destroyed per set. Every build and every recorded draw allocates; every release frees under the same mutex from the release thread.",
+   "evidence": "ShaderResources.cpp:2139-2141 ChainPoolSets 1024, sizes STORAGE_BUFFER 4096, SAMPLED_IMAGE 1024, STORAGE_IMAGE 1024, SAMPLER 512; :2151 one lock_guard for all of Allocate; :2178-2187 'for (auto it = pools.rbegin(); ...)' with OUT_OF_POOL_MEMORY/FRAGMENTED_POOL retried; :2188-2201 new pool; :2156-2175 and :2207-2210 dedicated pool per oversized set; pools only destroyed in ~DescriptorCache (:2104-2108). Allocate called per build (:1003) and per recorded draw (:2824); Free per release (:2710, :2724).",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "A pixel shader with ~30 sampled images (e.g. two 16-slot bindless tables) fills a pool's images after ~34 sets, so live sets (1024 cached templates plus in-flight per-draw sets) spread over dozens to hundreds of pools and allocations walk failing pools while other queues and the release thread wait on the mutex; at least two Allocate/Free pairs happen per draw miss.",
+   "proposal": "Size chain pools from observed ratios (e.g. per 1024 sets: 8192 storage buffers, 16384 sampled images, 2048 samplers, 1024 storage images) or keep pools per layout key sized to the layout's counts times N; remember the pool that last succeeded instead of always starting at the newest; move transient per-draw sets to per-batch pools reset in one vkResetDescriptorPool; trim empty pools periodically.",
+   "effort": "M",
+   "risk": "Larger pools reserve more driver memory each; per-layout pools need eviction for rare layouts.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 '[descriptors] layouts ... sets N from P pools and D dedicated pools' (ShaderResources.cpp:1189) every 10 s; add a counter of failing vkAllocateDescriptorSets attempts per Allocate; [lock] waits."
+  },
+  {
+   "id": "shader-resources-texture-cache-mutex-scope",
+   "title": "Textures().mutex is held across full-surface compares, snapshot reads that wait in the flush hook, and Texture creation",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:386-452",
+   "category": "global-lock-serialization",
+   "mechanism": "cachedTexture takes the sampled-texture cache mutex for the whole hit/miss handling, including GuestMemory::EqualsCommitted over the surface and ReadTextureSurface (both go through the flush hook and may wait for recorded GPU work), Texture construction (image creation, allocation, staging memcpy, detile recording) and budget eviction. The same mutex is taken per element by stage-A precollect on dispatch threads that deliberately run without GpuMutex.",
+   "evidence": ":388 'std::lock_guard lock(cache.mutex);' held through :407-412 equalsCommitted (comment :404-406: 'it waits for recorded work over the surface'), :433 ReadTextureSurface, :440 'std::make_shared<Texture>(context, *context.detiler, resource, components, entry.bytes, depthCompare)' (Texture.cpp:258-275 vkCreateImage/vkAllocateMemory, :295-296 staging memcpy), :444 eviction destroying Textures. Same mutex at precollectImages :2512-2513 (unlocked dispatch stage A) and fastTexture :2575-2576.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "One snapshot creation or compare (MBs, possibly waiting on the GPU) blocks every other thread's texture probes for its full duration, undoing the benefit of moving dispatch stage A off GpuMutex.",
+   "proposal": "Split cachedTexture: probe/touch under the mutex, release it for the compare/read/creation, then re-lock to insert (if another thread inserted meanwhile keep that entry and drop ours); collect eviction victims under the lock and destroy them after unlocking.",
+   "effort": "M",
+   "risk": "Two threads can occasionally build the same texture (wasted work, not incorrect); the insert must re-check, and stage-A records/fastTexture identity checks must still find the entry they read.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 LookupOutcomes rows 'sampled made snapshot', 'sampled hit snapshot', 'pending flush' (Texture.cpp:1170) in the [dispatch]/[indirect] tables; add try_lock contention counting to Textures().mutex like lockTracker (GuestMemory.cpp:946-950)."
+  },
+  {
+   "id": "shader-resources-snapshot-texture-copies-budget",
+   "title": "Block-compressed sampled textures keep a full CPU byte copy, are copied twice per creation, and live under a hard-coded 2 GiB budget whose evictions cascade into resource-cache invalidations",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:423-452",
+   "category": "allocation-copy",
+   "mechanism": "BC formats are not storage-eligible, so they take the snapshot path: the whole guest surface is copied into the cache entry (kept only for later compares), copied again into a staging Buffer, uploaded and detiled. The cache is bounded at 2 GiB with LRU eviction; an evicted texture still referenced by a cached ShaderResources makes the next lookup create a new object, which fails that template's Revalidate and forces a rebuild.",
+   "evidence": "SampledFromStorageEligible :224-228 excludes IsBlockCompressed; :423 'std::vector<std::byte>(source != nullptr ? 0u : bytes)' kept in the entry; :433 ReadTextureSurface fills it; Texture.cpp:295-296 'auto staging = std::make_shared<Buffer>(...); std::memcpy(staging->Bytes().data(), snapshot.data(), snapshot.size());'; :443 'constexpr std::uint64_t budget = 2048ull << 20u;' (and :611 for storage images) with no override; :444 eviction. Cascade: fastTexture :2578 'it->texture != record.texture' fails, fullWalk :1729 compares the new object against textures[textureIndex] and fails, Draw.cpp:982-984 removes the template.",
+   "onDefaultPath": true,
+   "impact": "medium",
+   "whyImpact": "If a gameplay scene's sampled working set exceeds 2 GiB of guest bytes (plausible for a 16 GB-unified-memory PS5 title with streaming), the LRU churns every frame: each re-creation does two full CPU copies, a re-upload and detile, ~13 flushed log lines, and invalidates every template that references it.",
+   "proposal": "Make both budgets configurable and default them from VK_EXT_memory_budget and system RAM; when write watching is available drop the per-entry CPU byte copy (stamps prove reuse; keep a per-64 KiB-block hash for the rare compare) and read guest bytes directly into the staging Buffer (one copy); add a budget-eviction counter to [textures].",
+   "effort": "M",
+   "risk": "Raising budgets blindly grows RAM/VRAM; without write watch the byte copy is the only proof of reuse and must stay.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 [textures] 'sampled created: X from storage images, Y snapshots' growing steadily during gameplay indicates churn; [rescache] revalidate failed/full counts; add an eviction counter at ShaderResources.cpp:444."
+  },
+  {
+   "id": "shader-resources-unmemoized-resource-rejections",
+   "title": "Unsupported T#/S# features throw inside the resource build on every draw, every frame; only ValidateShaders failures are memoized",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2586-2617",
+   "category": "incomplete-implementation",
+   "mechanism": "Texture and sampler descriptor decoders throw for unimplemented features; the build has already done key/Find, stage A (descriptor set, data buffers, earlier element lookups) when the throw unwinds under GpuMutex. Nothing records the failure, so the same draw repeats the work every frame and still renders nothing.",
+   "evidence": "GuestTextureResource.cpp:110-113,126 (corner sampling, PRT default color, array pitch, MSAA, BC swizzle) and GuestSamplerResource.cpp:102-116,143 (forced sRGB, degamma off, secondary LOD bias, point preclamp, anisotropy override, PRT blend-zero, border color table) throw via Require; ShaderResources.cpp:289-293 and :566-570 throw for depth-surface accesses. SamplerCache::Get decodes before inserting (Sampler.cpp:75-77) so a failing S# retries every build; precollectImages swallows the decode error (:2522-2524) and stage B re-decodes and throws (:2596). PacketExecution.cpp:281-285 catches and counts DrawSkip::Thrown. KnownValidationFailure (Draw.cpp:1485-1492) only consults validationFailures(), filled only by CachedFragmentOutputs (:549-555).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "Each such draw wastes part of a build plus an exception unwind under the global lock every frame; this is one concrete way unimplemented functions cost performance. It becomes medium if the [draws] thrown counter shows hundreds per second for Astro Bot.",
+   "proposal": "Memoize build failures keyed by the draw's resource key (DrawResourceKey without ranges, or the offending descriptor words plus per-element flags) in the same table as validationFailures and check it in KnownDrawRejection before lockForDraw; cache negative sampler decodes in SamplerCache. Then implement the most frequent missing features the skip counters report (e.g. border color tables via VK_EXT_custom_border_color).",
+   "effort": "S",
+   "risk": "The memo key must contain every word and flag the decode consumed so a later valid descriptor is not rejected.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 [draws] '; skipped packets: ... thrown N in X ms' (Draw.cpp:403-406); APS5_TRACE_DRAWS=1 prints each failure reason."
+  },
+  {
+   "id": "shader-resources-key-hash-validation-memo",
+   "title": "Per-draw key building and ordered-map lookups: DrawResourceKey vectors, FNV over the whole key, a validation memo built twice per draw with vector keys and std::set copies, layout std::map",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/Draw.cpp:456-603",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "Non-recipe draws rebuild their resource key from scratch (a vector per stage plus a concatenated copy), hash and compare it word by word, build the validation key twice (KnownDrawRejection and CachedFragmentOutputs) and search std::maps with vector keys under a global mutex, copying a std::set result; each build also copies the layout key and searches a std::map. ValidateShaders itself is memoized, but the memo is cleared wholesale at 1024 entries.",
+   "evidence": "Draw.cpp:583-603 DrawResourceKey via ShaderResources::ContentKey (ShaderResources.cpp:1192-1239; 'key.reserve(8 + program.bindings.size() * 12)' underestimates the 8 words per image element); ResourceCache KeyHash hashes every word (ShaderResources.hpp:495-501) and Find compares vectors under the mutex (:1946-1956). ValidationKey Draw.cpp:456-520; KnownDrawRejection (Execution Draw.cpp:362 -> Draw.cpp:1485-1492) and CachedFragmentOutputs (:532-565) each build it and search std::map under validationMutex; the memo returns a std::set<uint32_t> copy and is cleared at 1024 entries (:561), forcing full SPIR-V re-inspection (ShaderValidation.cpp:131-508). DescriptorCache::Layout copies the key into a new vector and searches std::map<vector> (ShaderResources.cpp:2110-2116) per build.",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "A few microseconds per non-recipe draw under GpuMutex; small individually but multiplied by thousands of draws per frame, and the wholesale memo clear causes periodic full-SPIR-V validation spikes.",
+   "proposal": "Precompute a 64-bit content hash per compiled stage when its variant/draw entry is built and use it for ResourceCache (full compare only on a hash hit); compute the validation key once per draw and share it between KnownDrawRejection and CachedFragmentOutputs; key the memo by an unordered_map on a 64-bit hash with LRU instead of clear(); return fragment outputs as a uint32 bitmask; use an unordered_map with a stored hash for DescriptorCache layouts.",
+   "effort": "S",
+   "risk": "Minimal; collisions are resolved by the existing full compares.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 [draws] validate= and lookup= phase totals; [rescache] 'validation memo H hits / M misses'."
+  },
+  {
+   "id": "shader-resources-fasttexture-per-element-locks",
+   "title": "Stage-B fast texture proof takes 4-6 global locks per sampled element instead of batching them like fastRevalidate",
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:2531-2584",
+   "category": "per-draw-cpu-cost",
+   "mechanism": "For each sampled element of a fresh build, fastTexture separately collects writes, scans the pending registry, proves DCC keys, checks the storage cache, checks stamps and re-locks the texture cache. fastRevalidate performs the same proof for a whole object with one registry scan, one stamp query batch and one storage-cache pass.",
+   "evidence": "fastTexture: GuestMemory::CollectWrites (:2551, tracker mutex on memo miss), PendingStorageOverlaps (:2552), ProvedClearKeys (:2558), StorageImageCached (:2565, storage cache mutex), UnchangedSince (:2565/:2570, tracker mutex), FindPending (:2569), Textures().mutex (:2576). fastRevalidate batches: StorageTexture::ScanPending (:1525), GuestMemory::UnchangedSinceAll (:1558), StorageImagesCached (:1559).",
+   "onDefaultPath": true,
+   "impact": "low",
+   "whyImpact": "A build with 20 sampled elements makes roughly 100 lock acquisitions under GpuMutex, contending with unlocked dispatch stage A on other threads; this is the common path whenever contents churn (cache misses).",
+   "proposal": "Restructure stage B like fastRevalidate: gather all records' queries, one ScanPending, one UnchangedSinceAll, one StorageImagesCached and one Textures().mutex section that validates and touches all entries and logs the lookups; fall back to cachedTexture only for elements that failed.",
+   "effort": "M",
+   "risk": "Must keep the collect-before-check ordering rule documented at :2541-2548 and the per-element fallback semantics.",
+   "howToMeasure": "APS5_PROFILE_DRAW=1 LookupOutcomes 'sampled fast hit' / 'sampled fast miss' ms; [resources] images phase; [lock] Draw-site hold time."
+  }
+ ],
+ "incompleteOrStubbed": [
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:920-922 and Graphics/src/ShaderValidation.cpp:471",
+   "what": "Guest buffers are bound only as writable VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; 'read-only descriptors are unsupported because the recompiler emits no NonWritable decoration' and uniform buffers are rejected, although the recompiler knows bufferWritten per element.",
+   "perfRelevance": "GPU side: drivers cannot use read-only/constant cache paths or assume no aliasing for constant and structured data that is never written, adding shader latency on every draw."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.hpp:40-48 and ShaderResources.cpp:2102-2213",
+   "what": "No push descriptors, descriptor update templates, descriptor buffers or dynamic offsets anywhere in the driver (grep finds only vkResetDescriptorPool in TextureDetilerDescriptors.cpp); every draw uses pool-allocated sets updated with vkUpdateDescriptorSets and VkCopyDescriptorSet.",
+   "perfRelevance": "Root cause of the per-draw descriptor-set allocation/copy/free cost (finding shader-resources-per-draw-descriptor-set)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:289-293, 566-570, 1102, 2610, 2635",
+   "what": "Not implemented: 32-bit integer read of a depth-layout texture, storage-image access to a depth/stencil surface, a misaligned guest buffer in a shader without shader data, unnormalized sampling of multi-level/array views, storage minLod above the addressed level; each throws.",
+   "perfRelevance": "The draw is dropped after a partial build under GpuMutex and the failure is not memoized, so the cost repeats every frame (finding shader-resources-unmemoized-resource-rejections)."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestTextureResource.cpp:100-113,126",
+   "what": "Texture streaming feedback (LOD warning / mip statistics) is ignored; corner sampling, PRT default color, nonzero array pitch, MSAA textures and BC swizzle throw.",
+   "perfRelevance": "A streamer that relies on mip feedback never gets it (streaming behavior and memory traffic may differ from console); throwing features drop draws every frame."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/GuestSamplerResource.cpp:102-116,143",
+   "what": "Forced sRGB, degamma disable, secondary LOD bias, point preclamp, anisotropy override, PRT blend-zero and border color tables throw; anisotropy threshold/bias are ignored.",
+   "perfRelevance": "Throws are retried on every build because SamplerCache::Get decodes before inserting; affected draws are skipped every frame."
+  },
+  {
+   "location": "core/shader/recompiler/Optimization/src/ResourceMaterializer.cpp:303-431",
+   "what": "Bindless image tables: storage and packed tables unsupported, tables with more distinct keys than APS5_BINDLESS_SLOTS (default 16) rejected, and every table padded to the slot count with copies of the first usable T#.",
+   "perfRelevance": "Padding multiplies per-element lookups and proofs in ShaderResources (finding shader-resources-bindless-padding-lookups); rejections drop draws."
+  },
+  {
+   "location": "core/libs/prx/libSceAgcDriver/Graphics/src/ShaderResources.cpp:443 and :611",
+   "what": "Sampled-texture and storage-image cache budgets are hard-coded to 2 GiB each with no override or VRAM-budget awareness.",
+   "perfRelevance": "Working sets above the budget churn every frame and cascade into resource-cache invalidations (finding shader-resources-snapshot-texture-copies-budget)."
+  },
+  {
+   "location": "core/libs/prx/libc/src/GuestWriteWatch.cpp:28",
+   "what": "Linux write watch is compiled out silently when build headers lack PAGEMAP_SCAN/UFFD_FEATURE_WP_ASYNC, with a byte-compare fallback.",
+   "perfRelevance": "Disables every stamp-based fast path in resource validation on such builds (finding shader-resources-linux-write-watch)."
+  }
+ ],
+ "quickExperiments": [
+  {
+   "setting": "APS5_PROFILE_DRAW=1",
+   "expectedEffect": "Prints every 10 s the lines needed to rank these findings: [lock] (GpuMutex waits per site), [draws] (lookup/resources/record/pipeline phases, hook waits, thrown skips, recipe hits), [rescache] (draw hits/misses/invalidated, miss churn 'same key'), [resources], [descriptors], [textures], [bufferpool], [bindless].",
+   "risk": "Small timing overhead; no behavior change."
+  },
+  {
+   "setting": "APS5_RESOURCE_CACHE_ENTRIES=8192",
+   "expectedEffect": "If [rescache] shows the cache pinned at 1024 entries and many 'same key' draw misses, more draws become template hits (Revalidate instead of a full build), cutting GpuMutex hold time per draw.",
+   "risk": "Entries pin textures/storage images beyond the 2 GiB caches and hold one descriptor set each: higher RAM/VRAM and descriptor-pool memory; correctness unchanged."
+  },
+  {
+   "setting": "APS5_BINDLESS_SLOTS=8",
+   "expectedEffect": "Only if the [bindless] line shows keys avg well below 8 and zero capacity rejections: halves padded sampled-image lookups and proofs per bindless table and shrinks sets.",
+   "risk": "Tables with more distinct keys than 8 are rejected (draws dropped); changes specializations so shaders recompile once (clear the shader disk cache if variants mismatch)."
+  },
+  {
+   "setting": "Run with stdout redirected to a file or the null device (Linux: '> /dev/null', Windows: '> NUL')",
+   "expectedEffect": "Removes console cost of the unconditional fflush'd texture-creation log lines (Texture.cpp:246-248, 462, 688) emitted under GpuMutex and the texture-cache mutex; most visible on a Windows console during streaming.",
+   "risk": "stdout diagnostics are lost (stderr profile lines are unaffected)."
+  },
+  {
+   "setting": "Linux only: run on kernel >= 6.7, allow userfaultfd ('sysctl -w vm.unprivileged_userfaultfd=1') and build against >= 6.7 kernel headers; confirm stderr has no '[memory] write watch unavailable' line",
+   "expectedEffect": "Enables stamp-based reuse proofs; without it every texture/snapshot check is a byte compare or full lookup, which alone can explain single-digit FPS.",
+   "risk": "System-wide security setting change for userfaultfd."
+  },
+  {
+   "setting": "APS5_PROFILE_GPU=1",
+   "expectedEffect": "[gputime] GPU ms per class and program shows whether the GPU is idle (CPU/lock bound) or slow per draw (e.g. PCIe-bound host-memory bindings).",
+   "risk": "Timestamp queries add small GPU overhead."
+  }
+ ]
+}
