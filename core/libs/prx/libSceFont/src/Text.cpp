@@ -19,6 +19,7 @@ using namespace Font;
 constexpr std::uint16_t TEXT_SOURCE_MAGIC = 0x0F04;
 constexpr std::uint16_t FONT_STRING_MAGIC = 0x0F05;
 constexpr std::uint16_t FONT_WRITING_MAGIC = 0x0F06;
+constexpr std::uint16_t FONT_WORDS_MAGIC = 0x0F0A;
 constexpr std::uint16_t CREATE_STRING_DETAIL_ID = 0x0FD4;
 constexpr std::uint32_t WRITING_FORM_HORIZONTAL = 0x10;
 constexpr std::uint32_t WRITING_FORM_HORIZONTAL_LTR = 0x12;
@@ -148,6 +149,232 @@ bool IsFormatCode(std::uint32_t code) {
     default:
         return false;
     }
+}
+
+struct ParsedText {
+    void* terminateOrder = nullptr;
+    std::uint32_t terminateCode = 0;
+};
+
+int CheckTextCreation(const FontMemory* fontMemory, const FontTextSource* textSource) {
+    if (TextSourceMagic(textSource) != TEXT_SOURCE_MAGIC) return SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
+    if (fontMemory->mem_kind != MEMORY_MAGIC || !fontMemory->iface || !fontMemory->iface->alloc || !fontMemory->iface->dealloc) return SCE_FONT_ERROR_INVALID_MEMORY;
+    return SCE_FONT_OK;
+}
+
+template <typename TCodeHandler>
+std::int32_t ParseTextSource(FontTextSource* textSource, ParsedText& parsed, TCodeHandler handleCode) {
+    void* textOrder = nullptr;
+    for (std::size_t count = 0; count < MAX_PARSED_CHARACTERS; ++count) {
+        FontTextParseResult result{};
+        const std::int32_t state = textSource->textParser(textSource, &textOrder, &result);
+        if (state == PARSER_RESULT_FONT_CODE) {
+            if (!handleCode(result.FontCode.font, result.FontCode.code, textOrder)) return SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
+            continue;
+        }
+        if (state == PARSER_RESULT_TERMINATE) {
+            parsed.terminateOrder = textOrder;
+            parsed.terminateCode = result.Terminate.terminateCode;
+            return SCE_FONT_OK;
+        }
+        if (state == PARSER_RESULT_ERROR && result.Error.errorCode < 0) return result.Error.errorCode;
+        return SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
+    }
+    return SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
+}
+
+enum class WordClass : std::uint8_t { Letter, Space, LineBreak, Glue, Combining, Ideographic, Close, WideClose, Open, WideOpen, Hyphen, BreakAfter };
+
+struct WordsEntry {
+    void* textOrder = nullptr;
+    std::uint32_t code = 0;
+    WordClass wordClass = WordClass::Letter;
+    bool breakBefore = false;
+};
+
+struct FontWordsData {
+    std::uint16_t magic = FONT_WORDS_MAGIC;
+    std::uint16_t reserved0 = 0;
+    std::uint32_t reserved1 = 0;
+    const FontMemory* memory = nullptr;
+    std::vector<WordsEntry> entries;
+};
+
+FontWordsData* GetWordsData(FontWords fontWords) {
+    auto* data = reinterpret_cast<FontWordsData*>(fontWords);
+    return data && data->magic == FONT_WORDS_MAGIC ? data : nullptr;
+}
+
+bool InRange(std::uint32_t code, std::uint32_t first, std::uint32_t last) {
+    return code >= first && code <= last;
+}
+
+bool IsLineBreakCode(std::uint32_t code) {
+    switch (code) {
+    case 0x000A: case 0x000B: case 0x000C: case 0x000D: case 0x0085: case 0x2028: case 0x2029:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsGlueCode(std::uint32_t code) {
+    switch (code) {
+    case 0x00A0: case 0x2007: case 0x200D: case 0x202F: case 0x2060: case 0xFEFF:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsCombiningCode(std::uint32_t code) {
+    switch (code) {
+    case 0x061C: case 0x200C: case 0x200E: case 0x200F:
+        return true;
+    default:
+        return InRange(code, 0x0300, 0x036F) || InRange(code, 0x1AB0, 0x1AFF) || InRange(code, 0x1DC0, 0x1DFF) || InRange(code, 0x202A, 0x202E) ||
+               InRange(code, 0x2066, 0x2069) || InRange(code, 0x20D0, 0x20FF) || InRange(code, 0x3099, 0x309A) || InRange(code, 0xFE00, 0xFE0F) ||
+               InRange(code, 0xFE20, 0xFE2F) || InRange(code, 0x1F3FB, 0x1F3FF) || InRange(code, 0xE0100, 0xE01EF);
+    }
+}
+
+bool IsCloseCode(std::uint32_t code) {
+    switch (code) {
+    case 0x0021: case 0x0029: case 0x002C: case 0x002E: case 0x003A: case 0x003B: case 0x003F: case 0x005D: case 0x007D:
+    case 0x2019: case 0x201D: case 0x2026:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsOpenCode(std::uint32_t code) {
+    switch (code) {
+    case 0x0028: case 0x005B: case 0x007B: case 0x00A1: case 0x00BF: case 0x2018: case 0x201C:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsWideCloseCode(std::uint32_t code) {
+    switch (code) {
+    case 0x3001: case 0x3002: case 0x3005: case 0x3009: case 0x300B: case 0x300D: case 0x300F: case 0x3011: case 0x3015: case 0x3017:
+    case 0x3019: case 0x301B: case 0x301C: case 0x301E: case 0x301F: case 0x303B: case 0x3041: case 0x3043: case 0x3045: case 0x3047:
+    case 0x3049: case 0x3063: case 0x3083: case 0x3085: case 0x3087: case 0x308E: case 0x3095: case 0x3096: case 0x309B: case 0x309C:
+    case 0x309D: case 0x309E: case 0x30A0: case 0x30A1: case 0x30A3: case 0x30A5: case 0x30A7: case 0x30A9: case 0x30C3: case 0x30E3:
+    case 0x30E5: case 0x30E7: case 0x30EE: case 0x30F5: case 0x30F6: case 0x30FB: case 0x30FC: case 0x30FD: case 0x30FE: case 0xFF01:
+    case 0xFF09: case 0xFF0C: case 0xFF0E: case 0xFF1A: case 0xFF1B: case 0xFF1F: case 0xFF3D: case 0xFF5D: case 0xFF60: case 0xFF61:
+    case 0xFF63: case 0xFF64: case 0xFF65: case 0xFF9E: case 0xFF9F:
+        return true;
+    default:
+        return InRange(code, 0x31F0, 0x31FF) || InRange(code, 0xFF67, 0xFF70);
+    }
+}
+
+bool IsWideOpenCode(std::uint32_t code) {
+    switch (code) {
+    case 0x3008: case 0x300A: case 0x300C: case 0x300E: case 0x3010: case 0x3014: case 0x3016: case 0x3018: case 0x301A: case 0x301D:
+    case 0xFF08: case 0xFF3B: case 0xFF5B: case 0xFF5F: case 0xFF62:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsIdeographicCode(std::uint32_t code) {
+    return InRange(code, 0x2E80, 0x2FFF) || InRange(code, 0x3003, 0x30FF) || InRange(code, 0x3100, 0x31FF) || InRange(code, 0x3200, 0x4DBF) ||
+           InRange(code, 0x4E00, 0x9FFF) || InRange(code, 0xA000, 0xA4CF) || InRange(code, 0xAC00, 0xD7A3) || InRange(code, 0xF900, 0xFAFF) ||
+           InRange(code, 0xFE30, 0xFE4F) || InRange(code, 0xFF01, 0xFF60) || InRange(code, 0xFF66, 0xFF9D) || InRange(code, 0xFFE0, 0xFFE6) ||
+           InRange(code, 0x1F000, 0x1FAFF) || InRange(code, 0x20000, 0x3FFFD);
+}
+
+WordClass ClassifyWordCode(std::uint32_t code) {
+    if (IsLineBreakCode(code)) return WordClass::LineBreak;
+    if (IsGlueCode(code)) return WordClass::Glue;
+    if (code == 0x200B || IsWhitespaceCode(code)) return WordClass::Space;
+    if (IsCombiningCode(code)) return WordClass::Combining;
+    if (code == 0x002D) return WordClass::Hyphen;
+    if (code == 0x00AD || code == 0x2010 || code == 0x2012 || code == 0x2013) return WordClass::BreakAfter;
+    if (IsCloseCode(code)) return WordClass::Close;
+    if (IsOpenCode(code)) return WordClass::Open;
+    if (IsWideCloseCode(code)) return WordClass::WideClose;
+    if (IsWideOpenCode(code)) return WordClass::WideOpen;
+    if (IsIdeographicCode(code)) return WordClass::Ideographic;
+    return WordClass::Letter;
+}
+
+bool IsSpaceClass(WordClass wordClass) {
+    return wordClass == WordClass::Space || wordClass == WordClass::LineBreak;
+}
+
+bool IsWideClass(WordClass wordClass) {
+    return wordClass == WordClass::Ideographic || wordClass == WordClass::WideClose || wordClass == WordClass::WideOpen;
+}
+
+bool BreaksBetween(WordClass previous, const WordsEntry& current) {
+    switch (current.wordClass) {
+    case WordClass::Space: case WordClass::LineBreak:
+        return true;
+    case WordClass::Combining: case WordClass::Glue: case WordClass::Close: case WordClass::WideClose:
+        return false;
+    default:
+        break;
+    }
+    switch (previous) {
+    case WordClass::Glue: case WordClass::Open: case WordClass::WideOpen:
+        return false;
+    case WordClass::BreakAfter:
+        return true;
+    case WordClass::Hyphen:
+        return !InRange(current.code, '0', '9');
+    default:
+        return IsWideClass(previous) || IsWideClass(current.wordClass);
+    }
+}
+
+void MarkWordBreaks(std::vector<WordsEntry>& entries) {
+    WordClass previous = WordClass::Space;
+    for (WordsEntry& entry : entries) {
+        entry.breakBefore = BreaksBetween(previous, entry);
+        if (entry.wordClass != WordClass::Combining) previous = entry.wordClass;
+        else if (IsSpaceClass(previous)) previous = WordClass::Letter;
+    }
+}
+
+const WordsEntry& RequireWordsEntry(const char* function, const FontWordsData& words, std::size_t index, const FontTextCharacter* character) {
+    if (index >= words.entries.size() || words.entries[index].textOrder != character->textOrder || words.entries[index].code != character->characterCode)
+        Unsupported(function, "a character that is not from the text of the words is not modelled");
+    return words.entries[index];
+}
+
+void FindWord(const char* function, const FontWordsData& words, FontTextCharacter* start, const FontTextCharacter* term, FontTextCharacter*& last, FontTextCharacter*& next) {
+    std::size_t index = 0;
+    for (const FontTextCharacter* previous = start->prev; previous && index < words.entries.size(); previous = previous->prev) ++index;
+    const WordsEntry* entry = &RequireWordsEntry(function, words, index, start);
+    FontTextCharacter* character = start;
+    const auto following = [&]() -> const WordsEntry* {
+        const FontTextCharacter* candidate = character->next;
+        if (!candidate || candidate == term) return nullptr;
+        return &RequireWordsEntry(function, words, index + 1, candidate);
+    };
+    const auto advance = [&](const WordsEntry* upcoming) {
+        character = character->next;
+        ++index;
+        entry = upcoming;
+        return following();
+    };
+    FontTextCharacter* bodyLast = nullptr;
+    const WordsEntry* nextEntry = following();
+    if (!IsSpaceClass(entry->wordClass)) {
+        while (nextEntry && !nextEntry->breakBefore) nextEntry = advance(nextEntry);
+        bodyLast = character;
+        if (nextEntry && IsSpaceClass(nextEntry->wordClass)) nextEntry = advance(nextEntry);
+    }
+    while (entry->wordClass == WordClass::Space && nextEntry && IsSpaceClass(nextEntry->wordClass)) nextEntry = advance(nextEntry);
+    if (entry->code == 0x000D && nextEntry && nextEntry->code == 0x000A) advance(nextEntry);
+    last = bodyLast ? bodyLast : character;
+    next = character->next;
 }
 
 FontTextCharacter MakeCharacter(FontHandle font, std::uint32_t code, void* textOrder) {
@@ -294,8 +521,7 @@ int APS5_VABI sceFontCreateString(const FontMemory* fontMemory, FontTextSource* 
         return SCE_FONT_ERROR_INVALID_PARAMETER;
     }
     *pFontString = nullptr;
-    if (TextSourceMagic(textSource) != TEXT_SOURCE_MAGIC) return SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
-    if (fontMemory->mem_kind != MEMORY_MAGIC || !fontMemory->iface || !fontMemory->iface->alloc || !fontMemory->iface->dealloc) return SCE_FONT_ERROR_INVALID_MEMORY;
+    if (const int rc = CheckTextCreation(fontMemory, textSource); rc != SCE_FONT_OK) return rc;
     if (detail) {
         constexpr std::uint32_t validOrders = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 31);
         if (detail->detailId != CREATE_STRING_DETAIL_ID || detail->detailType > 1 || (detail->detections & ~0x07u) != 0 || (detail->ordersOption & ~validOrders) != 0) return SCE_FONT_ERROR_INVALID_PARAMETER;
@@ -309,38 +535,21 @@ int APS5_VABI sceFontCreateString(const FontMemory* fontMemory, FontTextSource* 
     data->storage = new CharacterStorage{};
     if (!data->defaultFont && detail) data->defaultFont = detail->defaultFont;
     data->writingForm = static_cast<std::uint32_t>(textSource->systemUse0 >> 32);
-    std::int32_t state = SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
-    void* textOrder = nullptr;
-    for (std::size_t parsed = 0; parsed < MAX_PARSED_CHARACTERS; ++parsed) {
-        FontTextParseResult result{};
-        state = textSource->textParser(textSource, &textOrder, &result);
-        if (state == PARSER_RESULT_FONT_CODE) {
-            const FontHandle font = result.FontCode.font ? result.FontCode.font : data->defaultFont;
-            if (!font) {
-                state = SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
-                break;
-            }
-            data->storage->characters.push_back(MakeCharacter(font, result.FontCode.code, textOrder));
-            continue;
-        }
-        if (state == PARSER_RESULT_TERMINATE) {
-            data->terminateOrder = textOrder;
-            data->terminateCode = result.Terminate.terminateCode;
-            state = SCE_FONT_OK;
-        } else if (state == PARSER_RESULT_ERROR) {
-            state = result.Error.errorCode < 0 ? result.Error.errorCode : SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
-        } else {
-            state = SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
-        }
-        break;
-    }
-    if (state == PARSER_RESULT_FONT_CODE) state = SCE_FONT_ERROR_INVALID_TEXT_SOURCE;
+    ParsedText parsed{};
+    const std::int32_t state = ParseTextSource(textSource, parsed, [data](FontHandle font, std::uint32_t code, void* textOrder) {
+        if (!font) font = data->defaultFont;
+        if (!font) return false;
+        data->storage->characters.push_back(MakeCharacter(font, code, textOrder));
+        return true;
+    });
     if (state != SCE_FONT_OK) {
         ReleaseStorage(data->storage);
         data->~FontStringData();
         fontMemory->iface->dealloc(fontMemory->mspace_handle, raw);
         return state;
     }
+    data->terminateOrder = parsed.terminateOrder;
+    data->terminateCode = parsed.terminateCode;
     LinkCharacters(data->storage->characters);
     data->textCount = static_cast<std::uint32_t>(data->storage->characters.size());
     data->renderCount = data->textCount;
@@ -601,6 +810,62 @@ FontTextCodes* APS5_VABI sceFontTextCodesStepBack(FontTextCodes* textCodesStep) 
     FontTextCharacter* previous = state.current->prev;
     if (!previous) return nullptr;
     return SetTextCodesStep(textCodesStep, previous, state.term);
+}
+
+int APS5_VABI sceFontCreateWords(const FontMemory* fontMemory, FontTextSource* textSource, const void* detail, FontWords* pFontWords) {
+    (void)detail;
+    if (!fontMemory || !textSource || !pFontWords || !textSource->textParser) {
+        if (pFontWords) *pFontWords = nullptr;
+        return SCE_FONT_ERROR_INVALID_PARAMETER;
+    }
+    *pFontWords = nullptr;
+    if (const int rc = CheckTextCreation(fontMemory, textSource); rc != SCE_FONT_OK) return rc;
+    void* raw = fontMemory->iface->alloc(fontMemory->mspace_handle, sizeof(FontWordsData));
+    if (!raw) return SCE_FONT_ERROR_ALLOCATION_FAILED;
+    auto* words = new (raw) FontWordsData{};
+    words->memory = fontMemory;
+    const FontTextSource position = *textSource;
+    ParsedText parsed{};
+    const std::int32_t state = ParseTextSource(textSource, parsed, [words](FontHandle, std::uint32_t code, void* textOrder) {
+        words->entries.push_back({textOrder, code, ClassifyWordCode(code), false});
+        return true;
+    });
+    *textSource = position;
+    if (state != SCE_FONT_OK) {
+        words->~FontWordsData();
+        fontMemory->iface->dealloc(fontMemory->mspace_handle, raw);
+        return state;
+    }
+    MarkWordBreaks(words->entries);
+    *pFontWords = reinterpret_cast<FontWords>(words);
+    return SCE_FONT_OK;
+}
+
+int APS5_VABI sceFontDestroyWords(FontWords* pFontWords) {
+    if (!pFontWords) return SCE_FONT_ERROR_INVALID_PARAMETER;
+    auto* words = GetWordsData(*pFontWords);
+    *pFontWords = nullptr;
+    if (!words) return SCE_FONT_ERROR_INVALID_WORDS;
+    const FontMemory* memory = words->memory;
+    words->magic = 0;
+    words->~FontWordsData();
+    memory->iface->dealloc(memory->mspace_handle, words);
+    return SCE_FONT_OK;
+}
+
+int APS5_VABI sceFontWordsFindWordCharacters(FontWords fontWords, const FontTextCharacter* startCharacter, const FontTextCharacter* termCharacter, FontTextCharacter** pLastCharacter, FontTextCharacter** pNextCharacter) {
+    if (pLastCharacter) *pLastCharacter = nullptr;
+    if (pNextCharacter) *pNextCharacter = nullptr;
+    if (!fontWords || !startCharacter) return SCE_FONT_ERROR_INVALID_PARAMETER;
+    const auto* words = GetWordsData(fontWords);
+    if (!words) return SCE_FONT_ERROR_INVALID_WORDS;
+    if (startCharacter == termCharacter) Unsupported(__func__, "a start character equal to the term character is not modelled");
+    FontTextCharacter* last = nullptr;
+    FontTextCharacter* next = nullptr;
+    FindWord(__func__, *words, const_cast<FontTextCharacter*>(startCharacter), termCharacter, last, next);
+    if (pLastCharacter) *pLastCharacter = last;
+    if (pNextCharacter) *pNextCharacter = next;
+    return SCE_FONT_OK;
 }
 
 int APS5_VABI sceFontWritingInit(FontWriting* fontWriting, FontString fontString, const FontTextCharacter* fontCharacter) {

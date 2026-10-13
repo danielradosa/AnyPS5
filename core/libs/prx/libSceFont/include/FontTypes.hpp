@@ -332,6 +332,9 @@ struct FontCreateStringDetail {
 struct FontStringOpaque;
 using FontString = FontStringOpaque*;
 
+struct FontWordsOpaque;
+using FontWords = FontWordsOpaque*;
+
 struct FontWriting {
     void* systemUse[32];
 };

@@ -17,6 +17,9 @@ FontTextCodes* APS5_VABI sceFontCharactersRefersTextCodes(const FontTextCharacte
 FontTextCodes* APS5_VABI sceFontTextCodesStepNext(FontTextCodes*);
 FontTextCodes* APS5_VABI sceFontTextCodesStepBack(FontTextCodes*);
 int APS5_VABI sceFontCharacterGetSyllableStringState(const FontTextCharacter*, int*);
+int APS5_VABI sceFontCreateWords(const FontMemory*, FontTextSource*, const void*, FontWords*);
+int APS5_VABI sceFontDestroyWords(FontWords*);
+int APS5_VABI sceFontWordsFindWordCharacters(FontWords, const FontTextCharacter*, const FontTextCharacter*, FontTextCharacter**, FontTextCharacter**);
 }
 
 static void Check(bool value, int line) {
@@ -86,6 +89,82 @@ static bool StateIs(const FontTextCharacter* character, int expected) {
     return sceFontCharacterGetSyllableStringState(character, &state) == SCE_FONT_OK && state == expected;
 }
 
+static std::int32_t APS5_VABI ParseFailure(FontTextSource*, void** order, FontTextParseResult* result) {
+    *order = nullptr;
+    result->Error.errorCode = SCE_FONT_ERROR_FATAL;
+    return -1;
+}
+
+static bool WordIs(FontWords words, const FontTextCharacter* start, const FontTextCharacter* term, const FontTextCharacter* last, const FontTextCharacter* next) {
+    FontTextCharacter* foundLast = nullptr;
+    FontTextCharacter* foundNext = nullptr;
+    return sceFontWordsFindWordCharacters(words, start, term, &foundLast, &foundNext) == SCE_FONT_OK && foundLast == last && foundNext == next;
+}
+
+static void TestWords(const FontMemory& memory, FontHandle font) {
+    const std::vector<std::uint32_t> codes{'H', 'i', ',', ' ', 'y', 'o', 'u', ' ', ' ', 't', 'h', 'e', 'r', 'e', '\r', '\n', ' ', 'A', '-', 'b', ' ', '1', '-', '2',
+                                           0x00A0, 'k', 'g', ' ', 0x6F22, 0x0301, 0x5B57, 0x3002, 0x300C, 0x304B, 0x300D, 0x3041};
+    const int allocated = allocations;
+    FontTextSource source{};
+    Require(sceFontTextSourceInit(&source, codes.data(), static_cast<std::uint32_t>(codes.size() * sizeof(std::uint32_t)), ParseCodes, nullptr) == SCE_FONT_OK);
+    FontWords words = nullptr;
+    Require(sceFontCreateWords(&memory, &source, nullptr, &words) == SCE_FONT_OK && words != nullptr);
+    Require(source.current == codes.data() && allocations == allocated + 1);
+    Require(sceFontTextSourceSetDefaultFont(&source, font) == SCE_FONT_OK);
+    FontString string = nullptr;
+    Require(sceFontCreateString(&memory, &source, nullptr, &string) == SCE_FONT_OK);
+    std::uint32_t count = 0;
+    FontTextCharacter* c = sceFontStringRefersTextCharacters(string, &count);
+    Require(c != nullptr && count == codes.size());
+
+    Require(WordIs(words, &c[0], nullptr, &c[2], &c[4]));
+    Require(WordIs(words, &c[4], nullptr, &c[6], &c[9]));
+    Require(WordIs(words, &c[7], nullptr, &c[8], &c[9]));
+    Require(WordIs(words, &c[9], nullptr, &c[13], &c[16]));
+    Require(WordIs(words, &c[14], nullptr, &c[15], &c[16]));
+    Require(WordIs(words, &c[15], nullptr, &c[15], &c[16]));
+    Require(WordIs(words, &c[16], nullptr, &c[16], &c[17]));
+    Require(WordIs(words, &c[17], nullptr, &c[18], &c[19]));
+    Require(WordIs(words, &c[19], nullptr, &c[19], &c[21]));
+    Require(WordIs(words, &c[21], nullptr, &c[26], &c[28]));
+    Require(WordIs(words, &c[28], nullptr, &c[29], &c[30]));
+    Require(WordIs(words, &c[30], nullptr, &c[31], &c[32]));
+    Require(WordIs(words, &c[32], nullptr, &c[35], nullptr));
+    Require(WordIs(words, &c[0], &c[2], &c[1], &c[2]));
+    Require(WordIs(words, &c[4], &c[8], &c[6], &c[8]));
+    Require(WordIs(words, &c[33], &c[34], &c[33], &c[34]));
+
+    FontTextCharacter* next = nullptr;
+    Require(sceFontWordsFindWordCharacters(words, &c[0], nullptr, nullptr, &next) == SCE_FONT_OK && next == &c[4]);
+    FontTextCharacter* last = &c[1];
+    next = &c[1];
+    Require(sceFontWordsFindWordCharacters(nullptr, &c[0], nullptr, &last, &next) == SCE_FONT_ERROR_INVALID_PARAMETER && last == nullptr && next == nullptr);
+    Require(sceFontWordsFindWordCharacters(words, nullptr, nullptr, &last, &next) == SCE_FONT_ERROR_INVALID_PARAMETER);
+    std::uint64_t bogus[4]{};
+    Require(sceFontWordsFindWordCharacters(reinterpret_cast<FontWords>(bogus), &c[0], nullptr, &last, &next) == SCE_FONT_ERROR_INVALID_WORDS);
+    Require(Throws([&] { sceFontWordsFindWordCharacters(words, &c[3], &c[3], &last, &next); }));
+    Text other = CreateText(memory, {'x', 'y'}, font);
+    Require(Throws([&] { sceFontWordsFindWordCharacters(words, &other.characters[0], nullptr, &last, &next); }));
+    Require(sceFontDestroyString(&other.string) == SCE_FONT_OK);
+
+    FontWords failed = reinterpret_cast<FontWords>(bogus);
+    Require(sceFontCreateWords(nullptr, &source, nullptr, &failed) == SCE_FONT_ERROR_INVALID_PARAMETER && failed == nullptr);
+    Require(sceFontCreateWords(&memory, &source, nullptr, nullptr) == SCE_FONT_ERROR_INVALID_PARAMETER);
+    FontTextSource unset{};
+    unset.textParser = ParseCodes;
+    Require(sceFontCreateWords(&memory, &unset, nullptr, &failed) == SCE_FONT_ERROR_INVALID_TEXT_SOURCE && failed == nullptr);
+    FontTextSource failing{};
+    Require(sceFontTextSourceInit(&failing, codes.data(), 4, ParseFailure, nullptr) == SCE_FONT_OK);
+    Require(sceFontCreateWords(&memory, &failing, nullptr, &failed) == SCE_FONT_ERROR_FATAL && failed == nullptr);
+    Require(allocations == allocated + 2);
+
+    Require(sceFontDestroyString(&string) == SCE_FONT_OK);
+    Require(sceFontDestroyWords(nullptr) == SCE_FONT_ERROR_INVALID_PARAMETER);
+    Require(sceFontDestroyWords(&words) == SCE_FONT_OK && words == nullptr);
+    Require(sceFontDestroyWords(&words) == SCE_FONT_ERROR_INVALID_WORDS);
+    Require(allocations == allocated);
+}
+
 int main() {
     const FontMemoryInterface iface{Allocate, Release, nullptr, nullptr, nullptr, nullptr};
     FontMemory memory{};
@@ -126,6 +205,8 @@ int main() {
     Require(sceFontCharacterGetSyllableStringState(nullptr, &state) == SCE_FONT_ERROR_INVALID_PARAMETER && state == 0);
     Require(sceFontCharacterGetSyllableStringState(&characters[0], nullptr) == SCE_FONT_ERROR_INVALID_PARAMETER);
     Require(sceFontDestroyString(&text.string) == SCE_FONT_OK && text.string == nullptr);
+
+    TestWords(memory, font);
 
     Require(allocations == 0);
     Require(sceFontMemoryTerm(&memory) == SCE_FONT_OK);
