@@ -20,6 +20,7 @@ int APS5_VABI scePadSetVibrationMode(int, int);
 int APS5_VABI scePadInit_nid_postfix(void);
 int APS5_VABI scePadRead_nid_postfix(int, PadData*, int);
 int APS5_VABI scePadReadExt(int, PadData*, int);
+int APS5_VABI scePadOutputReport(int, int, const void*, int);
 int APS5_VABI scePadReadState(int, PadData*);
 int APS5_VABI scePadSetTiltCorrectionState(int, bool);
 int APS5_VABI scePadResetOrientation(int);
@@ -265,6 +266,19 @@ static void CheckRemoteController(int handle) {
     Require(!remote);
 }
 
+static void CheckOutputReport(int handle) {
+    constexpr int notPermitted = static_cast<int>(0x80920101);
+    std::uint32_t seen = 0;
+    PadOutputState output;
+    PadFetchOutput_nid_postfix(&seen, &output);
+    const std::uint8_t report[48]{0x02, 0xff};
+    Require(scePadOutputReport(0, 0x02, report, sizeof(report)) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadOutputReport(handle + 1, 0x02, report, sizeof(report)) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadOutputReport(handle, 0x02, nullptr, sizeof(report)) == PAD_ERROR_INVALID_ARG);
+    Require(scePadOutputReport(handle, 0x02, report, sizeof(report)) == notPermitted);
+    Require(!PadFetchOutput_nid_postfix(&seen, &output));
+}
+
 static void CheckInjectedState(const std::filesystem::path& path) {
     PadInputState physical;
     physical.buttons = 0x2000;
@@ -349,6 +363,7 @@ int main() {
     CheckReadExt(handle);
     CheckReadStateHandle(handle);
     CheckRemoteController(handle);
+    CheckOutputReport(handle);
     CheckInjectedState(path);
     Require(scePadSetVibrationMode(handle, 1) == 0);
     Require(scePadSetVibrationMode(handle, 2) == 0);

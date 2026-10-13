@@ -14,6 +14,7 @@ namespace {
 
 constexpr int PAD_ERROR_DEVICE_NOT_CONNECTED = static_cast<int>(0x80920007);
 constexpr int PAD_ERROR_DEVICE_NO_HANDLE = static_cast<int>(0x80920008);
+constexpr int PAD_ERROR_NOT_PERMITTED = static_cast<int>(0x80920101);
 
 bool g_opened = false;
 
@@ -21,6 +22,12 @@ bool ValidPort(int userId, int type, int index) {
     const bool personalPort = type == PAD_PORT_TYPE_STANDARD || type == PAD_PORT_TYPE_SPECIAL;
     const bool systemRemote = userId == PAD_USER_ID_SYSTEM && type == PAD_PORT_TYPE_REMOTE;
     return index == 0 && (personalPort || systemRemote);
+}
+
+int UnsupportedOperation(int handle, bool validArguments) {
+    if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
+    if (!validArguments) return PAD_ERROR_INVALID_ARG;
+    return PAD_ERROR_NOT_PERMITTED;
 }
 
 }
@@ -167,7 +174,11 @@ int APS5_VABI scePadGetFeatureReport() { NotImplemented_nid_no_patch(__func__); 
 
 int APS5_VABI scePadSetFeatureReport() { NotImplemented_nid_no_patch(__func__); return 0; }
 
-int APS5_VABI scePadOutputReport() { NotImplemented_nid_no_patch(__func__); return 0; }
+int APS5_VABI scePadOutputReport(int handle, int type, const void* report, int length) {
+ (void)type;
+ (void)length;
+ return UnsupportedOperation(handle, report != nullptr);
+}
 
 int APS5_VABI scePadRead_nid_postfix(int handle, PadData* data, int num) {
  if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
