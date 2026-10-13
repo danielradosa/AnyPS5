@@ -921,8 +921,8 @@ int APS5_VABI sceAmprAmmGetVirtualAddressRanges(std::uint64_t* start, std::uint6
     return 0;
 }
 
-int APS5_VABI sceAmprAmmSetPageTablePoolOccupancyNotificationThreshold(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceAmprAmmSetPageTablePoolOccupancyNotificationThreshold(int threshold) {
+    if (threshold <= 0) throw std::runtime_error("sceAmprAmmSetPageTablePoolOccupancyNotificationThreshold: a threshold the empty page table pool already reaches is not supported, as the console's notification for it is unknown");
     return 0;
 }
 

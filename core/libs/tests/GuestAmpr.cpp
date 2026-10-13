@@ -86,6 +86,7 @@ std::uint64_t APS5_VABI sceAmprMeasureCommandSizeReadFileGatherScatter(void*, st
 std::uint64_t APS5_VABI sceAmprMeasureCommandSizeResetGatherScatterState();
 std::size_t APS5_VABI sceKernelGetDirectMemorySize();
 int APS5_VABI sceAmprAmmGetUsageStatsData(void*);
+int APS5_VABI sceAmprAmmSetPageTablePoolOccupancyNotificationThreshold(int);
 int APS5_VABI sceAmprAmmCommandBufferConstructor(Apr::CommandBufferObject*);
 int APS5_VABI sceAmprAmmCommandBufferMap(Apr::CommandBufferObject*, std::uint64_t, std::uint64_t, std::int32_t, std::int32_t);
 int APS5_VABI sceAmprAmmCommandBufferMapWithGpuMaskId(Apr::CommandBufferObject*, std::uint64_t, std::uint64_t, std::int32_t, std::int32_t, std::uint8_t);
@@ -885,6 +886,23 @@ void TestAmmUsageStats() {
     Require(stats[0] == 0 && stats[1] == 0xdeadbeef);
 }
 
+void TestAmmOccupancyNotificationThreshold() {
+    for (const int threshold : {1, 256, 512, 513, std::numeric_limits<int>::max()})
+        Require(sceAmprAmmSetPageTablePoolOccupancyNotificationThreshold(threshold) == 0);
+    for (const int threshold : {0, -1, std::numeric_limits<int>::min()}) {
+        bool rejected = false;
+        try {
+            sceAmprAmmSetPageTablePoolOccupancyNotificationThreshold(threshold);
+        } catch (const std::runtime_error& error) {
+            rejected = std::string(error.what()).find("already reaches") != std::string::npos;
+        }
+        Require(rejected);
+    }
+    std::array<std::uint64_t, 3> stats{0x18, 0xdeadbeef, 0xdeadbeef};
+    Require(sceAmprAmmGetUsageStatsData(stats.data()) == 0);
+    Require((stats[1] & 0xffffu) == 512u && ((stats[1] >> 16u) & 0xffffu) == 0u);
+}
+
 void TestAmm() {
     std::uint64_t start = 0;
     std::uint64_t end = 0;
@@ -1566,6 +1584,7 @@ int main() {
     TestGatherScatter();
     TestAmmRangesAboveHintedMaps();
     TestAmmUsageStats();
+    TestAmmOccupancyNotificationThreshold();
     TestAmmRemapKeepsPoolReferences();
     TestAmmMapFailureKeepsPoolOwnership();
     TestAmm();
