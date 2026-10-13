@@ -515,6 +515,9 @@ int main() {
     Require(renameat_nid_postfix(-100, (root / "made.bin").string().c_str(), -100, (root / "final.bin").string().c_str()) == 0);
     Require(std::filesystem::is_regular_file(root / "final.bin"));
     Require(sceKernelClose(base) == 0);
+    for (const auto& entry : std::filesystem::directory_iterator(root)) {
+        if (entry.is_symlink()) std::filesystem::remove(entry.path());
+    }
     std::filesystem::remove_all(root);
     return 0;
 }

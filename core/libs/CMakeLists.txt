@@ -404,7 +404,7 @@ if(BUILD_TESTING)
 
     add_test_executable(guest_ppsa01530_exports_tests tests/GuestPPSA01530Exports.cpp)
     target_include_directories(guest_ppsa01530_exports_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(guest_ppsa01530_exports_tests PRIVATE libkernel libSceJson2 libSceNet libScePad libc)
+    target_link_libraries(guest_ppsa01530_exports_tests PRIVATE libkernel libScePad libc)
     configure_windows_unwind(guest_ppsa01530_exports_tests)
     add_test(NAME guest_ppsa01530_exports COMMAND guest_ppsa01530_exports_tests)
     if(WIN32)
