@@ -7,8 +7,11 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <poll.h>
 #include <unistd.h>
@@ -460,6 +463,165 @@ int receive_error(const Sock& socket) {
     return native_error();
 }
 
+constexpr std::uint8_t GUEST_MAC[6] = {0x02, 0x50, 0x53, 0x35, 0x00, 0x01};
+
+bool loopback_address(const sockaddr_storage& native) {
+    if (native.ss_family == AF_INET) return (ntohl(reinterpret_cast<const sockaddr_in&>(native).sin_addr.s_addr) >> 24) == 127;
+    const auto& v6 = reinterpret_cast<const sockaddr_in6&>(native).sin6_addr;
+    static const std::uint8_t loopback[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    return std::memcmp(&v6, loopback, sizeof(loopback)) == 0;
+}
+
+bool unspecified_address(const sockaddr_storage& native) {
+    if (native.ss_family == AF_INET) return reinterpret_cast<const sockaddr_in&>(native).sin_addr.s_addr == 0;
+    const auto& v6 = reinterpret_cast<const sockaddr_in6&>(native).sin6_addr;
+    static const std::uint8_t any[16] = {};
+    return std::memcmp(&v6, any, sizeof(any)) == 0;
+}
+
+std::string format_native_address(const sockaddr_storage& native) {
+    char text[INET6_ADDRSTRLEN] = {};
+    const void* address = native.ss_family == AF_INET
+        ? static_cast<const void*>(&reinterpret_cast<const sockaddr_in&>(native).sin_addr)
+        : static_cast<const void*>(&reinterpret_cast<const sockaddr_in6&>(native).sin6_addr);
+#ifdef _WIN32
+    if (!InetNtopA(native.ss_family, const_cast<void*>(address), text, sizeof(text))) return "?";
+#else
+    if (!::inet_ntop(native.ss_family, address, text, sizeof(text))) return "?";
+#endif
+    return text;
+}
+
+std::string netstat_endpoint(bool known, const sockaddr_storage& native) {
+    if (!known || (native.ss_family != AF_INET && native.ss_family != AF_INET6)) return "*.*";
+    const std::uint16_t port = ntohs(native.ss_family == AF_INET ? reinterpret_cast<const sockaddr_in&>(native).sin_port
+                                                                 : reinterpret_cast<const sockaddr_in6&>(native).sin6_port);
+    return (unspecified_address(native) ? std::string("*") : format_native_address(native)) + "." +
+        (port == 0 ? std::string("*") : std::to_string(port));
+}
+
+unsigned long pending_bytes(NativeSocket native) {
+#ifdef _WIN32
+    u_long count = 0;
+    return ioctlsocket(native, FIONREAD, &count) == 0 ? count : 0;
+#else
+    int count = 0;
+    return ::ioctl(native, FIONREAD, &count) == 0 && count > 0 ? static_cast<unsigned long>(count) : 0;
+#endif
+}
+
+std::vector<sockaddr_storage> host_interface_addresses() {
+    std::vector<sockaddr_storage> addresses;
+#ifdef _WIN32
+    if (!initialize_sockets()) return addresses;
+    for (const int family : {AF_INET, AF_INET6}) {
+        const NativeSocket probe = ::socket(family, SOCK_DGRAM, IPPROTO_UDP);
+        if (probe == INVALID_NATIVE_SOCKET) continue;
+        std::vector<char> buffer(1024);
+        DWORD bytes = 0;
+        while (WSAIoctl(probe, SIO_ADDRESS_LIST_QUERY, nullptr, 0, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes,
+                   nullptr, nullptr) != 0) {
+            if (WSAGetLastError() != WSAEFAULT || bytes <= buffer.size()) {
+                bytes = 0;
+                break;
+            }
+            buffer.resize(bytes);
+        }
+        if (bytes != 0) {
+            const auto* list = reinterpret_cast<const SOCKET_ADDRESS_LIST*>(buffer.data());
+            for (INT index = 0; index < list->iAddressCount; ++index) {
+                const auto& entry = list->Address[index];
+                if (!entry.lpSockaddr || entry.iSockaddrLength <= 0 ||
+                    static_cast<std::size_t>(entry.iSockaddrLength) > sizeof(sockaddr_storage)) continue;
+                sockaddr_storage address{};
+                std::memcpy(&address, entry.lpSockaddr, static_cast<std::size_t>(entry.iSockaddrLength));
+                addresses.push_back(address);
+            }
+        }
+        close_socket(probe);
+    }
+#else
+    ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0) return addresses;
+    for (auto* item = interfaces; item; item = item->ifa_next) {
+        if (!item->ifa_addr || !(item->ifa_flags & IFF_UP)) continue;
+        const int family = item->ifa_addr->sa_family;
+        if (family != AF_INET && family != AF_INET6) continue;
+        sockaddr_storage address{};
+        std::memcpy(&address, item->ifa_addr, family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6));
+        addresses.push_back(address);
+    }
+    freeifaddrs(interfaces);
+#endif
+    std::erase_if(addresses, [](const sockaddr_storage& address) {
+        return (address.ss_family != AF_INET && address.ss_family != AF_INET6) || loopback_address(address) ||
+            unspecified_address(address);
+    });
+    return addresses;
+}
+
+std::string ifconfig_report() {
+    char ether[32];
+    std::snprintf(ether, sizeof(ether), "\tether %02x:%02x:%02x:%02x:%02x:%02x\n", GUEST_MAC[0], GUEST_MAC[1], GUEST_MAC[2],
+        GUEST_MAC[3], GUEST_MAC[4], GUEST_MAC[5]);
+    std::string report = "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 16384\n"
+        "\tinet 127.0.0.1 netmask 0xff000000\n"
+        "\tinet6 ::1 prefixlen 128\n"
+        "eth0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n";
+    report += ether;
+    const auto addresses = host_interface_addresses();
+    for (const auto& address : addresses)
+        report += (address.ss_family == AF_INET ? "\tinet " : "\tinet6 ") + format_native_address(address) + "\n";
+    report += addresses.empty() ? "\tstatus: no carrier\n" : "\tstatus: active\n";
+    return report;
+}
+
+std::string netstat_line(const char* protocol, const std::string& received, const std::string& sent, const std::string& local,
+                         const std::string& foreign, const char* state) {
+    char line[160];
+    std::snprintf(line, sizeof(line), "%-5s %6s %6s %-22s %-22s %s", protocol, received.c_str(), sent.c_str(), local.c_str(),
+        foreign.c_str(), state);
+    std::string text = line;
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    return text + "\n";
+}
+
+std::string netstat_report() {
+    std::vector<std::pair<int, Sock>> sockets;
+    {
+        std::lock_guard lk(g_mutex);
+        sockets.assign(g_socks.begin(), g_socks.end());
+    }
+    std::string report = "Active Internet connections (including servers)\n" +
+        netstat_line("Proto", "Recv-Q", "Send-Q", "Local Address", "Foreign Address", "(state)");
+    for (const auto& [descriptor, socket] : sockets) {
+        (void)descriptor;
+        if (!socket.native) continue;
+        sockaddr_storage local{};
+        NativeLength local_length = sizeof(local);
+        const bool has_local = ::getsockname(socket.native->value, reinterpret_cast<sockaddr*>(&local), &local_length) == 0;
+        sockaddr_storage peer{};
+        NativeLength peer_length = sizeof(peer);
+        const bool has_peer = !socket.listening &&
+            ::getpeername(socket.native->value, reinterpret_cast<sockaddr*>(&peer), &peer_length) == 0;
+        std::string protocol = socket.type == NET_SOCK_STREAM ? "tcp" : socket.type == NET_SOCK_DGRAM ? "udp" : "raw";
+        protocol += socket.family == NET_AF_INET ? "4" : "6";
+        const char* state = "";
+        if (socket.type == NET_SOCK_STREAM)
+            state = socket.aborted ? "CLOSED" : socket.listening ? "LISTEN" : has_peer ? "ESTABLISHED" : "CLOSED";
+        report += netstat_line(protocol.c_str(), std::to_string(pending_bytes(socket.native->value)), "0",
+            netstat_endpoint(has_local, local), netstat_endpoint(has_peer, peer), state);
+    }
+    return report;
+}
+
+void write_debug_report(const std::string& report) {
+    static std::mutex output;
+    std::lock_guard<std::mutex> lk(output);
+    std::fputs(report.c_str(), stderr);
+    std::fflush(stderr);
+}
+
 }  // namespace
 
 extern "C" {
@@ -472,7 +634,7 @@ int* APS5_VABI sceNetErrnoLoc(void) {
 }
 
 int APS5_VABI sceNetShowNetstat(void) {
-    NotImplemented_nid_no_patch(__func__);
+    write_debug_report(netstat_report());
     return 0;
 }
 
@@ -1262,8 +1424,7 @@ int APS5_VABI sceNetGetMacAddress(NetEtherAddr* addr, int flags) {
         return fail(NET_EINVAL);
     }
     // Keep guest identity stable without exposing the host adapter address.
-    const std::uint8_t mac[6] = {0x02, 0x50, 0x53, 0x35, 0x00, 0x01};
-    std::memcpy(addr->data, mac, 6);
+    std::memcpy(addr->data, GUEST_MAC, sizeof(GUEST_MAC));
     return 0;
 }
 
@@ -1409,8 +1570,8 @@ int APS5_VABI sceNetResolverAbort(int rid, int flags) {
     return 0;
 }
 
-int APS5_VABI sceNetShowIfconfig() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceNetShowIfconfig(void) {
+    write_debug_report(ifconfig_report());
     return 0;
 }
 
