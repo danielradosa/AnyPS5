@@ -17,6 +17,8 @@
 #include "prx/libc/include/Shutdown.hpp"
 #include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
+#include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/File/include/NativeStat.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
 #include <algorithm>
@@ -187,6 +189,132 @@ struct GuestResourceUsage {
 };
 
 extern "C" Pthread APS5_VABI scePthreadSelf();
+extern "C" std::int64_t APS5_VABI write_nid_postfix(int d, const char* str, std::int64_t size);
+
+namespace {
+
+constexpr int errnoNoEntry = 2;
+constexpr int errnoArgumentListTooLong = 7;
+constexpr int errnoExecFormat = 8;
+constexpr int errnoBadDescriptor = 9;
+constexpr int errnoNoMemory = 12;
+constexpr int errnoAccess = 13;
+constexpr int errnoNotDirectory = 20;
+constexpr int errnoTextBusy = 26;
+constexpr int errnoLoop = 62;
+constexpr int errnoNameTooLong = 63;
+constexpr std::size_t guestPathMax = 1024;
+constexpr std::size_t guestArgumentMax = 262144;
+constexpr std::uint16_t guestFileTypeMask = 0170000;
+constexpr std::uint16_t guestRegularFile = 0100000;
+constexpr std::uint16_t guestFifo = 0010000;
+constexpr std::uint16_t guestSocket = 0140000;
+constexpr std::uint16_t guestExecuteBits = 0111;
+constexpr const char* guestDefaultPath = "/usr/bin:/bin";
+constexpr const char* guestShell = "/bin/sh";
+
+int copiedStringsError(char* const* strings, std::size_t& space) {
+    if (strings == nullptr) return 0;
+    for (; *strings != nullptr; ++strings) {
+        const std::size_t length = std::strlen(*strings) + 1;
+        if (length > space) return errnoArgumentListTooLong;
+        space -= length;
+    }
+    return 0;
+}
+
+int imageError(const FileStat& status) {
+    if ((status.st_mode & guestFileTypeMask) != guestRegularFile || (status.st_mode & guestExecuteBits) == 0) return errnoAccess;
+    return errnoExecFormat;
+}
+
+int execveError(const char* path, char* const* arguments, char* const* environment) {
+    if (arguments == nullptr) return errnoBadAddress;
+    if (path != nullptr && ::strnlen(path, guestPathMax) == guestPathMax) return errnoNameTooLong;
+    std::size_t space = guestArgumentMax;
+    if (const int error = copiedStringsError(arguments, space)) return error;
+    if (const int error = copiedStringsError(environment, space)) return error;
+    FileStat status{};
+    if (path == nullptr) {
+        if (!DescriptorIsOpen_nid_no_patch(0) || !File::FillFileStatFromDescriptor(0, &status)) return errnoBadDescriptor;
+        const auto type = status.st_mode & guestFileTypeMask;
+        if (type == guestFifo || type == guestSocket) return errnoInvalidArgument;
+        return imageError(status);
+    }
+    const int result = sceKernelStat(path, &status);
+    if (result != 0) return result & 0xffff;
+    return imageError(status);
+}
+
+const char* guestSearchPath(char* const* environment) {
+    for (; environment != nullptr && *environment != nullptr; ++environment) {
+        if (std::strncmp(*environment, "PATH=", 5) == 0) return *environment + 5;
+    }
+    return guestDefaultPath;
+}
+
+int shellError(const std::string& program, char* const* arguments, char* const* environment) {
+    std::vector<char*> shellArguments;
+    std::string shellName = "sh";
+    std::string programName = program;
+    shellArguments.push_back(shellName.data());
+    shellArguments.push_back(programName.data());
+    for (std::size_t index = 1; arguments[0] != nullptr && arguments[index] != nullptr; ++index) shellArguments.push_back(arguments[index]);
+    shellArguments.push_back(nullptr);
+    return execveError(guestShell, shellArguments.data(), environment);
+}
+
+int searchError(const char* name, char* const* arguments, char* const* environment) {
+    if (name == nullptr) throw std::invalid_argument("execvp: file is null");
+    const bool qualified = std::strchr(name, '/') != nullptr;
+    if (!qualified && *name == '\0') return errnoNoEntry;
+    std::string search = qualified ? std::string() : guestSearchPath(environment);
+    bool denied = false;
+    std::size_t start = 0;
+    for (bool more = true; more;) {
+        std::string candidate;
+        if (qualified) {
+            candidate = name;
+            more = false;
+        } else {
+            const auto end = search.find(':', start);
+            std::string directory = search.substr(start, end == std::string::npos ? std::string::npos : end - start);
+            more = end != std::string::npos;
+            start = end + 1;
+            if (directory.empty()) directory = ".";
+            if (directory.size() + std::strlen(name) + 2 > guestPathMax) {
+                const std::string message = "execvP: " + directory + ": path too long\n";
+                write_nid_postfix(2, message.data(), static_cast<std::int64_t>(message.size()));
+                continue;
+            }
+            candidate = directory + "/" + name;
+        }
+        const int error = execveError(candidate.c_str(), arguments, environment);
+        switch (error) {
+        case errnoArgumentListTooLong:
+        case errnoNoMemory:
+        case errnoTextBusy:
+            return error;
+        case errnoLoop:
+        case errnoNameTooLong:
+        case errnoNoEntry:
+        case errnoNotDirectory:
+            continue;
+        case errnoExecFormat:
+            return shellError(candidate, arguments, environment);
+        default: {
+            FileStat status{};
+            if (sceKernelStat(candidate.c_str(), &status) != 0) continue;
+            if (error != errnoAccess) return error;
+            denied = true;
+            continue;
+        }
+        }
+    }
+    return denied ? errnoAccess : errnoNoEntry;
+}
+
+}
 
 extern "C" {
 
@@ -338,16 +466,12 @@ int APS5_VABI wait_nid_postfix(int* status) {
 }
 
 int APS5_VABI execvp_nid_postfix(const char* file, char* const* arguments) {
-    (void)file;
-    (void)arguments;
-    NotImplemented_nid_no_patch("execvp: executable replacement");
+    *__error_nid_postfix() = searchError(file, arguments, environ_nid_postfix);
     return -1;
 }
 
 int APS5_VABI execv_nid_postfix(const char* path, char* const* arguments) {
-    (void)path;
-    (void)arguments;
-    NotImplemented_nid_no_patch("execv: executable replacement");
+    *__error_nid_postfix() = execveError(path, arguments, environ_nid_postfix);
     return -1;
 }
 
