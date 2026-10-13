@@ -10,7 +10,6 @@ Audit of why Astro Bot (PPSA21564 / PPSA22520) runs at 8-9 FPS in game with host
 | `FINDINGS.md` | Every finding from the six finished subsystem analyses, in full: mechanism, code evidence, proposal, risk, how to measure. 82 findings. |
 | `results/*.json` | The same six analyses as raw structured output, one file per subsystem. |
 | `workflow.js` | The workflow script that ran the audit, with the prompt, file list and focus questions for all 12 subsystems. |
-| `frame-journey.html` | Animated model of how a frame moves through the driver (game, submit, workers, GPU lock, recording, GPU, presenter, screen). Open it in a browser. Published copy: https://claude.ai/artifact/XnVFX8KC5yTQcNDP9hyFuC |
 
 ## Where it stopped
 
