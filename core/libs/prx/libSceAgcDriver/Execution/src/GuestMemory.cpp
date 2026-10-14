@@ -1105,9 +1105,14 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
     const bool useMemo = memoized && collectMemoEnabled() && bytes != 0;
     if (useMemo && !sharedCollectMemo()) {
         // An entry exists only for a completed walk of an in-arena range, so the tracker is
-        // initialized and watched; nothing below the lock needs asking.
-        for (const auto& entry : threadCollectMemo.entries) {
-            if (entry.epoch == epoch && entry.unwatched == unwatched && entry.begin <= first && stop <= entry.end) {
+        // initialized and watched; nothing below the lock needs asking. The thread's epochs only grow
+        // and its entries are written in ring order, so the current epoch's entries are the newest
+        // ones: the scan runs back from the newest and stops at the first older epoch.
+        auto& memo = threadCollectMemo;
+        for (std::size_t back = 1; back <= memo.entries.size(); ++back) {
+            const auto& entry = memo.entries[(memo.next - back) % memo.entries.size()];
+            if (entry.epoch != epoch) break;
+            if (entry.unwatched == unwatched && entry.begin <= first && stop <= entry.end) {
                 // The current generation, not the memoized one: blocks stamped since (MarkWritten, an
                 // overlapping collect) were written before this caller reads, and an older value would
                 // make every later UnchangedSince fail until the epoch ends.
