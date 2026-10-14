@@ -4404,6 +4404,38 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         std::vector<CopiedBytes> copied;
         for (const auto& [from, to] : keep) copied.push_back({from - descriptor.baseAddress, to - descriptor.baseAddress, from - descriptor.baseAddress});
         const auto padding = paddingSeeds(*import, std::move(copied));
+        // The retiled ranges go into the import's unit shadow where a slab takes them (split at slab
+        // boundaries, partly covered units not already fresh seeded from the import first), as the
+        // block write-back's windows do: the bytes stay in device memory until a host-facing consumer
+        // publishes them. Elsewhere, or with APS5_NO_LAYER_SHADOW=1, they are copied into the import.
+        static const bool layerShadow = std::getenv("APS5_NO_LAYER_SHADOW") == nullptr;
+        struct SlabPieces {
+            std::shared_ptr<ShadowSlab> slab;
+            std::shared_ptr<ShadowSlabPin> pin;
+            std::vector<VkBufferCopy> copies;
+        };
+        std::vector<SlabPieces> slabPieces;
+        std::vector<VkBufferCopy> importCopies;
+        std::vector<ShadowedRange> seeds;
+        for (const auto& [from, to] : keep) {
+            for (auto begin = from; begin < to;) {
+                const auto pieceEnd = layerShadow && UnitShadowEnabled() ? std::min(to, SlabBoundary(*import, begin)) : to;
+                const auto destination = layerShadow ? ShadowDestinationFor(context, *import, begin, pieceEnd) : std::nullopt;
+                if (destination.has_value()) {
+                    if (slabPieces.empty() || slabPieces.back().slab != destination->slab) slabPieces.push_back({destination->slab, destination->pin, {}});
+                    slabPieces.back().copies.push_back({begin - descriptor.baseAddress, destination->offset, pieceEnd - begin});
+                    for (const auto& [seedBegin, seedEnd] : destination->seedUnits) {
+                        if (std::none_of(seeds.begin(), seeds.end(), [&](const ShadowedRange& seed) { return seed.begin == seedBegin; })) seeds.push_back({seedBegin, seedEnd, destination->slab});
+                    }
+                    if (!shadowed.empty() && shadowed.back().end == begin && shadowed.back().slab == destination->slab) shadowed.back().end = pieceEnd;
+                    else shadowed.push_back({begin, pieceEnd, destination->slab});
+                } else {
+                    importCopies.push_back({begin - descriptor.baseAddress, descriptor.baseAddress - import->base + (begin - descriptor.baseAddress), pieceEnd - begin});
+                }
+                begin = pieceEnd;
+            }
+        }
+        if (!shadowed.empty()) shadowImport = import;
         detiler.BeginBatch();
         auto* recorder = Recorder::Active();
         std::unique_ptr<CommandBatch> batch;
@@ -4420,6 +4452,7 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             if (linear) recorder->Keep(linear, linear->Size());
             recorder->Keep(tiledScratch, tiledScratch->Size());
             for (const auto& slab : padding.slabs) recorder->Keep(slab);
+            for (const auto& pieces : slabPieces) recorder->Keep(pieces.slab);
             // The image itself must outlive the recorded retile: the cache may evict it right after.
             if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
             Recorder::CountBarriers(Recorder::CommandClass::StorageWriteBackHost, padding.copies.empty() ? 4 : 5);
@@ -4431,7 +4464,6 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             batch = std::make_unique<CommandBatch>(context);
             commands = batch->Handle();
         }
-        const auto importOffset = descriptor.baseAddress - import->base;
         // The tracked layers are the array layers when there are several; one tracked layer means
         // the whole surface.
         const auto* storedLayers = trackedLayers == arrayLayers && trackedLayers > 1 ? &layers : nullptr;
@@ -4445,12 +4477,18 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
         toSource.image = image;
         toSource.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, descriptor.mipCount, 0, geometry.imageLayers};
         context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSource);
-        if (!padding.copies.empty()) {
-            // The current bytes of the copied ranges no element holds go under the retile (every
-            // earlier writer of the import, host stores included, first; the import-ready barrier
-            // below orders the scratch writes).
-            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        if (!padding.copies.empty() || !seeds.empty()) {
+            // The current bytes of the copied ranges no element holds go under the retile, and the
+            // seeded units' import bytes into their slabs (every earlier writer of the import, host
+            // stores included, first; the import-ready barrier below orders the scratch writes, the
+            // scratch-done barrier the seeds before the slab copies).
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
             for (const auto& [source, copies] : padding.copies) context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(commands, source, tiledScratch->Handle(), static_cast<std::uint32_t>(copies.size()), copies.data());
+            for (const auto& [begin, end, slab] : seeds) {
+                const VkBufferCopy seed{begin - import->base, SlabOffset(*import, *slab, begin), end - begin};
+                context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(commands, import->buffer, slab->buffer, 1, &seed);
+                NoteShadowSeed(begin, end);
+            }
         }
         const auto regions = CopyRegions(storedLayers);
         context.Function<PFN_vkCmdCopyImageToBuffer>("vkCmdCopyImageToBuffer")(commands, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, linear->Handle(), static_cast<std::uint32_t>(regions.size()), regions.data());
@@ -4466,11 +4504,11 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             }
         }
         {
-            const auto scratchDone = WholeBufferBarrier(tiledScratch->Handle(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-            context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &scratchDone, 0, nullptr);
-            std::vector<VkBufferCopy> copies;
-            for (const auto& [from, to] : keep) copies.push_back({from - descriptor.baseAddress, importOffset + (from - descriptor.baseAddress), to - from});
-            if (!copies.empty()) context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(commands, tiledScratch->Handle(), import->buffer, static_cast<std::uint32_t>(copies.size()), copies.data());
+            const VkMemoryBarrier scratchDone{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+            context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &scratchDone, 0, nullptr, 0, nullptr);
+            const auto copyBuffer = context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer");
+            for (const auto& pieces : slabPieces) copyBuffer(commands, tiledScratch->Handle(), pieces.slab->buffer, static_cast<std::uint32_t>(pieces.copies.size()), pieces.copies.data());
+            if (!importCopies.empty()) copyBuffer(commands, tiledScratch->Handle(), import->buffer, static_cast<std::uint32_t>(importCopies.size()), importCopies.data());
         }
         VkImageMemoryBarrier backToGeneral = toSource;
         backToGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
