@@ -1216,6 +1216,7 @@ Recorder* Recorder::Active() {
 
 void Recorder::Activate() {
     activeRecorder = this;
+    publishedSinceActivate = false;
     {
         std::lock_guard tableLock(labelTableMutex);
         labelTableOwner = this;
@@ -2782,6 +2783,7 @@ void Recorder::publishPendingWrites() const {
     }
     merged->resize(out);
     pendingWrites.store(std::move(merged), std::memory_order_release);
+    publishedSinceActivate = true;
     publishGeneration.fetch_add(1, std::memory_order_release);
     ++snapshotRebuilds;
     if (DrawProfiled()) snapshotRebuildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
@@ -2797,11 +2799,23 @@ bool Recorder::overlaps(const Batch& batch, std::uint64_t address, std::uint64_t
 bool Recorder::PendingWriteOverlaps(std::uint64_t address, std::size_t bytes) const {
     if (bytes == 0) return false;
     const auto end = address + bytes;
-    if (open != nullptr && overlaps(*open, address, end)) return true;
+    // The published snapshot is a sorted union that holds every range of the open and in-flight
+    // batches once the active recorder has published: a range noted since was either published or
+    // already covered by it, and a republish merges all batches again. So a miss there (a binary
+    // search) is a miss in the per-batch lists, which are never merged (a label store per draw makes
+    // them hundreds long). APS5_NO_PENDING_FILTER=1 scans the lists only; APS5_VERIFY_PENDING_FILTER=1
+    // scans them too and fails on a range the snapshot misses.
+    static const bool filter = std::getenv("APS5_NO_PENDING_FILTER") == nullptr;
+    static const bool verify = std::getenv("APS5_VERIFY_PENDING_FILTER") != nullptr;
+    const bool filtered = filter && activeRecorder == this && publishedSinceActivate;
+    if (filtered && !verify && !AgcDriver::Graphics::SnapshotOverlaps(address, bytes)) return false;
+    bool found = open != nullptr && overlaps(*open, address, end);
     for (const auto& batch : inFlight) {
-        if (overlaps(*batch, address, end)) return true;
+        if (found) break;
+        found = overlaps(*batch, address, end);
     }
-    return false;
+    if (filtered && verify) Require(!found || AgcDriver::Graphics::SnapshotOverlaps(address, bytes), "a pending write is missing from the published snapshot");
+    return found;
 }
 
 bool Recorder::OpenWriteOverlaps(std::uint64_t address, std::size_t bytes) const {

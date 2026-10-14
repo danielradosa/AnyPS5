@@ -819,6 +819,9 @@ private:
     std::unique_ptr<Batch> open;
     std::vector<std::shared_ptr<void>> holdKept;
     std::uint64_t holdKeptSerial = 0;
+    // This recorder published the pending-write snapshot since it became active (PendingWriteOverlaps'
+    // filter: only then does the snapshot hold every range of its open and in-flight batches).
+    mutable bool publishedSinceActivate = false;
     std::deque<std::unique_ptr<Batch>> inFlight;
     // Batches popped from inFlight whose completions have not run yet: their writes stay in the
     // snapshot (a rebuild from inside a completion must not drop them) until finish returns.
