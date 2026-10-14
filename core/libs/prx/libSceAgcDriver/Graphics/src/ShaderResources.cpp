@@ -3530,9 +3530,12 @@ std::optional<std::vector<ShaderResources::MovedBuffer>> ShaderResources::MovedR
 }
 
 std::size_t ShaderResources::MaxDrawSnapshotBytes() {
-    const char* text = std::getenv("APS5_DRAW_SNAPSHOT_MAX_MIB");
-    const auto mib = text != nullptr ? std::strtoull(text, nullptr, 10) : 64ull;
-    return static_cast<std::size_t>(mib * 1024ull * 1024ull);
+    static const auto bytes = [] {
+        const char* text = std::getenv("APS5_DRAW_SNAPSHOT_MAX_MIB");
+        const auto mib = text != nullptr ? std::strtoull(text, nullptr, 10) : 64ull;
+        return static_cast<std::size_t>(mib * 1024ull * 1024ull);
+    }();
+    return bytes;
 }
 
 std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindings(Recorder& recorder, std::span<const MovedBuffer> moved) const {
