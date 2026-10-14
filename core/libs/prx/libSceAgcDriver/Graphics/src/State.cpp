@@ -897,12 +897,12 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     intersect(result.scissor, cx, 0x90, false);
     if ((read(cx, 0x292) & 2u) != 0) intersect(result.scissor, cx, 0x94, false);
     if (collapsed) result.scissor.extent = {0, 0};
-    // APS5_TRACE_VIEWPORTS: the viewport state of draws into targets at least 3840 wide, once per
-    // distinct state (Astro Bot's final pass sometimes fills only the top-left quarter of its 4K target).
-    static const bool traceViewports = std::getenv("APS5_TRACE_VIEWPORTS") != nullptr;
+    // APS5_TRACE_VIEWPORTS[=<min width>]: the viewport state of draws into targets at least that wide (default
+    // 3840), once per distinct state (Astro Bot's final pass sometimes fills only the top-left quarter of its 4K target).
+    static const std::uint32_t traceViewports = [] { const char* text = std::getenv("APS5_TRACE_VIEWPORTS"); if (text == nullptr) return 0u; const auto width = static_cast<std::uint32_t>(std::strtoul(text, nullptr, 10)); return width > 1 ? width : 3840u; }();
     std::uint32_t widestColor = 0;
     for (const auto& color : result.colors) widestColor = std::max(widestColor, color.extent.width);
-    if (traceViewports && std::max(widestColor, result.renderExtent.width) >= 3840) {
+    if (traceViewports != 0 && std::max(widestColor, result.renderExtent.width) >= traceViewports) {
         const auto peek = [](const Registers& registers, std::uint32_t offset, RegisterBank bank) { const auto found = find(registers, offset, bank); return found == registers.end() ? 0u : static_cast<std::uint32_t>(found->second); };
         const auto shaderWord = [&](std::uint32_t offset) { return peek(queue.shader, offset, RegisterBank::Shader); };
         const auto contextWord = [&](std::uint32_t offset) { return peek(cx, offset, RegisterBank::Context); };
