@@ -112,6 +112,11 @@ public:
     enum class SnapshotUse : std::uint8_t { Storage, Vertex, Index16, Index32, Index16Restart, Index32Restart };
     static constexpr std::size_t DrawSnapshotBudget = std::size_t{1024} << 20u;
     static constexpr std::size_t DrawSnapshotEntries = 1024;
+    // The storage pool's entry bound: APS5_DRAW_SNAPSHOT_ENTRIES, else DrawSnapshotEntries.
+    static std::size_t StorageSnapshotEntries();
+    // Storage snapshot lookups that returned nothing, by reason: no entry, the allocation registry
+    // moved, memory changed and the entry could not be refreshed (the [drawbindings] line).
+    static std::array<std::uint64_t, 3> StorageSnapshotMisses();
     static constexpr std::size_t DrawInputBudget = std::size_t{1024} << 20u;
     static constexpr std::size_t DrawInputEntries = 16384;
     std::shared_ptr<Buffer> ReusableDrawSnapshot(std::uint64_t address, std::size_t bytes, SnapshotUse use = SnapshotUse::Storage, std::uint32_t* derived = nullptr, std::uint64_t generation = 0);

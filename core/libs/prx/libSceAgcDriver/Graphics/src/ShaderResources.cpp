@@ -3577,6 +3577,10 @@ void noteDrawBindings(const DrawBindingsProfile& call) {
     const auto now = std::chrono::steady_clock::now();
     if (now - last < std::chrono::seconds(10)) return;
     last = now;
+    static std::array<std::uint64_t, 3> lastMisses{};
+    const auto misses = Recorder::StorageSnapshotMisses();
+    AgcDriver::ProfilePrint_nid_no_patch("[drawbindings] storage snapshot misses (10 s, all callers): no entry %llu, registry moved %llu, memory changed %llu; pool bound %zu entries\n", static_cast<unsigned long long>(misses[0] - lastMisses[0]), static_cast<unsigned long long>(misses[1] - lastMisses[1]), static_cast<unsigned long long>(misses[2] - lastMisses[2]), Recorder::StorageSnapshotEntries());
+    lastMisses = misses;
     AgcDriver::ProfilePrint_nid_no_patch("[drawbindings] %llu calls (10 s), %llu with snapshots; %llu read-only allocations looked at; snapshots: %llu reused, %llu copied (%.1f MiB), %llu moved overrides; snapshot loop %.1f ms, descriptor sets %.1f ms\n", static_cast<unsigned long long>(total.calls), static_cast<unsigned long long>(total.withSnapshots), static_cast<unsigned long long>(total.allocations), static_cast<unsigned long long>(total.reused), static_cast<unsigned long long>(total.made), static_cast<double>(total.madeBytes) / 1048576.0, static_cast<unsigned long long>(total.overrides), total.loopUs / 1000.0, total.setsUs / 1000.0);
     total = {};
 }
