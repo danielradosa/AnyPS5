@@ -78,6 +78,7 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
             if (found != drawCache.end()) entry = found->second;
             else ++drawEntryCounters.absent;
         }
+        std::vector<std::shared_ptr<SpecializeJob>> specializing;
         if (entry != nullptr) {
             const auto waitedBeforeValidate = profile ? Graphics::Recorder::ThreadWaitedMs() : 0.0;
             std::optional<DrawMiss> miss;
@@ -144,6 +145,8 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                     if (matched[i] == nullptr) continue;
                     ++counters.variantHitsByRank[ranks[i]];
                     if (ranks[i] != 0) rotate = true;
+                    if (matched[i]->registration != nullptr) ++counters.specializedStageHits;
+                    if (matched[i]->specialization != nullptr && specializeRoom()) specializing.push_back(std::move(matched[i]->specialization));
                 }
 
                 const auto again = drawCache.find(drawKey);
@@ -192,6 +195,7 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                 }
             }
         }
+        if (!specializing.empty()) submitSpecializations(specializing);
         phaseTiming.Phase(DrawRowKeyLookupValidate);
     }
 }

@@ -7,6 +7,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/DispatchCache.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawCache.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPrep.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawSpecialize.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/DispatchTiming.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawTiming.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/BufferCopy.hpp"
@@ -67,6 +68,8 @@ public:
     static std::optional<Graphics::IndirectDrawPath> ClassifyIndirectDraw(const ShaderRecompiler::RecompileResult& result, const Graphics::State& graphics, const DrawProgram& frontProgram, const std::shared_ptr<VulkanDevice>& localDevice, Pm4::DrawParameters& drawParameters, bool traceIndirect);
     static std::string dumpRequest(std::uint64_t address, const ShaderRecompiler::RecompileRequest& request);
     DrawEntryCounters DrawCacheCounters();
+    void WaitSpecializations();
+    SpecializeCounters DrawSpecializeCounters();
 
 private:
     friend class SampledReadScope;
@@ -130,7 +133,7 @@ private:
     static ShaderRecompiler::RecompileRequest drawStageRequest(std::size_t i, std::uint32_t pushOffset, const std::vector<DrawProgram>& programs, const Graphics::State& graphics, const ShaderRecompiler::ShaderPixelStageInfo& pixel, const std::vector<std::optional<ShaderRecompiler::ShaderVertexStageInfo>>& vertexInfos, const std::vector<ShaderRecompiler::MemoryRegion>& memory, const std::vector<ShaderRecompiler::LinkedProgram>& linked, const Pm4::DrawParameters& drawParameters, const ShaderRecompiler::SpirvTarget& target);
     static std::shared_ptr<DispatchVariant> drawVariant(const StageCapture& stageCapture, const DrawProgram& program, const std::optional<ShaderRecompiler::ShaderVertexStageInfo>& vertexInfo, const std::vector<Graphics::DecodeRead>& decodeReads);
     ShaderRecompiler::RecompileResult materializeDrawStage(std::size_t i, std::uint32_t pushOffset, const QueueState& queue, const Submission& submission, const std::vector<DrawProgram>& programs, const Graphics::State& graphics, const ShaderRecompiler::ShaderPixelStageInfo& pixel, const std::vector<std::optional<ShaderRecompiler::ShaderVertexStageInfo>>& vertexInfos, std::vector<ShaderRecompiler::MemoryRegion>& memory, const std::vector<ShaderRecompiler::LinkedProgram>& linked, const Pm4::DrawParameters& drawParameters, const std::shared_ptr<VulkanDevice>& localDevice, ShaderMemory& shaderMemory, std::vector<StageCapture>& stageCaptures, std::vector<bool>& recompiled, bool drawHit, const std::vector<std::shared_ptr<DispatchVariant>>& matched, const std::vector<std::vector<ShaderRecompiler::MemoryRegion>>& matchedRegions, bool profile, std::uint64_t dumpTarget, std::uint64_t dumpSlot1, std::uint64_t& captures, DrawPhaseTiming& phaseTiming, std::array<double, DrawDriverPhaseCount>& phaseMs, std::string& rejected);
-    void cacheDrawStages(bool useDrawEntries, bool drawHit, const Pm4::DrawParameters& drawParameters, const std::optional<Graphics::IndirectDrawPath>& indirectCpu, const std::vector<DrawProgram>& programs, const std::vector<StageCapture>& stageCaptures, const std::vector<std::optional<ShaderRecompiler::ShaderVertexStageInfo>>& vertexInfos, const std::vector<std::vector<Graphics::DecodeRead>>& decodeReads, bool verifyHit, const std::vector<std::shared_ptr<DispatchVariant>>& matched, std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::uint64_t drawKey, bool registerKey, const std::shared_ptr<const DrawDecode>& decode, DrawPhaseTiming& phaseTiming);
+    void cacheDrawStages(bool useDrawEntries, bool drawHit, const Pm4::DrawParameters& drawParameters, const std::optional<Graphics::IndirectDrawPath>& indirectCpu, const std::vector<DrawProgram>& programs, const std::vector<StageCapture>& stageCaptures, const std::vector<std::optional<ShaderRecompiler::ShaderVertexStageInfo>>& vertexInfos, const std::vector<std::vector<Graphics::DecodeRead>>& decodeReads, bool verifyHit, const std::vector<std::shared_ptr<DispatchVariant>>& matched, std::vector<std::shared_ptr<DispatchVariant>>& fresh, std::uint64_t drawKey, bool registerKey, const std::shared_ptr<const DrawDecode>& decode, const ShaderRecompiler::ShaderPixelStageInfo& pixel, const std::shared_ptr<VulkanDevice>& localDevice, DrawPhaseTiming& phaseTiming);
     static bool drawPrecheck();
     std::optional<DrawVerdict> precheckDraw(const QueueState& queue, const Submission& submission, std::span<const std::uint32_t> packet, const Pm4::DrawParameters& drawParameters, std::string& rejected, bool& traceIndirect);
     static std::optional<DrawVerdict> precheckRegisters(const QueueState& queue, const Pm4::DrawParameters& drawParameters, const std::function<bool()>& listRestart, std::string& rejected);
@@ -153,6 +156,22 @@ private:
     void reportDrawPrep(bool final);
     static void prepRead(std::uint64_t address, std::span<std::byte> out);
     static ShaderMemory::PendingWrite prepPendingWrite(std::uint64_t address, std::size_t bytes, std::span<std::byte> known);
+    static bool backgroundSpecializeEnabled();
+    static std::size_t specializeThreads();
+    static bool specializeEagerly();
+    void startDrawSpecialize();
+    void stopDrawSpecialize() noexcept;
+    static void* drawSpecializeMain(void* driver);
+    void runDrawSpecialize() noexcept;
+    void runSpecializeJob(SpecializeJob& job) noexcept;
+    SpecializeCount specializeStage(SpecializeJob& job);
+    bool specializationCurrent(const SpecializeJob& job);
+    bool publishSpecialization(const SpecializeJob& job, std::shared_ptr<const ShaderRecompiler::RecompileResult> result);
+    void submitSpecializations(std::vector<std::shared_ptr<SpecializeJob>>& jobs);
+    std::shared_ptr<const SpecializeTarget> specializeTarget(const ShaderRecompiler::SpirvTarget& target, std::uint64_t deviceSerial);
+    std::vector<std::shared_ptr<DispatchVariant>> parkSpecializations(std::uint64_t drawKey, const std::vector<std::shared_ptr<DispatchVariant>>& fresh, const std::vector<StageCapture>& stageCaptures, const std::vector<DrawProgram>& programs, const std::shared_ptr<const DrawDecode>& decode, const ShaderRecompiler::ShaderPixelStageInfo& pixel, const std::vector<std::optional<ShaderRecompiler::ShaderVertexStageInfo>>& vertexInfos, const Pm4::DrawParameters& drawParameters, const ShaderRecompiler::SpirvTarget& target, std::uint64_t deviceSerial, bool pipelineLibraries);
+    void noteParked(const std::vector<std::shared_ptr<DispatchVariant>>& parked, const std::vector<std::shared_ptr<DispatchVariant>>& fresh);
+    bool specializeRoom();
     void addDriverPhases(DispatchClass which, const std::array<double, DriverPhaseCount>& ms, bool hit, bool validated);
     static PendingDispatchPhases& pendingDispatchPhases();
     static std::chrono::steady_clock::time_point& packetStartedAt();
@@ -335,6 +354,7 @@ private:
 
     DrawEntryCounters drawEntryCounters;
     DrawPrepState drawPrep;
+    SpecializeState drawSpecialize;
 
     std::mutex driverPhasesMutex;
     std::array<DriverPhaseTotals, DispatchClassCount> driverPhaseTotals{};

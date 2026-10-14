@@ -90,6 +90,16 @@ void Driver::run(std::uint32_t id) noexcept {
             if (owner) driver.stopDrawPrep();
         }
     } drawPrepThread{*this, id == 0 && drawPrepEnabled()};
+    struct DrawSpecializeThreads {
+        Driver& driver;
+        bool owner;
+        DrawSpecializeThreads(Driver& driver, bool start) : driver(driver), owner(start) {
+            if (start) driver.startDrawSpecialize();
+        }
+        ~DrawSpecializeThreads() {
+            if (owner) driver.stopDrawSpecialize();
+        }
+    } drawSpecializeThreads{*this, id == 0 && backgroundSpecializeEnabled()};
     Submission submission;
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     auto& costs = submissionCosts(id);
