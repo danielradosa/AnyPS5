@@ -7,6 +7,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/DispatchCache.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawCache.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPrep.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawSpecialize.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Dispatch/DispatchTiming.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawTiming.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/BufferCopy.hpp"
@@ -153,6 +154,18 @@ private:
     void reportDrawPrep(bool final);
     static void prepRead(std::uint64_t address, std::span<std::byte> out);
     static ShaderMemory::PendingWrite prepPendingWrite(std::uint64_t address, std::size_t bytes, std::span<std::byte> known);
+    static bool backgroundSpecializeEnabled();
+    static std::size_t specializeThreads();
+    void startDrawSpecialize();
+    void stopDrawSpecialize() noexcept;
+    static void* drawSpecializeMain(void* driver);
+    void runDrawSpecialize() noexcept;
+    void runSpecializeJob(SpecializeJob& job) noexcept;
+    SpecializeCount specializeStage(SpecializeJob& job);
+    bool specializationCurrent(const SpecializeJob& job);
+    bool publishSpecialization(const SpecializeJob& job, std::shared_ptr<const ShaderRecompiler::RecompileResult> result);
+    void submitSpecializations(std::vector<std::shared_ptr<SpecializeJob>>& jobs);
+    std::shared_ptr<const SpecializeTarget> specializeTarget(const ShaderRecompiler::SpirvTarget& target, std::uint64_t deviceSerial);
     void addDriverPhases(DispatchClass which, const std::array<double, DriverPhaseCount>& ms, bool hit, bool validated);
     static PendingDispatchPhases& pendingDispatchPhases();
     static std::chrono::steady_clock::time_point& packetStartedAt();
@@ -335,6 +348,7 @@ private:
 
     DrawEntryCounters drawEntryCounters;
     DrawPrepState drawPrep;
+    SpecializeState drawSpecialize;
 
     std::mutex driverPhasesMutex;
     std::array<DriverPhaseTotals, DispatchClassCount> driverPhaseTotals{};

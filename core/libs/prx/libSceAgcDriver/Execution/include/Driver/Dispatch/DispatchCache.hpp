@@ -22,12 +22,15 @@ namespace AgcDriver::DriverDetail {
 
 inline constexpr std::size_t MaxDispatchVariants = 8;
 
+struct SpecializeJob;
+
 struct DispatchVariant {
 
     std::vector<std::pair<std::uint64_t, std::uint64_t>> runs;
     std::vector<std::uint32_t> words;
     std::uint64_t forgetSerial = 0;
     std::shared_ptr<const ShaderRecompiler::RecompileResult> compiled;
+    std::shared_ptr<const ShaderRecompiler::RecompileResult> registration;
 
     std::shared_ptr<const ShaderSnapshot> shader;
 
@@ -46,6 +49,8 @@ struct DispatchVariant {
     std::vector<ShaderRecompiler::MemoryRegion> captured;
     std::vector<std::pair<std::uint64_t, std::size_t>> spans;
     std::atomic<std::uint64_t> generation{0};
+
+    std::shared_ptr<SpecializeJob> specialization;
 };
 
 struct DispatchEntry {
