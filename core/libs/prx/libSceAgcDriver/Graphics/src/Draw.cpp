@@ -358,8 +358,8 @@ TileMipLayout ColorTargetMip(const ColorTarget& color, const ColorTargetLayout& 
 
 // APS5_PROFILE_DRAW: per-draw phase timers in microseconds (a recorded draw's phases are far below
 // the millisecond the old print rounded to), totalled over 10 s in the [draws] line.
-enum DrawPhase : std::size_t { PhaseValidate, PhaseVertex, PhaseSetup, PhaseReadTarget, PhasePrepare, PhaseLookup, PhaseResources, PhasePipeline, PhaseRecord, PhaseKeep, PhaseSync, PhaseWriteBack, PhaseDescribe, PhaseCount };
-constexpr std::array<const char*, PhaseCount> DrawPhaseNames{"validate", "vertex", "setup", "readTarget", "prepare", "lookup", "resources", "pipeline", "record", "keep", "sync", "writeBack", "describe"};
+enum DrawPhase : std::size_t { PhaseValidate, PhaseVertex, PhaseSetup, PhaseReadTarget, PhasePrepare, PhaseLookup, PhaseResources, PhasePipeline, PhaseSnapshots, PhasePassStart, PhaseRecord, PhaseKeep, PhaseSync, PhaseWriteBack, PhaseDescribe, PhaseCount };
+constexpr std::array<const char*, PhaseCount> DrawPhaseNames{"validate", "vertex", "setup", "readTarget", "prepare", "lookup", "resources", "pipeline", "snapshots", "passStart", "record", "keep", "sync", "writeBack", "describe"};
 
 // Why a draw did not go into the recorder without a wait (counted in the [draws] line): its targets
 // are not all resident, no recorder is active, a switch (APS5_SYNC_DRAWS, APS5_DUMP_TARGETS,
@@ -1709,6 +1709,7 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     // A queued label store over such memory likewise (Recorder::RecordStore).
     if (recorder->HasQueuedStores() && (resources.HoldsLease() || recorder->AnyQueuedStore(touches))) recorder->FlushStores();
     const auto drawBindings = resources.PrepareDrawBindings(*recorder, record.moved);
+    timer.phase(PhaseSnapshots);
     const bool capture = CaptureInputsEnabled();
     const bool meshIndirect = state.stages.mesh && args != nullptr;
     const bool addressBased = resources.HoldsLease();
@@ -1728,6 +1729,7 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     const bool fenced = state.depth.has_value() || !record.proxies.empty();
     const char* forced = capture ? "capture" : readsTarget ? "reads target" : gpuIndirect ? "gpu indirect" : meshIndirect ? "mesh indirect" : nullptr;
     const auto start = recorder->StartDrawPass(passKey, forced, fenced, passAccess);
+    timer.phase(PhasePassStart);
     const bool continued = start.continued;
     const auto passTarget = record.targets.empty() || record.targets.front() == nullptr ? 1 : record.targets.front()->Descriptor().baseAddress;
     if (!continued) recorder->CountPassBegin(passTarget);
