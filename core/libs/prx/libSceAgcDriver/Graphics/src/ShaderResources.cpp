@@ -3543,8 +3543,53 @@ std::size_t ShaderResources::MaxDrawSnapshotBytes() {
     return bytes;
 }
 
+namespace {
+
+// APS5_PROFILE_DRAW: what PrepareDrawBindings did over 10 s (the [drawbindings] line): calls that made
+// snapshots, the read-only V# allocations it looked at, snapshots reused from the recorder or copied
+// afresh (and their bytes), and the time of the snapshot loop and of the descriptor sets that follow.
+struct DrawBindingsProfile {
+    std::uint64_t calls = 0;
+    std::uint64_t withSnapshots = 0;
+    std::uint64_t allocations = 0;
+    std::uint64_t reused = 0;
+    std::uint64_t made = 0;
+    std::uint64_t madeBytes = 0;
+    std::uint64_t overrides = 0;
+    double loopUs = 0;
+    double setsUs = 0;
+};
+
+void noteDrawBindings(const DrawBindingsProfile& call) {
+    static std::mutex mutex;
+    static DrawBindingsProfile total;
+    static auto last = std::chrono::steady_clock::now();
+    std::lock_guard lock(mutex);
+    total.calls += call.calls;
+    total.withSnapshots += call.withSnapshots;
+    total.allocations += call.allocations;
+    total.reused += call.reused;
+    total.made += call.made;
+    total.madeBytes += call.madeBytes;
+    total.overrides += call.overrides;
+    total.loopUs += call.loopUs;
+    total.setsUs += call.setsUs;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds(10)) return;
+    last = now;
+    AgcDriver::ProfilePrint_nid_no_patch("[drawbindings] %llu calls (10 s), %llu with snapshots; %llu read-only allocations looked at; snapshots: %llu reused, %llu copied (%.1f MiB), %llu moved overrides; snapshot loop %.1f ms, descriptor sets %.1f ms\n", static_cast<unsigned long long>(total.calls), static_cast<unsigned long long>(total.withSnapshots), static_cast<unsigned long long>(total.allocations), static_cast<unsigned long long>(total.reused), static_cast<unsigned long long>(total.made), static_cast<double>(total.madeBytes) / 1048576.0, static_cast<unsigned long long>(total.overrides), total.loopUs / 1000.0, total.setsUs / 1000.0);
+    total = {};
+}
+
+}
+
 std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindings(Recorder& recorder, std::span<const MovedBuffer> moved) const {
     if ((_set == VK_NULL_HANDLE && fragment.set == VK_NULL_HANDLE) || usesBda) return {};
+    const bool profile = BuildProfiled();
+    DrawBindingsProfile counts;
+    const auto started = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    counts.calls = 1;
+    counts.allocations = allocations.size();
     const auto reads = guestMemory.InPlaceReads();
     const auto maxSnapshotBytes = MaxDrawSnapshotBytes();
     std::size_t totalSnapshotBytes = 0;
@@ -3561,6 +3606,7 @@ std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindi
             }
             selected.push_back(index);
             result->snapshots.push_back({0, std::move(buffer)});
+            ++counts.overrides;
             continue;
         }
         std::uint64_t address = item.address;
@@ -3583,13 +3629,23 @@ std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindi
             buffer = std::make_shared<Buffer>(context, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
             std::memcpy(buffer->Bytes().data(), reinterpret_cast<const void*>(begin), bytes);
             recorder.KeepDrawSnapshot(begin, bytes, generation, registryGeneration, buffer);
+            ++counts.made;
+            counts.madeBytes += bytes;
+        } else {
+            ++counts.reused;
         }
         selected.push_back(index);
         result->snapshots.push_back({begin, std::move(buffer)});
         totalSnapshotBytes += bytes;
         CaptureTrace::Log("draw-snapshot batch=%llu address=%llx bytes=%zu", static_cast<unsigned long long>(recorder.Submissions() + 1), static_cast<unsigned long long>(begin), bytes);
     }
-    if (selected.empty()) return {};
+    const auto looped = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    if (profile) counts.loopUs = std::chrono::duration<double, std::micro>(looped - started).count();
+    if (selected.empty()) {
+        if (profile) noteDrawBindings(counts);
+        return {};
+    }
+    counts.withSnapshots = 1;
     Require(context.descriptorCache != nullptr, "draw snapshots require a descriptor cache");
     std::array<std::vector<VkDescriptorSetLayoutBinding>, 2> descriptions;
     for (const auto& binding : bindings) descriptions[setOf(binding)].push_back(binding.layout);
@@ -3623,6 +3679,10 @@ std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindi
     context.Resolved(&DeviceFunctions::updateDescriptorSets, "vkUpdateDescriptorSets")(context.device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
     recorder.Keep(result);
     for (const auto& snapshot : result->snapshots) recorder.KeepBytes(snapshot.buffer.get(), snapshot.buffer->Bytes().size());
+    if (profile) {
+        counts.setsUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - looped).count();
+        noteDrawBindings(counts);
+    }
     return result;
 }
 
