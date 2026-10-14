@@ -998,7 +998,20 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
         failures.insert_or_assign(base, ImportFailure{base, bytes, GuestAllocations::Mapped(entry.ranges.begin(), entry.ranges.end())});
         return nullptr;
     }
-    if (!writable) {
+    // Resident direct memory (private pages since main's d9852df2a) would be imported directly and so dropped from
+    // write tracking: every snapshot over it is then compared (Astro's 2 GiB render heap, ~55 GB per 10 s). An alias
+    // demotes its runs to section views tracked by write protection, as before; when it cannot be made the range is
+    // imported directly. APS5_DIRECT_RESIDENT_IMPORTS=1 always imports directly.
+    static const bool directResident = std::getenv("APS5_DIRECT_RESIDENT_IMPORTS") != nullptr;
+    std::uintptr_t residentStart = 0, residentEnd = 0;
+    const bool aliasResident = writable && !directResident && GuestArena::GuestArenaResidentSpan_nid_postfix(static_cast<std::uintptr_t>(base), static_cast<std::size_t>(bytes), &residentStart, &residentEnd);
+    if (aliasResident) {
+        try {
+            entry.alias = GuestArena::GuestArenaMapAlias_nid_postfix(static_cast<std::uintptr_t>(base), static_cast<std::size_t>(bytes));
+        } catch (const std::runtime_error&) {
+            entry.alias = nullptr;
+        }
+    } else if (!writable) {
         if (refused.BaseAddress != nullptr) {
             char text[256];
             std::snprintf(text, sizeof(text), "AGC graphics: host import of 0x%llx+0x%llx: memory at 0x%llx (type 0x%lx, protection 0x%lx) is neither read-write, read-only nor a shared mapping", static_cast<unsigned long long>(base), static_cast<unsigned long long>(bytes), reinterpret_cast<unsigned long long>(refused.BaseAddress), refused.Type, refused.Protect);

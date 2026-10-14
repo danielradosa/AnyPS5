@@ -1569,6 +1569,7 @@ void secondMappingImportTests(const Device& device) {
         std::cout << "host import of singly mapped direct memory refused: imports after a second mapping not tested\n";
         return;
     }
+    Require(!AgcDriver::GuestMemory::WriteWatched() || AgcDriver::GuestMemory::Watched(address, bytes), "a host import of singly mapped direct memory dropped it from write tracking");
     const auto first = HostImportSerial(context, address, bytes, true);
     Require(first != 0 && HostImportSerial(context, address, bytes, true) == first, "singly mapped direct memory lost its import");
     Require(sceKernelMapDirectMemory(&release.alias, page, 0x33, 0, release.physical, page) == 0, "map the first page a second time");
