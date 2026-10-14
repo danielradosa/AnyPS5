@@ -158,6 +158,7 @@ private:
     static ShaderMemory::PendingWrite prepPendingWrite(std::uint64_t address, std::size_t bytes, std::span<std::byte> known);
     static bool backgroundSpecializeEnabled();
     static std::size_t specializeThreads();
+    static bool specializeEagerly();
     void startDrawSpecialize();
     void stopDrawSpecialize() noexcept;
     static void* drawSpecializeMain(void* driver);

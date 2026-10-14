@@ -29,6 +29,11 @@ bool Driver::backgroundSpecializeEnabled() {
     return enabled;
 }
 
+bool Driver::specializeEagerly() {
+    static const bool eager = std::getenv("APS5_SPECIALIZE_ON_HIT") == nullptr;
+    return eager;
+}
+
 std::size_t Driver::specializeThreads() {
     static const std::size_t threads = [] {
         const char* text = std::getenv("APS5_SPECIALIZE_THREADS");
@@ -104,8 +109,8 @@ void Driver::runDrawSpecialize() noexcept {
     for (;;) {
         drawSpecialize.changed.wait(lock, [&] { return drawSpecialize.stop.load() || !drawSpecialize.queue.empty(); });
         if (drawSpecialize.stop.load()) return;
-        auto job = std::move(drawSpecialize.queue.front());
-        drawSpecialize.queue.pop_front();
+        auto job = std::move(drawSpecialize.queue.back());
+        drawSpecialize.queue.pop_back();
         drawSpecialize.depth.store(drawSpecialize.queue.size(), std::memory_order_relaxed);
         ++drawSpecialize.running;
         lock.unlock();
@@ -118,11 +123,15 @@ void Driver::runDrawSpecialize() noexcept {
 }
 
 void Driver::submitSpecializations(std::vector<std::shared_ptr<SpecializeJob>>& jobs) {
-    std::uint64_t queued = 0;
+    std::uint64_t queued = 0, displaced = 0;
     {
         std::lock_guard lock(drawSpecialize.mutex);
         for (auto& job : jobs) {
-            if (!drawSpecialize.open.load() || drawSpecialize.queue.size() >= SpecializeState::QueueBound) continue;
+            if (!drawSpecialize.open.load()) continue;
+            if (drawSpecialize.queue.size() >= SpecializeState::QueueBound) {
+                drawSpecialize.queue.pop_front();
+                ++displaced;
+            }
             drawSpecialize.queue.push_back(std::move(job));
             ++queued;
         }
@@ -130,7 +139,7 @@ void Driver::submitSpecializations(std::vector<std::shared_ptr<SpecializeJob>>& 
     }
     if (queued != 0) drawSpecialize.changed.notify_all();
     drawSpecialize.counts[SpecializeQueued].fetch_add(queued, std::memory_order_relaxed);
-    drawSpecialize.counts[SpecializeDropped].fetch_add(jobs.size() - queued, std::memory_order_relaxed);
+    drawSpecialize.counts[SpecializeDropped].fetch_add(jobs.size() - queued + displaced, std::memory_order_relaxed);
     jobs.clear();
 }
 
@@ -191,10 +200,17 @@ std::vector<std::shared_ptr<DispatchVariant>> Driver::parkSpecializations(std::u
 
 void Driver::noteParked(const std::vector<std::shared_ptr<DispatchVariant>>& parked, const std::vector<std::shared_ptr<DispatchVariant>>& fresh) {
     std::uint64_t kept = 0;
-    for (std::size_t i = 0; i < parked.size() && i < fresh.size(); ++i) {
-        if (parked[i] != nullptr && parked[i] == fresh[i]) ++kept;
+    std::vector<std::shared_ptr<SpecializeJob>> eager;
+    {
+        std::lock_guard cacheLock(drawCacheMutex);
+        for (std::size_t i = 0; i < parked.size() && i < fresh.size(); ++i) {
+            if (parked[i] == nullptr || parked[i] != fresh[i]) continue;
+            ++kept;
+            if (specializeEagerly() && fresh[i]->specialization != nullptr) eager.push_back(std::move(fresh[i]->specialization));
+        }
     }
     if (kept != 0) drawSpecialize.counts[SpecializeParked].fetch_add(kept, std::memory_order_relaxed);
+    if (!eager.empty()) submitSpecializations(eager);
 }
 
 bool Driver::specializeRoom() {
