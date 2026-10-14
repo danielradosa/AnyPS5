@@ -74,6 +74,7 @@ struct DrawEntryCounters {
     std::uint64_t registerKeyLookups = 0, registerKeyHits = 0, decodeSkipped = 0, decodePartial = 0, facadeMismatches = 0, verifyDecodes = 0, verifyDecodeMismatches = 0;
     double keyUs = 0;
     std::uint64_t preparedLookups = 0, preparedHits = 0;
+    std::uint64_t specializedStageHits = 0;
     std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
 };
 

@@ -145,6 +145,7 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                     if (matched[i] == nullptr) continue;
                     ++counters.variantHitsByRank[ranks[i]];
                     if (ranks[i] != 0) rotate = true;
+                    if (matched[i]->registration != nullptr) ++counters.specializedStageHits;
                     if (matched[i]->specialization != nullptr && specializeRoom()) specializing.push_back(std::move(matched[i]->specialization));
                 }
 
