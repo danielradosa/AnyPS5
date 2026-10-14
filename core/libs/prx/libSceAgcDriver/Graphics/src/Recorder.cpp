@@ -2556,20 +2556,6 @@ namespace {
 std::size_t SnapshotPool(Recorder::SnapshotUse use) {
     return use == Recorder::SnapshotUse::Storage ? 0 : 1;
 }
-std::array<std::atomic<std::uint64_t>, 3> storageSnapshotMisses{};
-}
-
-std::size_t Recorder::StorageSnapshotEntries() {
-    static const std::size_t entries = [] {
-        const char* text = std::getenv("APS5_DRAW_SNAPSHOT_ENTRIES");
-        const auto parsed = text != nullptr ? std::strtoull(text, nullptr, 10) : 0ull;
-        return parsed != 0 ? static_cast<std::size_t>(parsed) : DrawSnapshotEntries;
-    }();
-    return entries;
-}
-
-std::array<std::uint64_t, 3> Recorder::StorageSnapshotMisses() {
-    return {storageSnapshotMisses[0].load(std::memory_order_relaxed), storageSnapshotMisses[1].load(std::memory_order_relaxed), storageSnapshotMisses[2].load(std::memory_order_relaxed)};
 }
 
 void Recorder::eraseDrawSnapshot(std::map<DrawSnapshotKey, DrawSnapshot>::iterator entry) {
@@ -2581,15 +2567,10 @@ void Recorder::eraseDrawSnapshot(std::map<DrawSnapshotKey, DrawSnapshot>::iterat
 
 std::shared_ptr<Buffer> Recorder::ReusableDrawSnapshot(std::uint64_t address, std::size_t bytes, SnapshotUse use, std::uint32_t* derived, std::uint64_t generation) {
     auto found = use == SnapshotUse::Vertex ? drawSnapshots.lower_bound({address, use, bytes}) : drawSnapshots.find({address, use, bytes});
-    const bool storage = use == SnapshotUse::Storage;
-    if (found == drawSnapshots.end() || std::get<0>(found->first) != address || std::get<1>(found->first) != use) {
-        if (storage) storageSnapshotMisses[0].fetch_add(1, std::memory_order_relaxed);
-        return {};
-    }
+    if (found == drawSnapshots.end() || std::get<0>(found->first) != address || std::get<1>(found->first) != use) return {};
     const bool sameRegistry = found->second.registryGeneration == GuestAllocations::GuestAllocationsGeneration_nid_postfix();
     if (!sameRegistry || !GuestMemory::UnchangedSince(address, bytes, found->second.generation)) {
         if (!sameRegistry || generation == 0 || use != SnapshotUse::Storage || !refreshDrawSnapshot(found->second, address, bytes)) {
-            if (storage) storageSnapshotMisses[sameRegistry ? 2 : 1].fetch_add(1, std::memory_order_relaxed);
             eraseDrawSnapshot(found);
             return {};
         }
@@ -2651,7 +2632,7 @@ bool Recorder::refreshDrawSnapshot(DrawSnapshot& entry, std::uint64_t address, s
 void Recorder::KeepDrawSnapshot(std::uint64_t address, std::size_t bytes, std::uint64_t generation, std::uint64_t registryGeneration, std::shared_ptr<Buffer> buffer, SnapshotUse use, std::uint32_t derived) {
     const bool storage = use == SnapshotUse::Storage;
     const auto budget = storage ? DrawSnapshotBudget : DrawInputBudget;
-    const auto maxEntries = storage ? StorageSnapshotEntries() : DrawInputEntries;
+    const auto maxEntries = storage ? DrawSnapshotEntries : DrawInputEntries;
     auto& pool = drawSnapshotPools[SnapshotPool(use)];
     if (generation == 0 || bytes > budget) return;
     if (use == SnapshotUse::Vertex) {
