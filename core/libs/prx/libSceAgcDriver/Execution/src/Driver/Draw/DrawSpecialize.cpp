@@ -1,5 +1,8 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Queues/WorkerAffinity.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
+#include "prx/libSceAgcDriver/Execution/include/TracyZone.hpp"
+#include "prx/libc/include/CpuTopology.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
 #include <chrono>
@@ -95,6 +98,8 @@ void* Driver::drawSpecializeMain(void* driver) {
 }
 
 void Driver::runDrawSpecialize() noexcept {
+    TracyZone::NameThread("draw specialize");
+    if (WorkerAffinityMask() != 0) CpuTopology::PinTraced("draw specialize", nullptr, CpuTopology::Get().process);
     std::unique_lock lock(drawSpecialize.mutex);
     for (;;) {
         drawSpecialize.changed.wait(lock, [&] { return drawSpecialize.stop.load() || !drawSpecialize.queue.empty(); });
@@ -203,6 +208,9 @@ void Driver::runSpecializeJob(SpecializeJob& job) noexcept {
     auto outcome = SpecializeFailed;
     try {
         outcome = specializeStage(job);
+    } catch (const std::exception& error) {
+        static std::atomic<std::uint64_t> reports{0};
+        if (reports.fetch_add(1, std::memory_order_relaxed) < 20) std::fprintf(stderr, "[draw-specialize] stage %zu (program 0x%llx) kept its registration result: %s\n", job.stage, static_cast<unsigned long long>(job.request.shader.codeAddress), error.what());
     } catch (...) {
     }
     drawSpecialize.counts[outcome].fetch_add(1, std::memory_order_relaxed);
