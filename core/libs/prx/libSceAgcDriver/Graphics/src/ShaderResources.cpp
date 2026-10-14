@@ -1713,8 +1713,13 @@ std::atomic<std::uint64_t> resourceCacheTouches{0};
 
 namespace {
 
+// As the recompiler reads it (LoopGuardLimit): APS5_LOOP_GUARD set empty or to 0 emits no guard, so no LoopLimit fault
+// resets a fault buffer and fault-only builds stay reusable.
 bool LoopGuardEnabled() {
-    static const bool enabled = std::getenv("APS5_LOOP_GUARD") != nullptr;
+    static const bool enabled = [] {
+        const char* guard = std::getenv("APS5_LOOP_GUARD");
+        return guard != nullptr && std::strtoul(guard, nullptr, 0) != 0;
+    }();
     return enabled;
 }
 
