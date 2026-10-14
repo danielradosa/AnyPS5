@@ -2540,17 +2540,17 @@ std::uint64_t StorageTexture::uploadWindows(const HostImport& import, std::span<
         for (const auto& [begin, end] : reads) recorder->FlushStoresOverlapping(begin, static_cast<std::size_t>(end - begin));
         if (!passDetail.empty()) recorder->NotePassEndDetail(uploadReason + passDetail);
         commands = recorder->Commands();
-        timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageUpload);
+        timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageDetile);
         if (linear) recorder->Keep(linear, linear->Size());
         for (const auto& source : sources) {
             if (source.slab != nullptr) recorder->Keep(source.slab);
         }
         if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
         if (!reads.empty()) recorder->NotePendingReads(reads, Recorder::ReadKind::StorageUpload);
-        Recorder::CountBarriers(Recorder::CommandClass::StorageUpload, direct ? 2 : 3);
+        Recorder::CountBarriers(Recorder::CommandClass::StorageDetile, direct ? 2 : 3);
         if (Recorder::BarrierValidate()) {
             const std::pair<VkImage, bool> written{image, true};
-            recorder->NoteAccess(Recorder::CommandClass::StorageUpload, Recorder::Access{reads, {}, std::span(&written, 1), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT});
+            recorder->NoteAccess(Recorder::CommandClass::StorageDetile, Recorder::Access{reads, {}, std::span(&written, 1), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT});
         }
     } else {
         batch = std::make_unique<CommandBatch>(context);
@@ -4041,13 +4041,13 @@ void StorageTexture::recordCopyFrom(StorageTexture& source, std::span<const VkIm
     auto timing = Recorder::NoTiming;
     if (recorder != nullptr) {
         commands = recorder->Commands();
-        timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageUpload);
+        timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageCopy);
         if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
         if (auto other = source.weak_from_this().lock()) recorder->Keep(std::move(other));
-        Recorder::CountBarriers(Recorder::CommandClass::StorageUpload, 2);
+        Recorder::CountBarriers(Recorder::CommandClass::StorageCopy, 2);
         if (Recorder::BarrierValidate()) {
             const std::array<std::pair<VkImage, bool>, 2> images{{{source.image, false}, {image, true}}};
-            recorder->NoteAccess(Recorder::CommandClass::StorageUpload, Recorder::Access{{}, {}, images, VK_PIPELINE_STAGE_TRANSFER_BIT});
+            recorder->NoteAccess(Recorder::CommandClass::StorageCopy, Recorder::Access{{}, {}, images, VK_PIPELINE_STAGE_TRANSFER_BIT});
         }
     } else {
         batch = std::make_unique<CommandBatch>(context);
@@ -4413,16 +4413,16 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             recorder->FlushKeyStoresOverlapping(firstStored, static_cast<std::size_t>(lastStored - firstStored));
             recorder->FlushStoresOverlapping(firstStored, static_cast<std::size_t>(lastStored - firstStored));
             commands = recorder->Commands();
-            timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageWriteBack);
+            timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageWriteBackHost);
             if (linear) recorder->Keep(linear, linear->Size());
             recorder->Keep(tiledScratch, tiledScratch->Size());
             for (const auto& slab : padding.slabs) recorder->Keep(slab);
             // The image itself must outlive the recorded retile: the cache may evict it right after.
             if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
-            Recorder::CountBarriers(Recorder::CommandClass::StorageWriteBack, padding.copies.empty() ? 4 : 5);
+            Recorder::CountBarriers(Recorder::CommandClass::StorageWriteBackHost, padding.copies.empty() ? 4 : 5);
             if (Recorder::BarrierValidate()) {
                 const std::pair<VkImage, bool> read{image, false};
-                recorder->NoteAccess(Recorder::CommandClass::StorageWriteBack, Recorder::Access{padding.importReads, keep, std::span(&read, 1), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT});
+                recorder->NoteAccess(Recorder::CommandClass::StorageWriteBackHost, Recorder::Access{padding.importReads, keep, std::span(&read, 1), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT});
             }
         } else {
             batch = std::make_unique<CommandBatch>(context);
