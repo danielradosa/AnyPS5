@@ -450,7 +450,7 @@ PublishReason PublishReasonFor(const char* flushReason) {
     if (is("buffer fill")) return PublishReason::Fill;
     if (is("packet store")) return PublishReason::Label;
     if (is("buffer copy count") || is("dispatch-cache entry")) return PublishReason::Validate;
-    if (is("storage image creation") || is("storage refresh")) return PublishReason::Upload;
+    if (is("storage image creation") || (flushReason != nullptr && std::strncmp(flushReason, "storage refresh", 15) == 0)) return PublishReason::Upload;
     return PublishReason::Hook;
 }
 

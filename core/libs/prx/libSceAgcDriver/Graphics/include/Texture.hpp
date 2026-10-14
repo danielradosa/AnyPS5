@@ -182,6 +182,16 @@ public:
     // overlapping pending image, as before).
     static bool FlushPending(std::uint64_t address, std::size_t bytes, const StorageTexture* except = nullptr, const char* reason = "memory access", PublishScope scope = PublishScope::Whole, bool* published = nullptr);
     static void FlushAllPending(const char* reason);
+    // Profile: Refresh counts the other images it stores under the innermost scope's reason on this thread
+    // ([storage] write-backs by reason), so the "storage refresh" traffic splits by what refreshed.
+    struct RefreshCaller {
+        explicit RefreshCaller(const char* reason) : previous(current) { current = reason; }
+        ~RefreshCaller() { current = previous; }
+        RefreshCaller(const RefreshCaller&) = delete;
+        RefreshCaller& operator=(const RefreshCaller&) = delete;
+        static inline thread_local const char* current = "storage refresh";
+        const char* previous;
+    };
     static bool AnyPending();
     static void FlushDumpSelected(const char* reason);
     static bool StoreAtFlipRequested(const char* value);

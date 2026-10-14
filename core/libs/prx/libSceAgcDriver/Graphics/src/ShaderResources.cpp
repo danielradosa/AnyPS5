@@ -456,6 +456,7 @@ std::shared_ptr<StorageTexture> sampledStorageSource(const Context& context, con
         }
     }
     try {
+        const StorageTexture::RefreshCaller caller("storage refresh: sampled");
         return cachedStorageTexture(context, {}, resource, 0, guestBytes);
     } catch (const std::exception& error) {
         counters.storageFallbacks.fetch_add(1, std::memory_order_relaxed);
@@ -2248,6 +2249,7 @@ ShaderResources::OwnRefreshFallback ShaderResources::refreshOwnObjects(std::span
             if (found != source) return OwnRefreshFallback::ForeignView;
             if (!GuestMemory::UnchangedSince(address, bytes, source->Generation())) {
                 countOwnRefresh(false);
+                const StorageTexture::RefreshCaller caller("storage refresh: sampled");
                 source->Refresh();
             }
             return OwnRefreshFallback::Count;
@@ -2257,6 +2259,7 @@ ShaderResources::OwnRefreshFallback ShaderResources::refreshOwnObjects(std::span
         countOwnRefresh(false);
         // The cache's image of the key is this source while it is cached (an entry is replaced
         // only after its image left the cache), so the lookup would refresh and return it.
+        const StorageTexture::RefreshCaller caller("storage refresh: sampled");
         source->Refresh();
         return OwnRefreshFallback::Count;
     };
@@ -2267,6 +2270,7 @@ ShaderResources::OwnRefreshFallback ShaderResources::refreshOwnObjects(std::span
         if (image == nullptr || !image->Cached()) return OwnRefreshFallback::Uncached;
         if (i >= storageKeys.size() || !StorageImageServesKeys(*image, storageKeys[i])) return OwnRefreshFallback::Keys;
         countOwnRefresh(true);
+        const StorageTexture::RefreshCaller caller("storage refresh: storage binding");
         image->Refresh();
         return OwnRefreshFallback::Count;
     };
@@ -3369,7 +3373,10 @@ void ShaderResources::resolveImageBinding(const ShaderRecompiler::DescriptorBind
         const auto guestBytes = record != nullptr && record->decoded ? record->guestBytes : DescribeSurface(resource).guestBytes;
         // The same surface as the previous element: its image was just looked up and refreshed.
         if (sameAsPrevious && StorageDedupeEnabled()) storageTextures.push_back(storageTextures.back());
-        else storageTextures.push_back(cachedStorageTexture(context, words, resource, mip, guestBytes));
+        else {
+            const StorageTexture::RefreshCaller caller("storage refresh: storage binding");
+            storageTextures.push_back(cachedStorageTexture(context, words, resource, mip, guestBytes));
+        }
         storageMips.push_back(mip);
         storageKeys.push_back(resource.dccAddress);
         storageFirstLayer.push_back(firstLayer);

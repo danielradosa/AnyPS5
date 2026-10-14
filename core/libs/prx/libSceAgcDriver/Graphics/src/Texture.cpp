@@ -1589,7 +1589,7 @@ bool StorageTexture::Refresh() {
         }
     }
     // No publish: the upload below reads the stored units from the unit shadow itself.
-    const bool flushed = FlushPending(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), alias.get(), "storage refresh", PublishScope::None);
+    const bool flushed = FlushPending(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), alias.get(), RefreshCaller::current, PublishScope::None);
     if (profile && flushed) start = LookupOutcomes::Add(LookupOutcomes::PendingFlush, start);
     // `original` holds the guest bytes the image was last uploaded from or written back as; while the
     // guest memory and the DCC keys still match, the image content is current. Pages nobody wrote
@@ -3835,7 +3835,10 @@ bool StorageTexture::CopyFrom(StorageTexture& source, const char*& refusal) {
     }
     // The source image must hold the surface: a stale one uploads first (and other images'
     // results pending over its memory land first, as the transfer's flush would have them).
-    source.Refresh();
+    {
+        const RefreshCaller caller("storage refresh: copy source");
+        source.Refresh();
+    }
     // Results pending over the destination range from before the copy are dead inside it and land
     // first around it; other images over the range hold content the copy supersedes (they
     // re-upload at their next use, behind this image's write-back).

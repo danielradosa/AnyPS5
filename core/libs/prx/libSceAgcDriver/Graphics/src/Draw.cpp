@@ -1240,6 +1240,12 @@ std::shared_ptr<StorageTexture> refreshResidentTarget(const Context& context, co
     const auto lookupStart = std::chrono::steady_clock::now();
     const auto walkedBefore = profile ? GuestMemory::ThreadCollectedBytes() : 0;
     std::shared_ptr<StorageTexture> resident;
+    // Profile: the other images the target's refresh stores count as for an overwrite candidate (full scissor and
+    // viewport, no blending, every color written, no alpha to coverage: needed for a full overwrite, while primitive
+    // coverage and kills stay unknown) or for a draw that loads the target.
+    const auto low = std::min(state.viewport.y, state.viewport.y + state.viewport.height), high = std::max(state.viewport.y, state.viewport.y + state.viewport.height);
+    const bool overwriteCandidate = state.scissor.offset.x <= 0 && state.scissor.offset.y <= 0 && state.scissor.extent.width >= color.extent.width && state.scissor.extent.height >= color.extent.height && state.viewport.x <= 0.0f && state.viewport.x + state.viewport.width >= static_cast<float>(color.extent.width) && low <= 0.0f && high >= static_cast<float>(color.extent.height) && !state.alphaToCoverage && std::all_of(state.blends.begin(), state.blends.end(), [](const auto& blend) { return blend.blendEnable == VK_FALSE && blend.colorWriteMask == 0xfu; });
+    const StorageTexture::RefreshCaller caller(overwriteCandidate ? "storage refresh: target, overwrite candidate" : "storage refresh: target, loads");
     try {
         resident = lookup();
         if (resident != nullptr) materializeRegisterClear(context, color, *resident);
