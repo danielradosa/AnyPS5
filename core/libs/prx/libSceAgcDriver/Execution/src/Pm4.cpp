@@ -6,6 +6,7 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -146,8 +147,20 @@ std::uint32_t copyDataCount(std::span<const std::uint32_t> packet) {
     return (packet[1] & 0x10000u) != 0 ? 2u : 1u;
 }
 
-std::uint64_t gpuClockCount() {
+std::atomic<std::uint64_t> flipClock{0};
+
+std::uint64_t realClockCount() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 10);
+}
+
+// APS5_GPU_TIMESTAMP_SCALE=<percent>: GPU timestamps run that much faster since the last flip (BryKytyPS5's
+// --gpu-timestamp-scale), so a game that sizes its dynamic resolution from them sees more GPU time.
+std::uint64_t gpuClockCount() {
+    static const std::uint64_t percent = [] { const char* text = std::getenv("APS5_GPU_TIMESTAMP_SCALE"); return text ? std::strtoull(text, nullptr, 10) : 100ull; }();
+    const auto now = realClockCount();
+    const auto anchor = flipClock.load(std::memory_order_relaxed);
+    if (percent == 100 || anchor == 0 || now <= anchor) return now;
+    return anchor + (now - anchor) * percent / 100u;
 }
 
 std::vector<std::byte> copyDataSource(std::span<const std::uint32_t> packet, std::size_t bytes) {
@@ -221,6 +234,10 @@ void executeAtomicMem(std::span<const std::uint32_t> packet) {
     });
 }
 
+}
+
+void NoteFlipClock() {
+    flipClock.store(realClockCount(), std::memory_order_relaxed);
 }
 
 std::string Name(std::uint32_t header) {
@@ -647,7 +664,7 @@ std::optional<LabelWrite> DecodeLabelWrite(std::span<const std::uint32_t> packet
         if (dataSelect == 0 || dataSelect > 3) return std::nullopt;
         if (destination == 0) return std::nullopt;
         std::uint64_t value = address(packet[5], packet[6]);
-        if (dataSelect == 3) value = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 10);
+        if (dataSelect == 3) value = gpuClockCount();
         LabelWrite label{destination, {}};
         label.inlineSize = dataSelect == 1 ? 4 : 8;
         std::memcpy(label.inlineBytes.data(), &value, label.inlineSize);
@@ -998,7 +1015,7 @@ void Execute(std::span<const std::uint32_t> packet, QueueState& queue) {
             if (dataSelect == 0 || destination == 0) return;
             std::uint64_t value = address(packet[5], packet[6]);
             if (dataSelect == 3) {
-                value = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 10);
+                value = gpuClockCount();
             }
             GuestMemory::Write(destination, std::as_bytes(std::span(&value, 1)).first(dataSelect == 1 ? 4 : 8), dataSelect == 1 ? 4 : 8);
             return;

@@ -215,6 +215,7 @@ void Driver::execute(const Submission& submission) {
             timed(&WorkerProfile::waitMs, [&] { submission.renderingWaits.at(cursor)->Wait(); });
         } else if (header == FlipPacketHeader) {
             CheckFailure();
+            Pm4::NoteFlipClock();
             std::uint64_t batchesAtFlip = 0, unsignaledAtFlip = 0;
             if (!drains) {
 
