@@ -2141,8 +2141,25 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
             if (profile) LookupOutcomes::Add(LookupOutcomes::UploadDirect, start);
             return;
         }
-        // Units another image's results shadow reach the import before the detile reads it in place.
-        PublishShadow(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), PublishScope::Whole, PublishReason::Upload);
+        // Units another image's results shadow are read from their slabs: the uploaded bytes are
+        // assembled in device memory (the rest from the import) and the detile reads the copy.
+        // APS5_NO_UPLOAD_SHADOW=1 publishes them into the import first and reads it in place, as before.
+        static const bool uploadShadow = std::getenv("APS5_NO_UPLOAD_SHADOW") == nullptr;
+        std::vector<ShadowRun> sources;
+        if (uploadShadow && AnyShadowedOverlaps(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) {
+            std::vector<std::pair<std::uint64_t, std::uint64_t>> runs;
+            if (layers == nullptr) {
+                runs.emplace_back(0, guestBytes);
+            } else {
+                for (std::uint32_t layer = 0; layer < trackedLayers; ++layer) {
+                    if ((*layers)[layer]) runs.emplace_back(layerBegin(layer) - descriptor.baseAddress, layerBegin(layer) - descriptor.baseAddress + layerBytes(layer));
+                }
+            }
+            sources = ShadowSources(context, *import, descriptor.baseAddress, runs, {});
+            if (std::none_of(sources.begin(), sources.end(), [](const ShadowRun& source) { return source.shadow; })) sources.clear();
+        }
+        if (sources.empty()) PublishShadow(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), PublishScope::Whole, PublishReason::Upload);
+        auto assembled = sources.empty() ? nullptr : std::make_shared<DeviceBuffer>(context, static_cast<std::size_t>(guestBytes), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         forgetBorrowed(0, trackedLayers);
         std::uint64_t uploadedBytes = layers == nullptr ? guestBytes : 0;
         if (layers != nullptr) {
@@ -2164,6 +2181,10 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
             commands = recorder->Commands();
             timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageUpload);
             if (linear) recorder->Keep(linear, linear->Size());
+            if (assembled) recorder->Keep(assembled, assembled->Size());
+            for (const auto& source : sources) {
+                if (source.slab) recorder->Keep(source.slab);
+            }
             // The image itself must outlive the recorded copy: the cache may evict it right after.
             if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
             // The detile reads the tiled bytes from the import when the batch runs.
@@ -2178,7 +2199,16 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
             batch = std::make_unique<CommandBatch>(context);
             commands = batch->Handle();
         }
-        const auto importOffset = descriptor.baseAddress - import->base;
+        if (assembled) {
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            for (const auto& source : sources) {
+                const VkBufferCopy piece{source.offset, source.begin, source.end - source.begin};
+                context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer")(commands, source.buffer, assembled->Handle(), 1, &piece);
+            }
+        }
+        // The detile's source (the barriers below order the assembly's copies before it).
+        const VkBuffer sourceBuffer = assembled ? assembled->Handle() : import->buffer;
+        const auto importOffset = assembled ? 0 : descriptor.baseAddress - import->base;
         if (direct) {
             recordDirectUploadBarrier(commands, layers == nullptr);
             for (std::uint32_t layer = 0; layer < arrayLayers; ++layer) {
@@ -2186,7 +2216,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
                 for (std::uint32_t level = 0; level < mips.size(); ++level) {
                     if (!geometry.HasLayer(level, layer)) continue;
                     const auto& mip = mips[level];
-                    detiler.DispatchImage(commands, descriptor.tileMode, elementBytes, import->buffer, importOffset + geometry.GuestLayerOffset(layer) + mip.tiledOffset, elementLayerView(level, layer), mip, false, layer, {.pipeBankXor = descriptor.pipeBankXor});
+                    detiler.DispatchImage(commands, descriptor.tileMode, elementBytes, sourceBuffer, importOffset + geometry.GuestLayerOffset(layer) + mip.tiledOffset, elementLayerView(level, layer), mip, false, layer, {.pipeBankXor = descriptor.pipeBankXor});
                 }
             }
             recordDirectUploadDone(commands);
@@ -2205,7 +2235,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
             for (std::uint32_t level = 0; level < mips.size(); ++level) {
                 if (!geometry.HasLayer(level, layer)) continue;
                 const auto& mip = mips[level];
-                detiler.Dispatch(commands, descriptor.tileMode, elementBytes, import->buffer, importOffset + geometry.GuestLayerOffset(layer) + mip.tiledOffset, linear->Handle(), geometry.LinearLayerOffset(layer) + mip.linearOffset, mip, false, layer, geometry.thick, {.pipeBankXor = descriptor.pipeBankXor});
+                detiler.Dispatch(commands, descriptor.tileMode, elementBytes, sourceBuffer, importOffset + geometry.GuestLayerOffset(layer) + mip.tiledOffset, linear->Handle(), geometry.LinearLayerOffset(layer) + mip.linearOffset, mip, false, layer, geometry.thick, {.pipeBankXor = descriptor.pipeBankXor});
             }
         }
         const auto linearRead = WholeBufferBarrier(linear->Handle(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
