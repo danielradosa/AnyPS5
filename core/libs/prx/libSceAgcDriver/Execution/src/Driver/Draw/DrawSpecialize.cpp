@@ -70,6 +70,25 @@ void Driver::stopDrawSpecialize() noexcept {
     drawSpecialize.idle.notify_all();
 }
 
+void Driver::WaitSpecializations() {
+    std::unique_lock lock(drawSpecialize.mutex);
+    drawSpecialize.idle.wait(lock, [&] { return !drawSpecialize.open.load() || (drawSpecialize.queue.empty() && drawSpecialize.running == 0); });
+}
+
+SpecializeCounters Driver::DrawSpecializeCounters() {
+    SpecializeCounters result;
+    for (std::size_t which = 0; which < SpecializeCountCount; ++which) result.counts[which] = drawSpecialize.counts[which].load(std::memory_order_relaxed);
+    result.jobNanoseconds = drawSpecialize.jobNanoseconds.load(std::memory_order_relaxed);
+    result.waiting = drawSpecialize.depth.load(std::memory_order_relaxed);
+    std::lock_guard cacheLock(drawCacheMutex);
+    for (const auto& item : drawCache) {
+        for (const auto& variants : item.second->stages) {
+            result.specializedVariants += static_cast<std::size_t>(std::count_if(variants.begin(), variants.end(), [](const std::shared_ptr<DispatchVariant>& variant) { return variant->registration != nullptr && !variant->compiled->registrationModule; }));
+        }
+    }
+    return result;
+}
+
 void* Driver::drawSpecializeMain(void* driver) {
     static_cast<Driver*>(driver)->runDrawSpecialize();
     return nullptr;
