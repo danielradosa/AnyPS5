@@ -368,7 +368,8 @@ public:
                 const auto memory = query(cursor);
                 if (memory.State != MEM_COMMIT || memory.Type != MEM_PRIVATE) return false;
                 const auto stop = std::min(end, reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize);
-                ULONG_PTR available = capacity - *count;
+                // Sized to the range's pages: GetWriteWatch's cost grows with the array it is handed.
+                ULONG_PTR available = std::min<ULONG_PTR>(capacity - *count, (stop + 4095) / 4096 - cursor / 4096);
                 if (available == 0) return true;
                 DWORD granularity = 0;
                 if (GetWriteWatch(clear ? WRITE_WATCH_FLAG_RESET : 0, reinterpret_cast<void*>(cursor), stop - cursor, pages + *count, &available, &granularity) != 0) fail("collect private guest writes");
