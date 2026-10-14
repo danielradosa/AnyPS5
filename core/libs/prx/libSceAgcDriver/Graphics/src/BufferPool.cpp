@@ -30,6 +30,35 @@ BufferPool::BufferPool(const Context& context) : device(context.device), unmap(c
     smallTier.budget = smallBudget;
     largeTier.budget = budget;
     deviceTier.budget = DeviceTierEnabled() ? DeviceBudget(context.memory) : 0;
+    physical = context.physical;
+    memoryProperties2 = context.memoryProperties2;
+    for (std::uint32_t heap = 0; heap < context.memory.memoryHeapCount && heap < VK_MAX_MEMORY_HEAPS; ++heap) {
+        if ((context.memory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 && (!deviceHeap || context.memory.memoryHeaps[heap].size > context.memory.memoryHeaps[*deviceHeap].size)) deviceHeap = heap;
+    }
+}
+
+VkDeviceSize BufferPool::DeviceRetainAllowance(VkDeviceSize retained, VkDeviceSize usage, VkDeviceSize budget, VkDeviceSize margin) {
+    const auto line = budget > margin ? budget - margin : 0;
+    if (usage <= line) return retained + (line - usage);
+    const auto over = usage - line;
+    return retained > over ? retained - over : 0;
+}
+
+void BufferPool::refreshDeviceAllowance() {
+    static const VkDeviceSize margin = [] {
+        const char* text = std::getenv("APS5_VRAM_MARGIN_MIB");
+        return static_cast<VkDeviceSize>(text != nullptr ? std::strtoull(text, nullptr, 10) : 384ull) << 20u;
+    }();
+    if (margin == 0 || memoryProperties2 == nullptr || physical == VK_NULL_HANDLE || !deviceHeap) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - allowanceChecked < std::chrono::milliseconds(100)) return;
+    allowanceChecked = now;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT reported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    properties.pNext = &reported;
+    memoryProperties2(physical, &properties);
+    if (reported.heapBudget[*deviceHeap] == 0) return;
+    deviceAllowance = DeviceRetainAllowance(deviceTier.retainedBytes, reported.heapUsage[*deviceHeap], reported.heapBudget[*deviceHeap], margin);
 }
 
 BufferPool::~BufferPool() {
@@ -223,7 +252,7 @@ std::optional<BufferAllocation> BufferPool::Take(std::size_t bytes, VkBufferUsag
         const auto now = std::chrono::steady_clock::now();
         if (now - lastReport > std::chrono::seconds(10)) {
             lastReport = now;
-            AgcDriver::ProfilePrint_nid_no_patch("[bufferpool] small: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB); large: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB)%s; device: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB of %llu)\n", static_cast<unsigned long long>(smallTier.hits), static_cast<unsigned long long>(smallTier.misses), static_cast<unsigned long long>(smallTier.evictions), smallTier.slots, smallTier.retainedBytes / 1048576.0, static_cast<unsigned long long>(largeTier.hits), static_cast<unsigned long long>(largeTier.misses), static_cast<unsigned long long>(largeTier.evictions), largeTier.slots, largeTier.retainedBytes / 1048576.0, sharedTiers() ? " (shared)" : "", static_cast<unsigned long long>(deviceTier.hits), static_cast<unsigned long long>(deviceTier.misses), static_cast<unsigned long long>(deviceTier.evictions), deviceTier.slots, deviceTier.retainedBytes / 1048576.0, static_cast<unsigned long long>(deviceTier.budget >> 20u));
+            AgcDriver::ProfilePrint_nid_no_patch("[bufferpool] small: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB); large: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB)%s; device: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB of %llu)\n", static_cast<unsigned long long>(smallTier.hits), static_cast<unsigned long long>(smallTier.misses), static_cast<unsigned long long>(smallTier.evictions), smallTier.slots, smallTier.retainedBytes / 1048576.0, static_cast<unsigned long long>(largeTier.hits), static_cast<unsigned long long>(largeTier.misses), static_cast<unsigned long long>(largeTier.evictions), largeTier.slots, largeTier.retainedBytes / 1048576.0, sharedTiers() ? " (shared)" : "", static_cast<unsigned long long>(deviceTier.hits), static_cast<unsigned long long>(deviceTier.misses), static_cast<unsigned long long>(deviceTier.evictions), deviceTier.slots, deviceTier.retainedBytes / 1048576.0, static_cast<unsigned long long>(std::min(deviceTier.budget, deviceAllowance) >> 20u));
         }
     }
     auto& tier = tierFor(capacity, properties);
@@ -309,10 +338,12 @@ void BufferPool::Put(const BufferAllocation& allocation) noexcept {
     try {
         std::lock_guard lock(mutex);
         auto& tier = tierFor(allocation.bytes, allocation.properties);
-        if (allocation.allocationBytes > tier.budget) {
+        if (&tier == &deviceTier) refreshDeviceAllowance();
+        const auto limit = &tier == &deviceTier ? std::min(tier.budget, deviceAllowance) : tier.budget;
+        if (allocation.allocationBytes > limit) {
             evicted.push_back(allocation);
         } else {
-            while (tier.slots != 0 && (tier.retainedBytes + allocation.allocationBytes > tier.budget || tier.slots >= maxSlots)) evictOldest(tier, evicted);
+            while (tier.slots != 0 && (tier.retainedBytes + allocation.allocationBytes > limit || tier.slots >= maxSlots)) evictOldest(tier, evicted);
             tier.free[{allocation.bytes, allocation.usage, allocation.properties}].push_back({allocation, ++clock});
             ++tier.slots;
             tier.retainedBytes += allocation.allocationBytes;

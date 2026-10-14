@@ -487,8 +487,16 @@ void PartialSlabDoesNotRetry() {
 
 }
 
+void DeviceAllowance() {
+    Expect(BufferPool::DeviceRetainAllowance(100, 500, 1000, 200) == 400, "a heap below budget - margin leaves the pool its retained bytes plus the room to that line");
+    Expect(BufferPool::DeviceRetainAllowance(300, 900, 1000, 200) == 200, "a heap 100 over budget - margin takes 100 from the retained bytes");
+    Expect(BufferPool::DeviceRetainAllowance(50, 1000, 1000, 200) == 0, "a heap further over than the pool holds retains nothing");
+    Expect(BufferPool::DeviceRetainAllowance(5, 10, 100, 200) == 0, "a margin over the budget retains nothing once the heap is used");
+}
+
 int main() {
     try {
+        DeviceAllowance();
         SizeClassesAndDirections();
         LargerClass();
         KeptUntilFence();
