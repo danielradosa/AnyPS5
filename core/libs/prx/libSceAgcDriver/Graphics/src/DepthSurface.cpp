@@ -453,17 +453,33 @@ public:
             const auto bytes = static_cast<std::size_t>(geometry.layerBytes);
             const std::array<std::pair<std::uint64_t, std::uint64_t>, 1> range{{{address, address + bytes}}};
             if (StorageTexture::AnyPendingUnitInside(range) || AnyShadowedOverlaps(address, bytes) || Recorder::SnapshotWriteOverlaps(address, bytes)) GuestMemory::FlushGpuWrites(address, bytes);
-            const GuestLayer current{address, geometry.layerBytes, resource.tileMode, geometry.thick, GuestMemory::CollectWrites(address, bytes)};
-            if (held.generation != 0 && held.address == current.address && held.bytes == current.bytes && held.tileMode == current.tileMode && held.thick == current.thick && !Recorder::SnapshotWriteOverlaps(current.address, bytes) && GuestMemory::UnchangedSince(current.address, bytes, held.generation)) {
-                held.generation = current.generation;
-                continue;
+            const auto generation = GuestMemory::CollectWrites(address, bytes);
+            const bool same = held.address == address && held.bytes == geometry.layerBytes && held.tileMode == resource.tileMode && held.thick == geometry.thick;
+            if (same && !Recorder::SnapshotWriteOverlaps(address, bytes)) {
+                if (held.generation != 0 && GuestMemory::UnchangedSince(address, bytes, held.generation)) {
+                    held.generation = generation;
+                    continue;
+                }
+                // An untracked range (a direct host import on Windows, or no write watching): the bytes uploaded last decide.
+                if (generation == 0 && untrackedUnchanged(held, address)) continue;
             }
             auto upload = std::make_shared<Buffer>(context, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-            GuestMemory::ReadCommitted(current.address, upload->Bytes().first(bytes));
+            held = {address, geometry.layerBytes, resource.tileMode, geometry.thick, generation};
+            if (generation == 0) {
+                held.saved.resize(bytes);
+                GuestMemory::ReadCommitted(address, held.saved);
+                std::copy(held.saved.begin(), held.saved.end(), upload->Bytes().begin());
+            } else {
+                GuestMemory::ReadCommitted(address, upload->Bytes().first(bytes));
+            }
             uploads.push_back(std::move(upload));
             uploadLayers.push_back(layer);
-            held = current;
             depthPlaneUploads().fetch_add(1, std::memory_order_relaxed);
+        }
+        static const bool trace = std::getenv("APS5_DEPTH_PLANE_TRACE") != nullptr;
+        static std::atomic<int> traced{0};
+        if (trace && (!copiedLayers.empty() || !uploads.empty()) && traced.fetch_add(1) < 400) {
+            std::fprintf(stderr, "[depth-plane] base 0x%llx %ux%u layers %u copied %zu uploaded %zu layerBytes %llu sliceLinear %llu staging %zu | tex %ux%u fmt %u dim %d tile %u baseArray %u lastArray %u\n", static_cast<unsigned long long>(resource.baseAddress), extent.width, extent.height, layers, copiedLayers.size(), uploads.size(), static_cast<unsigned long long>(geometry.layerBytes), static_cast<unsigned long long>(geometry.sliceLinearBytes), stagingBytes, resource.width, resource.height, resource.format, static_cast<int>(resource.dimension), resource.tileMode, resource.baseArray, resource.depthOrLastArray);
         }
         if (!copiedLayers.empty() || !uploads.empty()) {
             depthPlaneRefreshes().fetch_add(1, std::memory_order_relaxed);
@@ -492,7 +508,25 @@ private:
         TextureTileMode tileMode = TextureTileMode::kLinear;
         bool thick = false;
         std::uint64_t generation = 0;
+        // Untracked ranges only: the bytes uploaded, and the stamp of the last comparison that matched them.
+        std::vector<std::byte> saved;
+        std::array<std::uint64_t, 4> compared{};
     };
+
+    // Main's comparison for untracked storage images (StorageTexture::compareUntracked): within one collect epoch, with
+    // no driver stamp, page forget or recorded write over the layer since, the last matching comparison still holds.
+    static bool untrackedUnchanged(GuestLayer& held, std::uint64_t address) {
+        if (held.saved.size() != held.bytes) return false;
+        const auto* recorder = Recorder::Active();
+        const auto epoch = GuestMemory::CollectEpoch();
+        const std::array<std::uint64_t, 4> stamp{epoch, GuestMemory::NewestStamp(address, held.saved.size()), GuestMemory::ForgetSerial(), recorder != nullptr ? recorder->NewestWriteNote(address, held.saved.size()) : 0};
+        const bool cacheable = epoch != 0 && (stamp[2] & 1u) == 0;
+        if (cacheable && held.compared == stamp) return true;
+        held.compared = {};
+        if (!GuestMemory::EqualsCommittedUnsynced(address, held.saved)) return false;
+        if (cacheable) held.compared = stamp;
+        return true;
+    }
 
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;

@@ -1917,6 +1917,15 @@ void depthPlaneUploadTests(const Device& device, Recorder& recorder) {
     sample();
     Require(DepthPlaneUploads() == before + 2, "a layer the CPU wrote was not read again");
     Require(DepthPlaneRefreshes() == refreshes + 3, "a layer the CPU wrote did not refresh the plane copy");
+    AgcDriver::GuestMemory::Unwatch(address, bytes);
+    Require(!AgcDriver::GuestMemory::Watched(address, bytes), "the depth plane fixture is still write-watched");
+    sample();
+    Require(DepthPlaneUploads() == before + 3, "the first sample of a layer dropped from write tracking was not read from guest memory");
+    sample();
+    Require(DepthPlaneUploads() == before + 3, "an unchanged layer without write tracking was read again");
+    static_cast<volatile std::uint8_t*>(block)[slice + 128] = 0x3e;
+    sample();
+    Require(DepthPlaneUploads() == before + 4, "a layer the CPU wrote without write tracking was not read again");
 }
 
 void resourceReadTests(const Device& device, Recorder& recorder) {
