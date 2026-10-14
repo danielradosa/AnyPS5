@@ -2,7 +2,7 @@
 
 ### Silent stubs
 
-- [libSceSystemGesture](../../../core/libs/prx/libSceSystemGesture/Export.cpp) - the recognizers accept every call but never report a touch or primitive event, so a title that builds its touch UI on them sees no tap or drag even though libScePad reports touchpad contacts; lookups by event or primitive ID find nothing and `sceSystemGestureGetTouchRecognizerInformation` reports `updated_time` 0
+- [libSceSystemGesture](../../../core/libs/prx/libSceSystemGesture/Export.cpp) - the recognizers accept every call with a valid handle and pointers but never report a touch or primitive event, so a title that builds its touch UI on them sees no tap or drag even though libScePad reports touchpad contacts; lookups by event or primitive ID find nothing and `sceSystemGestureGetTouchRecognizerInformation` reports `updated_time` 0
 
 ### Unknown function info
 

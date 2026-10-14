@@ -1,12 +1,11 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libScePosixForWebKit/GuestResolver.hpp"
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <exception>
 #include <source_location>
-#include <stdexcept>
 #include <thread>
 
 extern "C" GuestResolver::ServiceEntry* APS5_VABI getservbyname_nid_postfix(const char*, const char*);
@@ -22,16 +21,6 @@ bool NetworkPort(const GuestResolver::ServiceEntry* entry, std::uint16_t port) {
     unsigned char bytes[4];
     std::memcpy(bytes, &entry->port, sizeof(bytes));
     return bytes[0] == port >> 8 && bytes[1] == (port & 0xff) && bytes[2] == 0 && bytes[3] == 0;
-}
-
-template<typename TException>
-bool Throws(const char* name, const char* protocol) {
-    try {
-        getservbyname_nid_postfix(name, protocol);
-    } catch (const TException&) {
-        return true;
-    }
-    return false;
 }
 
 int main() {
@@ -56,11 +45,11 @@ int main() {
     auto* mail = getservbyname_nid_postfix("mail", nullptr);
     Require(mail && std::strcmp(mail->name, "smtp") == 0 && NetworkPort(mail, 25));
 
-    Require(Throws<std::exception>("no-such-service", nullptr));
-    Require(Throws<std::exception>("domain", "sctp"));
-    Require(Throws<std::exception>("ntp", "TCP"));
-    Require(Throws<std::exception>("HTTP", "tcp"));
-    Require(Throws<std::invalid_argument>(nullptr, "tcp"));
+    errno = 0;
+    Require(getservbyname_nid_postfix("no-such-service", nullptr) == nullptr && errno == 0);
+    Require(getservbyname_nid_postfix("domain", "sctp") == nullptr);
+    Require(getservbyname_nid_postfix("ntp", "TCP") == nullptr);
+    Require(getservbyname_nid_postfix("HTTP", "tcp") == nullptr);
 
     auto* ntp = getservbyname_nid_postfix("ntp", "udp");
     Require(ntp && NetworkPort(ntp, 123));

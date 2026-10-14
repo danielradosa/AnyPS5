@@ -100,8 +100,6 @@ long double APS5_VABI fmal_nid_postfix(long double x, long double y, long double
 long double APS5_VABI ceill_nid_postfix(long double value) { return std::ceil(value); }
 long double APS5_VABI floorl_nid_postfix(long double value) { return std::floor(value); }
 long double APS5_VABI roundl_nid_postfix(long double value) { return std::round(value); }
-std::int64_t APS5_VABI lroundl_nid_postfix(long double value) { return std::llround(value); }
-std::int64_t APS5_VABI llroundl_nid_postfix(long double value) { return std::llround(value); }
 long double APS5_VABI nearbyintl_nid_postfix(long double value) { return std::nearbyint(value); }
 
 long double APS5_VABI fmodl_nid_postfix(long double x, long double y) { return std::fmod(x, y); }

@@ -22,6 +22,7 @@ int APS5_VABI sceNpWebApi2PushEventDeleteHandle(int, int);
 int APS5_VABI sceNpWebApi2PushEventCreateFilter(int, int, const char*, std::uint32_t, const void*, std::size_t);
 int APS5_VABI sceNpWebApi2CreateUserContext(int, int);
 int APS5_VABI sceNpWebApi2CreateRequest(int, const char*, const char*, const char*, const void*, std::int64_t*);
+int APS5_VABI sceNpWebApi2SetRequestTimeout(std::int64_t, std::uint32_t);
 int APS5_VABI sceNpWebApi2DeleteRequest(std::int64_t);
 int APS5_VABI sceNpWebApi2AddWebTraceTag(std::int64_t, const char*);
 }
@@ -83,12 +84,13 @@ int main() {
     constexpr int requestNotFound = static_cast<int>(0x80553406);
     const int user = sceNpWebApi2CreateUserContext(context, 1);
     std::int64_t request = 0;
-    Require(sceNpWebApi2CreateRequest(user, "userProfile", "/v1/users/me/profile", "GET", nullptr, &request) == 0 && request > 0);
+    Require(user > 0 && sceNpWebApi2CreateRequest(user, "userProfile", "/v1/users/me/profile", "GET", nullptr, &request) == 0 && request > 0);
     Require(sceNpWebApi2AddWebTraceTag(request, nullptr) == invalidArgument);
     Require(sceNpWebApi2AddWebTraceTag(request, "trace-1") == 0);
     Require(sceNpWebApi2AddWebTraceTag(request, "trace-2") == 0);
     Require(sceNpWebApi2AddWebTraceTag(request + 1000, "trace") == requestNotFound);
     Require(sceNpWebApi2AddWebTraceTag(0, "trace") == requestNotFound);
+    Require(sceNpWebApi2SetRequestTimeout(request, 30000000) == 0);
     Require(sceNpWebApi2DeleteRequest(request) == 0);
     Require(sceNpWebApi2AddWebTraceTag(request, "trace") == requestNotFound);
     Require(sceNpWebApi2Terminate(context) == 0);

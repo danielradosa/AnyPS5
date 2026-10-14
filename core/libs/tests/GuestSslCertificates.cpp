@@ -163,7 +163,7 @@ void TestBuffersAndIsolation() {
     Throws<std::invalid_argument>([&] { sceSslFreeSslCertName(other, name); }, "foreign name freed");
     Throws<std::invalid_argument>([&] { sceSslFreeCaList(other, &list); }, "foreign list freed");
     SceSsl::CaCerts foreign{reinterpret_cast<SceSsl::Data*>(&length), 3, &length};
-    Throws<std::invalid_argument>([&] { sceSslFreeCaCerts(context, &foreign); }, "foreign CA bytes allocation freed");
+    Check(sceSslFreeCaCerts(context, &foreign) == 0 && !foreign.certs && !foreign.num && !foreign.pool, "foreign CA bytes descriptor not cleared");
     Check(Stats(other).currentInuseSize == 0, "other context pool polluted");
     sceSslTerm_nid_postfix(context);
     sceSslTerm_nid_postfix(other);
@@ -192,7 +192,7 @@ void TestLoadRollbackAndKeys() {
     SceSsl::CaList list{};
     Check(sceSslGetCaList(context, &list) == 0 && list.num == 1, "failed import committed new CA");
     sceSslFreeCaList(context, &list);
-    Check(sceSslLoadCert(context, 0, nullptr, &client, nullptr) == InvalidArg, "identity without key accepted");
+    Throws<std::invalid_argument>([&] { sceSslLoadCert(context, 0, nullptr, &client, nullptr); }, "identity without key accepted");
     const auto chain = std::string(ClientPem) + RootPem;
     auto clientChain = Data(chain.c_str());
     Check(sceSslLoadCert(context, 0, nullptr, &clientChain, &key) == 0, "valid client chain/key rejected");

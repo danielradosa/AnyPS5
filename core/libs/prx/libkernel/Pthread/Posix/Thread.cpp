@@ -31,6 +31,12 @@ int APS5_VABI scePthreadGetprio(Pthread thread, int* prio);
 }
 
 static constexpr int GUEST_SCHED_FIFO = 1;
+static constexpr int GUEST_SCHED_RR = 3;
+
+static bool AcceptsSchedParam(int policy, int priority) {
+    if (policy != GUEST_SCHED_FIFO && policy != GUEST_SCHED_RR) return false;
+    return (priority >= 256 && priority <= 767) || (priority >= 896 && priority <= 959);
+}
 static constexpr std::size_t GUEST_CPUSET_BYTES = 32;
 static constexpr int GUEST_ERANGE = 34;
 
@@ -148,20 +154,21 @@ void APS5_VABI pthread_exit_nid_postfix(void* value) {
 
 int APS5_VABI scePthreadGetschedparam(Pthread thread, int* policy, KernelSchedParam* param) {
     if (!policy || !param) return SCE_KERNEL_ERROR_EINVAL;
-    *policy = GUEST_SCHED_FIFO;
-    return scePthreadGetprio(thread, &param->sched_priority);
+    const int result = scePthreadGetprio(thread, &param->sched_priority);
+    if (result == 0) *policy = thread->schedPolicy.load(std::memory_order_relaxed);
+    return result;
 }
 
 int APS5_VABI scePthreadSetschedparam(Pthread thread, int policy, const KernelSchedParam* param) {
-    (void)policy;
-    if (!param) return SCE_KERNEL_ERROR_EINVAL;
-    return scePthreadSetprio(thread, param->sched_priority);
+    if (!param || !AcceptsSchedParam(policy, param->sched_priority)) return SCE_KERNEL_ERROR_EINVAL;
+    const int result = scePthreadSetprio(thread, param->sched_priority);
+    if (result == 0) thread->schedPolicy.store(policy, std::memory_order_relaxed);
+    return result;
 }
 
 int APS5_VABI pthread_getschedparam_nid_postfix(Pthread thread, int* policy, KernelSchedParam* param) {
     if (!policy || !param) return PosixThread::GUEST_EINVAL;
-    *policy = GUEST_SCHED_FIFO;
-    return PosixThread::ToErrno(scePthreadGetprio(thread, &param->sched_priority));
+    return PosixThread::ToErrno(scePthreadGetschedparam(thread, policy, param));
 }
 
 int APS5_VABI pthread_getaffinity_np_nid_postfix(Pthread thread, std::size_t cpusetSize, void* cpuset) {
@@ -185,15 +192,12 @@ int APS5_VABI pthread_setaffinity_np_nid_postfix(Pthread thread, std::size_t cpu
     }
     if (cpusetSize != GUEST_CPUSET_BYTES) return GUEST_ERANGE;
     if (!cpuset) return PosixThread::GUEST_EFAULT;
-    const auto* bytes = static_cast<const std::uint8_t*>(cpuset);
-    for (std::size_t index = sizeof(KernelCpumask); index < GUEST_CPUSET_BYTES; ++index) {
-        if (bytes[index] != 0) return GuestEdeadlk;
-    }
     KernelCpumask requested = 0;
-    std::memcpy(&requested, bytes, sizeof(requested));
-    if (requested == 0 || (requested & ~sceKernelGetAvailableCpumask()) != 0) return GuestEdeadlk;
-    if (thread == self) return PosixThread::ToErrno(scePthreadSetaffinity(thread, requested));
-    return SetGuestThreadAffinityIfLive(thread, requested) ? 0 : PosixThread::GUEST_ESRCH;
+    std::memcpy(&requested, cpuset, sizeof(requested));
+    const KernelCpumask affinity = requested & sceKernelGetAvailableCpumask();
+    if (affinity == 0) return GuestEdeadlk;
+    if (thread == self) return PosixThread::ToErrno(scePthreadSetaffinity(thread, affinity));
+    return SetGuestThreadAffinityIfLive(thread, affinity) ? 0 : PosixThread::GUEST_ESRCH;
 }
 
 int APS5_VABI pthread_join_nid_postfix(Pthread thread, void** value) {
@@ -259,9 +263,8 @@ int APS5_VABI pthread_setprio_nid_postfix(Pthread thread, int prio) {
 }
 
 int APS5_VABI pthread_setschedparam_nid_postfix(Pthread thread, int policy, const KernelSchedParam* param) {
-    (void)policy;
     if (!param) return PosixThread::GUEST_EINVAL;
-    return PosixThread::ToErrno(scePthreadSetprio(thread, param->sched_priority));
+    return PosixThread::ToErrno(scePthreadSetschedparam(thread, policy, param));
 }
 
 void APS5_VABI pthread_testcancel_nid_postfix(void) {

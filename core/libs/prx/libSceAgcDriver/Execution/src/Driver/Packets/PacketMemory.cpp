@@ -185,6 +185,18 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
                 }
             }
         }
+        if (drained && opcode == 0x50 && Pm4::DmaSource(packet) == 2 && Pm4::DmaDestination(packet) != 1) {
+            const auto destination = packet[4] | (static_cast<std::uint64_t>(packet[5]) << 32u);
+            const std::size_t bytes = packet[6] & 0x3ffffffu;
+            if (bytes != 0 && destination % 16 == 0 && bytes % 16 == 0 && GuestMemory::Accessible(reinterpret_cast<const void*>(destination), bytes, true)) {
+                if (const auto localDevice = device.Load()) {
+                    storeBufferFill(submission.queue, destination, bytes, {packet[2], packet[2], packet[2], packet[2]}, localDevice, false, false);
+                    ++dmaFills;
+                    wroteOnGpu = true;
+                    drained = false;
+                }
+            }
+        }
         // A DMA_DATA into the emulated GDS: Pm4::Execute stores it on the CPU through GuestMemory::Write,
         // whose flush hook waits for the recorded GPU work noted over the GDS. Every GDS binding notes
         // the whole GDS as written (ShaderResources: AddWritable), readers included, so that work is
@@ -207,7 +219,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
 
     static const bool drawDrain = std::getenv("APS5_DRAW_DRAIN") != nullptr;
     drawPacket = Pm4::DrawOpcode(opcode);
-    sampleDump = opcode == 0x46 && (packet[1] & 0x3fu) == 0x39u;
+    sampleDump = Pm4::SampleDump(packet);
     // APS5_SYNTHETIC_OCCLUSION=1: every occlusion query reads "visible" (a counter that grows by 1 per DB and dump,
     // as KytyPS5 publishes it): no host queries, no segments, no drain. The values go out as deferred labels, in queue
     // order with the game's own GPU stores to the result buffer (a CPU store would wait for those).
@@ -215,16 +227,16 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
     if (sampleDump && syntheticOcclusion && DeferLabels()) {
         static std::atomic<std::uint64_t> counter{0};
         const std::uint64_t value = (1ull << 63u) | counter.fetch_add(1, std::memory_order_relaxed);
-        const std::uint64_t address = packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u);
+        const std::uint64_t address = Pm4::SampleDumpAddress(packet);
         auto& deferred = deferredLabels();
         if (deferred.labels.empty()) deferred.since = std::chrono::steady_clock::now();
-        for (std::uint64_t db = 0; db < 16; ++db) {
+        for (std::uint64_t db = 0; db < Pm4::SampleDumpBlocks; ++db) {
             auto& entry = deferred.labels.emplace_back();
-            entry.address = address + db * 16u;
-            entry.size = sizeof(value);
+            entry.address = address + db * Pm4::SampleDumpStride;
+            entry.size = Pm4::SampleDumpBlockBytes;
             std::memcpy(entry.bytes.data(), &value, sizeof(value));
         }
-        queuedLabels += 16;
+        queuedLabels += Pm4::SampleDumpBlocks;
         sampleDump = false;
     }
     if (sampleDump && !drainAll) {
@@ -232,8 +244,14 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         std::lock_guard gpuLock(GuestMemory::GpuMutex());
         if (const auto localDevice = device.Load()) {
             recordDeferredLabels(localDevice.get(), submission.queue);
-            wroteOnGpu = localDevice->DumpSamplesOnGpu(packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u));
+            wroteOnGpu = localDevice->DumpSamplesOnGpu(Pm4::SampleDumpAddress(packet));
         }
+    }
+
+    if (header == FlipPacketHeader) {
+        GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Flush);
+        std::lock_guard gpuLock(GuestMemory::GpuMutex());
+        static_cast<void>(Graphics::StorageTexture::StoreSmallPending("flip"));
     }
 
     static const bool syncFlip = std::getenv("APS5_SYNC_FLIP") != nullptr;
@@ -297,9 +315,9 @@ void Driver::dumpSampleCounters(std::uint64_t address) {
         samples = recorder->SamplesTotal();
     }
     constexpr std::uint64_t ready = 1ull << 63u;
-    for (std::uint64_t db = 0; db < 16; ++db) {
+    for (std::uint64_t db = 0; db < Pm4::SampleDumpBlocks; ++db) {
         const std::uint64_t value = ready | (db == 0 ? samples : 0u);
-        GuestMemory::Write(address + db * 16u, std::as_bytes(std::span(&value, 1)), 8);
+        GuestMemory::Write(address + db * Pm4::SampleDumpStride, std::as_bytes(std::span(&value, 1)).first(Pm4::SampleDumpBlockBytes), 8);
     }
 }
 

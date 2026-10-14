@@ -7,7 +7,6 @@
 #include <cstring>
 #include <list>
 #include <mutex>
-#include <new>
 #include <stdexcept>
 #include <string>
 #include "SceTypes.hpp"
@@ -593,11 +592,8 @@ const Value* APS5_VABI _ZNK3sce4Json5Array4backEv(const Array* self) {
     if (self->items->empty()) throw std::out_of_range("sce::Json::Array::back: empty array");
     return &self->items->back();
 }
-void APS5_VABI _ZN3sce4Json5Array8iteratorC1Ev(ArrayIterator* self) { new (self) ArrayIterator{}; }
 void APS5_VABI _ZN3sce4Json5Array8iteratorD1Ev(ArrayIterator* self) { (void)self; }
-ArrayIterator* APS5_VABI _ZN3sce4Json5Array8iteratoraSERKS2_(ArrayIterator* self, const ArrayIterator* other) { self->it = other->it; return self; }
 ArrayIterator* APS5_VABI _ZN3sce4Json5Array8iteratorppEv(ArrayIterator* self) { ++self->it; return self; }
-ArrayIterator* APS5_VABI _ZN3sce4Json5Array8iteratorppEi(ArrayIterator* result, ArrayIterator* self, int) { result->it = self->it++; return result; }
 Value* APS5_VABI _ZNK3sce4Json5Array8iteratordeEv(const ArrayIterator* self) { return &*self->it; }
 Value* APS5_VABI _ZNK3sce4Json5Array8iteratorptEv(const ArrayIterator* self) { return &*self->it; }
 bool APS5_VABI _ZNK3sce4Json5Array8iteratorneERKS2_(const ArrayIterator* self, const ArrayIterator* other) { return self->it != other->it; }
@@ -632,16 +628,6 @@ ObjectIterator* APS5_VABI _ZNK3sce4Json6Object4findERKNS0_6StringE(ObjectIterato
     return result;
 }
 bool APS5_VABI _ZNK3sce4Json6Object8iteratorneERKS2_(const ObjectIterator* self, const ObjectIterator* other) { return self->it != other->it; }
-void APS5_VABI _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(Pair* self, const String* key, const Value* value) {
-    Pair pair{};
-    CopyInto(pair.value, *value);
-    Construct(pair.key, *key->text);
-    *self = pair;
-}
-void APS5_VABI _ZN3sce4Json6Object4PairD1Ev(Pair* self) {
-    Destroy(self->key);
-    Destroy(self->value);
-}
 bool APS5_VABI _ZNK3sce4Json6Object5emptyEv(const Object* self) { return self->items->empty(); }
 std::size_t APS5_VABI _ZNK3sce4Json6Object4sizeEv(const Object* self) { return self->items->size(); }
 
@@ -961,6 +947,23 @@ bool APS5_VABI _ZNK3sce4Json5ValuecvbEv(const Value* self) {
     return NodeOf(*self).type != TypeNull;
 }
 
+void APS5_VABI _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(Pair* self, const String* key, const Value* value) {
+    Pair pair{};
+    Construct(pair.key, *key->text);
+    try {
+        CopyInto(pair.value, *value);
+    } catch (...) {
+        Destroy(pair.key);
+        throw;
+    }
+    *self = pair;
+}
+
+void APS5_VABI _ZN3sce4Json6Object4PairD1Ev(Pair* self) {
+    Destroy(self->key);
+    Destroy(self->value);
+}
+
 ObjectIterator* APS5_VABI _ZN3sce4Json6Object6insertERKNS1_4PairE(ObjectIterator* result, Object* self, const Pair* pair) {
     if (pair == nullptr) throw std::invalid_argument("sce::Json::Object::insert: null pair");
     auto found = std::find_if(self->items->begin(), self->items->end(), [&](const Pair& item) { return *item.key.text == *pair->key.text; });
@@ -972,5 +975,20 @@ ObjectIterator* APS5_VABI _ZN3sce4Json6Object6insertERKNS1_4PairE(ObjectIterator
     }
     result->it = found;
     return result;
+}
+
+ArrayIterator* APS5_VABI _ZN3sce4Json5Array8iteratorppEi(ArrayIterator* result, ArrayIterator* self, int) {
+    result->it = self->it;
+    ++self->it;
+    return result;
+}
+
+ArrayIterator* APS5_VABI _ZN3sce4Json5Array8iteratoraSERKS2_(ArrayIterator* self, const ArrayIterator* other) {
+    self->it = other->it;
+    return self;
+}
+
+void APS5_VABI _ZN3sce4Json5Array8iteratorC1Ev(ArrayIterator* self) {
+    self->it = {};
 }
 }

@@ -389,6 +389,78 @@ static void ObjectsAndArrays() {
     _ZN3sce4Json5ArrayD1Ev(&array);
 }
 
+static void ObjectPair() {
+    String key{};
+    _ZN3sce4Json6StringC1EPKc(&key, "answer");
+    Value value{};
+    _ZN3sce4Json5ValueC1Ev(&value);
+    Require(_ZN3sce4Json5Value3setEPKc(&value, "forty-two") == 0);
+
+    Pair pair{};
+    std::memset(&pair, 0x5a, sizeof(pair));
+    _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(&pair, &key, &value);
+    Require(pair.reserved == 0);
+    Require(pair.key.text != key.text && pair.value.node != value.node);
+    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(&pair.key), "answer") == 0);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&pair.value) == TypeString);
+    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(_ZNK3sce4Json5Value9getStringEv(&pair.value)), "forty-two") == 0);
+
+    Require(_ZN3sce4Json5Value3setEl(&value, 7) == 0);
+    _ZN3sce4Json6StringD1Ev(&key);
+    _ZN3sce4Json5ValueD1Ev(&value);
+    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(&pair.key), "answer") == 0);
+    Require(_ZNK3sce4Json5Value7getTypeEv(&pair.value) == TypeString);
+    _ZN3sce4Json6Object4PairD1Ev(&pair);
+    Require(pair.key.text == nullptr && pair.value.node == nullptr);
+}
+
+static void ArrayIteratorCopies() {
+    Array array{};
+    _ZN3sce4Json5ArrayC1Ev(&array);
+    for (std::int64_t i = 1; i <= 3; ++i) {
+        Value item{};
+        _ZN3sce4Json5ValueC1Ev(&item);
+        Require(_ZN3sce4Json5Value3setEl(&item, i) == 0);
+        _ZN3sce4Json5Array9push_backERKNS0_5ValueE(&array, &item);
+        _ZN3sce4Json5ValueD1Ev(&item);
+    }
+
+    Iterator it{};
+    std::memset(&it, 0x5a, sizeof(it));
+    _ZN3sce4Json5Array8iteratorC1Ev(&it);
+    Require(it.position == nullptr);
+
+    Iterator begin{}, end{};
+    _ZNK3sce4Json5Array5beginEv(&begin, &array);
+    _ZNK3sce4Json5Array3endEv(&end, &array);
+    Require(_ZN3sce4Json5Array8iteratoraSERKS2_(&it, &begin) == &it);
+    Require(!_ZNK3sce4Json5Array8iteratorneERKS2_(&it, &begin));
+
+    std::vector<std::int64_t> seen;
+    Iterator previous{};
+    while (_ZNK3sce4Json5Array8iteratorneERKS2_(&it, &end)) {
+        Require(_ZN3sce4Json5Array8iteratorppEi(&previous, &it, 0) == &previous);
+        seen.push_back(*_ZNK3sce4Json5Value10getIntegerEv(_ZNK3sce4Json5Array8iteratordeEv(&previous)));
+        Require(_ZNK3sce4Json5Array8iteratorneERKS2_(&previous, &it));
+    }
+    Require((seen == std::vector<std::int64_t>{1, 2, 3}));
+    Require(!_ZNK3sce4Json5Array8iteratorneERKS2_(&it, &end));
+    Require(*_ZNK3sce4Json5Value10getIntegerEv(_ZNK3sce4Json5Array8iteratordeEv(&previous)) == 3);
+
+    _ZN3sce4Json5Array8iteratorD1Ev(&previous);
+    _ZN3sce4Json5Array8iteratorD1Ev(&it);
+    _ZN3sce4Json5Array8iteratorD1Ev(&begin);
+    _ZN3sce4Json5Array8iteratorD1Ev(&end);
+    _ZN3sce4Json5ArrayD1Ev(&array);
+}
+
+static void AllocatorNotifyError() {
+    int allocator = 0x1234;
+    int userData = 0x5678;
+    _ZN3sce4Json12MemAllocator11notifyErrorEimPv(&allocator, -1, 64, &userData);
+    Require(allocator == 0x1234 && userData == 0x5678);
+}
+
 static void ObjectFind() {
     Object object{};
     _ZN3sce4Json6ObjectC1Ev(&object);
@@ -962,65 +1034,15 @@ static void StreamParse() {
     _ZN3sce4Json5ValueD1Ev(&root);
 }
 
-static void IteratorAssignmentAndPair() {
-    Array array{};
-    _ZN3sce4Json5ArrayC1Ev(&array);
-    Value flag{}, real{};
-    _ZN3sce4Json5ValueC1Eb(&flag, true);
-    _ZN3sce4Json5ValueC1Ed(&real, 2.5);
-    _ZN3sce4Json5Array9push_backERKNS0_5ValueE(&array, &flag);
-    _ZN3sce4Json5Array9push_backERKNS0_5ValueE(&array, &real);
-    _ZN3sce4Json5ValueD1Ev(&flag);
-    _ZN3sce4Json5ValueD1Ev(&real);
-
-    Iterator begin{}, end{}, it{}, old{};
-    _ZNK3sce4Json5Array5beginEv(&begin, &array);
-    _ZNK3sce4Json5Array3endEv(&end, &array);
-    _ZN3sce4Json5Array8iteratorC1Ev(&it);
-    Require(_ZN3sce4Json5Array8iteratoraSERKS2_(&it, &begin) == &it);
-    Require(_ZNK3sce4Json5Array8iteratordeEv(&it) == _ZNK3sce4Json5Array5frontEv(&array));
-    Require(!_ZNK3sce4Json5Array8iteratorneERKS2_(&it, &begin));
-
-    Require(_ZN3sce4Json5Array8iteratorppEi(&old, &it, 0) == &old);
-    Require(!_ZNK3sce4Json5Array8iteratorneERKS2_(&old, &begin));
-    Require(_ZNK3sce4Json5Array8iteratordeEv(&it) == _ZNK3sce4Json5Array4backEv(&array));
-    _ZN3sce4Json5Array8iteratorppEi(&old, &it, 0);
-    Require(_ZNK3sce4Json5Array8iteratordeEv(&old) == _ZNK3sce4Json5Array4backEv(&array));
-    Require(!_ZNK3sce4Json5Array8iteratorneERKS2_(&it, &end));
-    _ZN3sce4Json5Array8iteratorD1Ev(&old);
-    _ZN3sce4Json5Array8iteratorD1Ev(&it);
-    _ZN3sce4Json5Array8iteratorD1Ev(&end);
-    _ZN3sce4Json5Array8iteratorD1Ev(&begin);
-    _ZN3sce4Json5ArrayD1Ev(&array);
-
-    String key{}, other{};
-    _ZN3sce4Json6StringC1EPKc(&key, "key");
-    _ZN3sce4Json6StringC1EPKc(&other, "other");
-    Value value{};
-    _ZN3sce4Json5ValueC1El(&value, 7);
-    Pair pair{};
-    _ZN3sce4Json6Object4PairC1ERKNS0_6StringERKNS0_5ValueE(&pair, &key, &value);
-    Require(pair.key.text != key.text);
-    Require(pair.value.node != value.node);
-    _ZN3sce4Json6StringaSERKS1_(&key, &other);
-    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(&pair.key), "key") == 0);
-    Require(_ZN3sce4Json5Value3setEl(&value, 9) == 0);
-    Require(_ZNK3sce4Json5Value7getTypeEv(&pair.value) == TypeInteger);
-    Require(*_ZNK3sce4Json5Value10getIntegerEv(&pair.value) == 7);
-    _ZN3sce4Json5ValueD1Ev(&value);
-    _ZN3sce4Json6StringD1Ev(&key);
-    _ZN3sce4Json6StringD1Ev(&other);
-    Require(std::strcmp(_ZNK3sce4Json6String5c_strEv(&pair.key), "key") == 0);
-    Require(*_ZNK3sce4Json5Value10getIntegerEv(&pair.value) == 7);
-    _ZN3sce4Json6Object4PairD1Ev(&pair);
-}
-
 int main() {
     AllocatorErrors();
     ParseAndRoundTrip();
     NestingDepth();
     ObjectsAndArrays();
     ObjectFind();
+    ObjectPair();
+    ArrayIteratorCopies();
+    AllocatorNotifyError();
     NullAccess(_ZN3sce4Json11Initializer27setGlobalNullAccessCallBackEPFRKNS0_5ValueENS0_9ValueTypeEPS3_PvES7_);
     NullAccess(_ZN3sce4Json11Initializer27setGlobalNullAccessCallbackEPFRKNS0_5ValueENS0_9ValueTypeEPS3_PvES7_);
     ValueNullAccessCallback();
@@ -1034,5 +1056,4 @@ int main() {
     InitParameters();
     ValueClear();
     StreamParse();
-    IteratorAssignmentAndPair();
 }

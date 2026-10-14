@@ -80,9 +80,8 @@ int APS5_VABI sceNpCommerceSetPsStoreIconLayout(int layout) {
 }
 
 int APS5_VABI sceNpCommerceDialogOpen2(void) {
-    if (g_status == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
-    g_status = COMMON_DIALOG_STATUS_FINISHED;
-    return 0;
+ g_status = COMMON_DIALOG_STATUS_FINISHED;
+ return 0;
 }
 
 }

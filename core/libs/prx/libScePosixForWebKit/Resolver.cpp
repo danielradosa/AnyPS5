@@ -16,7 +16,6 @@
 #include <cstdlib>
 #include <cerrno>
 #include <new>
-#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -219,7 +218,6 @@ GuestResolver::HostEntry* APS5_VABI gethostbyname_nid_postfix(const char* name) 
 }
 
 GuestResolver::ServiceEntry* APS5_VABI getservbyname_nid_postfix(const char* name, const char* protocol) {
-    if (!name) throw std::invalid_argument("getservbyname: null name");
     for (const auto& service : Services) {
         bool named = std::strcmp(name, service.name) == 0;
         for (const char* alias : service.aliases)
@@ -237,8 +235,7 @@ GuestResolver::ServiceEntry* APS5_VABI getservbyname_nid_postfix(const char* nam
             CopyServiceText(lookup.protocol, service.protocol)};
         return &lookup.entry;
     }
-    throw std::runtime_error(std::string("getservbyname: service not in the built-in FreeBSD 11.4 subset: ") + name + "/" +
-        (protocol ? protocol : "*"));
+    return nullptr;
 }
 
 void APS5_VABI freeaddrinfo_nid_postfix(GuestResolver::AddressInfo* first) {

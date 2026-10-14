@@ -12,6 +12,7 @@ int APS5_VABI sceAppContentAddcontMount(uint32_t, const NpUnifiedEntitlementLabe
 int APS5_VABI sceAppContentAddcontUnmount(const AppContentMountPoint*);
 int APS5_VABI sceAppContentAddcontEnqueueDownload(uint32_t, const NpUnifiedEntitlementLabel*);
 int APS5_VABI sceAppContentGetAddcontDownloadProgress(uint32_t, const NpUnifiedEntitlementLabel*, void*);
+int APS5_VABI sceAppContentAddcontDelete(uint32_t, const NpUnifiedEntitlementLabel*);
 int APS5_VABI sceAppContentTemporaryDataMount2(uint32_t, AppContentMountPoint*);
 int APS5_VABI sceAppContentTemporaryDataUnmount(const AppContentMountPoint*);
 int APS5_VABI sceAppContentTemporaryDataFormat(const AppContentMountPoint*);
@@ -98,6 +99,9 @@ int main() {
     Require(sceAppContentGetAddcontDownloadProgress(0, nullptr, progress) == ErrorParameter);
     Require(sceAppContentGetAddcontDownloadProgress(0, &label, nullptr) == ErrorParameter);
     Require(sceAppContentGetAddcontDownloadProgress(0, &padded, progress) == ErrorParameter);
+    Require(sceAppContentAddcontDelete(0, &label) == ErrorNotFound);
+    Require(sceAppContentAddcontDelete(7, nullptr) == ErrorParameter);
+    Require(sceAppContentAddcontMount(0, &label, &mountPoint) == ErrorNotFound);
 
     std::filesystem::create_directory(directory / "temp0");
     { std::ofstream file(directory / "temp0" / "old.txt"); file << "previous run"; }

@@ -375,7 +375,6 @@ void* CopyName(Context& context, const mbedtls_x509_name& name) {
 extern "C" {
 
 int APS5_VABI sceSslInit_nid_postfix(std::uint64_t poolSize) {
-    if (!poolSize) return ErrorInvalidArg;
     auto& state = State();
     std::lock_guard lock(state.mutex);
     const auto handle = AllocateHandle(state);
@@ -386,7 +385,6 @@ int APS5_VABI sceSslInit_nid_postfix(std::uint64_t poolSize) {
 int APS5_VABI sceSslTerm_nid_postfix(int sslCtxId) {
     auto& state = State();
     std::lock_guard lock(state.mutex);
-    GetContext(sslCtxId);
     state.contexts.erase(sslCtxId);
     return 0;
 }
@@ -449,7 +447,8 @@ int APS5_VABI sceSslGetMemoryPoolStats(int sslCtxId, SceSsl::MemoryPoolStats* st
 }
 
 int APS5_VABI sceSslLoadCert(int sslCtxId, int caCertNum, SceSsl::Data** caList, SceSsl::Data* cert, SceSsl::Data* privateKey) {
-    if (caCertNum < 0 || (caCertNum && !caList) || (!!cert != !!privateKey)) return ErrorInvalidArg;
+    if (caCertNum < 0 || (caCertNum && !caList) || (!!cert != !!privateKey))
+        throw std::invalid_argument("Invalid SSL certificate load arguments");
     auto& state = State();
     std::lock_guard lock(state.mutex);
     auto& context = GetContext(sslCtxId);
@@ -457,7 +456,7 @@ int APS5_VABI sceSslLoadCert(int sslCtxId, int caCertNum, SceSsl::Data** caList,
     std::vector<std::shared_ptr<CertificateChain>> authorities;
     std::vector<std::unique_ptr<CertificateHandle>> handles;
     for (int index = 0; index < caCertNum; ++index) {
-        if (!caList[index]) return ErrorInvalidArg;
+        if (!caList[index]) throw std::invalid_argument("Missing SSL certificate descriptor");
         auto chain = ParseCertificate(*caList[index]);
         for (auto* entry = &chain->root; entry; entry = entry->next) {
             auto handle = std::make_unique<CertificateHandle>(CertificateHandle{chain, entry});
@@ -534,7 +533,12 @@ int APS5_VABI sceSslGetCaCerts(int sslCtxId, SceSsl::CaCerts* output) {
     if (!output) return ErrorInvalidArg;
     auto& state = State();
     std::lock_guard lock(state.mutex);
-    auto& context = GetContext(sslCtxId);
+    const auto found = state.contexts.find(sslCtxId);
+    if (found == state.contexts.end()) {
+        *output = {};
+        return ErrorNotFound;
+    }
+    auto& context = *found->second;
     PoolScope scope(context.pool);
     const auto count = CertificateCount(context);
     if (!count) {
@@ -565,12 +569,16 @@ int APS5_VABI sceSslFreeCaCerts(int sslCtxId, SceSsl::CaCerts* certificates) {
     if (!certificates) return ErrorInvalidArg;
     auto& state = State();
     std::lock_guard lock(state.mutex);
-    auto& context = GetContext(sslCtxId);
-    if (!certificates->certs && !certificates->num && !certificates->pool) return 0;
-    const auto found = context.caCerts.find(certificates->pool);
-    if (found == context.caCerts.end() || certificates->certs != certificates->pool || certificates->num != found->second.count)
-        throw std::invalid_argument("Invalid SSL CA certificate allocation");
-    context.caCerts.erase(found);
+    const auto found = state.contexts.find(sslCtxId);
+    if (found != state.contexts.end()) {
+        auto& snapshots = found->second->caCerts;
+        const auto allocation = snapshots.find(certificates->pool);
+        if (allocation != snapshots.end()) {
+            if (certificates->certs != certificates->pool || certificates->num != allocation->second.count)
+                throw std::invalid_argument("Invalid SSL CA certificate allocation");
+            snapshots.erase(allocation);
+        }
+    }
     *certificates = {};
     return 0;
 }
