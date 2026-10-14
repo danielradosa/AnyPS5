@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <span>
 #include <stdexcept>
@@ -123,6 +124,59 @@ std::shared_ptr<const SpecializeTarget> Driver::specializeTarget(const ShaderRec
     drawSpecialize.target = owned;
     drawSpecialize.targetSerial = deviceSerial;
     return owned;
+}
+
+std::vector<std::shared_ptr<DispatchVariant>> Driver::parkSpecializations(std::uint64_t drawKey, const std::vector<std::shared_ptr<DispatchVariant>>& fresh, const std::vector<StageCapture>& stageCaptures, const std::vector<DrawProgram>& programs, const std::shared_ptr<const DrawDecode>& decode, const ShaderRecompiler::ShaderPixelStageInfo& pixel, const std::vector<std::optional<ShaderRecompiler::ShaderVertexStageInfo>>& vertexInfos, const Pm4::DrawParameters& drawParameters, const ShaderRecompiler::SpirvTarget& target, std::uint64_t deviceSerial, bool pipelineLibraries) {
+    using Stage = ShaderRecompiler::ShaderStage;
+    static const std::vector<ShaderRecompiler::MemoryRegion> noMemory;
+    static const std::vector<ShaderRecompiler::LinkedProgram> noLinked;
+    std::vector<std::shared_ptr<DispatchVariant>> parked;
+    if (decode == nullptr || !pipelineLibraries || !target.registrationModules || !drawSpecialize.open.load(std::memory_order_relaxed) || drawParameters.indirect || ShaderRecompiler::DebugProbeActive()) return parked;
+    const auto& graphics = decode->state;
+    if (graphics.stages.path != Graphics::ShaderPath::Vertex || graphics.stages.mesh || graphics.stages.tessellation || graphics.rectList || graphics.depthBiasPerFace || Graphics::SplitsAlternateAlpha(graphics)) return parked;
+    if (std::any_of(stageCaptures.begin(), stageCaptures.end(), [](const StageCapture& stageCapture) { return stageCapture.compiled != nullptr && stageCapture.compiled->barycentricEmulation.active; })) return parked;
+    std::shared_ptr<const SpecializeTarget> owned;
+    for (std::size_t i = 0; i < fresh.size(); ++i) {
+        const auto& stageCapture = stageCaptures[i];
+        const auto& program = programs[i];
+        if (fresh[i] == nullptr || stageCapture.compiled == nullptr || !stageCapture.compiled->registrationModule || !CacheableResult(*stageCapture.compiled)) continue;
+        if ((program.binary.stage != Stage::Vertex && program.binary.stage != Stage::Fragment) || program.binary.codeAddress == NullPixelProgramAddress()) continue;
+        if (owned == nullptr) owned = specializeTarget(target, deviceSerial);
+        auto job = std::make_shared<SpecializeJob>();
+        job->drawKey = drawKey;
+        job->stage = i;
+        job->variant = fresh[i];
+        job->decode = decode;
+        job->target = owned;
+        for (const auto& region : stageCapture.regions) {
+            job->runs.emplace_back(region.guestAddress, region.guestAddress + region.bytes.size());
+            const auto count = region.bytes.size() / sizeof(std::uint32_t);
+            const auto offset = job->words.size();
+            job->words.resize(offset + count);
+            std::memcpy(job->words.data() + offset, region.bytes.data(), count * sizeof(std::uint32_t));
+        }
+        job->userData = program.userData;
+        job->request = drawStageRequest(i, stageCapture.pushOffset, programs, graphics, pixel, vertexInfos, noMemory, noLinked, drawParameters, owned->target);
+        job->request.context.userData = job->userData;
+        fresh[i]->specialization = std::move(job);
+        if (parked.empty()) parked.resize(fresh.size());
+        parked[i] = fresh[i];
+    }
+    return parked;
+}
+
+void Driver::noteParked(const std::vector<std::shared_ptr<DispatchVariant>>& parked, const std::vector<std::shared_ptr<DispatchVariant>>& fresh) {
+    std::uint64_t kept = 0;
+    for (std::size_t i = 0; i < parked.size() && i < fresh.size(); ++i) {
+        if (parked[i] != nullptr && parked[i] == fresh[i]) ++kept;
+    }
+    if (kept != 0) drawSpecialize.counts[SpecializeParked].fetch_add(kept, std::memory_order_relaxed);
+}
+
+bool Driver::specializeRoom() {
+    if (drawSpecialize.open.load(std::memory_order_relaxed) && drawSpecialize.depth.load(std::memory_order_relaxed) < SpecializeState::QueueBound) return true;
+    drawSpecialize.counts[SpecializeDropped].fetch_add(1, std::memory_order_relaxed);
+    return false;
 }
 
 void Driver::runSpecializeJob(SpecializeJob& job) noexcept {

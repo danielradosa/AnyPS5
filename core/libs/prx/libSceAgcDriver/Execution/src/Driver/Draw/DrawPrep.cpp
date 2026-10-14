@@ -404,10 +404,13 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             ++counts[PrepUncacheable];
             return;
         }
+        std::vector<std::shared_ptr<DispatchVariant>> parked;
+        if (backgroundSpecializeEnabled()) parked = parkSpecializations(drawKey, fresh, stageCaptures, programs, decode, pixel, vertexInfos, drawParameters, *drawPrep.target, drawPrep.deviceSerial, drawPrep.pipelineLibraries);
         if (!insertDrawEntry(drawKey, fresh, decode, true, entry == nullptr)) {
             ++counts[PrepRaced];
             return;
         }
+        noteParked(parked, fresh);
         ++counts[entry == nullptr ? PrepInserted : PrepRefreshed];
     } catch (...) {
         const auto reason = drawPrep.abortReason.exchange(0, std::memory_order_relaxed);
