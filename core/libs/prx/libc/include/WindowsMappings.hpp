@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -250,7 +251,17 @@ public:
                     if ((it->second.collected & (1u << ((at - it->first) / 4096))) == 0) return false;
                 }
             }
-        } else if (clear && !collectable(address, end)) return false;
+        } else {
+            // A range inside one clean range reports nothing and is collectable (every event that could make one of
+            // its subpages reportable or uncollectable forgets it first): the walk below would only jump over it.
+            // APS5_NO_CLEAN_EARLY_OUT=1 walks as before.
+            static const bool earlyOut = std::getenv("APS5_NO_CLEAN_EARLY_OUT") == nullptr;
+            if (earlyOut) {
+                const auto clean = cleanRanges.upper_bound(address);
+                if (clean != cleanRanges.begin() && std::prev(clean)->second >= end) return true;
+            }
+            if (clear && !collectable(address, end)) return false;
+        }
         // Consecutive views are neighbours in the map: a target spans hundreds of them.
         auto neighbour = views.end();
         // No clean range holds the cursor below `cleanAhead` (the next one's start) until the loop
