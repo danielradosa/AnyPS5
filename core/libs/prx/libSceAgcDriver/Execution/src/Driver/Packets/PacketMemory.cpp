@@ -10,6 +10,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Resource/include/Registration.hpp"
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -207,6 +208,16 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
     static const bool drawDrain = std::getenv("APS5_DRAW_DRAIN") != nullptr;
     drawPacket = Pm4::DrawOpcode(opcode);
     sampleDump = opcode == 0x46 && (packet[1] & 0x3fu) == 0x39u;
+    // APS5_SYNTHETIC_OCCLUSION=1: every occlusion query reads "visible" (a counter that grows by 1 per DB and dump,
+    // as KytyPS5 publishes it), stored at parse time: no host queries, no segments, no drain.
+    static const bool syntheticOcclusion = std::getenv("APS5_SYNTHETIC_OCCLUSION") != nullptr;
+    if (sampleDump && syntheticOcclusion) {
+        static std::atomic<std::uint64_t> counter{0};
+        const std::uint64_t value = (1ull << 63u) | counter.fetch_add(1, std::memory_order_relaxed);
+        const std::uint64_t address = packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u);
+        for (std::uint64_t db = 0; db < 16; ++db) GuestMemory::Write(address + db * 16u, std::as_bytes(std::span(&value, 1)), 8);
+        sampleDump = false;
+    }
     if (sampleDump && !drainAll) {
         GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
         std::lock_guard gpuLock(GuestMemory::GpuMutex());
