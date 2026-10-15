@@ -202,6 +202,55 @@ void CheckForgottenSectionKeepsNoPages() {
     CloseHandle(section);
 }
 
+void CheckResidentRuns() {
+    auto& mappings = Mappings::Get();
+    HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE | SEC_RESERVE, 0, Bytes, nullptr);
+    auto* memory = static_cast<unsigned char*>(mappings.Reserve(nullptr, Bytes));
+    Require(section && memory, "cannot allocate resident test memory");
+    mappings.Map(memory, Bytes, section, 0, PAGE_READWRITE, true, true);
+    const auto address = reinterpret_cast<std::uintptr_t>(memory);
+    const auto collect = [&](Collection mode, std::size_t begin = 0, std::size_t count = 16, std::size_t capacity = 32) {
+        std::set<std::size_t> result;
+        auto cursor = address + begin * Small;
+        const auto end = cursor + count * Small;
+        while (cursor < end) {
+            std::array<void*, 32> pages{};
+            auto available = capacity;
+            Require(mappings.Collect(cursor, end - cursor, pages.data(), &available, true, mode), "resident collection failed");
+            for (std::size_t i = 0; i < available; ++i) result.insert((reinterpret_cast<std::uintptr_t>(pages[i]) - address) / Small);
+            if (available < capacity) break;
+            cursor = reinterpret_cast<std::uintptr_t>(pages[available - 1]) + Small;
+        }
+        return result;
+    };
+    const auto write = [&](std::size_t page) { static_cast<volatile unsigned char*>(memory)[page * Small] = static_cast<unsigned char>(page + 1); };
+    Require(collect(Collection::All, 0, 4) == Pages(0, 4), "a partial collect missed fresh resident pages");
+    write(1);
+    auto expected = Pages(4, 16);
+    expected.insert(1);
+    Require(collect(Collection::All) == expected, "a partly collected run lost a write or its fresh pages");
+    Require(collect(Collection::All).empty(), "a collected resident run reported pages again");
+    write(3);
+    write(9);
+    Require(collect(Collection::All, 4, 4).empty(), "a resident collect reported writes outside its range");
+    Require(collect(Collection::All, 2, 9) == std::set<std::size_t>{3, 9}, "a resident collect lost writes inside its range");
+    Require(collect(Collection::All).empty(), "resident writes were not cleared");
+    write(5);
+    Require(collect(Collection::Armed) == std::set<std::size_t>{5}, "an armed resident collect lost a write");
+    Require(collect(Collection::Fresh).empty() && collect(Collection::All).empty(), "a collected resident run had fresh pages");
+    write(1);
+    write(2);
+    write(3);
+    Require(collect(Collection::All, 0, 16, 2) == Pages(1, 4), "a small output buffer lost resident writes");
+    std::array<void*, 32> pages{};
+    std::size_t count = pages.size();
+    write(7);
+    Require(mappings.Collect(address + 7 * Small + 100, 8, pages.data(), &count, true, Collection::All) && count == 1 && pages[0] == memory + 7 * Small + 100, "a collect inside one resident page lost its offset");
+    mappings.Reset(memory, Bytes);
+    VirtualFree(memory, 0, MEM_RELEASE);
+    CloseHandle(section);
+}
+
 void CheckConcurrentWrites() {
     Region region;
     std::atomic<bool> start{false};
@@ -230,6 +279,7 @@ int main() {
         CheckPrivate();
         CheckConcurrentWrites();
         CheckForgottenSectionKeepsNoPages();
+        CheckResidentRuns();
         std::cout << "Windows deferred write-watch tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
