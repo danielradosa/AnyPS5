@@ -941,8 +941,12 @@ void KeepDrawInput(Recorder* recorder, std::uint64_t address, const DrawInputCop
 }
 
 const HostImport* InPlaceDrawInput(const Context& context, std::uint64_t address, std::size_t bytes, std::size_t alignment) {
+    // Vertex and index ranges are copied by default: read in place from host imports (c903d1adf) they doubled Astro's
+    // hub draw GPU time once its 2 GiB render heap was imported (play1015d 66.6 vs play1015e 35.2 ms per present).
+    // APS5_IN_PLACE_DRAW_INPUTS=1 reads them in place.
+    static const bool inPlace = std::getenv("APS5_IN_PLACE_DRAW_INPUTS") != nullptr;
     auto* recorder = context.recorder;
-    if (recorder == nullptr || bytes == 0) return nullptr;
+    if (!inPlace || recorder == nullptr || bytes == 0) return nullptr;
     GuestMemory::FlushGpuWrites(address, bytes);
     if (recorder->PendingWriteOverlaps(address, bytes) || recorder->PendingLabelIn(address, bytes) || recorder->QueuedStoreOverlaps(address, bytes)) return nullptr;
     const auto overlaps = [&](const auto& writer) { return writer->WritesOverlap(address, bytes); };
