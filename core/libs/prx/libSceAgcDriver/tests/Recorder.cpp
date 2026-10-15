@@ -460,6 +460,16 @@ void copiedDirectOrderingTests(const Device& device, Recorder& recorder) {
     update(direct, 2);
     recorder.Sync();
     Require(*block == 45, "direct consumers lost GPU-ordered updates");
+    // A label the GPU stores lands in recorded order: no wait, even while a CPU completion label is pending elsewhere
+    // (that one stores the bytes already there, so the memory below is left as it was).
+    std::uint32_t elsewhere = 0;
+    std::memcpy(&elsewhere, reinterpret_cast<const void*>(address + 65536), sizeof(elsewhere));
+    static_cast<void>(recorder.Commands());
+    recorder.AfterCompletions(address + 65536, std::as_bytes(std::span(&elsewhere, 1)), 1001, 0, false);
+    recorder.NoteLabel(address, std::as_bytes(std::span(&label, 1)), 1002, 0);
+    const auto labelled = recorder.Submissions();
+    Require(Recorder::PendingCompletionLabels() != 0 && direct->Revalidate(std::span(&compute, 1)) && recorder.Submissions() == labelled, "a GPU-stored label made a direct consumer wait for the GPU");
+    recorder.Sync();
     {
         TextureDetiler detiler(context);
         auto imageContext = context;

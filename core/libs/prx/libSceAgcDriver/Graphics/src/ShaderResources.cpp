@@ -2741,7 +2741,12 @@ void CompletePendingCpuWrites(const Context& context, std::uint64_t address, std
     const auto overlaps = [&](const auto& writers) {
         return std::any_of(writers.begin(), writers.end(), [&](const auto& writer) { return writer->WritesOverlap(address, bytes); });
     };
-    if ((context.copiedWriters != nullptr && overlaps(*context.copiedWriters)) || overlaps(*drawWriters) || (labels && recorder->PendingLabelIn(address, bytes))) {
+    // Of the labels, only one whose value reaches memory by a CPU store at its batch's completion (or another queue's
+    // queued label) orders a GPU reader behind that completion; a label the GPU stores lands in recorded order, before
+    // any reader recorded after it (VulkanDevice::CopyBuffer decides the same). APS5_LABEL_SYNC_ANY=1 waits for every
+    // pending label in the range, as before.
+    static const bool anyLabel = std::getenv("APS5_LABEL_SYNC_ANY") != nullptr;
+    if ((context.copiedWriters != nullptr && overlaps(*context.copiedWriters)) || overlaps(*drawWriters) || (labels && (anyLabel ? recorder->PendingLabelIn(address, bytes) : recorder->CompletionLabelIn(address, bytes)))) {
         Recorder::CountSync(4);
         recorder->SyncThrough(address, bytes);
     }
