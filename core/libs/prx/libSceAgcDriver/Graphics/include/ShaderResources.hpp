@@ -146,9 +146,12 @@ public:
         DrawBindings() = default;
         DrawBindings(const DrawBindings&) = delete;
         DrawBindings& operator=(const DrawBindings&) = delete;
+        // The bytes sit at `offset` in `buffer`: a whole buffer, or a slice of a Recorder::AllocateDrawData chunk.
         struct Snapshot {
             std::uint64_t address;
             std::shared_ptr<Buffer> buffer;
+            VkDeviceSize offset = 0;
+            std::size_t bytes = 0;
         };
         DescriptorCache* cache = nullptr;
         DescriptorCache::SetAllocation fragmentAllocation;

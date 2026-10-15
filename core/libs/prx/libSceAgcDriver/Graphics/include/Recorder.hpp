@@ -114,6 +114,15 @@ public:
     static constexpr std::size_t DrawSnapshotEntries = 1024;
     static constexpr std::size_t DrawInputBudget = std::size_t{1024} << 20u;
     static constexpr std::size_t DrawInputEntries = 16384;
+    // Small per-draw bytes (draw snapshots, moved data words) suballocated from host-visible chunks the open batch keeps:
+    // a memcpy and a bump instead of a pooled Buffer, a snapshot-map entry and a kept owner per range.
+    struct DrawData {
+        std::shared_ptr<Buffer> buffer;
+        VkDeviceSize offset = 0;
+        std::byte* bytes = nullptr;
+    };
+    static constexpr std::size_t DrawDataChunkBytes = std::size_t{256} << 10u;
+    DrawData AllocateDrawData(std::size_t bytes);
     std::shared_ptr<Buffer> ReusableDrawSnapshot(std::uint64_t address, std::size_t bytes, SnapshotUse use = SnapshotUse::Storage, std::uint32_t* derived = nullptr, std::uint64_t generation = 0);
     void KeepDrawSnapshot(std::uint64_t address, std::size_t bytes, std::uint64_t generation, std::uint64_t registryGeneration, std::shared_ptr<Buffer> buffer, SnapshotUse use = SnapshotUse::Storage, std::uint32_t derived = 0);
     static constexpr std::size_t IndexRangeEntries = 16384;
@@ -546,6 +555,9 @@ private:
         std::vector<std::shared_ptr<void>> kept;
         std::size_t keptBytes = 0;
         std::unordered_set<const void*> keptOwners;
+        // AllocateDrawData's current chunk and its used bytes.
+        std::shared_ptr<Buffer> drawData;
+        std::size_t drawDataUsed = 0;
         std::vector<std::function<void()>> completions;
         std::vector<std::pair<std::uint64_t, std::uint64_t>> writes;
         std::vector<std::uint64_t> writeNotes;

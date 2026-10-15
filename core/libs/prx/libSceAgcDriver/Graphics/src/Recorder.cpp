@@ -2555,6 +2555,21 @@ void Recorder::KeepBytes(const void* owner, std::size_t bytes) {
     if (open->keptOwners.insert(owner).second) open->keptBytes += bytes;
 }
 
+Recorder::DrawData Recorder::AllocateDrawData(std::size_t bytes) {
+    ensureOpen();
+    const auto alignment = std::max<VkDeviceSize>(context.limits.minStorageBufferOffsetAlignment, 16);
+    auto offset = (open->drawDataUsed + alignment - 1) / alignment * alignment;
+    if (open->drawData == nullptr || offset + bytes > open->drawData->Bytes().size()) {
+        const auto chunk = std::max(bytes, DrawDataChunkBytes);
+        open->drawData = std::make_shared<Buffer>(context, chunk, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        Keep(open->drawData);
+        KeepBytes(open->drawData.get(), chunk);
+        offset = 0;
+    }
+    open->drawDataUsed = static_cast<std::size_t>(offset) + bytes;
+    return {open->drawData, offset, open->drawData->Bytes().data() + offset};
+}
+
 void Recorder::BoundKeptBytes(std::source_location where) {
     if (!GuestMemory::GpuMutex().HeldByThisThread()) return;
     if (open != nullptr && open->keptBytes >= KeptBytesBudget) Submit(where);
