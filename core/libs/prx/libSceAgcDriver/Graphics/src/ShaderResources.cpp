@@ -4429,9 +4429,13 @@ std::shared_ptr<ShaderResources::DrawBindings> ShaderResources::PrepareDrawBindi
     std::size_t totalSnapshotBytes = 0;
     // Ranges up to ArenaBytes go into the batch's draw-data arena on every draw instead of being proved reusable: the
     // copy costs less than the collect, the snapshot-map lookup and the generation check, and the per-frame constants
-    // the game moves every frame missed the map anyway. APS5_NO_DRAW_DATA_ARENA=1 keeps the pooled buffer per range.
+    // the game moves every frame missed the map anyway. APS5_NO_DRAW_DATA_ARENA=1 keeps the pooled buffer per range;
+    // APS5_DRAW_DATA_ARENA_KIB sets the bound (default 4).
     static const bool arena = std::getenv("APS5_NO_DRAW_DATA_ARENA") == nullptr;
-    constexpr std::size_t ArenaBytes = 4096;
+    static const std::size_t ArenaBytes = [] {
+        const char* text = std::getenv("APS5_DRAW_DATA_ARENA_KIB");
+        return static_cast<std::size_t>(text != nullptr ? std::strtoull(text, nullptr, 10) : 4ull) * 1024u;
+    }();
     auto result = std::make_shared<DrawBindings>();
     std::vector<std::size_t> selected;
     for (std::size_t index = 0; index < allocations.size(); ++index) {
