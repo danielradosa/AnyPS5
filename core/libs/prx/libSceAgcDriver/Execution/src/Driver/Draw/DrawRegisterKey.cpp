@@ -33,7 +33,9 @@ const auto& registerMasks() {
 
 }
 
-std::uint64_t RegisterStateKey(const QueueState& queue, bool allUserWords, bool incremental) {
+namespace {
+
+std::uint64_t registerShape(const QueueState& queue, bool incremental) {
     const auto& masks = registerMasks();
     const auto fingerprint = [&](const Registers& registers, Graphics::RegisterBank bank) {
         const auto& mask = masks[static_cast<std::size_t>(bank)];
@@ -41,30 +43,15 @@ std::uint64_t RegisterStateKey(const QueueState& queue, bool allUserWords, bool 
     };
     auto shape = (0xcbf29ce484222325ull ^ fingerprint(queue.context, Graphics::RegisterBank::Context)) * 0x100000001b3ull;
     shape = (shape ^ fingerprint(queue.shader, Graphics::RegisterBank::Shader)) * 0x100000001b3ull;
-    shape = (shape ^ fingerprint(queue.userConfig, Graphics::RegisterBank::UserConfig)) * 0x100000001b3ull;
-    auto exact = shape;
-    const auto words = [&](std::uint32_t base, std::uint32_t count) {
-        for (auto it = queue.shader.lower_bound(base); it != queue.shader.end() && it->first < base + count; ++it) {
-            exact = (exact ^ it->first) * 0x100000001b3ull;
-            exact = (exact ^ it->second) * 0x100000001b3ull;
-        }
-    };
-    for (const auto base : {0x00cu, 0x08cu, 0x10cu}) {
-        const auto resources = queue.shader.find(base - 1);
-        const auto count = resources == queue.shader.end() ? 0u : ((resources->second >> 1u) & 0x1fu) | (((resources->second >> 27u) & 1u) << 5u);
-        words(base, allUserWords ? 32u : std::min(count, 32u));
-    }
-    words(0x082u, 2);
-    words(0x102u, 2);
-    return exact;
+    return (shape ^ fingerprint(queue.userConfig, Graphics::RegisterBank::UserConfig)) * 0x100000001b3ull;
 }
 
+std::uint32_t userWordCount(const QueueState& queue, std::uint32_t base) {
+    const auto resources = queue.shader.find(base - 1);
+    return resources == queue.shader.end() ? 0u : ((resources->second >> 1u) & 0x1fu) | (((resources->second >> 27u) & 1u) << 5u);
+}
 
-std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegistry& registry, std::uint64_t deviceSerial) {
-    static const bool allUserWords = std::getenv("APS5_DRAW_KEY_ALL_USER_WORDS") != nullptr;
-    static const bool verify = std::getenv("APS5_VERIFY_REGISTER_KEYS") != nullptr;
-    auto key = RegisterStateKey(queue, allUserWords);
-    if (verify && key != RegisterStateKey(queue, allUserWords, false)) throw std::runtime_error("incremental register fingerprint disagrees with full state");
+std::uint64_t mixPrograms(std::uint64_t key, const QueueState& queue, const ShaderRegistry& registry, std::uint64_t deviceSerial) {
     const auto mix = [&](std::uint64_t value) {
         key ^= value;
         key *= 0x100000001b3ull;
@@ -88,6 +75,39 @@ std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegis
         mix(address - it->first);
     }
     return key;
+}
+
+}
+
+std::uint64_t RegisterStateKey(const QueueState& queue, bool allUserWords, bool incremental) {
+    auto exact = registerShape(queue, incremental);
+    const auto words = [&](std::uint32_t base, std::uint32_t count) {
+        for (auto it = queue.shader.lower_bound(base); it != queue.shader.end() && it->first < base + count; ++it) {
+            exact = (exact ^ it->first) * 0x100000001b3ull;
+            exact = (exact ^ it->second) * 0x100000001b3ull;
+        }
+    };
+    for (const auto base : {0x00cu, 0x08cu, 0x10cu}) words(base, allUserWords ? 32u : std::min(userWordCount(queue, base), 32u));
+    words(0x082u, 2);
+    words(0x102u, 2);
+    return exact;
+}
+
+std::uint64_t Driver::drawRegisterKey(const QueueState& queue, const ShaderRegistry& registry, std::uint64_t deviceSerial) {
+    static const bool allUserWords = std::getenv("APS5_DRAW_KEY_ALL_USER_WORDS") != nullptr;
+    static const bool verify = std::getenv("APS5_VERIFY_REGISTER_KEYS") != nullptr;
+    const auto key = RegisterStateKey(queue, allUserWords);
+    if (verify && key != RegisterStateKey(queue, allUserWords, false)) throw std::runtime_error("incremental register fingerprint disagrees with full state");
+    return mixPrograms(key, queue, registry, deviceSerial);
+}
+
+// The register key without the user-data words and merged-stage pointers (their counts and presence stay in):
+// what a draw's identity would be if addresses were fed per draw (APS5_DRAW_KEY_PROBE).
+std::uint64_t Driver::drawShapeKey(const QueueState& queue, const ShaderRegistry& registry, std::uint64_t deviceSerial) {
+    auto key = registerShape(queue, true);
+    for (const auto base : {0x00cu, 0x08cu, 0x10cu}) key = (key ^ userWordCount(queue, base)) * 0x100000001b3ull;
+    for (const auto base : {0x082u, 0x102u}) key = (key ^ (queue.shader.contains(base) ? 1u : 0u)) * 0x100000001b3ull;
+    return mixPrograms(key, queue, registry, deviceSerial);
 }
 
 bool Driver::sameVertexInfo(const ShaderRecompiler::ShaderVertexStageInfo& a, const ShaderRecompiler::ShaderVertexStageInfo& b) {
