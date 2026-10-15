@@ -1,5 +1,6 @@
 #include "Translation/VectorInstructions.hpp"
 #include "Translation/TranslationContext.hpp"
+#include <cstdlib>
 #include <stdexcept>
 
 namespace ShaderRecompiler {
@@ -24,6 +25,10 @@ bool roundsProductSeparately(const RdnaInstruction& inst) {
 }
 
 std::uint32_t TranslationContext::f32DenormalFlushFor(const RdnaInstruction& inst) const {
+    // APS5_FAST_F32=1 keeps f32 denormals as the host computes them instead of emulating the flush on every
+    // f32 source, result and product (no Vulkan driver here offers shaderDenormFlushToZeroFloat32).
+    static const bool fast = std::getenv("APS5_FAST_F32") != nullptr;
+    if (fast) return 0u;
     std::uint32_t flush = 0u;
     switch (inst.op) {
     case RdnaOpcode::VAddF32:

@@ -1,6 +1,7 @@
 #include "RdnaDecoder/RdnaInstructionDecoder.hpp"
 #include "Translation/TranslationContext.hpp"
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -342,6 +343,10 @@ IrU32 TranslationContext::quietNan32(IrU32 bits) {
 }
 
 IrValue* TranslationContext::nanResultF32(std::initializer_list<IrValue*> sources, IrValue* result, IrValue* invalidProduct) {
+    // APS5_FAST_F32=1 keeps the host's NaN results (NaN stays NaN, the payload is the host's) instead of
+    // reproducing RDNA's payload rules with ~4 integer operations per source on every f32 add, mul and fma.
+    static const bool fast = std::getenv("APS5_FAST_F32") != nullptr;
+    if (fast) return result;
     const auto isNan = [&](IrValue& bits) -> IrValue& { return ir.UGreaterThan(ir.BitwiseAnd(bits, ir.Constant(0x7fffffffu)), ir.Constant(0x7f800000u)); };
     IrValue* bits = &ir.BitCastU32(*result);
     bits = &ir.Select(isNan(*bits), ir.Constant(0xffc00000u), *bits);
