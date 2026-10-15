@@ -25,9 +25,10 @@ bool roundsProductSeparately(const RdnaInstruction& inst) {
 }
 
 std::uint32_t TranslationContext::f32DenormalFlushFor(const RdnaInstruction& inst) const {
-    // APS5_FAST_F32=1 keeps f32 denormals as the host computes them instead of emulating the flush on every
-    // f32 source, result and product (no Vulkan driver here offers shaderDenormFlushToZeroFloat32).
-    static const bool fast = std::getenv("APS5_FAST_F32") != nullptr;
+    // APS5_FAST_F32_DENORMALS=1 keeps f32 denormals as the host computes them instead of emulating the flush on
+    // every f32 source, result and product (no Vulkan driver here offers shaderDenormFlushToZeroFloat32). Unsafe:
+    // Astro's hub renders black with it (game code expects tiny values to compare and divide as zero).
+    static const bool fast = std::getenv("APS5_FAST_F32_DENORMALS") != nullptr;
     if (fast) return 0u;
     std::uint32_t flush = 0u;
     switch (inst.op) {
