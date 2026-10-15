@@ -488,6 +488,37 @@ void CheckVersionRanges() {
     Require(UnchangedSince(base, bytes, checkpoints.back()), "the latest checkpoint was rejected");
 }
 
+void CheckEpochUnionMemo() {
+    constexpr std::size_t bytes = 3 * Block;
+    constexpr std::size_t page = 4096;
+    auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
+    struct Cleanup {
+        void* memory;
+        ~Cleanup() {
+#ifdef _WIN32
+            GuestArena::GuestArenaRelease_nid_postfix(memory, bytes);
+#else
+            Unwatch(reinterpret_cast<std::uint64_t>(memory), bytes);
+            munmap(memory, bytes);
+#endif
+        }
+    } cleanup{memory};
+    const auto base = reinterpret_cast<std::uint64_t>(memory);
+    std::memset(memory, 17, bytes);
+    BumpCollectEpoch();
+    Require(CollectWrites(base, bytes) != 0, "the union test's block was not collected");
+    BumpCollectEpoch();
+    const auto first = CollectWrites(base, 2 * page);
+    Require(first != 0 && CollectWrites(base + 2 * page, 2 * page) != 0, "the union test lost watched coverage");
+    memory[page + 5] ^= 1;
+    Require(CollectWrites(base, 4 * page) != 0 && UnchangedSince(base, 4 * page, first), "a range covered by two walks of the epoch was walked again");
+    memory[Block + page + 5] ^= 1;
+    Require(CollectWrites(base + 3 * page, Block) != 0 && !UnchangedSince(base + Block, 2 * page, first), "the uncovered part of a partly walked range was not walked");
+    Require(UnchangedSince(base, 4 * page, first), "walking a range's gaps walked its covered pages too");
+    BumpCollectEpoch();
+    Require(CollectWrites(base, 4 * page) != 0 && !UnchangedSince(base, 4 * page, first), "a new epoch missed a CPU write under the union memo");
+}
+
 void CheckCollectBoundaries() {
     constexpr std::size_t bytes = 3 * Block;
     auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
@@ -822,6 +853,7 @@ int main() {
 #endif
         CheckVersionRanges();
         CheckCollectBoundaries();
+        CheckEpochUnionMemo();
         CheckImportWindow();
         CheckImportWindowZeroPages();
         CheckUnwatchedImport();

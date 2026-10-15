@@ -6,6 +6,7 @@
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
+#include "prx/libc/include/HostThreadLocal.hpp"
 #include <mutex>
 #include <array>
 #include <chrono>
@@ -1076,6 +1077,65 @@ bool sharedCollectMemo() {
     return shared;
 }
 
+// The per-thread memo as the union of the page ranges walked in the current epoch (sorted, disjoint,
+// merged): a collect walks only the gaps of its range no earlier walk of the epoch covered, and one
+// covered whole is a hit. The ring above matched only a range inside one earlier walk and held 256
+// walks, while the Astro hub walks ~260 per epoch with 43% of their pages already walked in it.
+// Emptied whenever the epoch or the unwatch serial differs from the ones it was filled under.
+// APS5_RING_COLLECT_MEMO=1 uses the ring as before.
+struct EpochCollectMemo {
+    std::uint64_t epoch = 0;
+    std::uint64_t unwatched = 0;
+    std::vector<std::uint64_t> begins;
+    std::vector<std::uint64_t> ends;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> walk;
+
+    void use(std::uint64_t currentEpoch, std::uint64_t serial) {
+        if (epoch == currentEpoch && unwatched == serial) return;
+        epoch = currentEpoch;
+        unwatched = serial;
+        begins.clear();
+        ends.clear();
+    }
+
+    void gaps(std::uint64_t first, std::uint64_t stop, std::vector<std::pair<std::uint64_t, std::uint64_t>>& out) const {
+        out.clear();
+        auto index = static_cast<std::size_t>(std::upper_bound(begins.begin(), begins.end(), first) - begins.begin());
+        auto cursor = first;
+        if (index != 0 && ends[index - 1] > cursor) cursor = ends[index - 1];
+        for (; cursor < stop && index < begins.size() && begins[index] < stop; ++index) {
+            if (begins[index] > cursor) out.emplace_back(cursor, begins[index]);
+            cursor = std::max(cursor, ends[index]);
+        }
+        if (cursor < stop) out.emplace_back(cursor, stop);
+    }
+
+    void add(std::uint64_t first, std::uint64_t stop) {
+        const auto low = static_cast<std::size_t>(std::lower_bound(ends.begin(), ends.end(), first) - ends.begin());
+        const auto high = static_cast<std::size_t>(std::upper_bound(begins.begin(), begins.end(), stop) - begins.begin());
+        if (low < high) {
+            first = std::min(first, begins[low]);
+            stop = std::max(stop, ends[high - 1]);
+            begins.erase(begins.begin() + static_cast<std::ptrdiff_t>(low) + 1, begins.begin() + static_cast<std::ptrdiff_t>(high));
+            ends.erase(ends.begin() + static_cast<std::ptrdiff_t>(low) + 1, ends.begin() + static_cast<std::ptrdiff_t>(high));
+            begins[low] = first;
+            ends[low] = stop;
+            return;
+        }
+        begins.insert(begins.begin() + static_cast<std::ptrdiff_t>(low), first);
+        ends.insert(ends.begin() + static_cast<std::ptrdiff_t>(low), stop);
+    }
+};
+
+EpochCollectMemo& epochCollectMemo() {
+    return HostThreadLocal<EpochCollectMemo, EpochCollectMemo>();
+}
+
+bool ringCollectMemo() {
+    static const bool ring = std::getenv("APS5_RING_COLLECT_MEMO") != nullptr;
+    return ring;
+}
+
 struct StampRuns {
     WriteTracker& tracker;
     StampKind kind;
@@ -1153,7 +1213,17 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
     const auto epoch = currentCollectEpoch();
     const auto unwatched = unwatchSerial.load(std::memory_order_acquire);
     const bool useMemo = memoized && collectMemoEnabled() && bytes != 0;
-    if (useMemo && !sharedCollectMemo()) {
+    const bool epochMemo = collectMemoEnabled() && !sharedCollectMemo() && !ringCollectMemo();
+    EpochCollectMemo* memo = epochMemo ? &epochCollectMemo() : nullptr;
+    if (useMemo && memo != nullptr) {
+        memo->use(epoch, unwatched);
+        memo->gaps(first, stop, memo->walk);
+        if (memo->walk.empty()) {
+            collectMemoHits.fetch_add(1, std::memory_order_relaxed);
+            return tracker.generation.load(std::memory_order_relaxed);
+        }
+    }
+    if (useMemo && !sharedCollectMemo() && memo == nullptr) {
         // An entry exists only for a completed walk of an in-arena range, so the tracker is
         // initialized and watched; nothing below the lock needs asking. The thread's epochs only grow
         // and its entries are written in ring order, so the current epoch's entries are the newest
@@ -1194,6 +1264,19 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
         }
     }
 #endif
+    if (memo != nullptr) {
+        // Under the tracker mutex the unwatch serial cannot move (every bump holds it): a change since
+        // the lock-free lookup empties the memo, so the whole range is walked.
+        memo->use(epoch, unwatchSerial.load(std::memory_order_relaxed));
+        if (useMemo) memo->gaps(first, stop, memo->walk);
+        else memo->walk.assign(1, {first, stop});
+        for (const auto& [from, to] : memo->walk) {
+            if (!walkWrites(tracker, from, to, StampKind::Cpu)) return 0;
+            memo->add(from, to);
+        }
+        memo->add(first, stop);
+        return tracker.generation;
+    }
     if (!walkWrites(tracker, first, stop, StampKind::Cpu)) return 0;
     // Only a completed walk is remembered; a failed one (uncommitted pages) returned 0 above.
     if (collectMemoEnabled()) {
