@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/BufferPool.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ColorTargetTransfer.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GpuColorTransfer.hpp"
@@ -869,6 +870,49 @@ const char* DrawRecipeMissName(DrawRecipeMiss miss) {
 
 namespace {
 
+// APS5_VRAM_DRAW_INPUTS: a vertex or index copy that will be kept for reuse goes to device-local host-visible
+// memory while the live total stays under the cap and the heap stays the margin below its budget (re-read at
+// most every 100 ms); null = make a host copy as before.
+std::shared_ptr<Buffer> VramDrawInput(const Context& context, std::size_t bytes, VkBufferUsageFlags usage) {
+    const auto cap = BufferPool::VramDrawInputCap();
+    if (cap == 0 || context.memoryProperties2 == nullptr || context.physical == VK_NULL_HANDLE) return {};
+    constexpr VkMemoryPropertyFlags rebar = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    std::optional<std::uint32_t> heap;
+    for (std::uint32_t i = 0; i < context.memory.memoryTypeCount && !heap; ++i) {
+        if ((context.memory.memoryTypes[i].propertyFlags & rebar) == rebar) heap = context.memory.memoryTypes[i].heapIndex;
+    }
+    if (!heap) return {};
+    static std::mutex mutex;
+    static std::chrono::steady_clock::time_point checked{};
+    static VkDeviceSize heapUsage = 0;
+    static VkDeviceSize heapBudget = 0;
+    {
+        std::lock_guard lock(mutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - checked >= std::chrono::milliseconds(100)) {
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT reported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+            VkPhysicalDeviceMemoryProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, &reported};
+            context.memoryProperties2(context.physical, &properties);
+            heapUsage = reported.heapUsage[*heap];
+            heapBudget = reported.heapBudget[*heap];
+            checked = now;
+        }
+        if (!BufferPool::VramDrawInputFits(BufferPool::VramDrawInputBytes.load(), bytes, cap, heapUsage, heapBudget, BufferPool::VramMargin())) return {};
+        heapUsage += bytes;
+    }
+    std::unique_ptr<Buffer> made;
+    try {
+        made = std::make_unique<Buffer>(context, bytes, usage, rebar);
+    } catch (...) {
+        return {};
+    }
+    BufferPool::VramDrawInputBytes += bytes;
+    return std::shared_ptr<Buffer>(made.release(), [bytes](Buffer* gone) {
+        BufferPool::VramDrawInputBytes -= bytes;
+        delete gone;
+    });
+}
+
 // APS5_PROFILE_DRAW: the per-phase timers of one draw (DrawPhase), shared by Draw's parts and
 // DrawWithRecipe.
 struct DrawTimer {
@@ -919,7 +963,10 @@ DrawInputCopy CopyDrawInput(const Context& context, Recorder* recorder, std::uin
             return copy;
         }
     }
-    copy.buffer = std::make_shared<Buffer>(context, bytes, use == Recorder::SnapshotUse::Vertex ? VK_BUFFER_USAGE_VERTEX_BUFFER_BIT : VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    const VkBufferUsageFlags usage = use == Recorder::SnapshotUse::Vertex ? VK_BUFFER_USAGE_VERTEX_BUFFER_BIT : VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (copy.generation != 0) copy.buffer = VramDrawInput(context, bytes, usage);
+    copy.vram = copy.buffer != nullptr;
+    if (!copy.vram) copy.buffer = std::make_shared<Buffer>(context, bytes, usage);
     GuestMemory::Read(address, copy.buffer->Bytes(), alignment);
     return copy;
 }
@@ -1094,7 +1141,8 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
         if (import != nullptr) {
             highest = InPlaceIndexRange(*context.recorder, draw.indexAddress, static_cast<std::size_t>(indexBytes), draw.indexSize, skipRestart).highest;
         } else if (!copy.reused) {
-            highest = HighestDrawIndex(copy.buffer->Bytes().first(static_cast<std::size_t>(indexBytes)), draw.indexSize, skipRestart);
+            const auto indices = copy.vram ? std::span<const std::byte>(reinterpret_cast<const std::byte*>(draw.indexAddress), static_cast<std::size_t>(indexBytes)) : std::span<const std::byte>(copy.buffer->Bytes().first(static_cast<std::size_t>(indexBytes)));
+            highest = HighestDrawIndex(indices, draw.indexSize, skipRestart);
             KeepDrawInput(context.recorder, draw.indexAddress, copy, use, skipRestart ? (highest ? *highest + 1u : 0u) : highest.value_or(0u));
         } else if (!skipRestart) {
             highest = copy.derived;

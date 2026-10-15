@@ -2,6 +2,7 @@
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_BUFFERPOOL_HPP
 
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -62,6 +63,13 @@ public:
     // heap is over that line). Past the budget Windows moves allocations to system memory, and every GPU access to
     // them crosses PCIe (the hub's storage write-backs ran 30x slower), so idle buffers go first.
     static VkDeviceSize DeviceRetainAllowance(VkDeviceSize retained, VkDeviceSize usage, VkDeviceSize budget, VkDeviceSize margin);
+    // APS5_VRAM_MARGIN_MIB (default 384, 0 = no margin).
+    static VkDeviceSize VramMargin();
+    // APS5_VRAM_DRAW_INPUTS=1: kept vertex and index snapshots are made in device-local host-visible memory, at most
+    // APS5_VRAM_DRAW_INPUTS_MIB (default 256) live, and the pool does not retain such buffers. 0 = off.
+    static std::size_t VramDrawInputCap();
+    static bool VramDrawInputFits(std::size_t live, std::size_t bytes, std::size_t cap, VkDeviceSize usage, VkDeviceSize budget, VkDeviceSize margin);
+    static inline std::atomic<std::size_t> VramDrawInputBytes{0};
     ~BufferPool();
     BufferPool(const BufferPool&) = delete;
     BufferPool& operator=(const BufferPool&) = delete;

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 namespace AgcDriver::Graphics {
@@ -44,11 +45,31 @@ VkDeviceSize BufferPool::DeviceRetainAllowance(VkDeviceSize retained, VkDeviceSi
     return retained > over ? retained - over : 0;
 }
 
-void BufferPool::refreshDeviceAllowance() {
+VkDeviceSize BufferPool::VramMargin() {
     static const VkDeviceSize margin = [] {
         const char* text = std::getenv("APS5_VRAM_MARGIN_MIB");
         return static_cast<VkDeviceSize>(text != nullptr ? std::strtoull(text, nullptr, 10) : 384ull) << 20u;
     }();
+    return margin;
+}
+
+std::size_t BufferPool::VramDrawInputCap() {
+    static const std::size_t cap = [] {
+        const char* on = std::getenv("APS5_VRAM_DRAW_INPUTS");
+        if (on == nullptr || std::strcmp(on, "1") != 0) return std::size_t{0};
+        const char* mib = std::getenv("APS5_VRAM_DRAW_INPUTS_MIB");
+        return static_cast<std::size_t>(mib != nullptr && *mib != '\0' ? std::strtoull(mib, nullptr, 10) : 256ull) << 20u;
+    }();
+    return cap;
+}
+
+bool BufferPool::VramDrawInputFits(std::size_t live, std::size_t bytes, std::size_t cap, VkDeviceSize usage, VkDeviceSize budget, VkDeviceSize margin) {
+    if (bytes > cap || live > cap - bytes) return false;
+    return budget == 0 || (usage < budget && bytes <= budget - usage && margin <= budget - usage - bytes);
+}
+
+void BufferPool::refreshDeviceAllowance() {
+    const VkDeviceSize margin = VramMargin();
     if (margin == 0 || memoryProperties2 == nullptr || physical == VK_NULL_HANDLE || !deviceHeap) return;
     const auto now = std::chrono::steady_clock::now();
     if (now - allowanceChecked < std::chrono::milliseconds(100)) return;
@@ -252,7 +273,7 @@ std::optional<BufferAllocation> BufferPool::Take(std::size_t bytes, VkBufferUsag
         const auto now = std::chrono::steady_clock::now();
         if (now - lastReport > std::chrono::seconds(10)) {
             lastReport = now;
-            AgcDriver::ProfilePrint_nid_no_patch("[bufferpool] small: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB); large: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB)%s; device: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB of %llu)\n", static_cast<unsigned long long>(smallTier.hits), static_cast<unsigned long long>(smallTier.misses), static_cast<unsigned long long>(smallTier.evictions), smallTier.slots, smallTier.retainedBytes / 1048576.0, static_cast<unsigned long long>(largeTier.hits), static_cast<unsigned long long>(largeTier.misses), static_cast<unsigned long long>(largeTier.evictions), largeTier.slots, largeTier.retainedBytes / 1048576.0, sharedTiers() ? " (shared)" : "", static_cast<unsigned long long>(deviceTier.hits), static_cast<unsigned long long>(deviceTier.misses), static_cast<unsigned long long>(deviceTier.evictions), deviceTier.slots, deviceTier.retainedBytes / 1048576.0, static_cast<unsigned long long>(std::min(deviceTier.budget, deviceAllowance) >> 20u));
+            AgcDriver::ProfilePrint_nid_no_patch("[bufferpool] small: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB); large: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB)%s; device: %llu hits, %llu misses, %llu evictions, %zu retained (%.0f MiB of %llu); vram draw inputs %.0f MiB\n", static_cast<unsigned long long>(smallTier.hits), static_cast<unsigned long long>(smallTier.misses), static_cast<unsigned long long>(smallTier.evictions), smallTier.slots, smallTier.retainedBytes / 1048576.0, static_cast<unsigned long long>(largeTier.hits), static_cast<unsigned long long>(largeTier.misses), static_cast<unsigned long long>(largeTier.evictions), largeTier.slots, largeTier.retainedBytes / 1048576.0, sharedTiers() ? " (shared)" : "", static_cast<unsigned long long>(deviceTier.hits), static_cast<unsigned long long>(deviceTier.misses), static_cast<unsigned long long>(deviceTier.evictions), deviceTier.slots, deviceTier.retainedBytes / 1048576.0, static_cast<unsigned long long>(std::min(deviceTier.budget, deviceAllowance) >> 20u), VramDrawInputBytes.load() / 1048576.0);
         }
     }
     auto& tier = tierFor(capacity, properties);
@@ -335,6 +356,11 @@ void BufferPool::Put(const BufferAllocation& allocation) noexcept {
     // Evicted allocations are destroyed after the mutex is released (see evictOldest). The vector
     // may throw on growth; a Put that cannot retain simply destroys, as noexcept requires.
     std::vector<BufferAllocation> evicted;
+    constexpr VkMemoryPropertyFlags rebar = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    if ((allocation.properties & rebar) == rebar && VramDrawInputCap() != 0) {
+        destroy(allocation);
+        return;
+    }
     try {
         std::lock_guard lock(mutex);
         auto& tier = tierFor(allocation.bytes, allocation.properties);

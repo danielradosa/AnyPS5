@@ -535,6 +535,13 @@ void DeviceAllowance() {
     Expect(BufferPool::DeviceRetainAllowance(300, 900, 1000, 200) == 200, "a heap 100 over budget - margin takes 100 from the retained bytes");
     Expect(BufferPool::DeviceRetainAllowance(50, 1000, 1000, 200) == 0, "a heap further over than the pool holds retains nothing");
     Expect(BufferPool::DeviceRetainAllowance(5, 10, 100, 200) == 0, "a margin over the budget retains nothing once the heap is used");
+    Expect(BufferPool::VramDrawInputFits(100, 50, 200, 500, 1000, 200), "a draw input under the cap and the margin fits");
+    Expect(!BufferPool::VramDrawInputFits(160, 50, 200, 500, 1000, 200), "a draw input past the live cap does not fit");
+    Expect(!BufferPool::VramDrawInputFits(0, 300, 200, 0, 1000, 0), "a draw input larger than the cap does not fit");
+    Expect(!BufferPool::VramDrawInputFits(0, 50, 200, 760, 1000, 200), "a draw input that would cross budget - margin does not fit");
+    Expect(BufferPool::VramDrawInputFits(0, 50, 200, 750, 1000, 200), "a draw input that reaches budget - margin exactly fits");
+    Expect(!BufferPool::VramDrawInputFits(0, 50, 200, 1200, 1000, 0), "a heap over its budget takes no draw input");
+    Expect(BufferPool::VramDrawInputFits(0, 50, 200, 5000, 0, 200), "a heap without a reported budget is limited by the cap alone");
 }
 
 int main() {
