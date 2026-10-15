@@ -131,7 +131,27 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         constexpr std::size_t gpuStoreLimit = 65536;
         bool drained = true;
         int storeReason = -1;
-        if (const auto store = Pm4::ResolveStore(packet, queue, gpuStoreLimit)) {
+        // A DMA_DATA from the GDS into memory: first a transfer out of the GDS's host import recorded behind every GDS
+        // user recorded before it (VulkanDevice::CopyBuffer path 1, as the larger memory copies below), instead of the
+        // CPU read below whose flush hook waits for those users. Debug aid: APS5_GDS_CPU_READBACKS=1 reads on the CPU.
+        static const bool gdsCpuReadbacks = std::getenv("APS5_GDS_CPU_READBACKS") != nullptr;
+        if (opcode == 0x50 && !gdsCpuReadbacks) {
+            const auto readback = Pm4::DecodeGdsReadback(packet);
+            if (readback.has_value() && GuestMemory::Accessible(reinterpret_cast<const void*>(readback->destination), readback->bytes, true)) {
+                GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Copy);
+                std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                if (const auto localDevice = device.Load()) {
+                    recordDeferredLabels(localDevice.get(), submission.queue);
+                    const auto outcome = localDevice->CopyBuffer(readback->destination, readback->source, readback->bytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, submission.queue, [](std::span<const std::byte>, std::uint64_t) {});
+                    if (outcome.path == 1 || outcome.path == 3) {
+                        ++gdsReadbacksOnGpu;
+                        wroteOnGpu = true;
+                        drained = false;
+                    }
+                }
+            }
+        }
+        if (const auto store = drained ? Pm4::ResolveStore(packet, queue, gpuStoreLimit) : std::optional<Pm4::StoreWrite>{}) {
             const auto bytes = store->Bytes();
             if (bytes.empty()) {
 
