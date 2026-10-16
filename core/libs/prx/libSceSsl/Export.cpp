@@ -2,9 +2,12 @@
 #include "prx/libc/include/General.hpp"
 
 #include <mbedtls/asn1.h>
+#include <mbedtls/base64.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
+#include <mbedtls/md.h>
 #include <mbedtls/oid.h>
+#include <mbedtls/pem.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/platform_util.h>
@@ -33,6 +36,26 @@ constexpr int ErrorInvalidValue = static_cast<int>(0x8095f007);
 constexpr int ErrorInvalidArg = static_cast<int>(0x8095177a);
 constexpr int SslVersionTls12 = 5;
 constexpr std::size_t MaxAlpnSize = 0xffff;
+
+constexpr std::int64_t TicksPerSecond = 1000000;
+constexpr std::int64_t TicksPerMinute = 60 * TicksPerSecond;
+constexpr std::int64_t TicksPerHour = 60 * TicksPerMinute;
+constexpr std::int64_t TicksPerDay = 24 * TicksPerHour;
+constexpr std::int64_t UnixEpochDays = 719162;
+
+std::int64_t DaysFromCivil(std::int64_t year, unsigned month, unsigned day) {
+    year -= month <= 2;
+    const std::int64_t era = (year >= 0 ? year : year - 399) / 400;
+    const auto yearOfEra = static_cast<unsigned>(year - era * 400);
+    const unsigned dayOfYear = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1;
+    const unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+    return era * 146097 + static_cast<std::int64_t>(dayOfEra) - 719468 + UnixEpochDays;
+}
+
+std::uint64_t TimeToTick(const mbedtls_x509_time& time) {
+    return static_cast<std::uint64_t>(DaysFromCivil(time.year, static_cast<unsigned>(time.mon), static_cast<unsigned>(time.day)) * TicksPerDay +
+        time.hour * TicksPerHour + time.min * TicksPerMinute + time.sec * TicksPerSecond);
+}
 
 struct Pool {
     std::size_t size, current = 0, peak = 0;
@@ -691,8 +714,69 @@ int APS5_VABI sceSslSetMinSslVersion(int sslConnectionId, int version) {
     return 0;
 }
 
-int APS5_VABI sceSslGetPem() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceSslGetNotBefore(int sslCtxId, void* certificate, SceSsl::RtcTick* begin) {
+    if (!begin) return ErrorInvalidArg;
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    const auto [owner, parsed] = GetCertificate(GetContext(sslCtxId), certificate);
+    begin->tick = TimeToTick(parsed->valid_from);
+    return 0;
+}
+
+int APS5_VABI sceSslGetNotAfter(int sslCtxId, void* certificate, SceSsl::RtcTick* limit) {
+    if (!limit) return ErrorInvalidArg;
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    const auto [owner, parsed] = GetCertificate(GetContext(sslCtxId), certificate);
+    limit->tick = TimeToTick(parsed->valid_to);
+    return 0;
+}
+
+int APS5_VABI sceSslGetFingerprint(int sslCtxId, void* certificate, int hashType, std::uint8_t* fingerprint) {
+    if (!fingerprint) return ErrorInvalidArg;
+    mbedtls_md_type_t type;
+    switch (hashType) {
+    case 0: type = MBEDTLS_MD_MD5; break;
+    case 1: type = MBEDTLS_MD_SHA1; break;
+    case 2: type = MBEDTLS_MD_SHA224; break;
+    case 3: type = MBEDTLS_MD_SHA256; break;
+    case 4: type = MBEDTLS_MD_SHA384; break;
+    case 5: type = MBEDTLS_MD_SHA512; break;
+    default: return ErrorInvalidArg;
+    }
+    const auto* info = mbedtls_md_info_from_type(type);
+    if (!info) throw std::runtime_error("sceSslGetFingerprint: digest is not built into the SSL backend");
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    auto& context = GetContext(sslCtxId);
+    const auto [owner, parsed] = GetCertificate(context, certificate);
+    PoolScope scope(context.pool);
+    CheckBackend(mbedtls_md(info, parsed->raw.p, parsed->raw.len, fingerprint), "SSL certificate fingerprint failed");
+    return 0;
+}
+
+int APS5_VABI sceSslGetPem(int sslCtxId, void* certificate, char* buffer, std::size_t* length) {
+    if (!length) return ErrorInvalidArg;
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    auto& context = GetContext(sslCtxId);
+    const auto retained = GetCertificate(context, certificate);
+    const auto* parsed = retained.second;
+    PoolScope scope(context.pool);
+    const auto encode = [&](unsigned char* output, std::size_t capacity, std::size_t* written) {
+        return mbedtls_pem_write_buffer("-----BEGIN CERTIFICATE-----\n", "-----END CERTIFICATE-----\n", parsed->raw.p, parsed->raw.len,
+            output, capacity, written);
+    };
+    std::size_t required = 0;
+    const auto sizing = encode(nullptr, 0, &required);
+    if (sizing != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) CheckBackend(sizing, "SSL PEM sizing failed");
+    const auto capacity = *length;
+    *length = required;
+    if (!buffer) return 0;
+    if (capacity < required) throw std::length_error("SSL PEM output buffer is too small");
+    std::size_t written = 0;
+    CheckBackend(encode(reinterpret_cast<unsigned char*>(buffer), required, &written), "SSL PEM encoding failed");
+    *length = written;
     return 0;
 }
 
