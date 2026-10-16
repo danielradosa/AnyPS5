@@ -29,6 +29,10 @@ std::uint32_t* APS5_VABI sceAgcDcbAtomicGds_0900(CommandBuffer* buf, std::uint32
     return packet;
 }
 
+std::uint32_t* APS5_VABI sceAgcDcbAtomicGds(CommandBuffer* buf, std::uint32_t engine, std::uint32_t operation, std::uint32_t completion, std::uint32_t dataMode, std::uint32_t autoIncrementBytes, std::uint16_t base, std::uint16_t size, std::uint32_t offsets, std::uint32_t destination, std::uint64_t source0, std::uint64_t source1) {
+    return sceAgcDcbAtomicGds_0900(buf, engine, operation, completion, dataMode, autoIncrementBytes, base, size, offsets, destination, source0, source1);
+}
+
 uint32_t* APS5_VABI sceAgcDcbJump(CommandBuffer* buf, uint8_t mode, uint8_t cache_policy, const uint32_t* target, uint32_t size_in_dwords) {
     return Agc::Command::WriteJump(buf, mode, cache_policy, target, size_in_dwords, __func__);
 }
