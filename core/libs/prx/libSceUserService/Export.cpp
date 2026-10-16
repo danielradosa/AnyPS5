@@ -26,6 +26,10 @@ int APS5_VABI sceUserServiceGetAccessibilityChatTranscription(int user_id, int32
  return ReportAccessibilitySetting(user_id, chat_transcription, 0);
 }
 
+int APS5_VABI sceUserServiceGetAccessibilityKeyremapEnable(int user_id, int32_t* enable) {
+ return ReportAccessibilitySetting(user_id, enable, 0);
+}
+
 int APS5_VABI sceUserServiceGetAccessibilityPressAndHoldDelay(int user_id, int32_t* press_and_hold_delay) {
  return ReportAccessibilitySetting(user_id, press_and_hold_delay, 0);
 }
@@ -36,6 +40,10 @@ int APS5_VABI sceUserServiceGetAccessibilityTriggerEffect(int user_id, int32_t* 
 
 int APS5_VABI sceUserServiceGetAccessibilityVibration(int user_id, int32_t* vibration) {
  return ReportAccessibilitySetting(user_id, vibration, 1);
+}
+
+int APS5_VABI sceUserServiceGetAccessibilityZoom(int user_id, int32_t* zoom) {
+ return ReportAccessibilitySetting(user_id, zoom, 0);
 }
 
 int APS5_VABI sceUserServiceGetAccessibilityZoomEnabled(int user_id, int32_t* zoom_enabled) {
