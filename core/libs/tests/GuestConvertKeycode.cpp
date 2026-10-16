@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <stdexcept>
 
 extern "C" {
@@ -92,5 +93,15 @@ int main() {
     Require(Throws(0, 5));
     Require(Throws(0, 33));
     Require(Throws(0, -1));
+
+    for (std::uint32_t state : {0u, 0x4000000u}) {
+        char16_t character[3] = {u'?', 0, 0};
+        Require(sceConvertKeycodeGetCharacter(0x04, state, 0, character) == 0);
+        Require(character[0] == u'a');
+        Require(sceConvertKeycodeGetCharacter(0x1E, state, 0, character) == 0);
+        Require(character[0] == u'1');
+        Require(sceConvertKeycodeGetCharacter(0x3A, state, 0, character) == 0);
+        Require(character[0] == 0);
+    }
     return 0;
 }

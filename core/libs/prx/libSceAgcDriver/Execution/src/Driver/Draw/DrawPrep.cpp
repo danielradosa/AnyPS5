@@ -523,7 +523,8 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             ++counts[PrepPrechecked];
             return;
         }
-        const auto drawKey = drawRegisterKey(scratch, *submission.shaders, drawPrep.deviceSerial);
+        std::uint64_t dataShape = 0;
+        const auto drawKey = drawRegisterKey(scratch, *submission.shaders, drawPrep.deviceSerial, &dataShape);
         const auto shapeKey = timer.on ? drawShapeKey(scratch, *submission.shaders, drawPrep.deviceSerial) : 0;
         timer.Mark(ProbeKey);
         std::shared_ptr<DrawEntry> entry;
@@ -590,9 +591,11 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             stageCapture.pushOffset = pushCursor;
             const auto capture = shaderMemory.Capture(*invocation);
             stageCapture.regions = shaderMemory.TakeRecentRegions();
+            stageCapture.userDataUse = capture->userDataUse;
             memory = shaderMemory.Regions();
             timer.Mark(ProbeWalk);
             stageCapture.compiled = invocation->Materialize(*capture);
+            stageCapture.capture = capture;
             timer.Mark(ProbeMaterialize);
             const auto slotEnd = (pushCursor / Graphics::PipelinePushSlotBytes + 1u) * Graphics::PipelinePushSlotBytes;
             if (stageCapture.compiled->pushConstants.size() > slotEnd - pushCursor) {
@@ -620,7 +623,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
         }
         std::vector<std::shared_ptr<DispatchVariant>> parked;
         if (backgroundSpecializeEnabled()) parked = parkSpecializations(drawKey, fresh, stageCaptures, programs, decode, pixel, vertexInfos, drawParameters, *drawPrep.target, drawPrep.deviceSerial, drawPrep.pipelineLibraries);
-        if (!insertDrawEntry(drawKey, fresh, decode, true, entry == nullptr)) {
+        if (!insertDrawEntry(drawKey, fresh, decode, true, entry == nullptr, drawDataHits() ? dataShape : 0)) {
             ++counts[PrepRaced];
             return;
         }

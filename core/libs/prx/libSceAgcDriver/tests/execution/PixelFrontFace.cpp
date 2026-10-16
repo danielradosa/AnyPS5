@@ -30,8 +30,8 @@ alignas(256) constexpr std::array<std::uint32_t, 6> BackFaceIsZeroCode{
     0x7e0402f2, 0x7d840080, 0x02020480, 0xf800180f, 0x01010101, 0xbf810000,
 };
 
-alignas(256) constexpr std::array<std::uint32_t, 6> FrontFaceIsOneCode{
-    0x7e0402f2, 0x7d840081, 0x02020480, 0xf800180f, 0x01010101, 0xbf810000,
+alignas(256) constexpr std::array<std::uint32_t, 6> FrontFaceIsAllBitsCode{
+    0x7e0402f2, 0x7d8400c1, 0x02020480, 0xf800180f, 0x01010101, 0xbf810000,
 };
 
 alignas(256) constexpr std::array<std::uint32_t, 6> FrontFaceIsPositiveCode{
@@ -131,8 +131,8 @@ int main() {
         if (!device) return VulkanTestSkipped;
         Draw(*device, BackFaceIsZeroCode, true);
         Check(false, true, "FRONT_FACE_ALL_BITS: v_cmp_eq_u32 0, front_face");
-        Draw(*device, FrontFaceIsOneCode, true);
-        Check(true, false, "FRONT_FACE_ALL_BITS: v_cmp_eq_u32 1, front_face");
+        Draw(*device, FrontFaceIsAllBitsCode, true);
+        Check(true, false, "FRONT_FACE_ALL_BITS: v_cmp_eq_u32 -1, front_face");
         Draw(*device, FrontFaceIsPositiveCode, false);
         Check(true, false, "sign encoding: v_cmp_lt_f32 0, front_face");
         std::puts("pixel front face tests passed");

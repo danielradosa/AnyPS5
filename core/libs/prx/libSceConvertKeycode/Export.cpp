@@ -11,6 +11,7 @@ constexpr int kErrInvalidAddress = static_cast<int>(0x80BC0031u);
 constexpr int kErrInvalidUserId = static_cast<int>(0x80BC0010u);
 constexpr std::uint32_t kStatusModifiers = 0xff00u;
 constexpr std::uint32_t kStatusLeds = 0x70000u;
+constexpr std::uint32_t kIgnoredStateBits = 0x4000000u;
 constexpr std::int32_t kKeyboardTypeEnglishUs = 4;
 }  // namespace
 
@@ -35,8 +36,8 @@ int APS5_VABI sceConvertKeycodeGetCharacterFromKeyboardData(void) {
 
 int APS5_VABI sceConvertKeycodeGetCharacter(std::uint16_t keycode, std::uint32_t status, std::int32_t keyboardType, char16_t* character) {
     if (character == nullptr) return kErrInvalidAddress;
-    if ((status & ~(kStatusModifiers | kStatusLeds)) != 0)
-        throw std::runtime_error(std::string(__func__) + ": unsupported status bits " + std::to_string(status & ~(kStatusModifiers | kStatusLeds)));
+    if ((status & ~(kStatusModifiers | kStatusLeds | kIgnoredStateBits)) != 0)
+        throw std::runtime_error(std::string(__func__) + ": unsupported status bits " + std::to_string(status & ~(kStatusModifiers | kStatusLeds | kIgnoredStateBits)));
     if (keyboardType != 0 && keyboardType != kKeyboardTypeEnglishUs)
         throw std::runtime_error(std::string(__func__) + ": keyboard type " + std::to_string(keyboardType) + " not implemented");
     *character = static_cast<char16_t>(Keyboard::Character(false, (status & kStatusLeds) >> 16, (status & kStatusModifiers) >> 8, keycode));

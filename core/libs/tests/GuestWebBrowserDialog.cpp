@@ -24,6 +24,7 @@ constexpr int COMMON_DIALOG_STATUS_INITIALIZED = 1;
 constexpr int COMMON_DIALOG_STATUS_FINISHED = 3;
 constexpr int COMMON_DIALOG_RESULT_USER_CANCELED = 1;
 constexpr int COMMON_DIALOG_ERROR_NOT_INITIALIZED = static_cast<int>(0x80B80003u);
+constexpr int COMMON_DIALOG_ERROR_ALREADY_INITIALIZED = static_cast<int>(0x80B80004u);
 constexpr int COMMON_DIALOG_ERROR_NOT_FINISHED = static_cast<int>(0x80B80005u);
 constexpr int COMMON_DIALOG_ERROR_ARG_NULL = static_cast<int>(0x80B8000Du);
 
@@ -77,6 +78,7 @@ int main() {
     Require(sceWebBrowserDialogSetCookie(&validCookie) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogResetCookie(&validReset) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogOpenForPredeterminedContent(param, &content) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
+    Require(sceWebBrowserDialogTerminate() == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_NONE);
     Require(sceWebBrowserDialogClose() == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogOpen(param) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
@@ -84,6 +86,7 @@ int main() {
     Require(result == 0x5a5a5a5a);
 
     Require(sceWebBrowserDialogInitialize() == 0);
+    Require(sceWebBrowserDialogInitialize() == COMMON_DIALOG_ERROR_ALREADY_INITIALIZED);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_INITIALIZED);
     Require(sceWebBrowserDialogUpdateStatus() == COMMON_DIALOG_STATUS_INITIALIZED);
     Require(sceWebBrowserDialogGetResult(&result) == COMMON_DIALOG_ERROR_NOT_FINISHED);
@@ -116,6 +119,7 @@ int main() {
     boundaryCookie.cookie = maxCookie.c_str();
     Require(sceWebBrowserDialogSetCookie(&boundaryCookie) == 0);
     Require(sceWebBrowserDialogTerminate() == 0);
+    Require(sceWebBrowserDialogTerminate() == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_NONE);
 
     Require(sceWebBrowserDialogInitialize() == 0);
@@ -136,6 +140,7 @@ int main() {
 
     Require(sceWebBrowserDialogClose() == 0);
     Require(sceWebBrowserDialogTerminate() == 0);
+    Require(sceWebBrowserDialogTerminate() == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_NONE);
 
     return 0;

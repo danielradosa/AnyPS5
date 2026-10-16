@@ -32,6 +32,7 @@ struct PthreadMutexattrPrivate {
     MutexType type;
     int protocol = 0;
     int ceiling = 0;
+    int pshared = 0;
 };
 
 struct PthreadMutexPrivate {
@@ -161,6 +162,7 @@ KernelCpumask GuestProcessAffinity();
 void SetLiveGuestThreadsAffinity(KernelCpumask mask);
 KernelCpumask LiveGuestThreadsAffinity();
 bool GuestThreadIsLive(const PthreadPrivate* thread);
+bool LiveGuestThreadExists(std::int64_t tid);
 bool SetGuestThreadAffinityIfLive(PthreadPrivate* thread, KernelCpumask mask);
 bool SetGuestThreadAffinityByTid(std::int64_t tid, KernelCpumask mask);
 

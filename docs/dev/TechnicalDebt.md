@@ -21,6 +21,7 @@ Throughout the project, every function at every stage either **does exactly what
 - Font, Http2, Net, Ssl, SystemService and libkernel exports imported by PPSA12544 and added without an implementation have unknown signatures
 - NpEntitlementAccess exports imported by PPSA12544's Unity plugins and added without an implementation have unknown signatures
 - Acm, GameLiveStreaming, Net, NpEntitlementAccess, NpManager and libkernel exports imported by PPSA14632 and added without an implementation are declared without parameters
+- Acm, GameLiveStreaming, Net, NpEntitlementAccess, VoiceQoS, WebBrowserDialog and libkernel exports imported by PPSA14632 and added without an implementation are declared without parameters
 
 ### Functional
 
