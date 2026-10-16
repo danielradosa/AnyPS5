@@ -88,6 +88,9 @@ double APS5_VABI erf_nid_postfix(double);
 double APS5_VABI erfc_nid_postfix(double);
 float APS5_VABI erfcf_nid_postfix(float);
 double APS5_VABI lgamma_nid_postfix(double);
+float APS5_VABI lgammaf_nid_postfix(float);
+double APS5_VABI tgamma_nid_postfix(double);
+float APS5_VABI tgammaf_nid_postfix(float);
 float APS5_VABI logbf_nid_postfix(float);
 int APS5_VABI ilogb_nid_postfix(double);
 int APS5_VABI ilogbf_nid_postfix(float);
@@ -960,6 +963,13 @@ int main() {
         Require(std::abs(lgamma_nid_postfix(sign * 0x1p-57) - 39.509389291916882) < 1e-13);
         Require(std::fetestexcept(FE_OVERFLOW | FE_DIVBYZERO | FE_INVALID) == 0);
     }
+    Require(lgammaf_nid_postfix(1.f) == 0.f && lgammaf_nid_postfix(2.f) == 0.f && std::isinf(lgammaf_nid_postfix(0.f)));
+    Require(std::abs(lgammaf_nid_postfix(0.5f) - 0.57236494f) < 1e-6f && std::abs(lgammaf_nid_postfix(10.f) - 12.801827f) < 1e-4f);
+    Require(std::abs(lgammaf_nid_postfix(-0.5f) - 1.2655121f) < 1e-6f);
+    Require(tgamma_nid_postfix(1.) == 1. && tgamma_nid_postfix(2.) == 1. && tgamma_nid_postfix(3.) == 2. && tgamma_nid_postfix(4.) == 6.);
+    Require(std::abs(tgamma_nid_postfix(0.5) - 1.772453850905516) < 1e-15 && std::isnan(tgamma_nid_postfix(-1.)));
+    Require(tgammaf_nid_postfix(1.f) == 1.f && tgammaf_nid_postfix(2.f) == 1.f && tgammaf_nid_postfix(3.f) == 2.f && tgammaf_nid_postfix(4.f) == 6.f);
+    Require(std::abs(tgammaf_nid_postfix(0.5f) - 1.7724538f) < 1e-6f && std::isnan(tgammaf_nid_postfix(-1.f)));
     Require(llroundl_nid_postfix(2.5L) == 3 && llroundl_nid_postfix(-2.5L) == -3 && llroundl_nid_postfix(0.49999999999999999L) == 0);
     Require(llroundl_nid_postfix(9007199254740993.0L) == 9007199254740993LL && llroundl_nid_postfix(-1e30L) == INT64_MIN);
     for (const int mode : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {

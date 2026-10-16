@@ -304,6 +304,8 @@ double APS5_VABI lgamma_nid_postfix(double x) {
     if (magnitude != 0 && magnitude < 0x3c70000000000000ull) return -std::log(std::fabs(x));
     return std::lgamma(x);
 }
+float APS5_VABI lgammaf_nid_postfix(float x) { return std::lgamma(x); }
+double APS5_VABI tgamma_nid_postfix(double x) { return std::tgamma(x); }
 
 float APS5_VABI sinf_nid_postfix(float x) { return std::sin(x); }
 float APS5_VABI cosf_nid_postfix(float x) { return std::cos(x); }
