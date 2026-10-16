@@ -33,7 +33,7 @@ int APS5_VABI sceConvertKeycodeGetCharacterFromKeyboardData(std::uint16_t keycod
     if (character == nullptr) return kErrInvalidAddress;
     if ((state & ~kIgnoredStateBits) != 0) throw std::runtime_error("sceConvertKeycodeGetCharacterFromKeyboardData: unsupported state " + std::to_string(state));
     if (type != 0) throw std::runtime_error("sceConvertKeycodeGetCharacterFromKeyboardData: unsupported keyboard type " + std::to_string(type));
-    *character = UsCharacter(keycode);
+    *character = static_cast<char16_t>(Keyboard::Character(false, 0, 0, keycode));
     return 0;
 }
 

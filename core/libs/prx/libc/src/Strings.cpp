@@ -668,14 +668,6 @@ int APS5_VABI wcsncpy_s_nid_postfix(char16_t* dest, size_t destsz, const char16_
     return 0;
 }
 
-char16_t* APS5_VABI wcsncat_nid_postfix(char16_t* dest, const char16_t* src, size_t n) {
-    const size_t dest_len = Length(dest);
-    size_t index = 0;
-    for (; index < n && src[index] != 0; ++index) dest[dest_len + index] = src[index];
-    dest[dest_len + index] = 0;
-    return dest;
-}
-
 int APS5_VABI wcsncat_s_nid_postfix(char16_t* dest, size_t destsz, const char16_t* src, size_t count) {
     constexpr int GuestEinval = 22;
     constexpr int GuestErange = 34;
