@@ -130,6 +130,10 @@ public:
     bool KnownHighestIndex(std::uint64_t address, std::size_t bytes, SnapshotUse use, std::optional<std::uint32_t>& highest);
     void KeepHighestIndex(std::uint64_t address, std::size_t bytes, SnapshotUse use, std::uint64_t generation, std::uint64_t registryGeneration, std::optional<std::uint32_t> highest);
     void OnComplete(std::function<void()> action);
+    // A completion that stores nothing into guest memory (a verify mode's compare): run with the
+    // batch's completions, but not counted as a completion-stamped writer (CompletionsRegistered,
+    // PendingWriteBackCompletions), so diagnostics leave the proofs built on those alone.
+    void OnCompleteReadOnly(std::function<void()> action);
     void NotePendingWrite(std::uint64_t address, std::size_t bytes);
     void NotePendingFill(std::uint64_t address, std::size_t bytes, std::uint8_t value);
     // Notes several [begin, end) ranges and publishes the snapshot once (a dispatch writes many buffers).

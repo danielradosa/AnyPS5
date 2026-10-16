@@ -208,8 +208,16 @@ public:
     // Records the copy-in of every staged region anew for another use of this upload (a resource
     // cache hit, from ShaderResources::Revalidate, under GuestMemory::GpuMutex, once the imports
     // were confirmed unchanged): the previous use's copy-back left the shadow behind, and the next
-    // RecordCopyBacks copies it back again. Nothing to do without staged regions.
-    void RecordStagingCopies(Recorder& recorder);
+    // RecordCopyBacks copies it back again. Nothing to do without staged regions. Under
+    // APS5_STAGING_REUSE=1 a region whose shadow still matches its import (NoteResidentShadows) is
+    // not copied in. Returns the regions copied in.
+    std::size_t RecordStagingCopies(Recorder& recorder);
+    // After a use's copy-backs, pending-write note and direct-write marks (ShaderResources::
+    // MarkGpuWrites): notes, per staged region, the write state at which its shadow and its import
+    // hold the same bytes, for RecordStagingCopies' reuse proof.
+    void NoteResidentShadows(const Recorder& recorder);
+    // Tests: APS5_STAGING_REUSE for this process (the environment is read once otherwise).
+    static void SetStagingReuse(bool enabled);
     void AddSnapshot(const GuestMemorySnapshot& snapshot);
     // Upload is the two stages below back to back. UploadPrepare needs no device lock: it merges the
     // regions, binds the image mirrors and host imports that already serve them (an import pointer is
@@ -338,7 +346,23 @@ private:
         // The device refused the shadow (memory or allocations exhausted): the region takes the
         // path it would take without staging, in both upload stages.
         bool unstaged = false;
+        // Staging reuse (APS5_STAGING_REUSE): the tracker generation of the shadow's last fill
+        // (its copy-in, or a reuse proof), whether no write touched the region from then until its
+        // copy-back was recorded, and the state after the use (NoteResidentShadows): generation (0:
+        // no reuse), newest write note over the region, completions registered, recorder id.
+        std::uint64_t filledGeneration = 0;
+        bool cleanUse = false;
+        std::uint64_t residentGeneration = 0;
+        std::uint64_t residentNote = 0;
+        std::uint64_t residentCompletions = 0;
+        std::uint64_t residentRecorder = 0;
     };
+    // Whether a staged region's shadow still holds its import's bytes (the reuse proof); counts
+    // the reason when not.
+    bool residentShadow(const Region& region, const Recorder& recorder) const;
+    // APS5_VERIFY_STAGING_REUSE=1: records copies of the import and the reused shadow where the
+    // copy-in would have run and compares them when the batch completes.
+    void verifyResidentShadow(const Region& region, Recorder& recorder) const;
 
     // How [begin, end) lies against the space's base regions.
     enum class BaseOverlap { None, Inside, Partial };

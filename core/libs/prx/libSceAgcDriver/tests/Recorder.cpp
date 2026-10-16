@@ -2116,6 +2116,104 @@ void readWrittenStagingTests(const Device& device, Recorder& recorder) {
     HostImportFor(context, address, bytes);
 }
 
+// Staging reuse (APS5_STAGING_REUSE): a staged region's copy-in is skipped while its shadow still
+// holds the import's bytes, and made again after a CPU store, a GPU writer's stamp, a write noted
+// over the region, a completion-stamped writer still pending, or a use that recorded no copy-back.
+// Every copy-back stores the shadow's written range, so a wrongly reused (stale) shadow would put
+// old bytes back over the CPU's store.
+bool stagingReuseTests(const Device& device, Recorder& recorder) {
+    const auto& context = device.GetContext();
+    constexpr std::size_t bytes = 4u << 20u;
+    if (context.hostImportAlignment == 0 || !AgcDriver::GuestMemory::WriteWatched()) {
+        std::cout << "host imports or write watching unavailable: staging reuse not tested\n";
+        return false;
+    }
+    // Direct memory, as the title's heaps: imported through an alias that keeps the guest pages
+    // write-watched (a plain host block's import is compared, never stamped).
+    struct Backing {
+        Recorder& recorder;
+        void* block = nullptr;
+        std::int64_t physical = -1;
+        ~Backing() {
+            recorder.Sync();
+            if (block != nullptr) sceKernelMunmap(block, bytes);
+            if (physical >= 0) sceKernelReleaseDirectMemory(physical, bytes);
+        }
+    } backing{recorder};
+    Require(sceKernelAllocateDirectMemory(0, 0x7fffffffffll, bytes, 65536, 0, &backing.physical) == 0, "allocate the staging reuse backing");
+    Require(sceKernelMapDirectMemory(&backing.block, bytes, 0x33, 0, backing.physical, 65536) == 0, "map the staging reuse backing for the GPU");
+    auto* guest = static_cast<std::uint8_t*>(backing.block);
+    std::memset(guest, 0x11, bytes);
+    const auto address = reinterpret_cast<std::uint64_t>(backing.block);
+    if (HostImportFor(context, address, bytes) == nullptr) {
+        std::cout << "host import of the direct memory refused: staging reuse not tested\n";
+        return false;
+    }
+    if (!AgcDriver::GuestMemory::Watched(address, bytes)) {
+        std::cout << "the imported direct memory is not write-watched: staging reuse not tested\n";
+        return false;
+    }
+    // The fill above is a CPU store: stamped now, before the first copy-in, not after it.
+    AgcDriver::GuestMemory::CollectWritesUncached(address, bytes);
+    recorder.Activate();
+    GuestBufferMemory::SetStagingReuse(true);
+    struct Restore {
+        ~Restore() { GuestBufferMemory::SetStagingReuse(false); }
+    } restore;
+    constexpr std::size_t offset = 65536;
+    constexpr std::size_t elementBytes = 1u << 20u;
+    const auto element = address + offset;
+    GuestBufferMemory memory(context);
+    memory.AllowDeviceStaging();
+    memory.AddWritable(element, elementBytes);
+    memory.Upload(false);
+    Require(memory.InPlaceReads().empty(), "the written 1 MiB element was not staged");
+    const auto use = [&] {
+        memory.RecordCopyBacks(recorder);
+        recorder.NotePendingWrites(memory.Writes());
+        memory.MarkDirectWrites();
+        memory.NoteResidentShadows(recorder);
+        recorder.Sync();
+    };
+    const auto guestHolds = [&](std::uint8_t stored) {
+        for (std::size_t at = 0; at < bytes; ++at) {
+            if (guest[at] != (at == offset + 100 ? stored : 0x11)) return false;
+        }
+        return true;
+    };
+    use();
+    Require(memory.RecordStagingCopies(recorder) == 0, "an unchanged staged region was copied in again");
+    use();
+    guest[offset + 100] = 0x5a;
+    AgcDriver::GuestMemory::BumpCollectEpoch();
+    Require(memory.RecordStagingCopies(recorder) == 1, "a CPU store into a staged region left the shadow reused");
+    use();
+    Require(guestHolds(0x5a), "a copy-back after a CPU store put stale shadow bytes back");
+    Require(memory.RecordStagingCopies(recorder) == 0, "the refilled shadow was not reused");
+    use();
+    AgcDriver::GuestMemory::MarkWritten(element + elementBytes - 4, 4);
+    Require(memory.RecordStagingCopies(recorder) == 1, "a stamped GPU write left the shadow reused");
+    use();
+    recorder.NotePendingWrite(element + 4096, 16);
+    Require(memory.RecordStagingCopies(recorder) == 1, "a noted pending write left the shadow reused");
+    use();
+    recorder.OnComplete([] {});
+    Require(memory.RecordStagingCopies(recorder) == 1, "a pending completion-stamped writer left the shadow reused");
+    use();
+    recorder.OnComplete([] {});
+    recorder.Sync();
+    Require(memory.RecordStagingCopies(recorder) == 0, "a completion that already ran blocked the reuse");
+    use();
+    Require(memory.RecordStagingCopies(recorder) == 0, "the shadow was not reused before a lost use");
+    Require(memory.RecordStagingCopies(recorder) == 1, "a shadow whose use recorded no copy-back was reused");
+    use();
+    GuestBufferMemory::SetStagingReuse(false);
+    Require(memory.RecordStagingCopies(recorder) == 1, "staging reuse ran with the switch off");
+    use();
+    Require(guestHolds(0x5a), "the staged copy-backs changed the guest bytes");
+    return true;
+}
+
 bool sparseRunImportTests(const Device& device, bool copied) {
     const auto& context = device.GetContext();
     constexpr std::size_t unit = 65536;
@@ -7603,6 +7701,11 @@ int main(int argc, char** argv) {
             lateLabelTests(recorder);
             largeLabelTests(recorder);
             std::cout << "Completion label storage and ordering tests passed\n";
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--staging-reuse-only") {
+            if (!stagingReuseTests(device, recorder)) return 77;
+            std::cout << "staging reuse tests passed\n";
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--written-buffer-order-only") {

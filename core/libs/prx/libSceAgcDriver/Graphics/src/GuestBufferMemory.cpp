@@ -3042,6 +3042,36 @@ bool atomicStagingEnabled() {
     return !disabled;
 }
 
+// Staging reuse (APS5_STAGING_REUSE=1, opt-in). The copy-in is half of the staging round trip
+// (Astro's hub: 31.8 MiB in and 31.8 MiB back per frame over PCIe, ~2.9 ms of GPU time each way),
+// and 93% of the staged regions belong to reused builds whose shadow survives between uses. After
+// a use the shadow and the import hold the same bytes: the copy-back put the shadow's written
+// sub-ranges into the import, and the rest of the shadow is what the copy-in read, provided no
+// write reached the region between that copy-in and the copy-back (cleanUse). The next use skips
+// the copy-in while that still holds, proven as the stored-layer source is (Texture.cpp
+// storedLayerSource): the same recorder; no completion-stamped writer (a BDA build's stores,
+// stamped only when its batch completes) recorded since, or none of them still pending; no write
+// noted over the region since the use's own note; no queued label or DCC key store over it; and no
+// block of it stamped since (a CPU store, once collected, or a GPU writer's MarkWritten).
+// APS5_VERIFY_STAGING_REUSE=1 copies the import and the reused shadow where the copy-in would have
+// run and compares them when the batch completes ([buffers] staging reuse verify line).
+std::atomic<int> stagingReuseOverride{-1};
+
+bool stagingReuseEnabled() {
+    static const bool enabled = std::getenv("APS5_STAGING_REUSE") != nullptr && std::string_view(std::getenv("APS5_STAGING_REUSE")) != "0";
+    const auto forced = stagingReuseOverride.load(std::memory_order_relaxed);
+    return forced >= 0 ? forced != 0 : enabled;
+}
+
+bool stagingReuseVerified() {
+    static const bool enabled = std::getenv("APS5_VERIFY_STAGING_REUSE") != nullptr;
+    return enabled;
+}
+
+// Why a staged region of a reused build was copied in after all (the [buffers] staging line).
+enum class ReuseMiss : std::uint8_t { NotResident = 0, Recorder, Completions, Note, QueuedStore, Stamped, Count };
+constexpr std::array<const char*, static_cast<std::size_t>(ReuseMiss::Count)> ReuseMissNames{"not resident", "recorder", "completions pending", "write noted", "queued store", "stamped"};
+
 std::uint64_t kibSetting(const char* name, std::uint64_t defaultKib) {
     const char* value = std::getenv(name);
     return (value != nullptr ? std::strtoull(value, nullptr, 10) : defaultKib) << 10u;
@@ -3091,6 +3121,13 @@ struct CopyStats {
     std::atomic<std::uint64_t> stagedOutBytes{0};
     std::atomic<std::uint64_t> stagedLost{0};
     std::atomic<std::uint64_t> stagingRefused{0};
+    // Staging reuse: copy-ins skipped and their bytes, copy-ins made by reason, and the verify
+    // mode's compares (regions compared, regions that differed).
+    std::atomic<std::uint64_t> reuseSkipped{0};
+    std::atomic<std::uint64_t> reuseSkippedBytes{0};
+    std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(ReuseMiss::Count)> reuseMisses{};
+    std::atomic<std::uint64_t> reuseVerified{0};
+    std::atomic<std::uint64_t> reuseDiffered{0};
     std::atomic<std::int64_t> lastStagingReport{0};
 };
 
@@ -3139,6 +3176,15 @@ void reportStaging() {
     lastStaged = staged;
     lastIn = in;
     lastOut = out;
+    if (!stagingReuseEnabled()) return;
+    static std::uint64_t lastSkipped = 0, lastSkippedBytes = 0;
+    const auto skipped = stats.reuseSkipped.load();
+    const auto skippedBytes = stats.reuseSkippedBytes.load();
+    std::string misses;
+    for (std::size_t reason = 0; reason < ReuseMissNames.size(); ++reason) misses += std::string(reason == 0 ? "" : ", ") + ReuseMissNames[reason] + " " + std::to_string(stats.reuseMisses[reason].load());
+    AgcDriver::ProfilePrint_nid_no_patch("[buffers] staging reuse: %llu copy-ins skipped (%.0f KiB); last 10 s: %llu skipped, %.0f KiB; copied in because: %s; verify: %llu compared, %llu differed\n", static_cast<unsigned long long>(skipped), skippedBytes / 1024.0, static_cast<unsigned long long>(skipped - lastSkipped), (skippedBytes - lastSkippedBytes) / 1024.0, misses.c_str(), static_cast<unsigned long long>(stats.reuseVerified.load()), static_cast<unsigned long long>(stats.reuseDiffered.load()));
+    lastSkipped = skipped;
+    lastSkippedBytes = skippedBytes;
 }
 
 }
@@ -3685,6 +3731,9 @@ void GuestBufferMemory::recordGpuCopies(std::span<Region* const> copies, bool ad
         recorder->FlushKeyStoresOverlapping(region->begin, static_cast<std::size_t>(region->end - region->begin));
         recorder->FlushStoresOverlapping(region->begin, static_cast<std::size_t>(region->end - region->begin));
     }
+    // Every write stamped before this generation was recorded (or collected) before the copies
+    // below, which read after it on the GPU; a later stamp makes the use unclean (RecordCopyBacks).
+    const auto filled = stagingReuseEnabled() ? GuestMemory::TrackerGeneration() : 0;
     const auto commands = recorder->Commands();
     const auto timing = recorder->BeginGpuTiming(StagingCopyInKey);
     if (Recorder::BarrierValidate()) {
@@ -3758,6 +3807,8 @@ void GuestBufferMemory::recordGpuCopies(std::span<Region* const> copies, bool ad
         // source is a live import or one retireImport already handed to this batch.
         recorder->Keep(region->buffer);
         region->snapshot.clear();
+        region->filledGeneration = filled;
+        region->residentGeneration = 0;
         if (region->deviceLocal) traceStaged(region->begin, region->end, region->atomic);
         if (profile) {
             Copies().gpuCopies.fetch_add(1, std::memory_order_relaxed);
@@ -3821,6 +3872,14 @@ void GuestBufferMemory::RecordCopyBacks(Recorder& recorder) {
                 Copies().gpuCopyBackBytes.fetch_add(to - from, std::memory_order_relaxed);
                 if (region.deviceLocal) Copies().stagedOutBytes.fetch_add(to - from, std::memory_order_relaxed);
             }
+        }
+        // Staging reuse: the shadow matches the import after this copy-back only if nothing wrote
+        // the region since its fill (a CPU store collected now, or a GPU writer's stamp); the
+        // copy-back's own marks come after this, in MarkGpuWrites.
+        if (region.deviceLocal && stagingReuseEnabled()) {
+            const auto bytes = static_cast<std::size_t>(region.end - region.begin);
+            GuestMemory::CollectWrites(region.begin, bytes);
+            region.cleanUse = region.filledGeneration != 0 && GuestMemory::UnchangedSince(region.begin, bytes, region.filledGeneration);
         }
         // Only once its copies are recorded: a throw above leaves the region counted by
         // HasCopiedWrites, so the caller still registers the CPU write-back that stores the
@@ -4248,10 +4307,12 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> GuestBufferMemory::DeviceRe
     return result;
 }
 
-void GuestBufferMemory::RecordStagingCopies(Recorder& recorder) {
-    if (!uploaded || committed) return;
+std::size_t GuestBufferMemory::RecordStagingCopies(Recorder& recorder) {
+    if (!uploaded || committed) return 0;
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    const bool reuse = stagingReuseEnabled();
     std::vector<Region*> copies;
+    std::size_t skipped = 0;
     for (auto& region : regions) {
         if (!region.gpuCopy || !region.deviceLocal) continue;
         // The previous use's copy-back was recorded by its MarkGpuWrites (or never, when that use
@@ -4259,13 +4320,96 @@ void GuestBufferMemory::RecordStagingCopies(Recorder& recorder) {
         // copy-in refills. The import is the one the region was taken from (the caller checked its
         // serial), so the copy source still stands.
         if (!region.copiedBack && profile) Copies().stagedLost.fetch_add(1, std::memory_order_relaxed);
+        const bool resident = reuse && region.copiedBack && residentShadow(region, recorder);
         region.copiedBack = false;
+        if (resident) {
+            // The shadow already holds the import's bytes: bound as it is. The previous use's
+            // copy-back barrier orders its reads of the shadow before this use's shaders, and the
+            // dispatch's leading barrier its writes. No in-place read of the import is made.
+            Require(Recorder::Active() == &recorder, "staging reuse proven against a recorder that is not the device's");
+            if (stagingReuseVerified()) verifyResidentShadow(region, recorder);
+            recorder.Keep(region.buffer);
+            region.filledGeneration = GuestMemory::TrackerGeneration();
+            region.residentGeneration = 0;
+            ++skipped;
+            if (profile) {
+                Copies().reuseSkipped.fetch_add(1, std::memory_order_relaxed);
+                Copies().reuseSkippedBytes.fetch_add(region.end - region.begin, std::memory_order_relaxed);
+            }
+            continue;
+        }
         copies.push_back(&region);
     }
-    if (copies.empty()) return;
+    if (skipped != 0 && profile) reportStaging();
+    if (copies.empty()) return 0;
     Require(Recorder::Active() == &recorder, "staging copies recorded into a recorder that is not the device's");
     if (profile) Copies().stagedReused.fetch_add(copies.size(), std::memory_order_relaxed);
     recordGpuCopies(copies, false);
+    return copies.size();
+}
+
+bool GuestBufferMemory::residentShadow(const Region& region, const Recorder& recorder) const {
+    static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    const auto miss = [&](ReuseMiss reason) {
+        if (profile) Copies().reuseMisses[static_cast<std::size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
+        return false;
+    };
+    const auto bytes = static_cast<std::size_t>(region.end - region.begin);
+    if (region.residentGeneration == 0) return miss(ReuseMiss::NotResident);
+    if (recorder.Id() != region.residentRecorder) return miss(ReuseMiss::Recorder);
+    // A writer stamped only by its completion is invisible to the stamps until it ran: none may
+    // have been recorded since, unless every registered completion has run.
+    if (recorder.CompletionsRegistered() != region.residentCompletions && Recorder::PendingWriteBackCompletions() != 0) return miss(ReuseMiss::Completions);
+    if (recorder.NewestWriteNote(region.begin, bytes) > region.residentNote) return miss(ReuseMiss::Note);
+    if ((recorder.HasQueuedStores() && recorder.QueuedStoreOverlaps(region.begin, bytes)) || (recorder.HasQueuedKeyStores() && recorder.QueuedKeyStoreOverlaps(region.begin, bytes))) return miss(ReuseMiss::QueuedStore);
+    GuestMemory::CollectWrites(region.begin, bytes);
+    if (!GuestMemory::UnchangedSince(region.begin, bytes, region.residentGeneration)) return miss(ReuseMiss::Stamped);
+    return true;
+}
+
+void GuestBufferMemory::verifyResidentShadow(const Region& region, Recorder& recorder) const {
+    const auto bytes = static_cast<std::size_t>(region.end - region.begin);
+    auto readback = std::make_shared<Buffer>(context, bytes * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    const auto commands = recorder.Commands();
+    RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    CopyBuffer(context, commands, region.copySource, region.begin - region.copySourceBase, readback->Handle(), 0, bytes);
+    CopyBuffer(context, commands, region.buffer->Handle(), 0, readback->Handle(), bytes, bytes);
+    RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+    recorder.Keep(region.buffer);
+    recorder.NotePendingRead(region.begin, bytes, Recorder::ReadKind::GpuCopy);
+    recorder.OnCompleteReadOnly([readback, bytes, address = region.begin] {
+        const auto contents = readback->Bytes();
+        const auto imported = contents.subspan(0, bytes);
+        const auto shadow = contents.subspan(bytes, bytes);
+        const auto first = std::mismatch(imported.begin(), imported.end(), shadow.begin());
+        Copies().reuseVerified.fetch_add(1, std::memory_order_relaxed);
+        if (first.first == imported.end()) return;
+        static std::atomic<int> reported{0};
+        const auto count = Copies().reuseDiffered.fetch_add(1, std::memory_order_relaxed);
+        if (count < 16 && reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+            const auto offset = static_cast<std::size_t>(first.first - imported.begin());
+            std::fprintf(stderr, "[buffers] staging reuse verify: region 0x%llx+0x%zx differs first at +0x%zx (import %02x, shadow %02x)\n", static_cast<unsigned long long>(address), bytes, offset, std::to_integer<unsigned>(*first.first), std::to_integer<unsigned>(*first.second));
+        }
+    });
+}
+
+void GuestBufferMemory::NoteResidentShadows(const Recorder& recorder) {
+    if (!stagingReuseEnabled() || !uploaded || committed) return;
+    std::uint64_t generation = 0;
+    for (auto& region : regions) {
+        if (!region.gpuCopy || !region.deviceLocal) continue;
+        region.residentGeneration = 0;
+        if (!region.copiedBack || !region.cleanUse) continue;
+        if (generation == 0) generation = GuestMemory::TrackerGeneration();
+        region.residentGeneration = generation;
+        region.residentNote = recorder.NewestWriteNote(region.begin, static_cast<std::size_t>(region.end - region.begin));
+        region.residentCompletions = recorder.CompletionsRegistered();
+        region.residentRecorder = recorder.Id();
+    }
+}
+
+void GuestBufferMemory::SetStagingReuse(bool enabled) {
+    stagingReuseOverride.store(enabled ? 1 : 0, std::memory_order_relaxed);
 }
 
 std::uint64_t ImageMirrorSerial(const Context& context, std::uint64_t address, std::size_t bytes) {
