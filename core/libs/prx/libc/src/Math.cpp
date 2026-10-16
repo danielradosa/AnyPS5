@@ -476,6 +476,14 @@ short APS5_VABI _Dtest_nid_postfix(const double* value) {
     return Finite;
 }
 
+short APS5_VABI _FDsign_nid_postfix(float value) {
+    return static_cast<short>((std::bit_cast<std::uint32_t>(value) >> 16) & 0x8000u);
+}
+
+short APS5_VABI _Dsign_nid_postfix(double value) {
+    return static_cast<short>((std::bit_cast<std::uint64_t>(value) >> 48) & 0x8000u);
+}
+
 int APS5_VABI __isnanf_nid_postfix(float x) { return std::isnan(x) ? 1 : 0; }
 int APS5_VABI isnanf_nid_postfix(float x) { return __isnanf_nid_postfix(x); }
 int APS5_VABI isnan_nid_postfix(double x) { return __isnan_nid_postfix(x); }
