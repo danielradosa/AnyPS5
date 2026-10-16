@@ -62,17 +62,23 @@ void TestValidation() {
     Require(sceAudioInHqOpen(user, 0, 0, 512, 48000, 2) == invalidSize);
     Require(sceAudioInHqOpen(user, 0, 0, 128, 44100, 2) == invalidFreq);
     Require(sceAudioInHqOpen(user, 0, 0, 128, 48000, 3) == invalidParam);
-    Require(sceAudioInHqOpen(user, 0, 0, 256, 48000, 0) == invalidParam);
+    Require(sceAudioInHqOpen(user, 0, 0, 128, 48000, 0) == invalidParam);
     Require(sceAudioInAsyncOpen(user, 2, 0, 128, 48000, 2) == invalidType);
     Require(sceAudioInAsyncOpen(user, 0, 1, 128, 48000, 2) == invalidParam);
     Require(sceAudioInAsyncOpen(user, 0, 0, 385, 48000, 2) == invalidSize);
     Require(sceAudioInAsyncOpen(user, 0, 0, 512, 48000, 2) == invalidSize);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 200, 48000, 2) == invalidSize);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 384, 44100, 2) == invalidFreq);
     Require(sceAudioInAsyncOpen(user, 0, 0, 256, 44100, 2) == invalidFreq);
     Require(sceAudioInAsyncOpen(user, 0, 0, 256, 48000, 3) == invalidParam);
     Require(sceAudioInAsyncOpen(user, 0, 0, 256, 48000, 0) == invalidParam);
+    Require(sceAudioInHqOpen(user, 0, 0, 256, 48000, 2) == invalidSize);
+    Require(sceAudioInHqOpen(user, 0, 0, 128, 16000, 2) == invalidFreq);
+    int port = sceAudioInAsyncOpen(user, 0, 0, 384, 48000, 2);
+    Require(port > 0 && sceAudioInClose(port) == 0);
     Require(ReportsNotImplemented("sceAudioInOpen", [] { sceAudioInOpen(user, 0, 0, 256, 48000, 0x10); }));
-    Require(ReportsNotImplemented("sceAudioInOpen", [] { sceAudioInHqOpen(user, 0, 0, 128, 48000, 0x10); }));
-    Require(ReportsNotImplemented("sceAudioInOpen", [] { sceAudioInAsyncOpen(user, 0, 0, 128, 48000, 0x10); }));
+    Require(ReportsNotImplemented("sceAudioInHqOpen", [] { sceAudioInHqOpen(user, 0, 0, 128, 48000, 0x10); }));
+    Require(ReportsNotImplemented("sceAudioInAsyncOpen", [] { sceAudioInAsyncOpen(user, 0, 0, 384, 48000, 0x10); }));
 }
 
 void TestCapture() {
@@ -164,7 +170,7 @@ void TestNoDevice() {
     Require(sceAudioInOpen(user, 1, 0, 128, 48000, 0x11) == handle);
     Require(sceAudioInClose(handle) == 0);
     Require(sceAudioInHqOpen(user, 0, 0, 512, 48000, 2) == static_cast<int>(0x80260102));
-    Require(sceAudioInHqOpen(user, 0, 0, 256, 48000, 2) == handle);
+    Require(sceAudioInHqOpen(user, 0, 0, 128, 48000, 2) == handle);
     Require(sceAudioInGetSilentState(handle) == 1);
     Require(sceAudioInClose(handle) == 0);
 }

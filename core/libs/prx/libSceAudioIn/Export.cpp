@@ -21,6 +21,7 @@ constexpr int AUDIO_IN_ERROR_PORT_FULL = static_cast<int>(0x80260107);
 constexpr int AUDIO_IN_ERROR_BUSY = static_cast<int>(0x8026010A);
 constexpr int AUDIO_IN_SILENT_STATE_DEVICE_NONE = 1;
 constexpr std::uint32_t MAX_QUEUED_BLOCKS = 4;
+constexpr std::uint32_t MAX_ASYNC_LEN = 384;
 
 using Clock = std::chrono::steady_clock;
 
@@ -199,11 +200,17 @@ int32_t APS5_VABI sceAudioInClose(int32_t handle) {
 }
 
 int32_t APS5_VABI sceAudioInHqOpen(int32_t user_id, uint32_t type, uint32_t index, uint32_t len, uint32_t freq, uint32_t param) {
-    return sceAudioInOpen(user_id, type, index, len, freq, param);
+    (void)user_id;
+    if (const int error = checkArguments(type, index, len, freq); error != 0) return error;
+    if (len != 128) return AUDIO_IN_ERROR_INVALID_SIZE;
+    if (freq != 48000) return AUDIO_IN_ERROR_INVALID_FREQ;
+    return openPort(len, freq, param, __func__);
 }
 
 int32_t APS5_VABI sceAudioInAsyncOpen(int32_t user_id, uint32_t type, uint32_t index, uint32_t len, uint32_t freq, uint32_t param) {
-    return sceAudioInOpen(user_id, type, index, len, freq, param);
+    (void)user_id;
+    if (const int error = checkArguments(type, index, len == MAX_ASYNC_LEN ? 128 : len, freq); error != 0) return error;
+    return openPort(len, freq, param, __func__);
 }
 
 int32_t APS5_VABI sceAudioInIsPadEmbeddedMic(int32_t handle) {
