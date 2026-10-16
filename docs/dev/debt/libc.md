@@ -42,6 +42,7 @@
 - [qsort_s](../../../core/libs/prx/libc/src/FileAndHeap.cpp) (libc) sorts as `qsort` does and passes its context as the comparator's third argument, as FreeBSD 13's [`qsort_s`](https://github.com/freebsd/freebsd-src/blob/release/13.0.0/lib/libc/stdlib/qsort.c#L97-L127) (C11 Annex K) does. It returns `EINVAL` after calling the constraint handler when `n` or `es` exceeds `RSIZE_MAX`, or when `n` is not 0 and `a` or `cmp` is null; FreeBSD 11, which the rest of libc follows, has no `qsort_s`. An element size of 0 sorts nothing, where FreeBSD loops over the same address. The console's behaviour is unverified; the Quake homebrew (#6698) imports it from its `libOSMesa.so.8`
 - [__udivti3](../../../core/libs/prx/libc/src/RuntimeSupport.cpp) (libc, re-exported by libSceAmpr) - the hardware traps on a zero divisor; this throws instead
 - [__umodti3](../../../core/libs/prx/libc/src/RuntimeSupport.cpp) (libc) - the hardware traps on a zero divisor; this throws instead
+- [__modti3](../../../core/libs/prx/libc/src/RuntimeSupport.cpp) (libc) - the hardware traps on a zero divisor; this throws instead
 
 ### Functional
 
