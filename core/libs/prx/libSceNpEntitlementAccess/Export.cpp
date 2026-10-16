@@ -144,6 +144,18 @@ int APS5_VABI sceNpEntitlementAccessRequestConsumeServiceEntitlement(void) {
  return SCE_NP_ERROR_SIGNED_OUT;
 }
 
+int APS5_VABI sceNpEntitlementAccessRequestConsumeEntitlement(void) {
+    return SCE_NP_ERROR_SIGNED_OUT;
+}
+
+int APS5_VABI sceNpEntitlementAccessRequestConsumableEntitlementInfo(void) {
+    return SCE_NP_ERROR_SIGNED_OUT;
+}
+
+int APS5_VABI sceNpEntitlementAccessPollConsumableEntitlementInfo(void) {
+    return SCE_NP_ERROR_SIGNED_OUT;
+}
+
 
 int APS5_VABI sceNpEntitlementAccessPollServiceEntitlementInfo(void) {
     return SCE_NP_ERROR_SIGNED_OUT;

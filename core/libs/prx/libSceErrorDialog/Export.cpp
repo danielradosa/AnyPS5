@@ -92,4 +92,12 @@ int APS5_VABI sceErrorDialogTerminate(void) {
  return kErrOk;
 }
 
+int APS5_VABI sceErrorDialogParamInitialize(void* param) {
+ if (param == nullptr) return kErrParam;
+ std::memset(param, 0, kParamSize);
+ const auto size = static_cast<std::int32_t>(kParamSize);
+ std::memcpy(param, &size, sizeof(size));
+ return kErrOk;
+}
+
 }

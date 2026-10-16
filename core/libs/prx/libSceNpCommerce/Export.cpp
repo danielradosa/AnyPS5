@@ -35,6 +35,10 @@ int APS5_VABI sceNpCommerceDialogOpen(const void* param) {
  return 0;
 }
 
+int APS5_VABI sceNpCommerceDialogInitializeInternal(void) {
+ return sceNpCommerceDialogInitialize();
+}
+
 int APS5_VABI sceNpCommerceDialogUpdateStatus(void) {
  return g_status;
 }

@@ -6,6 +6,7 @@ extern "C" {
 int APS5_VABI sceVrSetupDialogInitialize(void);
 int APS5_VABI sceVrSetupDialogOpen(const void* param);
 int APS5_VABI sceVrSetupDialogUpdateStatus(void);
+int APS5_VABI sceVrSetupDialogGetStatus(void);
 int APS5_VABI sceVrSetupDialogGetResult(void* result);
 int APS5_VABI sceVrSetupDialogClose(void);
 int APS5_VABI sceVrSetupDialogTerminate(void);
@@ -35,16 +36,19 @@ int main() {
     Require(sceVrSetupDialogClose() == kErrNotInitialized);
     Require(sceVrSetupDialogGetResult(result) == kErrNotInitialized);
     Require(sceVrSetupDialogUpdateStatus() == kStatusNone);
+    Require(sceVrSetupDialogGetStatus() == kStatusNone);
 
     Require(sceVrSetupDialogInitialize() == 0);
     Require(sceVrSetupDialogInitialize() == kErrAlreadyInitialized);
     Require(sceVrSetupDialogUpdateStatus() == kStatusInitialized);
+    Require(sceVrSetupDialogGetStatus() == kStatusInitialized);
 
     Require(sceVrSetupDialogOpen(nullptr) == kErrArgNull);
     Require(sceVrSetupDialogGetResult(result) == kErrNotFinished);
 
     Require(sceVrSetupDialogOpen(&param) == 0);
     Require(sceVrSetupDialogUpdateStatus() == kStatusFinished);
+    Require(sceVrSetupDialogGetStatus() == kStatusFinished);
 
     Require(sceVrSetupDialogGetResult(nullptr) == kErrArgNull);
     Require(sceVrSetupDialogGetResult(result) == 0);
@@ -55,4 +59,5 @@ int main() {
     Require(sceVrSetupDialogTerminate() == 0);
     Require(sceVrSetupDialogTerminate() == kErrNotInitialized);
     Require(sceVrSetupDialogUpdateStatus() == kStatusNone);
+    Require(sceVrSetupDialogGetStatus() == kStatusNone);
 }

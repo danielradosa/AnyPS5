@@ -6,6 +6,7 @@
 
 extern "C" {
 int APS5_VABI sceNpCommerceDialogInitialize();
+int APS5_VABI sceNpCommerceDialogInitializeInternal(void);
 int APS5_VABI sceNpCommerceDialogOpen(const void* param);
 int APS5_VABI sceNpCommerceDialogOpen2(void);
 int APS5_VABI sceNpCommerceDialogUpdateStatus(void);
@@ -58,6 +59,13 @@ int main() {
     Require(sceNpCommerceDialogOpen2() == 0);
     Require(sceNpCommerceDialogUpdateStatus() == statusFinished);
     RequireCanceledResult();
+    Require(sceNpCommerceDialogTerminate() == 0);
+    Require(sceNpCommerceDialogGetStatus() == statusNone);
+
+    Require(sceNpCommerceDialogInitializeInternal() == 0);
+    Require(sceNpCommerceDialogGetStatus() == statusInitialized);
+    Require(sceNpCommerceDialogInitializeInternal() == static_cast<int>(0x80B80004u));
+    Require(sceNpCommerceDialogInitialize() == static_cast<int>(0x80B80004u));
     Require(sceNpCommerceDialogTerminate() == 0);
     Require(sceNpCommerceDialogGetStatus() == statusNone);
     return 0;
