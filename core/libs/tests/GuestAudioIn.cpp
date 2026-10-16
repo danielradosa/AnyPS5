@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -23,16 +22,6 @@ int APS5_VABI sceAudioInIsPadEmbeddedMic(int);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
-
-template <typename TCall>
-static bool ReportsNotImplemented(const char* name, TCall call) {
-    try {
-        call();
-    } catch (const std::runtime_error& error) {
-        return std::string(error.what()) == std::string(name) + " not implemented";
-    }
-    return false;
-}
 
 static void SetEnvironment(const char* name, const std::string& value) {
 #ifdef _WIN32
@@ -76,9 +65,6 @@ void TestValidation() {
     Require(sceAudioInHqOpen(user, 0, 0, 128, 16000, 2) == invalidFreq);
     int port = sceAudioInAsyncOpen(user, 0, 0, 384, 48000, 2);
     Require(port > 0 && sceAudioInClose(port) == 0);
-    Require(ReportsNotImplemented("sceAudioInOpen", [] { sceAudioInOpen(user, 0, 0, 256, 48000, 0x10); }));
-    Require(ReportsNotImplemented("sceAudioInHqOpen", [] { sceAudioInHqOpen(user, 0, 0, 128, 48000, 0x10); }));
-    Require(ReportsNotImplemented("sceAudioInAsyncOpen", [] { sceAudioInAsyncOpen(user, 0, 0, 384, 48000, 0x10); }));
 }
 
 void TestCapture() {
@@ -172,6 +158,20 @@ void TestNoDevice() {
     Require(sceAudioInHqOpen(user, 0, 0, 512, 48000, 2) == static_cast<int>(0x80260102));
     Require(sceAudioInHqOpen(user, 0, 0, 128, 48000, 2) == handle);
     Require(sceAudioInGetSilentState(handle) == 1);
+    Require(sceAudioInClose(handle) == 0);
+    Require(sceAudioInOpen(user, 0, 0, 256, 16000, 0x10) == handle);
+    std::fill(buffer.begin(), buffer.end(), 0xCC);
+    Require(sceAudioInInput(handle, buffer.data()) == 256);
+    for (std::size_t i = 0; i < 256 * 4; ++i) Require(buffer[i] == 0);
+    Require(buffer[256 * 4] == 0xCC);
+    Require(sceAudioInClose(handle) == 0);
+    Require(sceAudioInHqOpen(user, 1, 0, 128, 48000, 0x10) == handle);
+    std::fill(buffer.begin(), buffer.end(), 0xCC);
+    Require(sceAudioInInput(handle, buffer.data()) == 128);
+    for (std::size_t i = 0; i < 128 * 4; ++i) Require(buffer[i] == 0);
+    Require(buffer[128 * 4] == 0xCC);
+    Require(sceAudioInClose(handle) == 0);
+    Require(sceAudioInAsyncOpen(user, 0, 0, 384, 48000, 0x10) == handle);
     Require(sceAudioInClose(handle) == 0);
 }
 
