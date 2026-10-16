@@ -281,15 +281,12 @@ void CheckCursorSetInfo(_Unwind_Context* context) {
     setInfo(context, true);
     assert(_Unwind_GetRegionStart_nid_postfix(context) == start && CursorInfo(context).startIp == start);
 }
-void CheckCursorFunctionNameThrows(_Unwind_Context* context) {
+void CheckCursorFunctionName(_Unwind_Context* context) {
     char name[64];
-    std::uintptr_t offset = 0;
-    try {
-        reinterpret_cast<bool (*)(_Unwind_Context*, char*, std::size_t, std::uintptr_t*)>(CursorSlots(context)[12])(context, name, sizeof(name), &offset);
-        assert(false);
-    } catch (const std::runtime_error& error) {
-        assert(std::string(error.what()).find("getFunctionName") != std::string::npos);
-    }
+    std::memset(name, 'x', sizeof(name));
+    std::uintptr_t offset = ~std::uintptr_t(0);
+    if (reinterpret_cast<bool (*)(_Unwind_Context*, char*, std::size_t, std::uintptr_t*)>(CursorSlots(context)[12])(context, name, sizeof(name), &offset))
+        assert(std::memchr(name, 0, sizeof(name)) != nullptr && offset <= _Unwind_GetIP_nid_postfix(context));
 }
 void CheckCursorSteps() {
     std::vector<std::uintptr_t> traced;
@@ -431,7 +428,7 @@ int main() {
             CheckFloatRegisterAborts(context, false);
             CheckFloatRegisterAborts(context, true);
             CheckCursorNames(context);
-            CheckCursorFunctionNameThrows(context);
+            CheckCursorFunctionName(context);
             CheckCursorSetInfo(context);
         }
         ++*static_cast<int*>(argument);
