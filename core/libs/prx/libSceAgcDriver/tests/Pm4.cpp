@@ -752,6 +752,25 @@ void testGdsReadbackDecode() {
     check(!DecodeGdsReadback(packet(0x20000000, 0x100, destination, 64 | (1u << 28u))).has_value(), "a non-incrementing GDS source decoded as a readback");
 }
 
+void testGdsLoadDecode() {
+    using AgcDriver::Pm4::DecodeGdsLoad;
+    constexpr std::uint64_t source = 0x56f9e6000ull;
+    const auto packet = [&](std::uint32_t control, std::uint64_t from, std::uint64_t to, std::uint32_t command) {
+        return makePacket(0x50, {control, static_cast<std::uint32_t>(from), static_cast<std::uint32_t>(from >> 32u), static_cast<std::uint32_t>(to), static_cast<std::uint32_t>(to >> 32u), command});
+    };
+    const auto copy = DecodeGdsLoad(packet(0x00100000, source, 0x24, 4));
+    check(copy.has_value() && copy->source == source && copy->destination == AgcDriver::Pm4::GdsAddress() + 0x24 && copy->bytes == 4, "a DMA_DATA from memory into the GDS did not decode as a load");
+    check(DecodeGdsLoad(packet(0x60100000, source, 0x24, 4)).has_value(), "a GDS load from memory selector 3 did not decode");
+    check(!DecodeGdsLoad(packet(0x20100000, 0x4, 0x24, 4)).has_value(), "a GDS-to-GDS DMA_DATA decoded as a load");
+    check(!DecodeGdsLoad(packet(0x40100000, 0, 0x24, 4)).has_value(), "a data fill into the GDS decoded as a load");
+    check(!DecodeGdsLoad(packet(0x00000000, source, 0x403d7b400ull, 4)).has_value(), "a memory-to-memory DMA_DATA decoded as a GDS load");
+    check(!DecodeGdsLoad(packet(0x00100000, source, 0x24, 0)).has_value(), "an empty GDS load decoded");
+    check(!DecodeGdsLoad(packet(0x00100000, source, 0x26, 4)).has_value(), "a misaligned GDS load decoded");
+    check(!DecodeGdsLoad(packet(0x00100000, source, 0xfff0, 64)).has_value(), "a load past the GDS end decoded");
+    check(!DecodeGdsLoad(packet(0x00100000, source, 0x24, 4 | (1u << 28u))).has_value(), "a non-incrementing memory source decoded as a GDS load");
+    check(!DecodeGdsLoad(packet(0x00100000, source, 0x24, 4 | (1u << 29u))).has_value(), "a non-incrementing GDS destination decoded as a load");
+}
+
 void testMemorySynchronization() {
     struct MemoryState {
         std::uint32_t source = 0;
@@ -1847,6 +1866,7 @@ int main(int argc, char** argv) {
         testCopies();
         testMemoryCopyDecode();
         testGdsReadbackDecode();
+        testGdsLoadDecode();
         testMemorySynchronization();
         testConditionalValidation();
         testConditionReadSynchronization();

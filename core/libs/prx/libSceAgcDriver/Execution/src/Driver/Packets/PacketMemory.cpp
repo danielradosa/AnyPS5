@@ -135,16 +135,18 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         constexpr std::size_t gpuStoreLimit = 65536;
         bool drained = true;
         int storeReason = -1;
-        // A DMA_DATA from the GDS into memory: first a transfer out of the GDS's host import recorded behind every GDS
-        // user recorded before it (VulkanDevice::CopyBuffer path 1, as the larger memory copies below), instead of the
-        // CPU read below whose flush hook waits for those users. Debug aid: APS5_GDS_CPU_READBACKS=1 reads on the CPU.
+        // A DMA_DATA from the GDS into memory while GDS users are still pending: first a transfer out of the GDS's host
+        // import recorded behind every GDS user recorded before it (VulkanDevice::CopyBuffer path 1, as the larger memory
+        // copies below), instead of the CPU read below whose flush hook waits for those users. With nothing pending the
+        // CPU read is immediate and its known-value store keeps later waits on the destination answerable. Debug aid:
+        // APS5_GDS_CPU_READBACKS=1 reads on the CPU.
         static const bool gdsCpuReadbacks = std::getenv("APS5_GDS_CPU_READBACKS") != nullptr;
         if (opcode == 0x50 && !gdsCpuReadbacks) {
             const auto readback = Pm4::DecodeGdsReadback(packet);
             if (readback.has_value() && GuestMemory::Accessible(reinterpret_cast<const void*>(readback->destination), readback->bytes, true)) {
                 GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Copy);
                 std::lock_guard gpuLock(GuestMemory::GpuMutex());
-                if (const auto localDevice = device.Load()) {
+                if (const auto localDevice = device.Load(); localDevice != nullptr && localDevice->StoresPendingOver(readback->source, readback->bytes)) {
                     recordDeferredLabels(localDevice.get(), submission.queue);
                     // The destination's writer is foreign to the shaders' write evidence (as a CPU copy's): its readers sync.
                     const auto outcome = localDevice->CopyBuffer(readback->destination, readback->source, readback->bytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, submission.queue, [&](std::span<const std::byte>, std::uint64_t) { noteForeignWriter(readback->destination, readback->destination + readback->bytes, submission.queue); });
@@ -241,6 +243,29 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         // makes CPU readers of the GDS wait), never behind completions (reason 5). Debug aid: APS5_GDS_CPU_STORES=1
         // stores every one on the CPU behind the hook.
         static const bool gdsCpuStores = std::getenv("APS5_GDS_CPU_STORES") != nullptr;
+        // A DMA_DATA from memory into the GDS whose source still has recorded GPU writes pending (a GDS readback
+        // transferred above, a shader's result): a transfer into the GDS's host import behind them, instead of
+        // ResolveGdsStore's CPU read that waits for them. Astro's queue 0 copies GDS 0x4 -> memory -> GDS 0x24 every frame;
+        // with the readback on the GPU that read waited ~100 ms for the open batch (play1015q). The GDS is noted written
+        // by the transfer, so its users and CPU stores order behind it. Debug aid: APS5_GDS_CPU_LOADS=1 reads on the CPU.
+        static const bool gdsCpuLoads = std::getenv("APS5_GDS_CPU_LOADS") != nullptr;
+        if (drained && toGds && !gdsDrain && !gdsCpuStores && !gdsCpuLoads) {
+            const auto load = Pm4::DecodeGdsLoad(packet);
+            if (load.has_value() && GuestMemory::Accessible(reinterpret_cast<const void*>(load->source), load->bytes)) {
+                GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Copy);
+                std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                if (const auto localDevice = device.Load(); localDevice != nullptr && localDevice->StoresPendingOver(load->source, load->bytes)) {
+                    recordDeferredLabels(localDevice.get(), submission.queue);
+                    const auto outcome = localDevice->CopyBuffer(load->destination, load->source, load->bytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, submission.queue, [](std::span<const std::byte>, std::uint64_t) {});
+                    if (outcome.path == 1) {
+                        Graphics::Recorder::CountRecordedWork();
+                        ++gdsLoadsOnGpu;
+                        wroteOnGpu = true;
+                        drained = false;
+                    }
+                }
+            }
+        }
         if (drained && toGds && !gdsDrain && !gdsCpuStores) {
             if (const auto store = Pm4::ResolveGdsStore(packet, gpuStoreLimit)) {
                 const auto bytes = store->Bytes();

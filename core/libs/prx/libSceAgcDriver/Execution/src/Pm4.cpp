@@ -861,6 +861,14 @@ std::optional<MemoryCopy> DecodeGdsReadback(std::span<const std::uint32_t> packe
     return MemoryCopy{GdsAddress() + packet[2], address(packet[4], packet[5]), bytes};
 }
 
+std::optional<MemoryCopy> DecodeGdsLoad(std::span<const std::uint32_t> packet) {
+    if (packet.size() != 7 || ((packet[0] >> 8u) & 0xffu) != 0x50) return std::nullopt;
+    if (!memorySelector(dmaSource(packet)) || dmaDestination(packet) != DmaSelectGds) return std::nullopt;
+    const std::size_t bytes = DmaBytes(packet);
+    if (bytes == 0 || packet[4] % 4 != 0 || bytes % 4 != 0 || !gdsRange(packet[4], bytes)) return std::nullopt;
+    return MemoryCopy{address(packet[2], packet[3]), GdsAddress() + packet[4], bytes};
+}
+
 bool UsesGpuCacheBarrier(std::span<const std::uint32_t> packet) {
     require(!packet.empty() && ((packet[0] >> 8u) & 0xffu) == 0x58, "cache barrier requires ACQUIRE_MEM");
     Validate(packet, 0);
