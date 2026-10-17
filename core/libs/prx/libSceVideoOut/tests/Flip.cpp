@@ -879,10 +879,15 @@ void testUnopenedEventRegistration() {
     check(sceKernelCreateEqueue(&eq, "unopened") == 0, "the event queue was not created");
     check(sceVideoOutAddFlipEvent(eq, 0, nullptr) == VIDEO_OUT_ERROR_INVALID_HANDLE, "flip event on an unopened port was accepted");
     check(sceVideoOutAddVblankEvent(eq, 1, nullptr) == VIDEO_OUT_ERROR_INVALID_HANDLE, "vblank event on an unopened port was accepted");
+    // PPSA08832 asks for the output status of its not yet opened handle (0) before sceVideoOutOpen.
+    VideoOutOutputStatus status{};
+    check(sceVideoOutGetOutputStatus(0, &status) == VIDEO_OUT_ERROR_INVALID_HANDLE, "output status of an unopened port was returned");
     const int handle = sceVideoOutOpen(255, 0, 0, nullptr);
     check(sceVideoOutAddFlipEvent(eq, handle, nullptr) == 0, "flip event on an open port was refused");
+    check(sceVideoOutGetOutputStatus(handle, &status) == 0, "output status of an open port was refused");
     sceVideoOutClose(handle);
     check(sceVideoOutAddFlipEvent(eq, handle, nullptr) == VIDEO_OUT_ERROR_INVALID_HANDLE, "flip event on a closed port was accepted");
+    check(sceVideoOutGetOutputStatus(handle, &status) == VIDEO_OUT_ERROR_INVALID_HANDLE, "output status of a closed port was returned");
     check(sceKernelDeleteEqueue(eq) == 0, "the event queue was not deleted");
     LibcRunShutdown_nid_postfix();
 }
