@@ -208,6 +208,97 @@ std::uint32_t IndexedWindowSlots(const IrProgram& program) {
     return static_cast<std::uint32_t>(reached);
 }
 
+std::optional<std::uint32_t> ImmediateArgument(const IrValue& value, std::size_t index) {
+    const IrValue* operand = value.Argument(index)->Resolve();
+    if (!operand->HasImmediate()) return std::nullopt;
+    return operand->ImmediateU32();
+}
+
+// A proven upper bound (WindowIndexBounds guesses, this one does not): masks, right shifts and
+// bit-field extracts by immediates bound any value.
+std::optional<std::uint32_t> ProvenBound(const IrValue& input) {
+    const IrValue* value = input.Resolve();
+    if (value->HasImmediate()) return value->ImmediateU32();
+    switch (value->Opcode()) {
+    case IrOpcode::BitwiseAnd32:
+    case IrOpcode::UMin32: {
+        const auto lhs = ImmediateArgument(*value, 0);
+        const auto rhs = ImmediateArgument(*value, 1);
+        if (lhs && rhs) return std::min(*lhs, *rhs);
+        if (lhs || rhs) return lhs ? lhs : rhs;
+        const auto inner = ProvenBound(*value->Argument(0));
+        const auto other = ProvenBound(*value->Argument(1));
+        if (inner && other) return std::min(*inner, *other);
+        return inner ? inner : other;
+    }
+    case IrOpcode::ShiftRightLogical32: {
+        const auto shift = ImmediateArgument(*value, 1);
+        if (!shift) return std::nullopt;
+        return ProvenBound(*value->Argument(0)).value_or(0xffffffffu) >> (*shift & 31u);
+    }
+    case IrOpcode::BitFieldUExtract: {
+        const auto count = ImmediateArgument(*value, 2);
+        if (count && *count < 32u) return (1u << *count) - 1u;
+        return std::nullopt;
+    }
+    default:
+        return std::nullopt;
+    }
+}
+
+// A dynamic window index umin(first + stride * k, clamp) whose k is proven below a few values: the
+// access selects among those registers instead of indexing an array the device keeps in local memory.
+std::optional<SpirvEmitterState::WindowCandidates> CandidatesOf(const IrValue& input, std::uint32_t window) {
+    constexpr std::uint32_t MaxCandidates = 16;
+    const IrValue* value = input.Resolve();
+    std::uint64_t clamp = window - 1u;
+    const auto peel = [&value](IrOpcode opcode) -> std::optional<std::uint32_t> {
+        if (value->HasImmediate() || value->Opcode() != opcode) return std::nullopt;
+        for (std::size_t side = 0; side < 2u; ++side) {
+            if (const auto immediate = ImmediateArgument(*value, side)) {
+                value = value->Argument(1u - side)->Resolve();
+                return immediate;
+            }
+        }
+        return std::nullopt;
+    };
+    if (const auto limit = peel(IrOpcode::UMin32)) clamp = std::min<std::uint64_t>(clamp, *limit);
+    SpirvEmitterState::WindowCandidates result;
+    if (const auto first = peel(IrOpcode::IAdd32)) result.first = *first;
+    if (const auto stride = peel(IrOpcode::IMul32)) result.stride = *stride;
+    else if (!value->HasImmediate() && value->Opcode() == IrOpcode::ShiftLeftLogical32) {
+        if (const auto shift = ImmediateArgument(*value, 1); shift && *shift < 16u) {
+            result.stride = 1u << *shift;
+            value = value->Argument(0)->Resolve();
+        }
+    }
+    if (value->HasImmediate()) return std::nullopt;
+    const auto bound = ProvenBound(*value);
+    if (!bound || *bound >= MaxCandidates) return std::nullopt;
+    result.k = value;
+    result.count = *bound + 1u;
+    if (result.first + std::uint64_t {result.stride} * (result.count - 1u) > clamp) return std::nullopt;
+    return result;
+}
+
+bool WindowCandidatesOf(const IrProgram& program, std::unordered_map<const IrValue*, SpirvEmitterState::WindowCandidates>& candidates) {
+    const auto window = program.Metadata().vectorWindowSize;
+    for (const auto& block : program.Blocks()) {
+        for (const IrValue* inst : block->Instructions()) {
+            if (inst->Opcode() != IrOpcode::LoadVectorWindow && inst->Opcode() != IrOpcode::StoreVectorWindow) continue;
+            const IrValue* index = inst->Argument(0)->Resolve();
+            if (index->HasImmediate()) continue;
+            const auto found = CandidatesOf(*index, window);
+            if (!found) {
+                candidates.clear();
+                return false;
+            }
+            candidates.emplace(inst, *found);
+        }
+    }
+    return true;
+}
+
 }
 
 void DefineModule(SpirvEmitterState& state) {
@@ -226,10 +317,13 @@ void DefineModule(SpirvEmitterState& state) {
     }
     if (const auto window = state.program.Metadata().vectorWindowSize; window != 0u) {
         static const bool narrowWindow = std::getenv("APS5_NO_WINDOW_NARROWING") == nullptr;
-        state.vectorWindowIndexed = narrowWindow ? IndexedWindowSlots(state.program) : 0u;
+        // APS5_NO_WINDOW_REGISTERS=1: windows whose dynamic indices all have few proven candidates stay arrays.
+        static const bool windowRegisters = std::getenv("APS5_NO_WINDOW_REGISTERS") == nullptr;
+        state.vectorWindowRegisters = windowRegisters && state.laneCount == 1u && WindowCandidatesOf(state.program, state.vectorWindowCandidates);
+        state.vectorWindowIndexed = narrowWindow && !state.vectorWindowRegisters ? IndexedWindowSlots(state.program) : 0u;
         for (std::uint32_t half = 0; half < state.laneCount; half++) {
             state.vectorWindowVariable.at(half) = state.module.AllocateId();
-            if (state.vectorWindowIndexed == 0u) continue;
+            if (state.vectorWindowIndexed == 0u && !state.vectorWindowRegisters) continue;
             auto& slots = state.vectorWindowSlots.at(half);
             for (std::uint32_t slot = state.vectorWindowIndexed; slot < window; slot++) slots.push_back(state.module.AllocateId());
         }
@@ -394,7 +488,7 @@ void DefineModule(SpirvEmitterState& state) {
             state.module.AddName(state.scratchVariable.at(half), "scratch_dwords");
         }
     }
-    if (state.program.Metadata().vectorWindowSize != 0u) {
+    if (state.program.Metadata().vectorWindowSize != 0u && !state.vectorWindowRegisters) {
         for (std::uint32_t half = 0; half < state.laneCount; half++) {
             state.module.AddName(state.vectorWindowVariable.at(half), "vector_window");
         }

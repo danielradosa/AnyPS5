@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <span>
 #include <string>
@@ -32,6 +33,12 @@ alignas(256) constexpr std::array<std::uint32_t, 54> Code{
     0x80010d01, 0xe0701010, 0x80011e01, 0xe0701014, 0x80012901, 0xbf810000,
 };
 
+alignas(256) const std::array<std::uint32_t, 54> MaskedCode = [] {
+    auto code = Code;
+    code[36] = 0x877c8709u;
+    return code;
+}();
+
 constexpr const char* Names[Checked] = {"v4", "v5", "v12", "v13", "v30", "v41"};
 
 std::array<std::uint32_t, 4> BufferDescriptor(const void* data, std::uint32_t bytes) {
@@ -56,14 +63,28 @@ std::uint32_t FunctionVariables(std::span<const std::uint32_t> words) {
     return count;
 }
 
-void Run(AgcDriver::VulkanDevice& device, std::uint32_t waveSize, std::uint32_t threads, std::uint32_t bounded, std::uint32_t data) {
+std::uint32_t FunctionArrays(std::span<const std::uint32_t> words) {
+    std::vector<std::uint32_t> arrays, pointers;
+    std::uint32_t count = 0;
+    for (std::size_t at = 5; at < words.size();) {
+        const auto length = words[at] >> 16u;
+        if (length == 0u) break;
+        const auto opcode = words[at] & 0xffffu;
+        if (opcode == spv::OpTypeArray) arrays.push_back(words[at + 1u]);
+        if (opcode == spv::OpTypePointer && words[at + 2u] == spv::StorageClassFunction && std::find(arrays.begin(), arrays.end(), words[at + 3u]) != arrays.end()) pointers.push_back(words[at + 1u]);
+        if (opcode == spv::OpVariable && words[at + 3u] == spv::StorageClassFunction && std::find(pointers.begin(), pointers.end(), words[at + 1u]) != pointers.end()) ++count;
+        at += length;
+    }
+    return count;
+}
+
+void Run(AgcDriver::VulkanDevice& device, std::span<const std::uint32_t> code, std::uint32_t waveSize, std::uint32_t threads, std::uint32_t bounded, std::uint32_t data, bool registers) {
     Output.fill(0xdeadbeefu);
     std::vector<std::uint32_t> userData(10, 0u);
     const auto output = BufferDescriptor(Output.data(), static_cast<std::uint32_t>(Output.size() * 4u));
     std::copy(output.begin(), output.end(), userData.begin() + 4);
     userData[8] = bounded;
     userData[9] = data;
-    const std::span<const std::uint32_t> code(Code);
     const std::array<ShaderRecompiler::MemoryRegion, 1> memory{{{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(code)}}};
     const ShaderRecompiler::ShaderComputeStageInfo compute{{threads, 1, 1}, 0u, {false, false, false}, false, 1};
     ShaderRecompiler::RecompileRequest request{
@@ -75,6 +96,7 @@ void Run(AgcDriver::VulkanDevice& device, std::uint32_t waveSize, std::uint32_t 
     request.useCache = false;
     const auto result = ShaderRecompiler::Recompile(request);
     Require(FunctionVariables(result.spirv.Words()) > 8u, "vector window narrowing: wave" + std::to_string(waveSize) + " window was not split into separate slot variables");
+    Require((FunctionArrays(result.spirv.Words()) == 0u) == registers, "vector window registers: wave" + std::to_string(waveSize) + (registers ? " indices with proven candidates still use the window array" : " a free index lost the window array"));
     device.Dispatch(result, 1, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));
     device.WaitIdle();
 }
@@ -106,10 +128,16 @@ int main() {
             return VulkanTestSkipped;
         }
         for (const std::uint32_t data : {20u, 2u, 31u}) {
-            Run(*device, 32, 32, 7u, data);
+            Run(*device, Code, 32, 32, 7u, data, false);
             Check(32, 32, 7u, data);
-            Run(*device, 64, 64, 7u, data);
+            Run(*device, Code, 64, 64, 7u, data, false);
             Check(64, 64, 7u, data);
+        }
+        for (const std::uint32_t data : {5u, 0u, 7u}) {
+            Run(*device, MaskedCode, 32, 32, 6u, data, std::getenv("APS5_NO_WINDOW_REGISTERS") == nullptr);
+            Check(32, 32, 6u, data);
+            Run(*device, MaskedCode, 64, 64, 6u, data, false);
+            Check(64, 64, 6u, data);
         }
         std::puts("vector window narrowing tests passed");
         return 0;

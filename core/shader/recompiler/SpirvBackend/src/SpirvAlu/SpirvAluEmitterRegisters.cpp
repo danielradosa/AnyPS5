@@ -103,6 +103,7 @@ std::uint32_t AccessNarrowedWindow(SpirvEmitterState& state, std::uint32_t index
 std::uint32_t DirectWindowElement(SpirvValueEmitContext& ctx, const IrValue& inst) {
     auto& state = ctx.state;
     const IrValue* index = inst.Argument(0)->Resolve();
+    if (state.vectorWindowRegisters) return index->HasImmediate() ? state.vectorWindowSlots.at(state.laneHalf).at(index->ImmediateU32()) : 0u;
     if (state.vectorWindowIndexed == 0u) return VectorWindowElement(state, ctx.Arg(inst, 0u));
     if (!index->HasImmediate()) return 0u;
     if (index->ImmediateU32() < state.vectorWindowIndexed) return VectorWindowElement(state, ctx.Arg(inst, 0u));
@@ -119,7 +120,21 @@ void EmitLoadVectorWindow(SpirvValueEmitContext& ctx, const IrValue& inst) {
         return value;
     };
     const auto pointer = DirectWindowElement(ctx, inst);
-    ctx.Define(inst, pointer != 0u ? load(pointer) : AccessNarrowedWindow(state, ctx.Arg(inst, 0u), load));
+    if (pointer != 0u) {
+        ctx.Define(inst, load(pointer));
+    } else if (state.vectorWindowRegisters) {
+        const auto& candidates = state.vectorWindowCandidates.at(&inst);
+        const auto& slots = state.vectorWindowSlots.at(state.laneHalf);
+        const auto k = ctx.Def(candidates.k);
+        auto value = load(slots.at(candidates.first));
+        for (std::uint32_t j = 1; j < candidates.count; ++j) {
+            const auto hit = Binary(state, spv::OpIEqual, TypeBool(state), k, ConstantU32(state, j));
+            value = Select(state, TypeU32(state), hit, load(slots.at(candidates.first + candidates.stride * j)), value);
+        }
+        ctx.Define(inst, value);
+    } else {
+        ctx.Define(inst, AccessNarrowedWindow(state, ctx.Arg(inst, 0u), load));
+    }
 }
 
 void EmitStoreVectorWindow(SpirvValueEmitContext& ctx, const IrValue& inst) {
@@ -129,8 +144,22 @@ void EmitStoreVectorWindow(SpirvValueEmitContext& ctx, const IrValue& inst) {
         state.module.AddFunction(spv::OpStore, pointer, value);
         return ConstantU32(state, 0u);
     };
-    if (const auto pointer = DirectWindowElement(ctx, inst); pointer != 0u) (void)store(pointer);
-    else (void)AccessNarrowedWindow(state, ctx.Arg(inst, 0u), store);
+    if (const auto pointer = DirectWindowElement(ctx, inst); pointer != 0u) {
+        (void)store(pointer);
+    } else if (state.vectorWindowRegisters) {
+        const auto& candidates = state.vectorWindowCandidates.at(&inst);
+        const auto& slots = state.vectorWindowSlots.at(state.laneHalf);
+        const auto k = ctx.Def(candidates.k);
+        for (std::uint32_t j = 0; j < candidates.count; ++j) {
+            const auto slot = slots.at(candidates.first + candidates.stride * j);
+            const auto previous = state.module.AllocateId();
+            state.module.AddFunction(spv::OpLoad, TypeU32(state), previous, slot);
+            const auto hit = Binary(state, spv::OpIEqual, TypeBool(state), k, ConstantU32(state, j));
+            state.module.AddFunction(spv::OpStore, slot, Select(state, TypeU32(state), hit, value, previous));
+        }
+    } else {
+        (void)AccessNarrowedWindow(state, ctx.Arg(inst, 0u), store);
+    }
 }
 
 void EmitGetGotoVariable(SpirvValueEmitContext& ctx, const IrValue& inst) {

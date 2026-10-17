@@ -167,6 +167,14 @@ struct SpirvEmitterState {
     std::array<std::uint32_t, 2> vectorWindowVariable {};
     std::uint32_t vectorWindowIndexed = 0;
     std::array<std::vector<std::uint32_t>, 2> vectorWindowSlots {};
+    struct WindowCandidates {
+        const IrValue* k = nullptr;
+        std::uint32_t first = 0;
+        std::uint32_t stride = 1;
+        std::uint32_t count = 0;
+    };
+    bool vectorWindowRegisters = false;
+    std::unordered_map<const IrValue*, WindowCandidates> vectorWindowCandidates;
     std::array<std::uint32_t, ImageBindingCount> imageVariables {};
     std::uint32_t samplerVariable = 0;
     std::vector<SpirvTableImageVariable> tableImageVariables;
