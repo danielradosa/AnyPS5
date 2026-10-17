@@ -34,6 +34,7 @@ int APS5_VABI scePadResetOrientation(int);
 int APS5_VABI scePadSetAngularVelocityDeadbandState(int, bool);
 int APS5_VABI scePadSetAngularVelocityBiasCorrectionState(int, bool);
 int APS5_VABI scePadIsRemoteController(int, bool*);
+int APS5_VABI scePadUnknown_n3kSX62fgNo(void);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -110,6 +111,8 @@ static float SettleOrientationW() {
 
 static void CheckTiltCorrection(int handle) {
     Require(scePadInit_nid_postfix() == 0);
+    // PPSA08832 calls it with no arguments right after scePadInit and returns its result.
+    Require(scePadUnknown_n3kSX62fgNo() == PAD_OK);
     PadInputState tilted;
     tilted.hasMotion = true;
     tilted.accel = {9.80665f, 0.0f, 0.0f};
