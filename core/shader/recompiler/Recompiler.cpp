@@ -530,6 +530,9 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
     targetOptions.registrationModules = registration;
     targetOptions.fragmentDescriptorSet = request.target.registrationModules;
     targetOptions.float16DenormPreserve = request.target.float16DenormPreserve;
+    // APS5_ROBUST_BUFFERS=1 forces the robust form for offline replays (requests do not carry the flag).
+    static const bool forceRobust = std::getenv("APS5_ROBUST_BUFFERS") != nullptr;
+    targetOptions.robustBuffers = request.target.robustBuffers || forceRobust;
 
     constexpr SpirvEmitter spirvEmitter;
     CompiledShaderArtifact result;

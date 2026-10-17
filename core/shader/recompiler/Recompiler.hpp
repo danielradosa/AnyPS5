@@ -267,6 +267,10 @@ struct SpirvTarget {
     std::uint32_t registrationWordLimit = 200000u;
     bool vertexSubgroups = true;
     bool float16DenormPreserve = false;
+    // The device enables robustBufferAccess2 with a 4-byte storage alignment and the driver binds guest
+    // buffer views in whole dwords: an aligned out-of-range dword load reads zero and a store is dropped
+    // by the hardware, so direct buffer accesses skip their own host bounds check (SpirvRuntimeBuffer.cpp).
+    bool robustBuffers = false;
 };
 
 struct BindingLayout {

@@ -160,6 +160,17 @@ std::uint32_t directWordIndex(SpirvEmitterState& state, const MemoryResourceAcce
     return EmitAddU32(state, relative, base);
 }
 
+// The host bounds check of a direct buffer dword access; `last` is the access's second dword when the base
+// is misaligned. With robustBuffers (SpirvTarget) the device returns zero for an out-of-range dword load and
+// drops an out-of-range store, and guest views are bound in whole dwords, so only a misaligned access (two
+// dwords, all or nothing) keeps the check; the base misalignment is a specialization constant, so the
+// aligned form folds to no check at all when the pipeline is created.
+std::uint32_t hostInBounds(SpirvEmitterState& state, const MemoryResourceAccess& access, std::uint32_t unaligned, std::uint32_t last) {
+    const auto checked = EmitMemoryElementInBounds(state, access, last);
+    if (!state.robustBuffers) return checked;
+    return Binary(state, spv::OpLogicalOr, TypeBool(state), Unary(state, spv::OpLogicalNot, TypeBool(state), unaligned), checked);
+}
+
 std::uint32_t readBuffer(SpirvValueEmitContext& context, const IrValue& instruction, std::uint32_t address, std::uint32_t bits) {
     if (context.Memory(instruction).gpuDescriptor) return EmitBdaRead(context, instruction, address, bits);
     auto& state = context.state;
@@ -169,7 +180,7 @@ std::uint32_t readBuffer(SpirvValueEmitContext& context, const IrValue& instruct
     const auto unaligned = nonzero(state, misalignment);
     const auto next = EmitAddU32(state, index, ConstantU32(state, 1u));
     const auto last = Select(state, TypeU32(state), unaligned, next, index);
-    return EmitValueOrZeroIfCondition(state, EmitMemoryElementInBounds(state, access, last), [&] {
+    return EmitValueOrZeroIfCondition(state, hostInBounds(state, access, unaligned, last), [&] {
         const auto load = [&](std::uint32_t word) {
             const auto value = state.module.AllocateId();
             const auto pointer = EmitMemoryElementPointer(state, access, word);
@@ -244,7 +255,7 @@ void writeBuffer(SpirvValueEmitContext& context, const IrValue& instruction, std
         });
         return;
     }
-    EmitIfCondition(state, EmitMemoryElementInBounds(state, access, last), [&] {
+    EmitIfCondition(state, hostInBounds(state, access, unaligned, last), [&] {
         auto mask = ConstantU32(state, bits == 32u ? 0xffffffffu : (1u << bits) - 1u);
         auto masked = Binary(state, spv::OpBitwiseAnd, u32, value, mask);
         if (bits != 32u) {

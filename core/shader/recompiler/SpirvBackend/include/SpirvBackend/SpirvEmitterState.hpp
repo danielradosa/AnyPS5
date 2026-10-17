@@ -101,6 +101,7 @@ struct SpirvEmitterState {
     std::uint32_t hostSubgroupSize = 0;
     bool splitSubgroup = false;
     bool narrowSubgroupClock = false;
+    bool robustBuffers = false;
     bool float64DenormPreserve = false;
     bool registrationModules = false;
     bool fragmentDescriptorSet = false;

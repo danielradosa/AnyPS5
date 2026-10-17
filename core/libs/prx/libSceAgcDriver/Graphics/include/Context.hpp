@@ -184,6 +184,9 @@ struct Context {
     // per call, and a GPU-side draw count (VK_KHR_draw_indirect_count).
     bool drawIndirectFirstInstance = false;
     bool multiDrawIndirect = false;
+    // The device bounds-checks storage buffers in hardware (VulkanDevice: robustBufferAccess2); guest
+    // buffer views are then bound in whole dwords (GuestBufferMemory::Descriptor).
+    bool robustBuffers = false;
     bool drawIndirectCount = false;
     bool occlusionQueryPrecise = false;
     bool depthBounds = false;

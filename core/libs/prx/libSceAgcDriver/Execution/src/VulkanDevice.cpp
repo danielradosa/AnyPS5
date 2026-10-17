@@ -298,6 +298,7 @@ struct VulkanDevice::State {
     bool narrowSubgroupClock = false;
     bool float64DenormPreserve = false;
     bool float16DenormPreserve = false;
+    bool robustBuffers = false;
     bool demoteToHelperInvocation = false;
     bool earlyFragmentSampleMaskTestBeforeSampleCounting = false;
     // VK_EXT_descriptor_indexing with non-uniform image array indexing (bindless image tables in
@@ -1811,9 +1812,20 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         VkPhysicalDeviceFeatures2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &robustness2};
         state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2")(selected, &queried);
     }
+    // robustBufferAccess2 (with robustBufferAccess, enabled above) at a 4-byte storage alignment: the hardware
+    // bounds-checks guest buffer views in whole dwords, so the recompiler drops its own host bounds checks
+    // (SpirvTarget::robustBuffers). APS5_NO_ROBUST_BUFFERS=1 keeps the shader checks as before.
+    VkPhysicalDeviceRobustness2PropertiesEXT robustness2Properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT};
+    if (robustness2.robustBufferAccess2 == VK_TRUE) {
+        VkPhysicalDeviceProperties2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &robustness2Properties};
+        state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &queried);
+    }
+    state->robustBuffers = std::getenv("APS5_NO_ROBUST_BUFFERS") == nullptr && robustness2.robustBufferAccess2 == VK_TRUE && robustness2.nullDescriptor == VK_TRUE && enabled.robustBufferAccess == VK_TRUE && robustness2Properties.robustStorageBufferAccessSizeAlignment != 0 && robustness2Properties.robustStorageBufferAccessSizeAlignment <= 4;
+    APS5_LOG_OUT("Robust buffers=%d (robustBufferAccess2 %u, storage alignment %llu)", state->robustBuffers ? 1 : 0, static_cast<unsigned>(robustness2.robustBufferAccess2), static_cast<unsigned long long>(robustness2Properties.robustStorageBufferAccessSizeAlignment));
     if (robustness2.nullDescriptor == VK_TRUE) {
         robustness2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
         robustness2.nullDescriptor = VK_TRUE;
+        robustness2.robustBufferAccess2 = state->robustBuffers ? VK_TRUE : VK_FALSE;
         robustness2.pNext = bdaFeatures.pNext;
         bdaFeatures.pNext = &robustness2;
         deviceExtensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
@@ -3476,6 +3488,7 @@ ShaderRecompiler::SpirvTarget VulkanDevice::buildTarget() const {
     target.narrowSubgroupClock = state->narrowSubgroupClock;
     target.float64DenormPreserve = state->float64DenormPreserve;
     target.float16DenormPreserve = state->float16DenormPreserve;
+    target.robustBuffers = state->robustBuffers;
     target.fixedPushSlots = state->graphicsPipelineLibrary;
     target.registrationModules = state->graphicsPipelineLibrary;
     target.srgbDecodeFormats = state->srgbDecodeFormats;
@@ -3574,6 +3587,7 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.samplerCache = state->samplerCache.get();
     context.drawIndirectFirstInstance = state->drawIndirectFirstInstance;
     context.multiDrawIndirect = state->multiDrawIndirect;
+    context.robustBuffers = state->robustBuffers;
     context.dualSrcBlend = state->dualSrcBlend;
     context.depthBounds = state->depthBounds;
     context.depthBiasClamp = state->depthBiasClamp;

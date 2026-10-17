@@ -4222,6 +4222,9 @@ VkDescriptorBufferInfo GuestBufferMemory::Descriptor(std::uint64_t address, std:
         range = std::min<std::uint64_t>(range, end - (address - adjustment));
     }
     if (address - adjustment + range > end) Require(false, describe("rounded up to its view range exceeds"));
+    // Whole dwords: the shaders' dword index bound (OpArrayLength) floors the range, and the hardware's
+    // robust bound rounds it up, so a partial last dword would read data instead of zero.
+    if (context.robustBuffers && range >= 4u) range &= ~std::uint64_t{3};
     Require(range <= context.limits.maxStorageBufferRange, "guest buffer view exceeds descriptor range limit");
     const auto handle = region.direct != nullptr ? region.direct->buffer : region.mirror != nullptr ? region.mirror->buffer->Handle() : region.buffer->Handle();
     return {handle, offset - adjustment, range};
