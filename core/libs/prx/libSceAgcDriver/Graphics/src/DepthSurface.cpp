@@ -1226,7 +1226,10 @@ void reportDepthView(std::uint64_t now) {
 }
 
 VkImageAspectFlags storeBackClearedHtile(const Context& context, const DepthTarget& target) {
-    if (target.htileAddress == 0) return 0;
+    // Diagnostic: APS5_NO_HTILE_STOREBACK=1 skips the bind-time HTILE read and store-back (the behaviour
+    // before upstream 3e61fcf1f; a title decoding depth through HTILE after a fast clear needs it).
+    static const bool storeBack = std::getenv("APS5_NO_HTILE_STOREBACK") == nullptr;
+    if (target.htileAddress == 0 || !storeBack) return 0;
     const bool profiled = depthViewProfiled();
     auto& profile = depthViewProfile();
     auto mark = profiled ? depthViewNow() : 0;
