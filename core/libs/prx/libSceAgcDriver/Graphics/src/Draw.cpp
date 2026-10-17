@@ -1836,6 +1836,12 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     const PassAccess passAccess{passReads, resources.GpuWrites(), passImages, passAttachments, unknownMemory, unknownMemory};
     const bool fenced = state.depth.has_value() || !record.proxies.empty();
     const char* forced = capture ? "capture" : readsTarget ? "reads target" : gpuIndirect ? "gpu indirect" : meshIndirect ? "mesh indirect" : nullptr;
+    // APS5_GPU_TIME_BY_DRAW=1 (diagnostic, with APS5_PROFILE_GPU): every draw begins its own render pass
+    // and its [gputime] range is keyed by its fragment program's variant (3: none); the Execution draw
+    // path prints each variant's guest address once ([draw-shader]). The per-pass load/store this adds
+    // costs every draw about the same, so the ranking of programs holds.
+    static const bool byDraw = std::getenv("APS5_GPU_TIME_BY_DRAW") != nullptr;
+    if (byDraw) recorder->Commands();
     const auto start = recorder->StartDrawPass(passKey, forced, fenced, passAccess);
     timer.phase(PhasePassStart);
     const bool continued = start.continued;
@@ -1851,7 +1857,9 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     // APS5_GPU_TIME_BY_PASS=1: the range is keyed by the pass's first color target (depth-only: 1), so
     // [gputime] lists passes by target among its programs instead of the draw class.
     static const bool byPass = std::getenv("APS5_GPU_TIME_BY_PASS") != nullptr;
-    const auto passTimingKey = byPass ? passTarget : Recorder::ClassKey(CommandClass::Draw);
+    const auto fragment = std::ranges::find_if(shaders, [](const CompiledShader& shader) { return shader.stage == ShaderRecompiler::ShaderStage::Fragment && shader.program != nullptr; });
+    const auto drawKey = fragment != shaders.end() && fragment->program->PipelineVariantId() > 0xffff ? fragment->program->PipelineVariantId() : std::uint64_t{3};
+    const auto passTimingKey = byDraw ? drawKey : byPass ? passTarget : Recorder::ClassKey(CommandClass::Draw);
     const auto drawTiming = !continued ? recorder->BeginGpuTiming(passTimingKey) : Recorder::NoTiming;
     if (!continued && Recorder::BarrierValidate()) {
         auto reads = resources.InPlaceReads();

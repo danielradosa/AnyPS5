@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <set>
 
 namespace AgcDriver::DriverDetail {
 
@@ -404,6 +406,13 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         const auto slotEnd = (pushCursorBytes / Graphics::PipelinePushSlotBytes + 1u) * Graphics::PipelinePushSlotBytes;
         require(result.pushConstants.size() <= slotEnd - pushCursorBytes, "stage push constants exceed the pipeline push constant block");
         stages.push_back({program.binary.stage, &result, result.pushConstants.empty() ? 0u : pushCursorBytes});
+        static const bool byDraw = std::getenv("APS5_GPU_TIME_BY_DRAW") != nullptr;
+        if (byDraw && program.binary.stage == ShaderRecompiler::ShaderStage::Fragment) {
+            static std::mutex seenMutex;
+            static std::set<std::uint64_t> seen;
+            std::lock_guard seenLock(seenMutex);
+            if (seen.insert(result.PipelineVariantId()).second) std::fprintf(stderr, "[draw-shader] fragment variant 0x%llx = program 0x%llx\n", static_cast<unsigned long long>(result.PipelineVariantId()), static_cast<unsigned long long>(program.binary.codeAddress));
+        }
         pushCursorBytes += static_cast<std::uint32_t>(result.pushConstants.size());
     }
 
