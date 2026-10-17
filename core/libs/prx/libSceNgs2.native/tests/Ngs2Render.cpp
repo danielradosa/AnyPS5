@@ -43,6 +43,8 @@ static void TestErrorsAndInfo() {
     Ngs2SystemInfo info{};
     Require(sceNgs2SystemGetInfo(0x1234, &info, sizeof(info)) == static_cast<int>(0x804A0230u));
     Require(sceNgs2RackDestroy(0x1234, nullptr) == static_cast<int>(0x804A0261u));
+    const Ngs2VoiceCommand stop{2, 0, 4, 0, {.u = SCE_NGS2_VOICE_EVENT_STOP}};
+    Require(sceNgs2VoiceRunCommands(0x1234, &stop, 1) == static_cast<int>(0x804A0300u));
 
     const auto system = CreateSystem();
     const auto rack = CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER);
@@ -90,6 +92,8 @@ static void TestErrorsAndInfo() {
     Ngs2ContextBufferInfo released{};
     Require(sceNgs2SystemDestroy(system, &released) == SCE_NGS2_OK && released.host_buffer != nullptr);
     Require(sceNgs2SystemGetInfo(system, &info, sizeof(info)) == SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE);
+    // PPSA08832 sends a stop command to a voice it no longer owns and ignores the result.
+    Require(sceNgs2VoiceRunCommands(named0, &stop, 1) == SCE_NGS2_ERROR_INVALID_VOICE_HANDLE);
 }
 
 static void TestPcmBlockEnd() {

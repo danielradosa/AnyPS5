@@ -410,7 +410,9 @@ int APS5_VABI sceNgs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamHe
 
 int APS5_VABI sceNgs2VoiceRunCommands(uintptr_t voice_handle, const Ngs2VoiceCommand* commands, size_t num_commands) {
     std::lock_guard lock(Ngs2Mutex());
-    auto& voice = CheckedVoice(voice_handle);
+    auto* found = Ngs2FindVoice(voice_handle);
+    if (found == nullptr) return SCE_NGS2_ERROR_INVALID_VOICE_HANDLE;
+    auto& voice = *found;
     if (commands == nullptr && num_commands != 0) APS5_INVALID_ARG_EX;
     for (std::size_t i = 0; i < num_commands; i++) {
         const auto& command = commands[i];
