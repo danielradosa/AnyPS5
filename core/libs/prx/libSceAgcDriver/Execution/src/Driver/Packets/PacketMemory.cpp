@@ -117,7 +117,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
     }
 
     // Profile only: a DMA_DATA whose memory or GDS source has recorded GPU writes pending (its CPU read below or in
-    // Execute waits for them), by destination (memory, GDS, nowhere) and source (memory, GDS).
+    // Execute waits for them, unless a GDS readback becomes a transfer), by destination (memory, GDS, nowhere) and source (memory, GDS).
     if (profile && opcode == 0x50 && Pm4::DmaSource(packet) != 2) {
         const bool fromGds = Pm4::DmaSource(packet) == Pm4::DmaSelectGds;
         const auto source = fromGds ? Pm4::GdsAddress() + packet[2] : packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u);
@@ -135,7 +135,33 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         constexpr std::size_t gpuStoreLimit = 65536;
         bool drained = true;
         int storeReason = -1;
-        if (const auto store = Pm4::ResolveStore(packet, queue, gpuStoreLimit)) {
+        // A DMA_DATA from the GDS into memory: first a transfer out of the GDS's host import recorded behind every GDS
+        // user recorded before it (VulkanDevice::CopyBuffer path 1, as the larger memory copies below), instead of the
+        // CPU read below whose flush hook waits for those users. Debug aid: APS5_GDS_CPU_READBACKS=1 reads on the CPU.
+        static const bool gdsCpuReadbacks = std::getenv("APS5_GDS_CPU_READBACKS") != nullptr;
+        if (opcode == 0x50 && !gdsCpuReadbacks) {
+            const auto readback = Pm4::DecodeGdsReadback(packet);
+            if (readback.has_value() && GuestMemory::Accessible(reinterpret_cast<const void*>(readback->destination), readback->bytes, true)) {
+                GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Copy);
+                std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                if (const auto localDevice = device.Load()) {
+                    recordDeferredLabels(localDevice.get(), submission.queue);
+                    // The destination's writer is foreign to the shaders' write evidence (as a CPU copy's): its readers sync.
+                    const auto outcome = localDevice->CopyBuffer(readback->destination, readback->source, readback->bytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, submission.queue, [&](std::span<const std::byte>, std::uint64_t) { noteForeignWriter(readback->destination, readback->destination + readback->bytes, submission.queue); });
+                    if (outcome.path == 1) {
+                        // The GDS stays noted as written until the transfer ran, as a GDS binding notes it: a CPU store
+                        // into it (Execute's fallback) waits for the transfer instead of landing before it reads. The
+                        // transfer is recorded work, so the submission end submits it.
+                        if (auto* recorder = Graphics::Recorder::Active()) recorder->NotePendingWrite(readback->source, readback->bytes);
+                        Graphics::Recorder::CountRecordedWork();
+                        ++gdsReadbacksOnGpu;
+                        wroteOnGpu = true;
+                        drained = false;
+                    }
+                }
+            }
+        }
+        if (const auto store = drained ? Pm4::ResolveStore(packet, queue, gpuStoreLimit) : std::optional<Pm4::StoreWrite>{}) {
             const auto bytes = store->Bytes();
             if (bytes.empty()) {
 
@@ -203,8 +229,8 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         }
         // A DMA_DATA into the emulated GDS: Pm4::Execute stores it on the CPU through GuestMemory::Write,
         // whose flush hook waits for the recorded GPU work noted over the GDS. Every GDS binding notes
-        // the whole GDS as written (ShaderResources: AddWritable), readers included, so that work is
-        // every recorded GDS user of any queue: its copy-backs land before the store and its copy-ins
+        // the whole GDS as written (ShaderResources: AddWritable), readers included, as does a GDS readback
+        // transfer (below), so that work is every recorded GDS user of any queue: its copy-backs land before the store and its copy-ins
         // read before it. Nothing else reaches the GDS (its address is the driver's own), so the device
         // drain that waited for every queue's newest batch orders nothing more. Debug aid:
         // APS5_GDS_DRAIN=1 drains as before.

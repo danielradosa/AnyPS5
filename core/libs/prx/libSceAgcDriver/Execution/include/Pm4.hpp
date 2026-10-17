@@ -147,6 +147,8 @@ struct MemoryCopy {
     std::size_t bytes;
 };
 std::optional<MemoryCopy> DecodeMemoryCopy(std::span<const std::uint32_t> packet);
+// A DMA_DATA from the GDS into memory as a copy from GdsAddress() + offset, or nothing when the packet is not one.
+std::optional<MemoryCopy> DecodeGdsReadback(std::span<const std::uint32_t> packet);
 std::uint32_t DmaSource(std::span<const std::uint32_t> packet);
 std::uint32_t DmaDestination(std::span<const std::uint32_t> packet);
 inline constexpr std::uint32_t DmaSelectGds = 1;

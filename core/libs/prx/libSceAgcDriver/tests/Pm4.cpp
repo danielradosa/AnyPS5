@@ -735,6 +735,23 @@ void testMemoryCopyDecode() {
     check(!DecodeMemoryCopy(makePacket(0x40, {0x10101, 0, 0, 0, 0})).has_value(), "a COPY_DATA decoded as a DMA_DATA copy");
 }
 
+void testGdsReadbackDecode() {
+    using AgcDriver::Pm4::DecodeGdsReadback;
+    constexpr std::uint64_t destination = 0x403d7b400ull;
+    const auto packet = [&](std::uint32_t control, std::uint64_t from, std::uint64_t to, std::uint32_t command) {
+        return makePacket(0x50, {control, static_cast<std::uint32_t>(from), static_cast<std::uint32_t>(from >> 32u), static_cast<std::uint32_t>(to), static_cast<std::uint32_t>(to >> 32u), command});
+    };
+    const auto copy = DecodeGdsReadback(packet(0x20000000, 0x100, destination, 64));
+    check(copy.has_value() && copy->source == AgcDriver::Pm4::GdsAddress() + 0x100 && copy->destination == destination && copy->bytes == 64, "a DMA_DATA from the GDS into memory did not decode as a readback");
+    check(DecodeGdsReadback(packet(0x20300000, 0x100, destination, 64)).has_value(), "a GDS readback into memory selector 3 did not decode");
+    check(!DecodeGdsReadback(packet(0x60000000, 0x1120000000ull, destination, 64)).has_value(), "a memory-to-memory DMA_DATA decoded as a GDS readback");
+    check(!DecodeGdsReadback(packet(0x20100000, 0x100, 0x200, 64)).has_value(), "a GDS-to-GDS DMA_DATA decoded as a readback");
+    check(!DecodeGdsReadback(packet(0x20200000, 0x100, destination, 64)).has_value(), "a GDS readback to nowhere decoded");
+    check(!DecodeGdsReadback(packet(0x20000000, 0x100, destination, 0)).has_value(), "an empty GDS readback decoded");
+    check(!DecodeGdsReadback(packet(0x20000000, 0xfff0, destination, 64)).has_value(), "a readback past the GDS end decoded");
+    check(!DecodeGdsReadback(packet(0x20000000, 0x100, destination, 64 | (1u << 28u))).has_value(), "a non-incrementing GDS source decoded as a readback");
+}
+
 void testMemorySynchronization() {
     struct MemoryState {
         std::uint32_t source = 0;
@@ -1829,6 +1846,7 @@ int main(int argc, char** argv) {
         testTraceRegisterWrites();
         testCopies();
         testMemoryCopyDecode();
+        testGdsReadbackDecode();
         testMemorySynchronization();
         testConditionalValidation();
         testConditionReadSynchronization();
