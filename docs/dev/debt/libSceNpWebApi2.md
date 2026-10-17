@@ -1,5 +1,9 @@
 # libSceNpWebApi2 technical debt
 
+### Silent stubs
+
+- [sceNpWebApi2SetRequestTimeout](../../../core/libs/prx/libSceNpWebApi2/Export.cpp) (libSceNpWebApi2) - the `(request id, timeout)` signature follows [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/np/np_web_api2/np_web_api2.cpp). Pinball FX (PPSA08755) calls it while its main menu loads. It returns `INVALID_ARGUMENT` for a request id of 0 or below and otherwise succeeds and stores nothing: no request reaches a service, as `sceNpWebApi2SendRequest` fails with `UNAVAILABLE` at once, so no timeout can expire. shadPS4 returns `LIB_CONTEXT_NOT_FOUND`, `USER_CONTEXT_NOT_FOUND` or `REQUEST_NOT_FOUND` for an id it does not know; this call does not look the id up among the requests `sceNpWebApi2CreateRequest` records for `sceNpWebApi2AddWebTraceTag` (`sceNpWebApi2AbortRequest`, `sceNpWebApi2AddHttpRequestHeader` and `sceNpWebApi2DeleteRequest` also accept any id), so those errors are not reported
+
 ### Unknown function info
 
 - [sceNpWebApi2AddWebTraceTag](../../../core/libs/prx/libSceNpWebApi2/Export.cpp) (libSceNpWebApi2) - the `(int64 requestId, const char* value)` signature follows the SDK 12.000 reference, which lists no specific errors. Requests created by `sceNpWebApi2CreateRequest` are now tracked until `sceNpWebApi2DeleteRequest`: a null value returns `INVALID_ARGUMENT` (0x80553402) and an id that was never created or was deleted `REQUEST_NOT_FOUND` (0x80553406, the reference's code; the library's `UNAVAILABLE` constant has the same value). The tags are kept with the request in call order and never sent, since no request reaches PSN; the WebTrace debug setting that consumes them is a devkit feature. A tag length limit (`PARAMETER_TOO_LONG`) is not known, so any length is accepted

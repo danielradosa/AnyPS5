@@ -77,5 +77,8 @@ int main() {
     Require(userId == 0x5a5a, "sceNpGetUserIdByAccountId must leave the user id untouched");
     Require(sceNpGetUserIdByAccountId(0, &userId) == InvalidArgument, "sceNpGetUserIdByAccountId must reject account id 0");
     Require(sceNpGetUserIdByAccountId(0x1234567890ull, nullptr) == InvalidArgument, "sceNpGetUserIdByAccountId must reject a null user id");
+    Require(sceNpGetUserIdByAccountId(0x1234, nullptr) == InvalidArgument, "sceNpGetUserIdByAccountId must reject a null output");
+    Require(sceNpGetUserIdByAccountId(0x1234, &userId) == SignedOut, "sceNpGetUserIdByAccountId must report NP as signed out");
+    Require(userId == 0x5a5a, "sceNpGetUserIdByAccountId must leave the user id untouched");
     return 0;
 }

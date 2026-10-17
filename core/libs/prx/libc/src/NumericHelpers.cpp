@@ -67,7 +67,7 @@ float APS5_VABI remquof_nid_postfix(float x, float y, int* quotient) { return st
 double APS5_VABI copysign_nid_postfix(double magnitude, double sign) { return std::copysign(magnitude, sign); }
 float APS5_VABI copysignf_nid_postfix(float magnitude, float sign) { return std::copysign(magnitude, sign); }
 
-long double APS5_VABI nanl_nid_postfix(const char* tag) { return std::nanl(tag); }
+long double APS5_VABI nanl_nid_postfix(const char*) { return std::numeric_limits<long double>::quiet_NaN(); }
 
 double APS5_VABI nextafter_nid_postfix(double from, double to) { return CheckNeighbor_nid_no_patch(from, to, std::nextafter(from, to)); }
 double APS5_VABI nexttoward_nid_postfix(double from, long double to) { return CheckNeighbor_nid_no_patch(from, to, std::nexttoward(from, to)); }

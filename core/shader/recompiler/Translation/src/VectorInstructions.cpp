@@ -1,5 +1,6 @@
 #include "Translation/VectorInstructions.hpp"
 #include "Translation/TranslationContext.hpp"
+#include <cstdlib>
 #include <stdexcept>
 
 namespace ShaderRecompiler {
@@ -24,8 +25,60 @@ bool roundsProductSeparately(const RdnaInstruction& inst) {
 }
 
 std::uint32_t TranslationContext::f32DenormalFlushFor(const RdnaInstruction& inst) const {
+    // APS5_FAST_F32_DENORMALS=1 keeps f32 denormals as the host computes them instead of emulating the flush on
+    // every f32 source, result and product (no Vulkan driver here offers shaderDenormFlushToZeroFloat32). Unsafe:
+    // Astro's hub renders black with it (game code expects tiny values to compare and divide as zero).
+    static const bool fast = std::getenv("APS5_FAST_F32_DENORMALS") != nullptr;
+    if (fast) return 0u;
+    // By default the flush is kept only where a tiny value changes a decision, an index or a
+    // reciprocal: the sources of compares, conversions, floor/ceil/fract/frexp/trunc/rndne (fract(-tiny) is ~1.0,
+    // floor(-tiny) is -1, against 0 and -0 flushed), min/max/med3, and of rcp/rsq/sqrt/log/exp (whose sources were
+    // flushed results before). Add, sub, mul, fma and sin/cos keep host denormals in their sources, products and
+    // results, where the emulation costs most; a tiny value they leave behind is flushed by its next decision. The
+    // legacy multiplies (0 * anything = +0) keep their whole flush. Offline (spvstats, RTX 4060) the top hub compute
+    // programs come out within 1-6% of the size without any flush, 20-45% below the flush everywhere; with it on
+    // only f32_denormal_flush and vector_constant_factor_tininess fail beyond APS5_FAST_F32's tests (the compare
+    // tests that APS5_FAST_F32_DENORMALS fails pass). Astro's hub +7.0% (play1016b). APS5_EXACT_F32=1 flushes
+    // everywhere as before (the denormal tests run with it).
+    static const bool safe = std::getenv("APS5_EXACT_F32") == nullptr;
     std::uint32_t flush = 0u;
-    switch (inst.op) {
+    if (safe) {
+        switch (inst.op) {
+        case RdnaOpcode::VAddF32:
+        case RdnaOpcode::VSubF32:
+        case RdnaOpcode::VSubrevF32:
+        case RdnaOpcode::VMulF32:
+        case RdnaOpcode::VSinF32:
+        case RdnaOpcode::VCosF32:
+        case RdnaOpcode::VMacF32:
+        case RdnaOpcode::VMadmkF32:
+        case RdnaOpcode::VMadakF32:
+        case RdnaOpcode::VFmaF32:
+            return 0u;
+        case RdnaOpcode::VMinF32:
+        case RdnaOpcode::VMaxF32:
+        case RdnaOpcode::VMin3F32:
+        case RdnaOpcode::VMax3F32:
+        case RdnaOpcode::VMed3F32:
+        case RdnaOpcode::VFractF32:
+        case RdnaOpcode::VFloorF32:
+        case RdnaOpcode::VCeilF32:
+        case RdnaOpcode::VFrexpMantF32:
+        case RdnaOpcode::VTruncF32:
+        case RdnaOpcode::VRndneF32:
+        case RdnaOpcode::VRcpF32:
+        case RdnaOpcode::VRcpIflagF32:
+        case RdnaOpcode::VRsqF32:
+        case RdnaOpcode::VSqrtF32:
+        case RdnaOpcode::VLogF32:
+        case RdnaOpcode::VExpF32:
+            flush = 1u;
+            break;
+        default:
+            break;
+        }
+    }
+    if (flush == 0u) switch (inst.op) {
     case RdnaOpcode::VAddF32:
     case RdnaOpcode::VSubF32:
     case RdnaOpcode::VSubrevF32:

@@ -10,9 +10,11 @@ int APS5_VABI sceUserServiceGetUserColor(int user_id, int* color);
 int APS5_VABI sceUserServiceGetNpAccountId(int user_id, std::uint64_t* account_id);
 int APS5_VABI sceUserServiceGetAgeLevel(int user_id, std::uint32_t* age_level);
 int APS5_VABI sceUserServiceGetAccessibilityChatTranscription(int user_id, std::int32_t* value);
+int APS5_VABI sceUserServiceGetAccessibilityKeyremapEnable(int user_id, std::int32_t* value);
 int APS5_VABI sceUserServiceGetAccessibilityPressAndHoldDelay(int user_id, std::int32_t* value);
 int APS5_VABI sceUserServiceGetAccessibilityTriggerEffect(int user_id, std::int32_t* value);
 int APS5_VABI sceUserServiceGetAccessibilityVibration(int user_id, std::int32_t* value);
+int APS5_VABI sceUserServiceGetAccessibilityZoom(int user_id, std::int32_t* value);
 int APS5_VABI sceUserServiceGetAccessibilityZoomEnabled(int user_id, std::int32_t* value);
 int APS5_VABI sceUserServiceGetAccessibilityZoomFollowFocus(int user_id, std::int32_t* value);
 }
@@ -66,9 +68,11 @@ int main() {
     };
     const Setting settings[] = {
         {sceUserServiceGetAccessibilityChatTranscription, 0},
+        {sceUserServiceGetAccessibilityKeyremapEnable, 0},
         {sceUserServiceGetAccessibilityPressAndHoldDelay, 0},
         {sceUserServiceGetAccessibilityTriggerEffect, 1},
         {sceUserServiceGetAccessibilityVibration, 1},
+        {sceUserServiceGetAccessibilityZoom, 0},
         {sceUserServiceGetAccessibilityZoomEnabled, 0},
         {sceUserServiceGetAccessibilityZoomFollowFocus, 1},
     };

@@ -11,9 +11,11 @@
 #include <thread>
 extern "C" {
 int APS5_VABI socket_nid_postfix(int, int, int);
+int APS5_VABI __sys_socketex_nid_postfix(const char*, int, int, int);
 int APS5_VABI close_nid_postfix(int);
 int APS5_VABI pipe_nid_postfix(int*);
 int APS5_VABI fcntl_nid_postfix(int, int, ...);
+int APS5_VABI _fcntl_nid_postfix(int, int, ...);
 int APS5_VABI ioctl_nid_postfix(int, std::uint64_t, void*);
 std::int64_t APS5_VABI read_nid_postfix(int, void*, std::uint64_t);
 std::int64_t APS5_VABI write_nid_postfix(int, const char*, std::int64_t);
@@ -63,6 +65,8 @@ static constexpr std::uint64_t NonblockingRequest = 0x8004667e;
 static constexpr std::uint64_t ReadableRequest = 0x4004667f;
 static constexpr std::uint64_t WindowSizeRequest = 0x40087468;
 static constexpr std::uint64_t AsyncRequest = 0x8004667d;
+static constexpr std::uint64_t CloseOnExecRequest = 0x20006601;
+static constexpr std::uint64_t KeepOnExecRequest = 0x20006602;
 static constexpr int SceEbadf = static_cast<int>(0x80020009u);
 static constexpr int SceEinval = static_cast<int>(0x80020016u);
 static constexpr int SceEnotsup = static_cast<int>(0x8002002du);
@@ -108,6 +112,8 @@ static void SocketsKeepTheirPath() {
     Require(sceKernelFcntl(socket, GetFlags) == SceEbadf);
     Require(sceKernelFcntl(-1, GetFlags) == SceEbadf);
     Require(sceKernelFcntl(12345, GetFlags) == SceEbadf);
+    const int named = __sys_socketex_nid_postfix("probe", 2, 1, 0);
+    Require(named >= 0 && sceKernelFcntl(named, GetFlags) == ReadWrite && close_nid_postfix(named) == 0);
 }
 
 static void FileFlagsRoundTrip() {
@@ -123,6 +129,10 @@ static void FileFlagsRoundTrip() {
     Require(fcntl_nid_postfix(file, GetDescriptorFlags) == 1);
     Require(sceKernelFcntl(file, SetDescriptorFlags, 0) == 0);
     Require(sceKernelFcntl(file, GetDescriptorFlags) == 0);
+    Require(ioctl_nid_postfix(file, CloseOnExecRequest, nullptr) == 0);
+    Require(fcntl_nid_postfix(file, GetDescriptorFlags) == 1);
+    Require(ioctl_nid_postfix(file, KeepOnExecRequest, nullptr) == 0);
+    Require(fcntl_nid_postfix(file, GetDescriptorFlags) == 0);
     Require(fcntl_nid_postfix(file, DarwinReadAhead, 1) == 0);
     Require(fcntl_nid_postfix(file, GetFlags) == (ReadWrite | ReadAheadFlag));
     Require(fcntl_nid_postfix(file, ReadAhead, -1) == 0);
@@ -160,6 +170,10 @@ static void FileFlagsRoundTrip() {
     Require(fcntl_nid_postfix(file, SetLock, &lock) == 0);
     GuestLock probe{0, 0, 0, 1, 0, 0};
     Require(fcntl_nid_postfix(file, GetLock, &probe) == 0 && probe.type == 2);
+    static GuestLock imageProbe{0, 0, 0, 1, 0, 0};
+    Require(_fcntl_nid_postfix(file, GetLock, &imageProbe) == 0 && imageProbe.type == 2);
+    Require(_fcntl_nid_postfix(file, SetDescriptorFlags, 1) == 0 && _fcntl_nid_postfix(file, GetDescriptorFlags) == 1);
+    Require(_fcntl_nid_postfix(file, SetDescriptorFlags, 0) == 0);
     lock.type = 2;
     Require(fcntl_nid_postfix(file, SetLock, &lock) == 0);
     lock.type = 7;
@@ -326,6 +340,10 @@ static void PipeFlagsRoundTrip() {
     Require(fcntl_nid_postfix(pipe[1], SetDescriptorFlags, 1) == 0);
     Require(fcntl_nid_postfix(pipe[1], GetDescriptorFlags) == 1);
     Require(fcntl_nid_postfix(pipe[0], GetDescriptorFlags) == 0);
+    Require(ioctl_nid_postfix(pipe[0], CloseOnExecRequest, nullptr) == 0);
+    Require(fcntl_nid_postfix(pipe[0], GetDescriptorFlags) == 1);
+    Require(ioctl_nid_postfix(pipe[1], KeepOnExecRequest, nullptr) == 0);
+    Require(fcntl_nid_postfix(pipe[1], GetDescriptorFlags) == 0);
 
     Require(fcntl_nid_postfix(pipe[0], SetFlags, fcntl_nid_postfix(pipe[0], GetFlags) | NonBlocking) == 0);
     Require(fcntl_nid_postfix(pipe[0], GetFlags) == (ReadOnly | NonBlocking));

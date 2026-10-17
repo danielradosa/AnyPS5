@@ -384,7 +384,7 @@ void lowerPackedAncillary(IrProgram& program, IrBuilder& builder, IrValue& ancil
     }
     std::array<IrValue*, 2> fields {};
     const auto field = [&](std::size_t index) -> IrValue& {
-        if (fields[index] == nullptr && index == 1u) fields[index] = &builder.Constant(0u);
+        if (fields[index] == nullptr && index == 1u) fields[index] = &insertBefore(program, ancillary, IrOpcode::IMul32, insertBuiltin(program, builder, ancillary, StageInputKind::Layer), insertBuiltin(program, builder, ancillary, StageInputKind::LayerExported));
         if (fields[index] == nullptr) {
             fields[index] = &insertBuiltin(program, builder, ancillary, StageInputKind::SampleId);
         }
@@ -846,6 +846,22 @@ void ConstantFolder::Fold(IrProgram& program) const {
     Fold(program, program.BlockOrder());
 }
 
+bool ConstantFolder::FoldVertexLaneBounds(IrProgram& program, std::uint32_t hostSubgroupSize, std::uint32_t spirvVersion) const {
+    if (program.Resources().stage != IrShaderStage::Vertex || hostSubgroupSize != 32u || spirvVersion < 0x00010000u || spirvVersion >= 0x00010600u) return false;
+    bool changed = false;
+    for (IrBlock* block : program.BlockOrder()) {
+        for (IrValue* value : block->Instructions()) {
+            if (value->Opcode() != IrOpcode::SelectU32 || value->ArgumentCount() != 3u) continue;
+            const auto& half = resolveArg(*value, 0);
+            auto& low = resolveArg(*value, 1);
+            if (half.Opcode() != IrOpcode::ULessThan32 || half.ArgumentCount() != 2u || !isLaneIndex(resolveArg(half, 0)) || !isImmediateU32(resolveArg(half, 1), 32u) || !isImmediate(low, IrType::U32) || !isImmediate(resolveArg(*value, 2), IrType::U32)) continue;
+            replaceWith(*value, low);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 bool ConstantFolder::ComposePackedAncillary(IrProgram& program) const {
     std::vector<IrValue*> words;
     for (IrBlock* block : program.BlockOrder()) {
@@ -859,7 +875,10 @@ bool ConstantFolder::ComposePackedAncillary(IrProgram& program) const {
     for (IrValue* word : words) {
         IrValue& primitive = insertBuiltin(program, builder, *word, StageInputKind::RasterPrimitive);
         IrValue& sample = insertBefore(program, *word, IrOpcode::ShiftLeftLogical32, insertBuiltin(program, builder, *word, StageInputKind::SampleId), builder.Constant(8u));
-        word->ReplaceAllUsesWith(&insertBefore(program, *word, IrOpcode::BitwiseOr32, primitive, sample));
+        IrValue& exportedLayer = insertBefore(program, *word, IrOpcode::IMul32, insertBuiltin(program, builder, *word, StageInputKind::Layer), insertBuiltin(program, builder, *word, StageInputKind::LayerExported));
+        IrValue& layer = insertBefore(program, *word, IrOpcode::ShiftLeftLogical32, exportedLayer, builder.Constant(16u));
+        IrValue& fields = insertBefore(program, *word, IrOpcode::BitwiseOr32, sample, layer);
+        word->ReplaceAllUsesWith(&insertBefore(program, *word, IrOpcode::BitwiseOr32, primitive, fields));
     }
     return !words.empty();
 }

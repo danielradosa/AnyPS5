@@ -187,6 +187,10 @@ int APS5_VABI _Cnd_init_nid_postfix(void** handle) {
     return threadSuccess;
 }
 
+int APS5_VABI _Cnd_init_with_default_name_override_nid_postfix(void** handle, const char*) {
+    return _Cnd_init_nid_postfix(handle);
+}
+
 void APS5_VABI _Cnd_destroy_nid_postfix(void** handle) {
     if (!handle)
         throw std::invalid_argument("_Cnd_destroy: null condition handle pointer");
@@ -219,11 +223,6 @@ int APS5_VABI _Cnd_wait_nid_postfix(void** conditionHandle, void** mutexHandle) 
     lock.release();
     mutex->owner.store(std::this_thread::get_id(), std::memory_order_release);
     mutex->count = 1;
-    return threadSuccess;
-}
-
-int APS5_VABI _Cnd_signal_nid_postfix(void** handle) {
-    ResolveCondition(handle, "_Cnd_signal")->native.notify_one();
     return threadSuccess;
 }
 
@@ -275,6 +274,10 @@ int SignalCondition_nid_no_patch(void** handle) {
     return threadSuccess;
 }
 
+unsigned APS5_VABI _ZNSt6thread20hardware_concurrencyEv_nid_postfix() {
+    return std::thread::hardware_concurrency();
+}
+
 int APS5_VABI _Thrd_sleep_nid_postfix(const Xtime* target, Xtime*) {
     if (!target)
         APS5_INVALID_ARG_EX;
@@ -299,4 +302,10 @@ int APS5_VABI _Thrd_sleep_nid_postfix(const Xtime* target, Xtime*) {
     }
 }
 
+
+int APS5_VABI _Cnd_signal_nid_postfix(void** handle) {
+    return SignalCondition_nid_no_patch(handle);
 }
+
+}
+

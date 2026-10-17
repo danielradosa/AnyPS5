@@ -106,7 +106,7 @@ int main() {
     Check(sceKernelFcntl(socket, SetFl, 0) == 0);
     Check(sceKernelFcntl(socket, GetFl, 0) == SCE_KERNEL_O_RDWR);
     Check(sceKernelFcntl(socket, SetFl, SCE_KERNEL_O_APPEND) == SCE_KERNEL_ERROR_EOPNOTSUPP);
-    Check(sceKernelFcntl(socket, GetFd, 0) == SCE_KERNEL_ERROR_EINVAL);
+    Check(sceKernelFcntl(socket, GetFd, 0) == 0);
     Check(close_nid_postfix(socket) == 0);
     Check(sceKernelFcntl(socket, GetFl, 0) == SCE_KERNEL_ERROR_EBADF);
 

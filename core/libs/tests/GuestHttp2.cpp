@@ -169,6 +169,34 @@ int main() {
     result = {};
     Require(sceHttp2WaitAsync(request, &result, nullptr, nullptr) == 0 && result.req_id == request && result.result == NetworkError);
     Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, nullptr); }));
+    Require(sceHttp2SendRequestAsync(request, nullptr, 0, nullptr, nullptr) == 0);
+    std::uint32_t wait_timeout = 2000000;
+    Require(sceHttp2WaitAsync(request, &result, &wait_timeout, nullptr) == 0);
+    Require(result.req_id == request && result.result == static_cast<int>(0x80436063));
+    Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, nullptr); }));
+    const int invalidRequests[] = {0, -1, 0x7fffffff, context, tmpl, box, doomedRequest, doomedTemplateRequest, doomedContextRequest};
+    for (const int invalid : invalidRequests) {
+        Require(sceHttp2SendRequestAsync(invalid, nullptr, 0, nullptr, nullptr) == InvalidId);
+        Require(sceHttp2WaitAsync(invalid, &result, nullptr, nullptr) == InvalidId);
+    }
+    const int independent = sceHttp2CreateRequestWithURL(tmpl, "GET", "https://example.com/", 0);
+    Require(independent > 0 && independent != request);
+    Require(sceHttp2SendRequestAsync(request, nullptr, 0, nullptr, nullptr) == 0);
+    Require(sceHttp2SendRequestAsync(independent, nullptr, 0, nullptr, nullptr) == 0);
+    Require(sceHttp2SendRequestAsync(request, nullptr, 0, nullptr, nullptr) == 0);
+    Require(Throws([&] { sceHttp2SendRequestAsync(request, nullptr, 0, nullptr, &tag); }));
+    Require(sceHttp2WaitAsync(independent, &result, nullptr, nullptr) == 0);
+    Require(result.req_id == independent && result.result == static_cast<int>(0x80436063));
+    Require(Throws([&] { sceHttp2WaitAsync(independent, &result, nullptr, nullptr); }));
+    for (int i = 0; i < 2; ++i) {
+        Require(sceHttp2WaitAsync(request, &result, nullptr, nullptr) == 0);
+        Require(result.req_id == request && result.result == static_cast<int>(0x80436063));
+    }
+    Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, nullptr); }));
+    Require(sceHttp2SendRequestAsync(independent, nullptr, 0, nullptr, nullptr) == 0);
+    Require(sceHttp2DeleteRequest(independent) == 0);
+    Require(sceHttp2SendRequestAsync(independent, nullptr, 0, nullptr, nullptr) == InvalidId);
+    Require(sceHttp2WaitAsync(independent, &result, nullptr, nullptr) == InvalidId);
     Require(sceKernelDeleteUserEvent(eq, request) == 0);
     Require(sceHttp2SendRequestAsync(request, nullptr, 0, &option, nullptr) == KernelNoEntry);
     Require(Throws([&] { sceHttp2WaitAsync(request, &result, nullptr, nullptr); }));

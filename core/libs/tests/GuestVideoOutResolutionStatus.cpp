@@ -56,7 +56,7 @@ static bool UnpegRejects(int handle) {
 static void RequireOutputUnchanged(int handle, const VideoOutOutputStatus& before) {
     VideoOutOutputStatus after{};
     Require(sceVideoOutGetOutputStatus(handle, &after) == 0);
-    Require(after.flags == 0 && after.refreshRate == before.refreshRate && after.resolution == before.resolution);
+    Require(after.flags == before.flags && after.dynamicRange == before.dynamicRange && after.refreshRate == before.refreshRate && after.resolution == before.resolution);
 }
 
 int main() {

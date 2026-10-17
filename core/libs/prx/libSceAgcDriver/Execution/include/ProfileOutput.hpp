@@ -139,6 +139,8 @@ private:
 };
 
 inline std::atomic<ProfileOutput*> createdProfileOutput{nullptr};
+// Set before the output stops: a profile line printed later (a host buffer released during teardown) is dropped.
+inline std::atomic<bool> profileOutputStopped{false};
 
 inline ProfileOutput& ProfileOutput_nid_no_patch() {
     static ProfileOutput output([](std::string_view text) {
@@ -150,11 +152,13 @@ inline ProfileOutput& ProfileOutput_nid_no_patch() {
 }
 
 inline void StopProfileOutput_nid_no_patch() {
+    profileOutputStopped.store(true, std::memory_order_release);
     if (auto* output = createdProfileOutput.load(std::memory_order_acquire)) output->Stop();
 }
 
 template<typename... TArgs>
 void ProfilePrint_nid_no_patch(const char* format, TArgs... args) {
+    if (profileOutputStopped.load(std::memory_order_acquire)) return;
     ProfileOutput_nid_no_patch().Print(format, args...);
 }
 

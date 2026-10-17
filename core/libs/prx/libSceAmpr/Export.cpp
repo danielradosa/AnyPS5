@@ -7,8 +7,6 @@
 #include "prx/libc/include/SonyCrt.hpp"
 #include "prx/libc/include/exceptions/Runtime.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
-#include "prx/libkernel/Pthread/include/Cond.hpp"
-#include "prx/libkernel/Pthread/include/Mutex.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 #include <algorithm>
 #include <array>
@@ -17,6 +15,7 @@
 #include <limits>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 static constexpr int SCE_AMPR_ERROR_BUFFER_FULL = 0x8002001C;
@@ -24,8 +23,6 @@ static constexpr int SCE_KERNEL_ERROR_EINVAL = 0x80020016;
 static constexpr int SCE_KERNEL_ERROR_EPERM = 0x80020001;
 static constexpr int SCE_KERNEL_ERROR_ESRCH = 0x80020003;
 static constexpr int SCE_KERNEL_ERROR_EBUSY = 0x80020010;
-static constexpr int SCE_KERNEL_ERROR_ENOMEM = 0x8002000C;
-static constexpr int SCE_KERNEL_ERROR_EDEADLK = 0x8002000B;
 
 static std::uint32_t RemainingCommandBytes(const Apr::CommandBufferObject& buffer) {
     if (buffer.offset > buffer.size) throw std::invalid_argument("AMPR: command buffer offset exceeds bound memory");
@@ -230,18 +227,17 @@ static int RecordWriteAddressFromCounterPair(Apr::CommandBufferObject* buffer, v
     return AppendCommand(buffer, Apr::Opcode::WriteAddressFromCounterPair, Apr::WriteAddressFromCounterCommand{{}, reinterpret_cast<std::uint64_t>(address), counter, counter + 1u});
 }
 
-struct Xtime {
-    std::int64_t sec;
-    std::int64_t nsec;
-};
-
 static constexpr int ThrdSuccess = 0;
-static constexpr int ThrdError = 4;
 static constexpr int ThrdNomem = 1;
+static constexpr int ThrdTimedout = 2;
 static constexpr int ThrdBusy = 3;
-static constexpr int GuestClockRealtime = 0;
-static constexpr std::int64_t NanosPerSecond = 1000000000;
-static constexpr std::int64_t LongestSleepSeconds = 86400;
+static constexpr int ThrdError = 4;
+
+static constexpr int CppDeviceOrResourceBusy = 0;
+static constexpr int CppInvalidArgument = 1;
+static constexpr int CppResourceUnavailableTryAgain = 6;
+
+static constexpr int MtxPlain = 0x1;
 
 static std::atomic_flag sharedPtrSpinLock;
 
@@ -257,37 +253,32 @@ static_assert(sizeof(AmmUsageStatsData) == 0x18);
 static constexpr std::uint16_t AmmPageTablePoolEntries = 512;
 static constexpr std::uint32_t AmmRingIdleFlags = 0x7;
 
+struct GuestPad {
+    unsigned (APS5_VABI* const* vtable)(GuestPad*);
+    void* condition;
+    void* mutex;
+    bool started;
+};
+
+static_assert(offsetof(GuestPad, condition) == 0x8 && offsetof(GuestPad, mutex) == 0x10 && offsetof(GuestPad, started) == 0x18 && sizeof(GuestPad) == 0x20);
+
 extern "C" {
+int APS5_VABI pthread_create_nid_postfix(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg);
 int APS5_VABI pthread_join_nid_postfix(Pthread thread, void** value);
 Pthread APS5_VABI scePthreadSelf();
 void APS5_VABI sceKernelDebugRaiseException(int code, int argument);
-int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg, const char* name);
-[[noreturn]] void APS5_VABI _ZSt14_Throw_C_errori_nid_postfix(int code);
-[[noreturn]] void APS5_VABI __cxa_pure_virtual_nid_postfix();
+int APS5_VABI _Mtx_init_nid_postfix(void** handle, int type);
+void APS5_VABI _Mtx_destroy_nid_postfix(void** handle);
+int APS5_VABI _Mtx_lock_nid_postfix(void** handle);
+int APS5_VABI _Mtx_unlock_nid_postfix(void** handle);
+int APS5_VABI _Cnd_init_nid_postfix(void** handle);
+void APS5_VABI _Cnd_destroy_nid_postfix(void** handle);
+int APS5_VABI _Cnd_wait_nid_postfix(void** condition, void** mutex);
+int APS5_VABI _Cnd_signal_nid_postfix(void** handle);
 int APS5_VABI wcsrtombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t** source, std::size_t limit, void* state);
 int APS5_VABI _Cnd_init_nid_postfix(void** handle);
 int SignalCondition_nid_no_patch(void** handle);
 [[noreturn]] void ThrowCppError_nid_no_patch(int code);
-}
-
-static KernelTimespec XtimeDeadline(const Xtime& time) {
-    constexpr auto largest = std::numeric_limits<std::int64_t>::max();
-    constexpr auto smallest = std::numeric_limits<std::int64_t>::min();
-    const auto carry = time.nsec / NanosPerSecond;
-    auto nanos = time.nsec % NanosPerSecond;
-    auto seconds = time.sec;
-    if ((carry > 0 && seconds > largest - carry) || (carry < 0 && seconds < smallest - carry)) throw std::overflow_error("_Thrd_sleep: xtime seconds overflow");
-    seconds += carry;
-    if (nanos < 0) {
-        if (seconds == smallest) throw std::overflow_error("_Thrd_sleep: xtime seconds overflow");
-        nanos += NanosPerSecond;
-        --seconds;
-    }
-    return {seconds, nanos};
-}
-
-static int ThrdInitResult(int result) {
-    return result == 0 ? ThrdSuccess : result == SCE_KERNEL_ERROR_ENOMEM ? ThrdNomem : ThrdError;
 }
 
 static constexpr int DefaultUnexpectedException = static_cast<int>(0xA0020009);
@@ -304,49 +295,25 @@ static bool APS5_VABI FunctionTypeInfoCatch_nid_no_patch(const std::type_info*, 
     return false;
 }
 
-struct GuestPad {
-    const void* vtable;
-    PthreadCond cond;
-    PthreadMutex mutex;
-    bool started;
-};
-
-static_assert(offsetof(GuestPad, cond) == 0x8 && offsetof(GuestPad, mutex) == 0x10 && offsetof(GuestPad, started) == 0x18 && sizeof(GuestPad) == 0x20);
-
-static constexpr char PadName[] = "SceLibc_Thr";
-static const __cxxabiv1::__class_type_info PadTypeInfo{"St4_Pad"};
-static const void* const PadVtable[] {nullptr, &PadTypeInfo, reinterpret_cast<const void*>(__cxa_pure_virtual_nid_postfix)};
-
-static int PadMutexInit(PthreadMutex* mutex) {
-    *mutex = nullptr;
-    PthreadMutexattr attributes = nullptr;
-    if (const int result = scePthreadMutexattrInit(&attributes)) return ThrdInitResult(result);
-    const int result = scePthreadMutexInit(mutex, &attributes, PadName);
-    const int destroyed = scePthreadMutexattrDestroy(&attributes);
-    if (result != 0) return ThrdInitResult(result);
-    if (destroyed != 0) {
-        scePthreadMutexDestroy(mutex);
-        return ThrdError;
+static void RequireThrd(int result, const char* what) {
+    switch (result) {
+    case ThrdSuccess:
+        return;
+    case ThrdNomem:
+    case ThrdTimedout:
+        ThrowCppError_nid_no_patch(CppResourceUnavailableTryAgain);
+    case ThrdBusy:
+        ThrowCppError_nid_no_patch(CppDeviceOrResourceBusy);
+    case ThrdError:
+        ThrowCppError_nid_no_patch(CppInvalidArgument);
     }
-    return ThrdSuccess;
+    throw std::runtime_error(std::string(what) + " failed with " + std::to_string(result));
 }
 
-static int PadCondInit(PthreadCond* cond) {
-    *cond = nullptr;
-    return ThrdInitResult(scePthreadCondInit(cond, nullptr, PadName));
-}
-
-static int PadLock(PthreadMutex* mutex) {
-    const int result = scePthreadMutexLock(mutex);
-    return result == 0 ? ThrdSuccess : result == SCE_KERNEL_ERROR_EDEADLK ? ThrdBusy : ThrdError;
-}
-
-static void* APS5_VABI PadCall_nid_no_patch(void* argument) {
+static void* APS5_VABI PadEntry_nid_no_patch(void* argument) {
     auto* pad = static_cast<GuestPad*>(argument);
-    void (APS5_VABI *go)(GuestPad*);
-    std::memcpy(&go, pad->vtable, sizeof(go));
-    go(pad);
-    return nullptr;
+    const auto go = pad->vtable[0];
+    return reinterpret_cast<void*>(static_cast<std::uintptr_t>(go(pad)));
 }
 
 static std::mutex standardStreamLock;
@@ -967,7 +934,6 @@ void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* stre
 [[noreturn]] void APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(int code) {
     ThrowCppError_nid_no_patch(code);
 }
-
 int APS5_VABI _Thrd_join_nid_postfix(Pthread thread, int* code) {
     void* result = nullptr;
     if (pthread_join_nid_postfix(thread, &result) != 0) return ThrdError;
@@ -975,53 +941,50 @@ int APS5_VABI _Thrd_join_nid_postfix(Pthread thread, int* code) {
     return ThrdSuccess;
 }
 
-void APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(GuestPad* self) {
-    if (!self) throw std::invalid_argument("_Pad::_Release: null pad");
-    if (const int result = PadLock(&self->mutex)) _ZSt14_Throw_C_errori_nid_postfix(result);
-    self->started = true;
-    scePthreadCondSignal(&self->cond);
-    scePthreadMutexUnlock(&self->mutex);
+void APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(GuestPad* pad) {
+    if (!pad) APS5_INVALID_ARG_EX;
+    RequireThrd(_Mtx_lock_nid_postfix(&pad->mutex), "_Pad::_Release: _Mtx_lock");
+    pad->started = true;
+    RequireThrd(_Cnd_signal_nid_postfix(&pad->condition), "_Pad::_Release: _Cnd_signal");
+    RequireThrd(_Mtx_unlock_nid_postfix(&pad->mutex), "_Pad::_Release: _Mtx_unlock");
 }
 
-void APS5_VABI _ZNSt4_PadC2Ev_nid_postfix(GuestPad* self) {
-    if (!self) throw std::invalid_argument("_Pad constructor: null pad");
-    self->vtable = &PadVtable[2];
-    if (const int result = PadCondInit(&self->cond)) _ZSt14_Throw_C_errori_nid_postfix(result);
-    if (const int result = PadMutexInit(&self->mutex)) {
-        scePthreadCondDestroy(&self->cond);
-        _ZSt14_Throw_C_errori_nid_postfix(result);
+void APS5_VABI _ZNSt4_PadC2Ev_nid_postfix(GuestPad* pad) {
+    if (!pad) APS5_INVALID_ARG_EX;
+    RequireThrd(_Cnd_init_nid_postfix(&pad->condition), "_Pad::_Pad: _Cnd_init");
+    const int created = _Mtx_init_nid_postfix(&pad->mutex, MtxPlain);
+    if (created != ThrdSuccess) {
+        _Cnd_destroy_nid_postfix(&pad->condition);
+        RequireThrd(created, "_Pad::_Pad: _Mtx_init");
     }
-    self->started = false;
-    if (const int result = PadLock(&self->mutex)) {
-        scePthreadMutexDestroy(&self->mutex);
-        scePthreadCondDestroy(&self->cond);
-        _ZSt14_Throw_C_errori_nid_postfix(result);
+    pad->started = false;
+    const int locked = _Mtx_lock_nid_postfix(&pad->mutex);
+    if (locked != ThrdSuccess) {
+        _Mtx_destroy_nid_postfix(&pad->mutex);
+        _Cnd_destroy_nid_postfix(&pad->condition);
+        RequireThrd(locked, "_Pad::_Pad: _Mtx_lock");
     }
 }
 
-void APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(GuestPad* self) {
-    if (!self) throw std::invalid_argument("_Pad destructor: null pad");
-    self->vtable = &PadVtable[2];
-    scePthreadMutexUnlock(&self->mutex);
-    scePthreadMutexDestroy(&self->mutex);
-    scePthreadCondDestroy(&self->cond);
+void APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(GuestPad* pad) {
+    if (!pad) APS5_INVALID_ARG_EX;
+    RequireThrd(_Mtx_unlock_nid_postfix(&pad->mutex), "_Pad::~_Pad: _Mtx_unlock");
+    _Mtx_destroy_nid_postfix(&pad->mutex);
+    _Cnd_destroy_nid_postfix(&pad->condition);
 }
 
 Pthread APS5_VABI _Thrd_id_nid_postfix(void) {
     return scePthreadSelf();
 }
 
-void APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(GuestPad* self, Pthread* thread) {
-    if (!self) throw std::invalid_argument("_Pad::_Launch: null pad");
-    if (scePthreadCreate(thread, nullptr, PadCall_nid_no_patch, self, PadName) != 0) _ZSt14_Throw_C_errori_nid_postfix(ThrdNomem);
-    while (!self->started) scePthreadCondWait(&self->cond, &self->mutex);
+void APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(GuestPad* pad, Pthread* thread) {
+    if (!pad || !thread) APS5_INVALID_ARG_EX;
+    const int created = pthread_create_nid_postfix(thread, nullptr, PadEntry_nid_no_patch, pad);
+    if (created != 0) ThrowCppError_nid_no_patch(CppResourceUnavailableTryAgain);
+    while (!pad->started) RequireThrd(_Cnd_wait_nid_postfix(&pad->condition, &pad->mutex), "_Pad::_Launch: _Cnd_wait");
 }
 
 std::uint64_t _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;
-
-int APS5_VABI _Cnd_signal_nid_postfix(void** handle) {
-    return SignalCondition_nid_no_patch(handle);
-}
 
 void APS5_VABI _Unlock_shared_ptr_spin_lock_nid_postfix(void) {
     sharedPtrSpinLock.clear(std::memory_order_release);
@@ -1056,23 +1019,6 @@ int APS5_VABI _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE7_Get
 
 void APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix(void) {
     while (sharedPtrSpinLock.test_and_set(std::memory_order_acquire)) std::this_thread::yield();
-}
-
-int APS5_VABI _Thrd_sleep_nid_postfix(const Xtime* target, Xtime*) {
-    if (!target) APS5_INVALID_ARG_EX;
-    const auto deadline = XtimeDeadline(*target);
-    for (;;) {
-        KernelTimespec now{};
-        if (clock_gettime_nid_postfix(GuestClockRealtime, &now) != 0) throw std::runtime_error("_Thrd_sleep: reading the realtime clock failed");
-        if (now.tv_sec > deadline.tv_sec || (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) return 0;
-        KernelTimespec remaining{deadline.tv_sec - now.tv_sec, deadline.tv_nsec - now.tv_nsec};
-        if (remaining.tv_nsec < 0) {
-            remaining.tv_nsec += NanosPerSecond;
-            --remaining.tv_sec;
-        }
-        remaining.tv_sec = std::min(remaining.tv_sec, LongestSleepSeconds);
-        if (nanosleep_nid_postfix(&remaining, nullptr) != 0) throw std::runtime_error("_Thrd_sleep: nanosleep failed");
-    }
 }
 
 int APS5_VABI wcstombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t* source, std::size_t limit) {

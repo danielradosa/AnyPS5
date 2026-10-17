@@ -1,3 +1,4 @@
+#include "prx/libc/include/MallocManagedSize.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <algorithm>
 #include <cstdint>
@@ -124,17 +125,6 @@ bool InsideAllocation(const Arena& arena, std::uintptr_t start, std::size_t size
     return found->second.used && size <= found->second.end - start && start - found->first <= found->second.end - found->first - size;
 }
 
-struct MallocManagedSize {
-    std::uint16_t size;
-    std::uint16_t version;
-    std::uint32_t reserved;
-    std::size_t maxSystemSize;
-    std::size_t currentSystemSize;
-    std::size_t maxInuseSize;
-    std::size_t currentInuseSize;
-};
-static_assert(sizeof(MallocManagedSize) == 0x28);
-
 int FillStats(void* handle, MallocManagedSize* stats) {
     if (!stats || stats->size < sizeof(MallocManagedSize)) return 22;
     std::lock_guard lock(arenaMutex);
@@ -259,6 +249,10 @@ void* APS5_VABI sceLibcMspaceMemalign_nid_postfix(void* handle, std::size_t alig
     }
     std::lock_guard lock(arenaMutex);
     return Allocate(Find(handle), size, alignment);
+}
+
+void* APS5_VABI sceLibcMspaceAlignedAlloc_nid_postfix(void* handle, std::size_t alignment, std::size_t size) {
+    return sceLibcMspaceMemalign_nid_postfix(handle, alignment, size);
 }
 
 void* APS5_VABI sceLibcMspaceReallocalign_nid_postfix(void* handle, void* pointer, std::size_t size, std::size_t alignment) {

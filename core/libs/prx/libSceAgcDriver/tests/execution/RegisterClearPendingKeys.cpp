@@ -202,13 +202,15 @@ int Run(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     Require(!AgcDriver::Graphics::PendingKeysFill(keyAddress, KeyBytes).has_value(), "the memo proved a 0x20 fill that a kernel's key store follows");
     Require(!image->FillClear(clear, StorageTexture::WholeImage, refusal, true) && refusal != nullptr && std::strcmp(refusal, "keys pending") == 0, "a clear went ahead over a kernel's pending key store after the 0x20 fill");
     device.WaitIdle();
-    // A key read drops the memo entry of the fill that has landed, so the next fill has none.
+    // A key read drops the memo entry of the fill that has landed, so the next fill has none: the
+    // value the recorder keeps for that fill proves its keys instead.
     AgcDriver::Graphics::ReadDccKeys(keyAddress, SurfaceBytes);
 
     Require(fillRegisterKeys(false), "the unmemoized 0x20 key fill was not recorded");
     refusal = nullptr;
-    Require(!AgcDriver::Graphics::PendingKeysFill(keyAddress, KeyBytes).has_value(), "the memo proved a 0x20 fill it never noted");
-    Require(!image->FillClear(clear, StorageTexture::WholeImage, refusal, true) && refusal != nullptr && std::strcmp(refusal, "keys pending") == 0, "a clear went ahead over a 0x20 fill the memo never noted");
+    Require(AgcDriver::Graphics::PendingKeysFill(keyAddress, KeyBytes) == DccKeys::ClearRegister, "the recorded value of a 0x20 fill the memo never noted did not prove its keys");
+    if (!image->FillClear(clear, StorageTexture::WholeImage, refusal, true)) Require(false, std::string("the clear over a 0x20 fill proved by its recorded value was refused: ") + (refusal != nullptr ? refusal : "?"));
+    Require(recorder->PendingWriteOverlaps(keyAddress, KeyBytes), "the clear over a 0x20 fill proved by its recorded value waited for it");
     device.WaitIdle();
 
     // A 0x20 fill over two surfaces' keys: the uncompressed store over the first keeps the second's

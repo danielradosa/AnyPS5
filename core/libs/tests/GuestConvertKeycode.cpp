@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <stdexcept>
 
 extern "C" {
@@ -11,6 +12,7 @@ int APS5_VABI sceConvertKeycodeGetCharacter(uint16_t keycode, uint32_t status, i
 
 namespace {
 constexpr int InvalidAddress = static_cast<int>(0x80bc0031u);
+constexpr int InvalidUserId = static_cast<int>(0x80bc0010u);
 constexpr uint32_t LeftCtrl = 0x01u << 8;
 constexpr uint32_t LeftShift = 0x02u << 8;
 constexpr uint32_t RightShift = 0x20u << 8;
@@ -42,8 +44,18 @@ bool Throws(uint32_t status, int32_t type) {
 }
 
 int main() {
+    Require(sceConvertKeycodeGetImeKeyboardType(0, nullptr) == InvalidAddress);
+    Require(sceConvertKeycodeGetImeKeyboardType(-1, nullptr) == InvalidAddress);
+
     uint32_t type = 0xffffffffu;
+    Require(sceConvertKeycodeGetImeKeyboardType(-1, &type) == InvalidUserId);
+    Require(type == 0xffffffffu);
+    Require(sceConvertKeycodeGetImeKeyboardType(1, &type) == 0);
+    Require(type == 0);
+
+    type = 0xffffffffu;
     Require(sceConvertKeycodeGetImeKeyboardType(0, &type) == 0);
+    Require(type == 0);
     Require(Character(0x04, 0, static_cast<int32_t>(type)) == u'a');
     Require(Character(0x1e, LeftShift, static_cast<int32_t>(type)) == u'!');
 
@@ -81,5 +93,15 @@ int main() {
     Require(Throws(0, 5));
     Require(Throws(0, 33));
     Require(Throws(0, -1));
+
+    for (std::uint32_t state : {0u, 0x4000000u}) {
+        char16_t character[3] = {u'?', 0, 0};
+        Require(sceConvertKeycodeGetCharacter(0x04, state, 0, character) == 0);
+        Require(character[0] == u'a');
+        Require(sceConvertKeycodeGetCharacter(0x1E, state, 0, character) == 0);
+        Require(character[0] == u'1');
+        Require(sceConvertKeycodeGetCharacter(0x3A, state, 0, character) == 0);
+        Require(character[0] == 0);
+    }
     return 0;
 }

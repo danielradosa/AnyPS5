@@ -2,8 +2,11 @@
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_BUFFERPOOL_HPP
 
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -55,6 +58,18 @@ class BufferPool {
 public:
     explicit BufferPool(const Context& context);
     static VkDeviceSize DeviceBudget(const VkPhysicalDeviceMemoryProperties& memory);
+    // How many bytes of idle device buffers the device tier may hold while the device-local heap uses `usage` of its
+    // VK_EXT_memory_budget `budget`: what it holds now plus the room left below `budget - margin` (less when the
+    // heap is over that line). Past the budget Windows moves allocations to system memory, and every GPU access to
+    // them crosses PCIe (the hub's storage write-backs ran 30x slower), so idle buffers go first.
+    static VkDeviceSize DeviceRetainAllowance(VkDeviceSize retained, VkDeviceSize usage, VkDeviceSize budget, VkDeviceSize margin);
+    // APS5_VRAM_MARGIN_MIB (default 384, 0 = no margin).
+    static VkDeviceSize VramMargin();
+    // APS5_VRAM_DRAW_INPUTS=1: kept vertex and index snapshots are made in device-local host-visible memory, at most
+    // APS5_VRAM_DRAW_INPUTS_MIB (default 256) live, and the pool does not retain such buffers. 0 = off.
+    static std::size_t VramDrawInputCap();
+    static bool VramDrawInputFits(std::size_t live, std::size_t bytes, std::size_t cap, VkDeviceSize usage, VkDeviceSize budget, VkDeviceSize margin);
+    static inline std::atomic<std::size_t> VramDrawInputBytes{0};
     ~BufferPool();
     BufferPool(const BufferPool&) = delete;
     BufferPool& operator=(const BufferPool&) = delete;
@@ -120,6 +135,9 @@ private:
     static std::size_t NextCapacity(std::size_t capacity);
     VkDeviceSize destroy(const BufferAllocation& allocation) noexcept;
     VkDeviceSize trim();
+    // Re-reads the heap budget (at most every 100 ms, under `mutex`) into deviceAllowance; APS5_VRAM_MARGIN_MIB
+    // (default 384, 0 = off) is the margin kept below the budget.
+    void refreshDeviceAllowance();
     // Moves the tier's least recently used slot (the oldest front of its lists) to `evicted`; the
     // caller destroys those after releasing the mutex, so builds taking buffers on other threads
     // do not wait behind the Vulkan destroy calls. Nothing changes when the vector cannot grow.
@@ -139,6 +157,11 @@ private:
     Tier largeTier;
     Tier deviceTier;
     std::uint64_t clock = 0;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    PFN_vkGetPhysicalDeviceMemoryProperties2 memoryProperties2 = nullptr;
+    std::optional<std::uint32_t> deviceHeap;
+    std::chrono::steady_clock::time_point allowanceChecked{};
+    VkDeviceSize deviceAllowance = std::numeric_limits<VkDeviceSize>::max();
     std::mutex slabMutex;
     std::unordered_map<std::uint64_t, Slab> slabs;
     std::unordered_map<VkDeviceMemory, std::unique_ptr<SlabBlock>> slabBlocks;

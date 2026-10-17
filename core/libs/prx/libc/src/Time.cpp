@@ -402,9 +402,21 @@ std::size_t formatGuestTime(char* destination, std::size_t size, const char* for
     *buffer.cursor = '\0';
     return static_cast<std::size_t>(buffer.cursor - destination);
 }
+
+char** HostZoneNames() {
+#ifdef _WIN32
+    _tzset();
+    return _tzname;
+#else
+    ::tzset();
+    return ::tzname;
+#endif
+}
 }
 
 extern "C" {
+
+char* tzname_nid_postfix[2] = {HostZoneNames()[0], HostZoneNames()[1]};
 
 GuestTm* APS5_VABI localtime_s_nid_postfix(const int64_t* timer, GuestTm* result);
 GuestTm* APS5_VABI gmtime_s_nid_postfix(const int64_t* timer, GuestTm* result);
@@ -413,11 +425,9 @@ std::size_t APS5_VABI mbsrtowcs_nid_postfix(std::uint16_t* destination, const ch
 int APS5_VABI ___mb_cur_max_nid_postfix();
 
 void APS5_VABI tzset_nid_postfix(void) {
-#ifdef _WIN32
-    _tzset();
-#else
-    ::tzset();
-#endif
+    char** names = HostZoneNames();
+    tzname_nid_postfix[0] = names[0];
+    tzname_nid_postfix[1] = names[1];
 }
 
 int64_t APS5_VABI libc_time_nid_postfix(int64_t* timer) {
@@ -441,6 +451,20 @@ int64_t APS5_VABI _Xtime_get_ticks_nid_postfix() {
     clock_gettime(CLOCK_REALTIME, &now);
     return static_cast<int64_t>(now.tv_sec) * 1000000 + now.tv_nsec / 1000;
 #endif
+}
+
+int APS5_VABI timespec_get_nid_postfix(timespec* ts, int base) {
+    if (ts == nullptr || base != TIME_UTC) return 0;
+#ifdef _WIN32
+    FILETIME ft{};
+    GetSystemTimePreciseAsFileTime(&ft);
+    const uint64_t hundredNs = ((static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime) - 116444736000000000ULL;
+    ts->tv_sec = static_cast<decltype(ts->tv_sec)>(hundredNs / 10000000ULL);
+    ts->tv_nsec = static_cast<decltype(ts->tv_nsec)>((hundredNs % 10000000ULL) * 100ULL);
+#else
+    if (clock_gettime(CLOCK_REALTIME, ts) != 0) return 0;
+#endif
+    return TIME_UTC;
 }
 
 double APS5_VABI libc_difftime_nid_postfix(int64_t time1, int64_t time0) {
@@ -469,13 +493,17 @@ GuestTm* APS5_VABI localtime_nid_postfix(const int64_t* timer) {
 GuestTm* APS5_VABI localtime_s_nid_postfix(const int64_t* timer, GuestTm* result) {
     if (timer == nullptr || result == nullptr) return nullptr;
     std::tm host{};
+    const int callerError = errno;
 #ifdef _WIN32
     const std::int64_t cycles = *timer >= 0 && *timer <= HOST_LAST_SECOND ? 0 : calendarCycles(*timer, CALENDAR_CYCLE_SECONDS);
     const std::time_t t = static_cast<std::time_t>(*timer - cycles * CALENDAR_CYCLE_SECONDS);
-    if (localtime_s(&host, &t) != 0) return nullptr;
+    if (localtime_s(&host, &t) != 0) {
+        errno = callerError;
+        return nullptr;
+    }
     const std::int64_t year = host.tm_year + cycles * CALENDAR_CYCLE_YEARS;
     if (year < std::numeric_limits<int>::min() || year > std::numeric_limits<int>::max()) {
-        errno = EINVAL;
+        errno = callerError;
         return nullptr;
     }
     host.tm_year = static_cast<int>(year);
@@ -489,7 +517,10 @@ GuestTm* APS5_VABI localtime_s_nid_postfix(const int64_t* timer, GuestTm* result
     result->tm_zone = _tzname[daylight ? 1 : 0];
 #else
     const std::time_t t = static_cast<std::time_t>(*timer);
-    if (localtime_r(&t, &host) == nullptr) return nullptr;
+    if (localtime_r(&t, &host) == nullptr) {
+        errno = callerError;
+        return nullptr;
+    }
     copyCalendarFields(host, *result);
     result->tm_gmtoff = host.tm_gmtoff;
     result->tm_zone = host.tm_zone;

@@ -3,6 +3,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
@@ -200,6 +201,9 @@ void Run(AgcDriver::VulkanDevice& device, std::uint8_t* texels, bool tracked) {
     Require(StorageTexture::FindPending(surface, LayerBytes) != nullptr, "the store into A left no pending image");
     Load(device, texels, 0);
     RequireOutput(0x11111111u, 0x11111111u, "B's layer 0 after A's first store");
+    const bool shadowed = tracked && AgcDriver::GuestMemory::Watched(surface, BlockBytes) && AgcDriver::Graphics::UnitShadowEnabled() && std::getenv("APS5_NO_LAYER_SHADOW") == nullptr;
+    // B's upload read A's results from the unit shadow: nothing was published into guest memory.
+    if (shadowed && std::getenv("APS5_NO_UPLOAD_SHADOW") == nullptr) Require(reinterpret_cast<const std::uint32_t*>(texels)[0] == Initial0, "B's upload published A's shadowed results into guest memory");
     // With B cached, A's next results reach B's layer 0 through A's store, then B's refresh: on the device.
     Store(device, texels, 0x22222222u);
     Require(StorageTexture::FindPending(surface, LayerBytes) != nullptr, "the second store into A left no pending image");
@@ -212,6 +216,13 @@ void Run(AgcDriver::VulkanDevice& device, std::uint8_t* texels, bool tracked) {
     else Require(StorageTexture::LayerCopies() == copies + 1, "B's refresh read layer 0 back from guest memory instead of copying A's stored image");
     Load(device, texels, 1);
     RequireOutput(Initial1, Initial1, "B's layer 1 after the layer copy");
+    if (shadowed) {
+        // A's second store went into the import's unit shadow (B took the layer on the device): the
+        // guest bytes get it only when a host-facing consumer publishes.
+        Require(AgcDriver::Graphics::AnyShadowedOverlaps(surface, LayerBytes), "A's linear store did not go into the unit shadow");
+        Require(reinterpret_cast<const std::uint32_t*>(texels)[0] != 0x22222222u, "A's linear store reached guest memory without a publish");
+        std::puts("A's linear store stays in the unit shadow until a publish");
+    }
     StorageTexture::FlushPending(surface, BlockBytes, nullptr, "test");
     device.WaitIdle();
     RequireMemory(texels, 0x22222222u, 0x22222222u, "after A's store");

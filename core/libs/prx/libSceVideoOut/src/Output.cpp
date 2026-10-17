@@ -14,6 +14,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceVideoOut/include/VideoOutDriver.hpp"
 #include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
+#include "prx/libSceAgcDriver/Execution/include/HostHdr.hpp"
 
 static constexpr std::uint32_t VIDEO_OUT_OUTPUT_OPTIONS_FIRST_WORD = 0x00FF0000;
 static constexpr std::size_t VIDEO_OUT_OUTPUT_OPTIONS_FREE_WORD = 3;
@@ -28,8 +29,10 @@ static VideoOutOutputStatus outputStatus(const auto& cfg) {
         status.resolution = static_cast<std::uint32_t>(std::strtoul(forcedResolution, nullptr, 0));
         std::fprintf(stderr, "[videoout] output status resolution %u (display %ux%u)\n", status.resolution, cfg.width, cfg.height);
     }
-    status.dynamicRange = 1;
+    const bool hdr = AgcDriver::CurrentHostHdr().available;
+    status.dynamicRange = hdr ? VIDEO_OUT_DYNAMIC_RANGE_HDR : VIDEO_OUT_DYNAMIC_RANGE_SDR;
     status.refreshRate = (cfg.outputMode == VIDEO_OUT_OUTPUT_MODE_119_88HZ) ? VIDEO_OUT_REFRESH_RATE_119_88HZ : VIDEO_OUT_REFRESH_RATE_59_94HZ;
+    status.flags = hdr ? VIDEO_OUT_OUTPUT_STATUS_FLAG_HDR : 0;
     return status;
 }
 
@@ -97,9 +100,7 @@ int APS5_VABI sceVideoOutOpen(int userId, int busType, int index, const void* pa
         throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_VALUE");
     }
     const int handle = VideoOutDriver::Get().Open(busType);
-    if (handle < 0) {
-        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_RESOURCE_BUSY");
-    }
+    if (handle < 0) return VIDEO_OUT_ERROR_RESOURCE_BUSY;
     return handle;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();
@@ -125,9 +126,7 @@ int APS5_VABI sceVideoOutSetFlipRate(int handle, int rate) try {
     if (cfg == nullptr) {
         throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_HANDLE");
     }
-    if (rate < 0 || rate > 2) {
-        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_VALUE");
-    }
+    if (rate < 0 || rate > 2) return VIDEO_OUT_ERROR_INVALID_VALUE;
     std::lock_guard lock(cfg->mutex);
     cfg->Check();
     cfg->flipRate = rate;
@@ -146,7 +145,13 @@ int APS5_VABI sceVideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) t
     }
     std::unique_lock lock(cfg->mutex);
     cfg->Check();
-    *status = cfg->flipStatus;
+    if (cfg->ps4) {
+        const auto& current = cfg->flipStatus;
+        VideoOutFlipStatusPs4 legacy{current.count, current.processTime, 0, current.flipArg, 0, 0, current.gcQueueNum, current.flipPendingNum, current.currentBuffer, 0};
+        *reinterpret_cast<VideoOutFlipStatusPs4*>(status) = legacy;
+    } else {
+        *status = cfg->flipStatus;
+    }
     return 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();
@@ -162,7 +167,13 @@ int APS5_VABI sceVideoOutGetVblankStatus(int handle, VideoOutVblankStatus* statu
     }
     std::unique_lock lock(cfg->mutex);
     cfg->Check();
-    *status = cfg->vblankStatus;
+    if (cfg->ps4) {
+        const auto& current = cfg->vblankStatus;
+        VideoOutVblankStatusPs4 legacy{current.count, current.processTime, 0, current.flags};
+        *reinterpret_cast<VideoOutVblankStatusPs4*>(status) = legacy;
+    } else {
+        *status = cfg->vblankStatus;
+    }
     return 0;
 } catch (const ProcessShutdown&) {
     LibcAwaitExit_nid_postfix();

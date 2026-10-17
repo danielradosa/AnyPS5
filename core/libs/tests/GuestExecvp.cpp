@@ -9,6 +9,7 @@
 extern "C" {
 int APS5_VABI execvp_nid_postfix(const char*, char* const*);
 int APS5_VABI execv_nid_postfix(const char*, char* const*);
+int APS5_VABI execve_nid_postfix(const char*, char* const*, char* const*);
 int APS5_VABI open_nid_postfix(const char*, int, int);
 int APS5_VABI close_nid_postfix(int);
 int APS5_VABI mkdir_nid_postfix(const char*, unsigned short);
@@ -66,6 +67,15 @@ int main() {
         threw = true;
     }
     Require(threw);
+    char variable[] = "HOME=/";
+    char* replacement[] = {variable, nullptr};
+    bool unsupported = false;
+    try {
+        execve_nid_postfix("/bin/sh", arguments, replacement);
+    } catch (const std::runtime_error& error) {
+        unsupported = std::string(error.what()) == "execve: executable replacement not implemented";
+    }
+    Require(unsupported);
     const std::string longPath(1024, 'a');
     Require(ExecvError(longPath.c_str(), arguments) == Enametoolong);
     std::string huge(300000, 'x');

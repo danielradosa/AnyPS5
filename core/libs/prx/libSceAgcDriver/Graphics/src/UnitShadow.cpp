@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/SlimMutex.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
@@ -97,7 +98,7 @@ struct UnitShadow {
 };
 
 struct Shadows {
-    std::mutex mutex;
+    SlimMutex mutex;
     std::map<std::uint64_t, std::shared_ptr<UnitShadow>> byBase;
     std::uint64_t liveBytes = 0;
     std::uint64_t peakBytes = 0;
@@ -450,7 +451,7 @@ PublishReason PublishReasonFor(const char* flushReason) {
     if (is("buffer fill")) return PublishReason::Fill;
     if (is("packet store")) return PublishReason::Label;
     if (is("buffer copy count") || is("dispatch-cache entry")) return PublishReason::Validate;
-    if (is("storage image creation") || is("storage refresh")) return PublishReason::Upload;
+    if (is("storage image creation") || (flushReason != nullptr && std::strncmp(flushReason, "storage refresh", 15) == 0)) return PublishReason::Upload;
     return PublishReason::Hook;
 }
 

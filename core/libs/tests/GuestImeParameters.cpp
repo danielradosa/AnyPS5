@@ -275,7 +275,7 @@ static void CheckOpenPanel() {
     Require(sceImeSetCaret(&caret) == 0, "caret inside the longer text");
     Require(sceImeSetText(u"ab", 2) == 0, "text shortened");
     Require(sceImeSetCaret(&caret) == invalidParam, "caret past the shortened text");
-    Require(std::memcmp(buffer, u"name", sizeof(u"name")) == 0, "the title's buffer is not written without input");
+    Require(std::memcmp(buffer, u"ab", sizeof(u"ab")) == 0, "the title's buffer holds the text set last");
 
     TextGeometry geometry{10.0f, 10.0f, 100, 20};
     Require(sceImeSetTextGeometry(TextAreaMode::Preedit, nullptr) == invalidAddress, "geometry needs a value");

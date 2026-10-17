@@ -9,6 +9,7 @@
 
 extern "C" {
 std::uint32_t* APS5_VABI sceAgcDcbAtomicGds_0900(CommandBuffer*, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint16_t, std::uint16_t, std::uint32_t, std::uint32_t, std::uint64_t, std::uint64_t);
+std::uint32_t* APS5_VABI sceAgcDcbAtomicGds(CommandBuffer*, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint16_t, std::uint16_t, std::uint32_t, std::uint32_t, std::uint64_t, std::uint64_t);
 std::uint32_t APS5_VABI sceAgcDcbAtomicGdsGetSize();
 std::uint32_t APS5_VABI sceAgcAcbAtomicGdsGetSize();
 }
@@ -93,6 +94,16 @@ void testControlFields() {
     check(packetFor(3, 0x200, 0, 0, 0)[1] == 0xc0010000u, "engine or compare-swap bit mismatch");
 }
 
+void testUnsuffixedForm() {
+    Storage versioned;
+    Storage unsuffixed;
+    const auto* expected = sceAgcDcbAtomicGds_0900(&versioned.buffer, 0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u, 0x55555555u, 0x1234, 0x5678, 0xabcdef12u, 0x9abcdef0u, 0x0102030405060708ull, 0x1112131415161718ull);
+    auto* packet = sceAgcDcbAtomicGds(&unsuffixed.buffer, 0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u, 0x55555555u, 0x1234, 0x5678, 0xabcdef12u, 0x9abcdef0u, 0x0102030405060708ull, 0x1112131415161718ull);
+    check(packet == unsuffixed.words.data() && unsuffixed.buffer.cursor_up == packet + 11, "unsuffixed builder does not write 11 dwords at the cursor");
+    check(packet[1] == 0x40050022u && packet[2] == 0x15u, "unsuffixed builder control words differ from the console's");
+    check(std::equal(expected, expected + 11, packet), "unsuffixed and _0900 builders write different packets");
+}
+
 void testSizeAndBounds() {
     check(sceAgcDcbAtomicGdsGetSize() == 44, "DCB ATOMIC_GDS size is not 44 bytes");
     check(sceAgcAcbAtomicGdsGetSize() == 44, "ACB ATOMIC_GDS size is not 44 bytes");
@@ -117,6 +128,7 @@ int main() {
         testConsoleControlWords();
         testStackArguments();
         testControlFields();
+        testUnsuffixedForm();
         testSizeAndBounds();
         std::puts("AGC atomic GDS tests passed");
         return 0;

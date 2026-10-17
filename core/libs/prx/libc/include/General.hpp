@@ -19,6 +19,7 @@ extern "C" int HostStandardError_nid_no_patch();
 #endif
 
 extern "C" std::filesystem::path ResolvePath_nid_no_patch(const char* path);
+extern "C" std::filesystem::path ResolvePathOrRelinkedModule_nid_no_patch(const char* path);
 extern "C" std::string GuestPathFromHost_nid_no_patch(const std::filesystem::path& host);
 extern "C" std::filesystem::path RelinkedModulePath_nid_no_patch(const std::filesystem::path& path);
 extern "C" int SetWorkingDirectory_nid_no_patch(const char* resolved);

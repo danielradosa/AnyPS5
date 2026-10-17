@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -122,6 +123,7 @@ int APS5_VABI sceUltInitialize() {
 
 int APS5_VABI sceUltFinalize() {
     std::vector<std::shared_ptr<UltSemaphoreState>> semaphores;
+    std::vector<std::shared_ptr<UltMutexState>> mutexes;
     {
         std::lock_guard<std::mutex> lock(gMutex);
         if (!gUlthreads.empty()) {
@@ -135,6 +137,13 @@ int APS5_VABI sceUltFinalize() {
             semaphores.push_back(state);
         }
         gSemaphores.clear();
+        mutexes.reserve(gMutexes.size());
+        for (auto& entry : gMutexes) {
+            auto& state = entry.second;
+            std::lock_guard<std::mutex> stateLock(state->_mutex);
+            state->_alive = false;
+            mutexes.push_back(state);
+        }
         gMutexes.clear();
         gResourcePools.clear();
         for (auto& entry : gQueues) {
@@ -149,6 +158,9 @@ int APS5_VABI sceUltFinalize() {
         gRuntimes.clear();
     }
     for (const auto& state : semaphores) {
+        state->_available.notify_all();
+    }
+    for (const auto& state : mutexes) {
         state->_available.notify_all();
     }
     return ULT_OK;
@@ -171,12 +183,35 @@ int APS5_VABI sceUltMutexCreate(void* mutex, const char* name, void* waitingQueu
     }
     auto state = std::make_shared<UltMutexState>();
     state->_attribute = optParam != nullptr ? optParam->attribute : 0;
+    state->_waitingPool = waitingQueueResourcePool;
     std::lock_guard<std::mutex> lock(gMutex);
     if (waitingQueueResourcePool != nullptr && gResourcePools.find(waitingQueueResourcePool) == gResourcePools.end()) {
         return ULT_ERROR_INVALID;
     }
+    if (gMutexes.find(mutex) != gMutexes.end()) {
+        return ULT_ERROR_STATE;
+    }
     std::memset(mutex, 0, 256);
     gMutexes[mutex] = std::move(state);
+    return ULT_OK;
+}
+
+int APS5_VABI sceUltMutexDestroy(void* mutex) {
+    if (mutex == nullptr) {
+        return ULT_ERROR_NULL;
+    }
+    std::lock_guard<std::mutex> lock(gMutex);
+    auto it = gMutexes.find(mutex);
+    if (it == gMutexes.end()) {
+        return ULT_ERROR_STATE;
+    }
+    auto state = it->second;
+    std::lock_guard<std::mutex> stateLock(state->_mutex);
+    if (state->_lockCount != 0 || state->_waiters != 0) {
+        return ULT_ERROR_BUSY;
+    }
+    state->_alive = false;
+    gMutexes.erase(it);
     return ULT_OK;
 }
 
@@ -190,7 +225,30 @@ int APS5_VABI sceUltMutexLock(void* mutex) {
         }
         state = it->second;
     }
-    state->_mutex.lock();
+    const auto self = std::this_thread::get_id();
+    std::unique_lock<std::mutex> lock(state->_mutex);
+    if (!state->_alive) {
+        return ULT_ERROR_STATE;
+    }
+    if (state->_owner == self) {
+        ++state->_lockCount;
+        return ULT_OK;
+    }
+    ++state->_waiters;
+    try {
+        state->_available.wait(lock, [&] {
+            return !state->_alive || state->_lockCount == 0;
+        });
+    } catch (...) {
+        --state->_waiters;
+        throw;
+    }
+    --state->_waiters;
+    if (!state->_alive) {
+        return ULT_ERROR_STATE;
+    }
+    state->_owner = self;
+    state->_lockCount = 1;
     return ULT_OK;
 }
 
@@ -204,7 +262,16 @@ int APS5_VABI sceUltMutexUnlock(void* mutex) {
         }
         state = it->second;
     }
-    state->_mutex.unlock();
+    const auto self = std::this_thread::get_id();
+    std::lock_guard<std::mutex> lock(state->_mutex);
+    if (!state->_alive || state->_owner != self) {
+        return ULT_ERROR_STATE;
+    }
+    --state->_lockCount;
+    if (state->_lockCount == 0) {
+        state->_owner = {};
+        state->_available.notify_one();
+    }
     return ULT_OK;
 }
 
@@ -222,6 +289,43 @@ int APS5_VABI sceUltWaitingQueueResourcePoolCreate(void* pool, const char* name,
     std::memset(pool, 0, 256);
     std::lock_guard<std::mutex> lock(gMutex);
     gResourcePools[pool] = {numThreads, numSyncObjects, workArea};
+    return ULT_OK;
+}
+
+int APS5_VABI sceUltWaitingQueueResourcePoolDestroy(void* pool) {
+    if (pool == nullptr) {
+        return ULT_ERROR_NULL;
+    }
+    std::lock_guard<std::mutex> lock(gMutex);
+    auto it = gResourcePools.find(pool);
+    if (it == gResourcePools.end()) {
+        return ULT_ERROR_STATE;
+    }
+    for (const auto& entry : gMutexes) {
+        if (entry.second->_waitingPool == pool) {
+            std::lock_guard<std::mutex> stateLock(entry.second->_mutex);
+            if (entry.second->_waiters != 0) {
+                return ULT_ERROR_BUSY;
+            }
+        }
+    }
+    for (const auto& entry : gSemaphores) {
+        if (entry.second->_waitingPool == pool) {
+            std::lock_guard<std::mutex> stateLock(entry.second->_mutex);
+            if (entry.second->_waiters != 0) {
+                return ULT_ERROR_BUSY;
+            }
+        }
+    }
+    for (const auto& entry : gQueues) {
+        if (entry.second->_pool && entry.second->_pool->_waitingPool == pool) {
+            std::lock_guard<std::mutex> poolLock(entry.second->_pool->_mutex);
+            if (entry.second->_waiters != 0) {
+                return ULT_ERROR_BUSY;
+            }
+        }
+    }
+    gResourcePools.erase(it);
     return ULT_OK;
 }
 
@@ -359,6 +463,7 @@ int APS5_VABI sceUltSemaphoreCreate(void* semaphore, const char* name, std::int3
     }
     auto state = std::make_shared<UltSemaphoreState>();
     state->_resources = numInitialResource;
+    state->_waitingPool = waitingQueueResourcePool;
     std::lock_guard<std::mutex> lock(gMutex);
     if (waitingQueueResourcePool != nullptr && gResourcePools.find(waitingQueueResourcePool) == gResourcePools.end()) {
         return ULT_ERROR_INVALID;

@@ -11,7 +11,13 @@
 #include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstdlib>
+#include <span>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace AgcDriver::DriverDetail {
 
@@ -24,6 +30,188 @@ double MillisecondsSince(std::chrono::steady_clock::time_point start) {
 bool ProfileDraw() {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     return profile;
+}
+
+// APS5_DRAW_KEY_PROBE=1 (diagnostic, draw-prep thread only): how prepared draws relate to the last draws with the same
+// shape key (Driver::drawShapeKey: the register key without user-data words), and where prepareDraw's time goes.
+// Feeds the address-free draw key decision (AnyPS5-tools/draw-key-map-1015.md, stage 1); changes no draw.
+bool drawKeyProbe() {
+    static const bool probe = std::getenv("APS5_DRAW_KEY_PROBE") != nullptr;
+    return probe;
+}
+
+enum ProbePhase : std::size_t { ProbeKey, ProbeLookup, ProbeDecode, ProbeVertexInfo, ProbeInvocation, ProbeWalk, ProbeMaterialize, ProbeVariant, ProbeInsert, ProbeClassify, ProbePhaseCount };
+constexpr std::array<const char*, ProbePhaseCount> ProbePhaseNames{"key", "lookup", "decode", "vertex-info", "invocation", "walk", "materialize", "variant", "insert", "probe"};
+
+struct ProbeStage {
+    bool valid = false;
+    std::uint64_t variantId = 0;
+    std::vector<std::uint32_t> userData;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> runs;
+    std::vector<std::uint32_t> words;
+};
+
+struct ProbeSets {
+    std::array<std::vector<ProbeStage>, 4> sets;
+    std::size_t count = 0;
+    std::size_t next = 0;
+};
+
+struct DrawKeyProbe {
+    std::unordered_map<std::uint64_t, ProbeSets> table;
+    std::array<double, ProbePhaseCount> ns{};
+    double prepareNs = 0;
+    std::uint64_t prepareCalls = 0, decodes = 0, probed = 0, shapeNew = 0, shapeKnown = 0, drawsSameCode = 0, drawsSameRuns = 0, drawsExplained = 0, drawsIdentical = 0, drawsUserEqual = 0;
+    std::array<std::uint64_t, 5> bestRank{};
+    std::uint64_t stages = 0, stagesSameCode = 0, stagesSameRuns = 0, stagesWordsEqual = 0, stagesExplained = 0, runsTotal = 0, runsExplained = 0, userWordsDiffering = 0, stagesUserDiffering = 0, wordsCompared = 0, wordsDiffering = 0;
+};
+
+DrawKeyProbe& keyProbe() {
+    static auto* probe = new DrawKeyProbe;
+    return *probe;
+}
+
+struct ProbeTimer {
+    bool on = drawKeyProbe();
+    std::chrono::steady_clock::time_point last = on ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    void Mark(ProbePhase phase) {
+        if (!on) return;
+        const auto now = std::chrono::steady_clock::now();
+        keyProbe().ns[phase] += static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - last).count());
+        last = now;
+    }
+};
+
+// A pointer in a user-data word pair (low word, then a high word whose low 16 bits complete the address).
+std::uint64_t userPointer(std::span<const std::uint32_t> words, std::size_t at) {
+    return static_cast<std::uint64_t>(words[at]) | (static_cast<std::uint64_t>(words[at + 1] & 0xffffu) << 32u);
+}
+
+struct StageVerdict {
+    bool sameCode = false, sameRuns = false, wordsEqual = false, explained = false;
+    std::size_t runsExplained = 0, userDiffering = 0, wordsDiffering = 0;
+};
+
+StageVerdict compareStage(const ProbeStage& before, const ProbeStage& now) {
+    StageVerdict verdict;
+    verdict.sameCode = before.variantId == now.variantId;
+    for (std::size_t i = 0; i < std::min(before.userData.size(), now.userData.size()); ++i) verdict.userDiffering += before.userData[i] != now.userData[i] ? 1 : 0;
+    verdict.sameRuns = before.runs.size() == now.runs.size() && std::equal(before.runs.begin(), before.runs.end(), now.runs.begin(), [](const auto& a, const auto& b) { return a.second - a.first == b.second - b.first; });
+    verdict.wordsEqual = before.words == now.words;
+    if (before.words.size() == now.words.size()) {
+        for (std::size_t i = 0; i < now.words.size(); ++i) verdict.wordsDiffering += before.words[i] != now.words[i] ? 1 : 0;
+    }
+    std::vector<std::uint64_t> deltas{0};
+    if (before.userData.size() == now.userData.size()) {
+        for (std::size_t k = 0; k + 1 < now.userData.size(); ++k) {
+            const auto was = userPointer(before.userData, k);
+            const auto is = userPointer(now.userData, k);
+            if (was != is && was != 0 && is != 0) deltas.push_back(is - was);
+        }
+    }
+    for (const auto& [begin, end] : now.runs) {
+        const bool found = std::any_of(before.runs.begin(), before.runs.end(), [&](const auto& old) {
+            return old.second - old.first == end - begin && std::find(deltas.begin(), deltas.end(), begin - old.first) != deltas.end();
+        });
+        verdict.runsExplained += found ? 1 : 0;
+    }
+    verdict.explained = verdict.runsExplained == now.runs.size();
+    return verdict;
+}
+
+void probeDraw(std::uint64_t shapeKey, const std::vector<DrawProgram>& programs, const std::vector<std::shared_ptr<DispatchVariant>>& fresh) {
+    auto& probe = keyProbe();
+    ++probe.probed;
+    std::vector<ProbeStage> current(programs.size());
+    for (std::size_t i = 0; i < programs.size(); ++i) {
+        if (fresh[i] == nullptr || fresh[i]->compiled == nullptr) continue;
+        current[i] = {true, fresh[i]->compiled->PipelineVariantId(), programs[i].userData, fresh[i]->runs, fresh[i]->words};
+    }
+    if (probe.table.size() > 32768) probe.table.clear();
+    auto& ring = probe.table[shapeKey];
+    if (ring.count == 0) {
+        ++probe.shapeNew;
+    } else {
+        ++probe.shapeKnown;
+        int bestScore = -1;
+        std::size_t bestRank = 0;
+        std::vector<StageVerdict> best;
+        for (std::size_t rank = 0; rank < ring.count; ++rank) {
+            const auto& set = ring.sets[(ring.next + ring.sets.size() - 1 - rank) % ring.sets.size()];
+            if (set.size() != current.size()) continue;
+            std::vector<StageVerdict> verdicts(current.size());
+            bool code = true, runs = true, explained = true;
+            for (std::size_t i = 0; i < current.size(); ++i) {
+                if (!current[i].valid || !set[i].valid) continue;
+                verdicts[i] = compareStage(set[i], current[i]);
+                code = code && verdicts[i].sameCode;
+                runs = runs && verdicts[i].sameRuns;
+                explained = explained && verdicts[i].explained;
+            }
+            const int score = (code ? 4 : 0) + (code && runs ? 2 : 0) + (code && runs && explained ? 1 : 0);
+            if (score > bestScore) {
+                bestScore = score;
+                bestRank = rank;
+                best = std::move(verdicts);
+            }
+        }
+        if (bestScore < 0) {
+            ++probe.bestRank[4];
+        } else {
+            ++probe.bestRank[bestRank];
+            bool code = true, runs = true, explained = true, identical = true, userEqual = true;
+            for (std::size_t i = 0; i < current.size(); ++i) {
+                if (!current[i].valid) continue;
+                const auto& verdict = best[i];
+                ++probe.stages;
+                probe.stagesSameCode += verdict.sameCode ? 1 : 0;
+                probe.stagesSameRuns += verdict.sameRuns ? 1 : 0;
+                probe.stagesWordsEqual += verdict.wordsEqual ? 1 : 0;
+                probe.stagesExplained += verdict.explained ? 1 : 0;
+                probe.runsTotal += current[i].runs.size();
+                probe.runsExplained += verdict.runsExplained;
+                probe.userWordsDiffering += verdict.userDiffering;
+                probe.stagesUserDiffering += verdict.userDiffering != 0 ? 1 : 0;
+                probe.wordsCompared += verdict.sameRuns ? current[i].words.size() : 0;
+                probe.wordsDiffering += verdict.sameRuns ? verdict.wordsDiffering : 0;
+                code = code && verdict.sameCode;
+                runs = runs && verdict.sameRuns;
+                explained = explained && verdict.explained;
+                identical = identical && verdict.wordsEqual;
+                userEqual = userEqual && verdict.userDiffering == 0;
+            }
+            probe.drawsSameCode += code ? 1 : 0;
+            probe.drawsSameRuns += code && runs ? 1 : 0;
+            probe.drawsExplained += code && runs && explained ? 1 : 0;
+            probe.drawsIdentical += code && runs && identical ? 1 : 0;
+            probe.drawsUserEqual += userEqual ? 1 : 0;
+        }
+    }
+    ring.sets[ring.next] = std::move(current);
+    ring.next = (ring.next + 1) % ring.sets.size();
+    ring.count = std::min(ring.count + 1, ring.sets.size());
+}
+
+void reportKeyProbe() {
+    auto& probe = keyProbe();
+    const auto count = [](std::uint64_t value) { return static_cast<unsigned long long>(value); };
+    const auto prepared = std::max<std::uint64_t>(probe.probed, 1);
+    std::string phases;
+    char part[96];
+    double inside = 0;
+    for (std::size_t i = 0; i < ProbePhaseCount; ++i) {
+        inside += probe.ns[i];
+        std::snprintf(part, sizeof(part), " %s %.1f", ProbePhaseNames[i], probe.ns[i] / 1e3 / static_cast<double>(prepared));
+        phases += part;
+    }
+    AgcDriver::ProfilePrint_nid_no_patch("[draw-key-probe] (10 s): %llu prepared draws: shape new %llu, known %llu (best of the last value sets by rank 1-4 %llu/%llu/%llu/%llu, none comparable %llu); draws with every stage same code %llu, + same run layout %llu, + every run moved with a user pointer %llu, + identical words %llu; user data all equal %llu; stages %llu: same code %llu, same runs %llu, words equal %llu, explained %llu (runs %llu of %llu), user words differing %llu in %llu stages, words differing %llu of %llu compared; us per prepared draw:%s; prepareDraw %llu calls %.1f ms (phases %.1f ms), %llu decodes, shape table %zu\n",
+        count(probe.probed), count(probe.shapeNew), count(probe.shapeKnown), count(probe.bestRank[0]), count(probe.bestRank[1]), count(probe.bestRank[2]), count(probe.bestRank[3]), count(probe.bestRank[4]),
+        count(probe.drawsSameCode), count(probe.drawsSameRuns), count(probe.drawsExplained), count(probe.drawsIdentical), count(probe.drawsUserEqual),
+        count(probe.stages), count(probe.stagesSameCode), count(probe.stagesSameRuns), count(probe.stagesWordsEqual), count(probe.stagesExplained), count(probe.runsExplained), count(probe.runsTotal), count(probe.userWordsDiffering), count(probe.stagesUserDiffering), count(probe.wordsDiffering), count(probe.wordsCompared),
+        phases.c_str(), count(probe.prepareCalls), probe.prepareNs / 1e6, inside / 1e6, count(probe.decodes), probe.table.size());
+    auto table = std::move(probe.table);
+    probe = DrawKeyProbe{};
+    probe.table = std::move(table);
 }
 
 }
@@ -239,7 +427,14 @@ void Driver::walkDrawPrep(const Submission& submission) {
                 }
                 const auto reached = static_cast<std::size_t>(std::upper_bound(draws.begin(), draws.end(), worker) - draws.begin());
                 drawPrep.drawsAhead = index >= reached ? index - reached : 0;
-                prepareDraw(submission, packet);
+                if (drawKeyProbe()) {
+                    const auto started = std::chrono::steady_clock::now();
+                    prepareDraw(submission, packet);
+                    keyProbe().prepareNs += static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+                    ++keyProbe().prepareCalls;
+                } else {
+                    prepareDraw(submission, packet);
+                }
                 break;
             }
             case 0x22:
@@ -315,6 +510,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
     if (ShaderRecompiler::DebugProbeActive()) return;
     drawPrep.abortReason.store(0, std::memory_order_relaxed);
     drawPrep.capturing = false;
+    ProbeTimer timer;
     try {
         auto drawParameters = Pm4::ResolveDraw(packet, scratch);
         if (drawParameters.indirect) {
@@ -327,14 +523,22 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             ++counts[PrepPrechecked];
             return;
         }
-        const auto drawKey = drawRegisterKey(scratch, *submission.shaders, drawPrep.deviceSerial);
+        std::uint64_t dataShape = 0;
+        const auto drawKey = drawRegisterKey(scratch, *submission.shaders, drawPrep.deviceSerial, &dataShape);
+        const auto shapeKey = timer.on ? drawShapeKey(scratch, *submission.shaders, drawPrep.deviceSerial) : 0;
+        timer.Mark(ProbeKey);
         std::shared_ptr<DrawEntry> entry;
         {
             std::lock_guard cacheLock(drawCacheMutex);
             if (const auto found = drawCache.find(drawKey); found != drawCache.end()) entry = found->second;
         }
         std::shared_ptr<const DrawDecode> decode = entry != nullptr ? entry->decode : nullptr;
-        if (decode == nullptr) decode = decodeDraw(scratch, submission);
+        timer.Mark(ProbeLookup);
+        if (decode == nullptr) {
+            decode = decodeDraw(scratch, submission);
+            if (timer.on) ++keyProbe().decodes;
+        }
+        timer.Mark(ProbeDecode);
         const auto& graphics = decode->state;
         const auto& pixel = decode->pixel;
         const auto& roles = decode->roles;
@@ -347,8 +551,10 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
         }
         if (entry != nullptr && entryCurrent(*entry, programs)) {
             ++counts[PrepCurrent];
+            timer.Mark(ProbeLookup);
             return;
         }
+        timer.Mark(ProbeLookup);
         std::vector<ShaderRecompiler::MemoryRegion> memory;
         std::vector<ShaderRecompiler::LinkedProgram> linked;
         for (std::size_t i = 0; i < programs.size(); ++i) {
@@ -364,6 +570,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             if (program.binary.stage == Stage::Fragment || roles[i] == Role::GeometryBack) continue;
             vertexInfos[i] = Graphics::DecodeVertexStageInfo(program.binary.header, program.binary.headerAddress, program.userData, &decodeReads[i], false, 8u - program.firstUserSgpr, &prepRead);
         }
+        timer.Mark(ProbeVertexInfo);
         drawPrep.capturing = true;
         ShaderMemory shaderMemory(memory, &prepPendingWrite, nullptr, nullptr, &prepRead);
         std::vector<StageCapture> stageCaptures(programs.size());
@@ -374,6 +581,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             pushCursor = Graphics::StagePushOffset(pushCursor, program.binary.stage, drawPrep.pipelineLibraries);
             const auto request = drawStageRequest(i, pushCursor, programs, graphics, pixel, vertexInfos, memory, linked, drawParameters, *drawPrep.target);
             const auto invocation = TryInvocationFor(*program.snapshot, program.codeOffset, request);
+            timer.Mark(ProbeInvocation);
             if (!invocation) {
                 ++counts[PrepNotPrepared];
                 return;
@@ -383,8 +591,12 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             stageCapture.pushOffset = pushCursor;
             const auto capture = shaderMemory.Capture(*invocation);
             stageCapture.regions = shaderMemory.TakeRecentRegions();
+            stageCapture.userDataUse = capture->userDataUse;
             memory = shaderMemory.Regions();
+            timer.Mark(ProbeWalk);
             stageCapture.compiled = invocation->Materialize(*capture);
+            stageCapture.capture = capture;
+            timer.Mark(ProbeMaterialize);
             const auto slotEnd = (pushCursor / Graphics::PipelinePushSlotBytes + 1u) * Graphics::PipelinePushSlotBytes;
             if (stageCapture.compiled->pushConstants.size() > slotEnd - pushCursor) {
                 ++counts[PrepFailed];
@@ -400,17 +612,23 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             fresh[i] = drawVariant(stageCapture, programs[i], vertexInfos[i], decodeReads[i]);
             any = true;
         }
+        timer.Mark(ProbeVariant);
         if (!any) {
             ++counts[PrepUncacheable];
             return;
         }
+        if (timer.on) {
+            probeDraw(shapeKey, programs, fresh);
+            timer.Mark(ProbeClassify);
+        }
         std::vector<std::shared_ptr<DispatchVariant>> parked;
         if (backgroundSpecializeEnabled()) parked = parkSpecializations(drawKey, fresh, stageCaptures, programs, decode, pixel, vertexInfos, drawParameters, *drawPrep.target, drawPrep.deviceSerial, drawPrep.pipelineLibraries);
-        if (!insertDrawEntry(drawKey, fresh, decode, true, entry == nullptr)) {
+        if (!insertDrawEntry(drawKey, fresh, decode, true, entry == nullptr, drawDataHits() ? dataShape : 0)) {
             ++counts[PrepRaced];
             return;
         }
         noteParked(parked, fresh);
+        timer.Mark(ProbeInsert);
         ++counts[entry == nullptr ? PrepInserted : PrepRefreshed];
     } catch (...) {
         const auto reason = drawPrep.abortReason.exchange(0, std::memory_order_relaxed);
@@ -436,6 +654,7 @@ void Driver::reportDrawPrep(bool final) {
     AgcDriver::ProfilePrint_nid_no_patch("[draw-prep] pending aborts by site (10 s): vertex reads over a recorded write %llu, a storage image %llu, a shadow %llu, several %llu; capture reads %llu, %llu, %llu, %llu; capture policy %llu; draws ahead of the worker 0-7 %llu, 8-15 %llu, 16-23 %llu, 24-31 %llu, 32-39 %llu, 40+ %llu" "\n",
                                          sites(0, 1), sites(0, 2), sites(0, 4), several(0), sites(1, 1), sites(1, 2), sites(1, 4), several(1), static_cast<unsigned long long>(drawPrep.policyAborts),
                                          static_cast<unsigned long long>(ahead[0]), static_cast<unsigned long long>(ahead[1]), static_cast<unsigned long long>(ahead[2]), static_cast<unsigned long long>(ahead[3]), static_cast<unsigned long long>(ahead[4]), static_cast<unsigned long long>(ahead[5]));
+    if (drawKeyProbe()) reportKeyProbe();
     drawPrep.readAborts = {};
     drawPrep.policyAborts = 0;
     drawPrep.abortsAhead = {};

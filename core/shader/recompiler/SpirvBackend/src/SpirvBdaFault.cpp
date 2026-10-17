@@ -2,6 +2,7 @@
 #include "SpirvBackend/SpirvFlowEmitter.hpp"
 #include "SpirvBackend/SpirvMemory/SpirvTypes.hpp"
 #include "SpirvBackend/SpirvMemory/SpirvConstants.hpp"
+#include <algorithm>
 #include <stdexcept>
 
 namespace ShaderRecompiler {
@@ -76,6 +77,11 @@ void RecordBdaFault(SpirvEmitterState& state, std::uint32_t address, std::uint32
     state.module.AddFunction(spv::OpFunctionCall, TypeVoid(state), state.module.AllocateId(), state.bdaFaultFunction, ConstantU32(state, static_cast<std::uint32_t>(reason)), address, bytes, instruction);
 }
 
+void RecordBdaFaultReason(SpirvEmitterState& state, std::uint32_t address, std::uint32_t bytes, std::uint32_t instruction, std::uint32_t reason) {
+    if (state.bdaFaultFunction == 0 || !state.program.Info().usesDma) throw std::runtime_error("BDA fault function is missing");
+    state.module.AddFunction(spv::OpFunctionCall, TypeVoid(state), state.module.AllocateId(), state.bdaFaultFunction, reason, address, bytes, instruction);
+}
+
 void RecordBdaFaultWords(SpirvEmitterState& state, std::uint32_t addressLow, std::uint32_t addressHigh, std::uint32_t bytes, std::uint32_t instruction, BdaAbi::FaultReason reason) {
     if (state.program.Info().usesDma) {
         const auto u64 = TypeScalarU64(state);
@@ -107,16 +113,18 @@ void StopBdaInvocationIf(SpirvEmitterState& state, std::uint32_t condition) {
     EmitLabel(state, failed);
     if (state.bdaStopValue != 0) {
         state.module.AddFunction(spv::OpReturnValue, state.bdaStopValue);
-    } else if (OrderedPixelShader(state) && state.pixelValidMaskVariable != 0) {
-        state.module.AddFunction(spv::OpStore, state.pixelValidMaskVariable, ConstantU32(state, 0u));
-        state.module.AddFunction(spv::OpEndInvocationInterlockEXT);
-        EmitKillIfPixelValidMaskInactive(state);
-        state.module.AddFunction(spv::OpReturn);
     } else {
         if (OrderedPixelShader(state)) {
             state.module.AddFunction(spv::OpEndInvocationInterlockEXT);
         }
-        state.module.AddFunction(state.program.Resources().stage == IrShaderStage::Pixel ? spv::OpKill : spv::OpReturn);
+        if (state.program.Resources().stage != IrShaderStage::Pixel) {
+            state.module.AddFunction(spv::OpReturn);
+        } else if (std::ranges::find(state.supportedExtensions, "SPV_KHR_terminate_invocation") != state.supportedExtensions.end()) {
+            state.module.EmitExtension("SPV_KHR_terminate_invocation");
+            state.module.AddFunction(spv::OpTerminateInvocation);
+        } else {
+            state.module.AddFunction(spv::OpKill);
+        }
     }
     EmitLabel(state, next);
 }

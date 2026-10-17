@@ -1,6 +1,7 @@
 #include "RdnaDecoder/RdnaInstructionDecoder.hpp"
 #include "Translation/TranslationContext.hpp"
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -342,6 +343,11 @@ IrU32 TranslationContext::quietNan32(IrU32 bits) {
 }
 
 IrValue* TranslationContext::nanResultF32(std::initializer_list<IrValue*> sources, IrValue* result, IrValue* invalidProduct) {
+    // The host's NaN results are kept (NaN stays NaN, the payload is the host's) instead of reproducing RDNA's
+    // payload rules with ~4 integer operations per source on every f32 add, mul and fma (Astro's hub +6.5%,
+    // play1015af). APS5_EXACT_F32=1 reproduces the payloads (the payload GPU tests run with it).
+    static const bool fast = std::getenv("APS5_EXACT_F32") == nullptr;
+    if (fast) return result;
     const auto isNan = [&](IrValue& bits) -> IrValue& { return ir.UGreaterThan(ir.BitwiseAnd(bits, ir.Constant(0x7fffffffu)), ir.Constant(0x7f800000u)); };
     IrValue* bits = &ir.BitCastU32(*result);
     bits = &ir.Select(isNan(*bits), ir.Constant(0xffc00000u), *bits);
@@ -448,8 +454,7 @@ IrU32 TranslationContext::readScalarCode(std::uint32_t code) {
         case 235u:
         case 236u:
         case 237u:
-        case 238u:
-            throw std::runtime_error("TranslationContext::readScalarCode: the scalar aperture source " + RdnaOperandToString(DecodeRdnaScalarSource(code, 0u)) + " is not modelled");
+        case 238u: return readRawU32(DecodeRdnaScalarSource(code, 0u));
         default: return IrU32(ir.Constant(0u));
     }
 }
@@ -482,8 +487,7 @@ IrU32 TranslationContext::readRawU32(const RdnaOperand& operand) {
         case RdnaOperandKind::SrcSharedBase:
         case RdnaOperandKind::SrcSharedLimit:
         case RdnaOperandKind::SrcPrivateBase:
-        case RdnaOperandKind::SrcPrivateLimit:
-            throw std::runtime_error("TranslationContext::readRawU32: the scalar aperture source " + RdnaOperandToString(operand) + " is not modelled");
+        case RdnaOperandKind::SrcPrivateLimit: return IrU32(ir.Constant(static_cast<std::uint32_t>(RdnaApertureSourceValue(operand))));
         default: throw std::runtime_error("TranslationContext::readRawU32 invalid decoded operand used as a raw U32 source");
     }
 }

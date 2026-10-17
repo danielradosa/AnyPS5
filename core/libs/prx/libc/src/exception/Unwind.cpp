@@ -123,11 +123,6 @@ bool APS5_VABI CursorIsSignalFrame(_Unwind_Context* context) {
     return context->signalFrame;
 }
 
-bool APS5_VABI CursorGetFunctionName(_Unwind_Context*, char*, std::size_t, std::uintptr_t*) {
-    NotImplemented_nid_no_patch("libunwind cursor: getFunctionName");
-    return false;
-}
-
 const char* APS5_VABI CursorGetRegisterName(_Unwind_Context*, int number) {
     if (number == CursorInstructionRegister) return "rip";
     if (number == CursorStackRegister) return "rsp";
@@ -140,6 +135,9 @@ const char* APS5_VABI CursorGetRegisterName(_Unwind_Context*, int number) {
 
 extern "C" _Unwind_Reason_Code __gxx_personality_v0(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
 extern "C" _Unwind_Reason_Code __gcc_personality_v0(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
+#ifdef _WIN32
+extern "C" void _Unwind_DeleteException(_Unwind_Exception*);
+#endif
 
 namespace LibcUnwind {
 _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
@@ -262,6 +260,30 @@ const IMAGE_NT_HEADERS64* ImageHeaders(Word pc, const Byte*& base) {
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
     return nt->Signature == IMAGE_NT_SIGNATURE ? nt : nullptr;
+}
+
+bool NearestExport(Word pc, const char*& name, Word& address) {
+    const Byte* base = nullptr;
+    const auto* nt = ImageHeaders(pc, base);
+    if (!nt) return false;
+    const auto& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!directory.VirtualAddress || !directory.Size) return false;
+    const auto* exports = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + directory.VirtualAddress);
+    const auto* functions = reinterpret_cast<const DWORD*>(base + exports->AddressOfFunctions);
+    const auto* names = reinterpret_cast<const DWORD*>(base + exports->AddressOfNames);
+    const auto* ordinals = reinterpret_cast<const WORD*>(base + exports->AddressOfNameOrdinals);
+    const Word rva = pc - Word(base);
+    name = nullptr;
+    DWORD nearest = 0;
+    for (DWORD i = 0; i < exports->NumberOfNames; ++i) {
+        if (ordinals[i] >= exports->NumberOfFunctions) continue;
+        const DWORD target = functions[ordinals[i]];
+        if (target - directory.VirtualAddress < directory.Size || target > rva || (name && target <= nearest)) continue;
+        name = reinterpret_cast<const char*>(base + names[i]);
+        nearest = target;
+    }
+    address = Word(base) + nearest;
+    return name != nullptr;
 }
 
 bool VirtualUnwind(const _Unwind_Context& context, _Unwind_Context& caller) {
@@ -575,6 +597,23 @@ void APS5_VABI CursorSetInfoBasedOnIPRegister(_Unwind_Context* context, bool isR
     *context = probe;
 }
 
+bool APS5_VABI CursorGetFunctionName(_Unwind_Context* context, char* buffer, std::size_t length, std::uintptr_t* offset) {
+    const Word pc = context->registers[16];
+#ifdef _WIN32
+    const char* name = nullptr;
+    Word address = 0;
+    if (!NearestExport(pc, name, address)) return false;
+#else
+    Dl_info image {};
+    if (!dladdr(reinterpret_cast<void*>(pc), &image) || !image.dli_sname) return false;
+    const char* name = image.dli_sname;
+    const auto address = reinterpret_cast<Word>(image.dli_saddr);
+#endif
+    std::snprintf(buffer, length, "%s", name);
+    *offset = pc - address;
+    return true;
+}
+
 _Unwind_Reason_Code PhaseTwo(_Unwind_Context context, _Unwind_Exception* exception) {
     for (unsigned depth = 0; depth < 65536; ++depth) {
         Frame frame; Rules rules;
@@ -656,6 +695,12 @@ _Unwind_Reason_Code APS5_VABI _Unwind_Resume_or_Rethrow_nid_postfix(_Unwind_Exce
 }
 
 void APS5_VABI _Unwind_DeleteException_nid_postfix(_Unwind_Exception* exception) {
+#ifdef _WIN32
+    if (exception && LibcException::Gnu(exception->exception_class)) {
+        _Unwind_DeleteException(exception);
+        return;
+    }
+#endif
     if (exception && exception->exception_cleanup) exception->exception_cleanup(_URC_FOREIGN_EXCEPTION_CAUGHT, exception);
 }
 
@@ -706,6 +751,7 @@ _Unwind_Reason_Code APS5_VABI _Unwind_Backtrace_nid_postfix(_Unwind_Trace_Fn tra
 namespace LibcUnwind {
 int APS5_VABI CursorStep(_Unwind_Context*, bool) { std::abort(); }
 void APS5_VABI CursorSetInfoBasedOnIPRegister(_Unwind_Context*, bool) { std::abort(); }
+bool APS5_VABI CursorGetFunctionName(_Unwind_Context*, char*, std::size_t, std::uintptr_t*) { std::abort(); }
 }
 
 extern "C" {
@@ -747,7 +793,7 @@ const std::uintptr_t CursorSlots[] = {
     Slot(&CursorGetInfo),
     Slot(&CursorJumpTo),
     Slot(&CursorIsSignalFrame),
-    Slot(&CursorGetFunctionName),
+    Slot(&LibcUnwind::CursorGetFunctionName),
     Slot(&LibcUnwind::CursorSetInfoBasedOnIPRegister),
     Slot(&CursorGetRegisterName),
 };

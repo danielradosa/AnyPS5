@@ -17,6 +17,8 @@ namespace {
 
 void Require(bool value) { if (!value) std::abort(); }
 
+constexpr int kStatusNone = 0;
+constexpr int kStatusInitialized = 1;
 constexpr int kStatusFinished = 3;
 constexpr int kErrNotInitialized = static_cast<int>(0x80B80003);
 constexpr int kErrAlreadyInitialized = static_cast<int>(0x80B80004);
@@ -42,10 +44,15 @@ int main() {
 
     Require(scePlayerSelectionDialogTerminate() == kErrNotInitialized);
     Require(scePlayerSelectionDialogOpen(&param) == kErrNotInitialized);
+    Require(scePlayerSelectionDialogClose() == kErrNotInitialized);
     Require(scePlayerSelectionDialogGetResult(&result) == kErrNotInitialized);
+    Require(scePlayerSelectionDialogGetStatus() == kStatusNone);
+    Require(scePlayerSelectionDialogUpdateStatus() == kStatusNone);
 
     Require(scePlayerSelectionDialogInitialize() == 0);
     Require(scePlayerSelectionDialogInitialize() == kErrAlreadyInitialized);
+    Require(scePlayerSelectionDialogGetStatus() == kStatusInitialized);
+    Require(scePlayerSelectionDialogUpdateStatus() == kStatusInitialized);
 
     Require(scePlayerSelectionDialogOpen(nullptr) == kErrArgNull);
     Require(scePlayerSelectionDialogGetResult(&result) == kErrNotFinished);
@@ -65,4 +72,6 @@ int main() {
     Require(scePlayerSelectionDialogClose() == 0);
     Require(scePlayerSelectionDialogTerminate() == 0);
     Require(scePlayerSelectionDialogTerminate() == kErrNotInitialized);
+    Require(scePlayerSelectionDialogGetStatus() == kStatusNone);
+    Require(scePlayerSelectionDialogUpdateStatus() == kStatusNone);
 }

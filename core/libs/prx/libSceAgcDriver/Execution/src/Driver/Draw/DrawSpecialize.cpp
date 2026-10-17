@@ -303,6 +303,7 @@ bool Driver::publishSpecialization(const SpecializeJob& job, std::shared_ptr<con
     swapped->touched = entry.touched;
     swapped->order = entry.order;
     swapped->prepared = entry.prepared;
+    swapped->shape = entry.shape;
     accountDrawVariant(*old, false);
     accountDrawVariant(*variant, true);
     previous = std::exchange(found->second, std::move(swapped));

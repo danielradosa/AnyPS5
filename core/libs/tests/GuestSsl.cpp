@@ -82,7 +82,6 @@ int main() {
     constexpr int notFound = static_cast<int>(0x8095F004);
     constexpr int invalidArg = static_cast<int>(0x8095177A);
     int marker = 0;
-
     const int context = sceSslInit_nid_postfix(0x10000);
     Require(context > 0);
     SslMemoryPoolStats stats{1, 1, 1, 1};
@@ -95,7 +94,7 @@ int main() {
     Require(sceSslGetCaCerts(context, &certs) == notFound);
     Require(certs.certs == nullptr && certs.num == 0 && certs.pool == nullptr);
 
-    certs = {};
+    certs = {&marker, 3, &marker};
     Require(sceSslFreeCaCerts(context, &certs) == 0);
     Require(certs.certs == nullptr && certs.num == 0 && certs.pool == nullptr);
 

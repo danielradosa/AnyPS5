@@ -37,6 +37,7 @@ struct MockDevice {
     std::uint64_t destroyedBuffers = 0;
     VkDeviceSize liveBytes = 0;
     std::map<VkDeviceMemory, VkDeviceSize> memoryBytes;
+    std::map<VkDeviceMemory, std::uint32_t> memoryTypes;
     std::map<VkBuffer, std::pair<VkDeviceMemory, VkDeviceSize>> bound;
     std::set<VkBuffer> liveBuffers;
     std::deque<VkResult> results;
@@ -74,6 +75,7 @@ VKAPI_ATTR VkResult VKAPI_CALL mockAllocateMemory(VkDevice, const VkMemoryAlloca
     *memory = reinterpret_cast<VkDeviceMemory>(static_cast<std::uintptr_t>(mock.next++));
     if (info->memoryTypeIndex == 1) mock.hostMemory[*memory].resize(info->allocationSize);
     mock.memoryBytes[*memory] = info->allocationSize;
+    mock.memoryTypes[*memory] = info->memoryTypeIndex;
     mock.liveBytes += info->allocationSize;
     ++mock.allocations;
     return VK_SUCCESS;
@@ -145,6 +147,47 @@ Context mockContext() {
     context.limits.maxMemoryAllocationCount = 1u << 20u;
     context.bufferDeviceAddress = true;
     return context;
+}
+
+VkDeviceSize reportedBudget = 0;
+VkDeviceSize reportedUsage = 0;
+
+VKAPI_ATTR void VKAPI_CALL mockMemoryProperties2(VkPhysicalDevice, VkPhysicalDeviceMemoryProperties2* properties) {
+    auto* reported = static_cast<VkPhysicalDeviceMemoryBudgetPropertiesEXT*>(properties->pNext);
+    reported->heapBudget[0] = reportedBudget;
+    reported->heapUsage[0] = reportedUsage;
+}
+
+void HostPlacement() {
+    mock = MockDevice{};
+    auto context = mockContext();
+    context.physical = reinterpret_cast<VkPhysicalDevice>(std::uintptr_t{1});
+    context.memoryProperties2 = mockMemoryProperties2;
+    context.memory.memoryHeapCount = 2;
+    context.memory.memoryHeaps[0] = {2048 * MiB, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT};
+    context.memory.memoryHeaps[1] = {16384 * MiB, 0};
+    context.memory.memoryTypes[0].heapIndex = 0;
+    context.memory.memoryTypes[1].heapIndex = 1;
+    constexpr auto usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    reportedBudget = 1620 * MiB;
+    reportedUsage = 1600 * MiB;
+    VkDeviceMemory placed = VK_NULL_HANDLE;
+    {
+        DeviceBuffer large(context, 176 * MiB, usage);
+        placed = MemoryOf(large.Handle());
+        Expect(mock.memoryTypes.at(placed) == 1, "a device buffer over the device-local budget was not placed in the host memory type");
+    }
+    Expect(!mock.memoryBytes.contains(placed) && mock.liveBuffers.empty(), "a device buffer placed in host memory was kept in the device pool after its release");
+    reportedUsage = 200 * MiB;
+    VkDeviceMemory device = VK_NULL_HANDLE;
+    {
+        DeviceBuffer large(context, 176 * MiB, usage);
+        device = MemoryOf(large.Handle());
+        Expect(mock.memoryTypes.at(device) == 0, "a device buffer within the device-local budget was not placed in device-local memory");
+    }
+    Expect(mock.memoryBytes.contains(device), "a device-local buffer was not kept in the device pool after its release");
+    DeviceBuffer again(context, 176 * MiB, usage);
+    Expect(MemoryOf(again.Handle()) == device, "a retained device-local buffer was not reused");
 }
 
 void SizeClassesAndDirections() {
@@ -487,8 +530,23 @@ void PartialSlabDoesNotRetry() {
 
 }
 
+void DeviceAllowance() {
+    Expect(BufferPool::DeviceRetainAllowance(100, 500, 1000, 200) == 400, "a heap below budget - margin leaves the pool its retained bytes plus the room to that line");
+    Expect(BufferPool::DeviceRetainAllowance(300, 900, 1000, 200) == 200, "a heap 100 over budget - margin takes 100 from the retained bytes");
+    Expect(BufferPool::DeviceRetainAllowance(50, 1000, 1000, 200) == 0, "a heap further over than the pool holds retains nothing");
+    Expect(BufferPool::DeviceRetainAllowance(5, 10, 100, 200) == 0, "a margin over the budget retains nothing once the heap is used");
+    Expect(BufferPool::VramDrawInputFits(100, 50, 200, 500, 1000, 200), "a draw input under the cap and the margin fits");
+    Expect(!BufferPool::VramDrawInputFits(160, 50, 200, 500, 1000, 200), "a draw input past the live cap does not fit");
+    Expect(!BufferPool::VramDrawInputFits(0, 300, 200, 0, 1000, 0), "a draw input larger than the cap does not fit");
+    Expect(!BufferPool::VramDrawInputFits(0, 50, 200, 760, 1000, 200), "a draw input that would cross budget - margin does not fit");
+    Expect(BufferPool::VramDrawInputFits(0, 50, 200, 750, 1000, 200), "a draw input that reaches budget - margin exactly fits");
+    Expect(!BufferPool::VramDrawInputFits(0, 50, 200, 1200, 1000, 0), "a heap over its budget takes no draw input");
+    Expect(BufferPool::VramDrawInputFits(0, 50, 200, 5000, 0, 200), "a heap without a reported budget is limited by the cap alone");
+}
+
 int main() {
     try {
+        DeviceAllowance();
         SizeClassesAndDirections();
         LargerClass();
         KeptUntilFence();
@@ -508,6 +566,7 @@ int main() {
         AllocationFailure(VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_DEVICE_LOST, true);
         SuccessfulAllocationKeepsPool();
         PartialSlabDoesNotRetry();
+        HostPlacement();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL: %s\n", error.what());
         return 1;

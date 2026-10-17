@@ -9,6 +9,7 @@ int APS5_VABI sceErrorDialogUpdateStatus(void);
 int APS5_VABI sceErrorDialogGetStatus(void);
 int APS5_VABI sceErrorDialogClose(void);
 int APS5_VABI sceErrorDialogTerminate(void);
+int APS5_VABI sceErrorDialogParamInitialize(void* param);
 }
 
 namespace {
@@ -34,11 +35,16 @@ struct ErrorDialogParam {
 int main() {
     ErrorDialogParam param{16, static_cast<std::int32_t>(0x80020001), 0, 0};
 
+    Require(sceErrorDialogGetStatus() == 0);
+    Require(sceErrorDialogUpdateStatus() == 0);
     Require(sceErrorDialogTerminate() == kErrNotInitialized);
+    Require(sceErrorDialogClose() == kErrInvalidState);
     Require(sceErrorDialogOpen(&param) == kErrInvalidState);
 
     Require(sceErrorDialogInitialize() == 0);
     Require(sceErrorDialogInitialize() == kErrAlreadyInitialized);
+    Require(sceErrorDialogGetStatus() == 1);
+    Require(sceErrorDialogUpdateStatus() == 1);
 
     Require(sceErrorDialogClose() == kErrInvalidState);
 
@@ -60,4 +66,15 @@ int main() {
 
     Require(sceErrorDialogTerminate() == 0);
     Require(sceErrorDialogTerminate() == kErrNotInitialized);
+    Require(sceErrorDialogGetStatus() == 0);
+    Require(sceErrorDialogUpdateStatus() == 0);
+    Require(sceErrorDialogClose() == kErrInvalidState);
+
+    Require(sceErrorDialogParamInitialize(nullptr) == kErrParam);
+    ErrorDialogParam initialized{-1, -1, -1, -1};
+    Require(sceErrorDialogParamInitialize(&initialized) == 0);
+    Require(initialized.size == 16 && initialized.error_code == 0 && initialized.user_id == 0 && initialized.reserved == 0);
+    Require(sceErrorDialogInitialize() == 0);
+    Require(sceErrorDialogOpen(&initialized) == 0);
+    Require(sceErrorDialogTerminate() == 0);
 }
