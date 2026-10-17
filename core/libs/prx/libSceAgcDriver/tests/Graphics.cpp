@@ -4782,6 +4782,20 @@ void storageTextureBudgetTests() {
     Require(StorageTextureBudget(memory, &reported) == 2 * GiB, "a device without a device-local heap does not keep 2 GiB of storage images");
 }
 
+void pressureStorageBudgetTests() {
+    using AgcDriver::Graphics::PressureStorageBudget;
+    constexpr std::uint64_t GiB = 1ull << 30u;
+    constexpr std::uint64_t MiB = 1ull << 20u;
+    constexpr std::uint64_t Heap = 8 * GiB;
+    constexpr std::uint64_t Reserve = 768 * MiB;
+    Require(PressureStorageBudget(1797 * MiB, 1000 * MiB, Heap, 4 * GiB, Reserve) == 1797 * MiB, "with gigabytes of headroom the storage image cache lost its usual budget");
+    Require(PressureStorageBudget(1797 * MiB, 1000 * MiB, Heap, Heap - Reserve - 200 * MiB, Reserve) == 1200 * MiB, "the cache may not grow into exactly the headroom above the reserve");
+    Require(PressureStorageBudget(1797 * MiB, 1700 * MiB, Heap, Heap - 300 * MiB, Reserve) == 1232 * MiB, "a card filled past the reserve does not shrink the cache by the shortfall");
+    Require(PressureStorageBudget(1797 * MiB, 600 * MiB, Heap, Heap, Reserve) == 512 * MiB, "a full card took the cache under its 512 MiB floor");
+    Require(PressureStorageBudget(1797 * MiB, 600 * MiB, Heap, Heap + GiB, Reserve) == 512 * MiB, "usage above the heap size took the cache under its floor");
+    Require(PressureStorageBudget(300 * MiB, 0, Heap, Heap, Reserve) == 300 * MiB, "the floor raised a budget that was already below it");
+}
+
 void sampledBudgetReportTests() {
     using AgcDriver::Graphics::SampledBudgetReportDue;
     using std::chrono::seconds;
@@ -7895,6 +7909,7 @@ int main(int argc, char** argv) {
         textureCacheBudgetTests();
         sampledTextureBudgetTests();
         storageTextureBudgetTests();
+        pressureStorageBudgetTests();
         sampledBudgetReportTests();
         meshArgumentTests();
         meshIndexBufferTests();

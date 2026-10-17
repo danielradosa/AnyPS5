@@ -39,7 +39,17 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <thread>
 #include "prx/libc/include/GuestAllocations.hpp"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <pdh.h>
+#include <pdhmsg.h>
+#include <cwchar>
+#endif
 
 namespace AgcDriver::Graphics {
 namespace {
@@ -518,6 +528,27 @@ std::uint64_t storageBudget(const Context& context) {
     cached.device = context.physical;
     cached.read = now;
     cached.budget = StorageTextureBudget(context.memory, &reported);
+    // APS5_VRAM_RESERVE_MIB (default 768, 0 = off): the storage image cache grows only into the device's
+    // physical headroom above this reserve, by the adapter's dedicated usage over all processes. The
+    // VK_EXT_memory_budget budget stays put while other processes (dwm, browsers) fill the card, and
+    // NVIDIA's heap usage leaves out the driver's own allocations (~1 GB on an 8 GB 4060), so past the
+    // card's size Windows demoted our VRAM and Astro's write-backs ran ~80x slower.
+    static const std::uint64_t reserve = [] {
+        const char* text = std::getenv("APS5_VRAM_RESERVE_MIB");
+        return (text != nullptr ? std::strtoull(text, nullptr, 10) : 768ull) << 20u;
+    }();
+    const auto heap = largestDeviceLocalHeap(context.memory);
+    const auto usage = reserve != 0 && heap ? AdapterDedicatedUsage() : std::nullopt;
+    if (usage) {
+        const auto normal = cached.budget;
+        const auto storage = storageCacheBytes();
+        cached.budget = PressureStorageBudget(normal, storage, context.memory.memoryHeaps[*heap].size, *usage, reserve);
+        static std::chrono::steady_clock::time_point reported{};
+        if (now - reported >= std::chrono::seconds(10)) {
+            reported = now;
+            std::fprintf(stderr, "[vram] adapter dedicated %llu of %llu MiB (all processes), storage image cache %llu MiB, budget %llu MiB (unpressed %llu)\n", static_cast<unsigned long long>(*usage >> 20u), static_cast<unsigned long long>(context.memory.memoryHeaps[*heap].size >> 20u), static_cast<unsigned long long>(storage >> 20u), static_cast<unsigned long long>(cached.budget >> 20u), static_cast<unsigned long long>(normal >> 20u));
+        }
+    }
     return cached.budget;
 }
 
@@ -1022,6 +1053,76 @@ std::uint64_t StorageTextureBudget(const VkPhysicalDeviceMemoryProperties& memor
     const auto heap = largestDeviceLocalHeap(memory);
     if (reported == nullptr || !heap || reported->heapBudget[*heap] == 0) return TextureCacheBudget(memory);
     return std::max<std::uint64_t>(512ull << 20u, std::min<std::uint64_t>(TextureCacheBudget(memory), reported->heapBudget[*heap] / 4u));
+}
+
+std::uint64_t PressureStorageBudget(std::uint64_t normal, std::uint64_t cached, std::uint64_t heapBytes, std::uint64_t adapterUsage, std::uint64_t reserve) {
+    const auto floor = std::min<std::uint64_t>(normal, 512ull << 20u);
+    const auto headroom = heapBytes > adapterUsage ? heapBytes - adapterUsage : 0u;
+    const auto room = headroom >= reserve ? cached + (headroom - reserve) : cached - std::min(cached, reserve - headroom);
+    return std::clamp(room, floor, normal);
+}
+
+namespace {
+
+std::atomic<std::uint64_t> adapterUsageBytes{0};
+std::atomic<bool> adapterUsageKnown{false};
+
+}
+
+// Samples the adapter's dedicated usage over all processes once a second (the "GPU Adapter Memory" counter
+// Task Manager shows), on Windows only.
+void StartVramMonitor([[maybe_unused]] std::uint32_t luidLow, [[maybe_unused]] std::int32_t luidHigh) {
+#ifdef _WIN32
+    static std::once_flag started;
+    std::call_once(started, [luidLow, luidHigh] {
+        std::thread([luidLow, luidHigh] {
+            // The thread never ends: it keeps this library loaded.
+            HMODULE self = nullptr;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&AdapterDedicatedUsage), &self);
+            const HMODULE pdh = LoadLibraryW(L"pdh.dll");
+            if (pdh == nullptr) return;
+            const auto open = reinterpret_cast<decltype(&PdhOpenQueryW)>(reinterpret_cast<void*>(GetProcAddress(pdh, "PdhOpenQueryW")));
+            const auto add = reinterpret_cast<decltype(&PdhAddEnglishCounterW)>(reinterpret_cast<void*>(GetProcAddress(pdh, "PdhAddEnglishCounterW")));
+            const auto collect = reinterpret_cast<decltype(&PdhCollectQueryData)>(reinterpret_cast<void*>(GetProcAddress(pdh, "PdhCollectQueryData")));
+            const auto values = reinterpret_cast<decltype(&PdhGetFormattedCounterArrayW)>(reinterpret_cast<void*>(GetProcAddress(pdh, "PdhGetFormattedCounterArrayW")));
+            PDH_HQUERY query = nullptr;
+            PDH_HCOUNTER counter = nullptr;
+            if (open == nullptr || add == nullptr || collect == nullptr || values == nullptr || open(nullptr, 0, &query) != ERROR_SUCCESS || add(query, L"\\GPU Adapter Memory(*)\\Dedicated Usage", 0, &counter) != ERROR_SUCCESS) {
+                std::fprintf(stderr, "[vram] the GPU Adapter Memory counter is unavailable: the storage image cache keeps its usual budget\n");
+                return;
+            }
+            wchar_t wanted[40];
+            std::swprintf(wanted, 40, L"luid_0x%08x_0x%08x_", static_cast<unsigned>(luidHigh), static_cast<unsigned>(luidLow));
+            const auto wantedLength = std::wcslen(wanted);
+            std::vector<std::byte> buffer;
+            for (;;) {
+                DWORD bytes = 0;
+                DWORD count = 0;
+                if (collect(query) == ERROR_SUCCESS && static_cast<DWORD>(values(counter, PDH_FMT_LARGE, &bytes, &count, nullptr)) == static_cast<DWORD>(PDH_MORE_DATA)) {
+                    buffer.resize(bytes);
+                    auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buffer.data());
+                    if (values(counter, PDH_FMT_LARGE, &bytes, &count, items) == ERROR_SUCCESS) {
+                        std::uint64_t total = 0;
+                        bool found = false;
+                        for (DWORD item = 0; item < count; ++item) {
+                            if (_wcsnicmp(items[item].szName, wanted, wantedLength) != 0) continue;
+                            total += static_cast<std::uint64_t>(std::max<LONGLONG>(items[item].FmtValue.largeValue, 0));
+                            found = true;
+                        }
+                        adapterUsageBytes.store(total, std::memory_order_relaxed);
+                        adapterUsageKnown.store(found, std::memory_order_release);
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }).detach();
+    });
+#endif
+}
+
+std::optional<std::uint64_t> AdapterDedicatedUsage() {
+    if (!adapterUsageKnown.load(std::memory_order_acquire)) return std::nullopt;
+    return adapterUsageBytes.load(std::memory_order_relaxed);
 }
 
 std::uint64_t SampledTextureBudget(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported, std::uint64_t textureBytes) {

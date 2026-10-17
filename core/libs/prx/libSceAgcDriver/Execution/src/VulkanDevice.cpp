@@ -1344,6 +1344,18 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     state->drawIndirectCount = hasExtension(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
     if (state->drawIndirectCount) deviceExtensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
     state->memoryBudget = hasExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    if (!compileOnly) {
+        VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+        VkPhysicalDeviceProperties2 idProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &id};
+        state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &idProperties);
+        if (id.deviceLUIDValid) {
+            std::uint32_t low = 0;
+            std::int32_t high = 0;
+            std::memcpy(&low, id.deviceLUID, sizeof(low));
+            std::memcpy(&high, id.deviceLUID + sizeof(low), sizeof(high));
+            Graphics::StartVramMonitor(low, high);
+        }
+    }
     // Guest memory is host memory: importing it lets address-based shaders use it in place instead of
     // copying every registered allocation per draw.
     if (hasExtension(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) && std::getenv("APS5_NO_HOST_IMPORT") == nullptr) {
