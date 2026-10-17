@@ -411,7 +411,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
             static std::mutex seenMutex;
             static std::set<std::uint64_t> seen;
             std::lock_guard seenLock(seenMutex);
-            if (seen.insert(result.PipelineVariantId()).second) std::fprintf(stderr, "[draw-shader] fragment variant 0x%llx = program 0x%llx\n", static_cast<unsigned long long>(result.PipelineVariantId()), static_cast<unsigned long long>(program.binary.codeAddress));
+            if (seen.insert(result.PipelineVariantId()).second) std::fprintf(stderr, "[draw-shader] fragment variant 0x%llx = program 0x%llx (first stage 0x%llx)\n", static_cast<unsigned long long>(result.PipelineVariantId()), static_cast<unsigned long long>(program.binary.codeAddress), static_cast<unsigned long long>(programs.front().binary.codeAddress));
         }
         pushCursorBytes += static_cast<std::uint32_t>(result.pushConstants.size());
     }
