@@ -1704,6 +1704,14 @@ bool HtileFillCovers(std::uint64_t htile, VkExtent2D extent, std::uint64_t addre
     return address + bytes - htile >= HtileMetadataBytes(extent);
 }
 
+bool OverlapsDepthHtile(std::uint64_t address, std::size_t bytes) {
+    std::lock_guard lock(surfacesMutex());
+    return std::ranges::any_of(surfaces(), [&](const auto& surface) {
+        const auto& target = surface->target;
+        return surface->active->load(std::memory_order_acquire) && target.samples == 1u && target.htileAddress != 0u && address < target.htileAddress + HtileMetadataBytes(target.extent) && target.htileAddress < address + bytes;
+    });
+}
+
 void NoteDepthMetadataFill(std::uint64_t address, std::size_t bytes, std::uint32_t pattern) {
     std::lock_guard lock(surfacesMutex());
     forgetHtileReads(address, bytes);

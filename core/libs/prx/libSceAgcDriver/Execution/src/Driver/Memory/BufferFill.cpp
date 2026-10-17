@@ -350,12 +350,19 @@ void Driver::storeBufferFill(std::uint32_t queueId, std::uint64_t base, std::siz
         if (Graphics::StorageTexture::FlushPending(base, bytes, nullptr, "buffer fill", Graphics::PublishScope::PartialUnits)) ++flushed;
     }
     phase(FillFlush);
-    const bool stored = cleared || absorbed || localDevice->FillBuffer(base, bytes, pattern);
+    // A uniform fill over a depth surface's HTILE (a fast clear) is stored on the CPU at once when
+    // CopyBuffer's CPU rule holds (VulkanDevice::AndOrOnCpu): the next depth draw's HTILE read and
+    // store-back (DepthSurfaceView) then finds no pending GPU write to wait for (~7-12 ms each).
+    // APS5_NO_HTILE_CLEAR_HLE=1 fills it on the GPU as before.
+    static const bool htileOnCpu = std::getenv("APS5_NO_HTILE_CLEAR_HLE") == nullptr;
+    const bool htileStored = htileOnCpu && !cleared && !absorbed && uniform && coverage.image == nullptr && bytes <= (4u << 20u) && Graphics::OverlapsDepthHtile(base, bytes) && localDevice->AndOrOnCpu(base, bytes, 0u, pattern[0]) == 0;
+    if (htileStored) ++cpuFills;
+    const bool stored = cleared || absorbed || htileStored || localDevice->FillBuffer(base, bytes, pattern);
     phase(FillDevice);
-    if (stored && !cleared && !absorbed) {
+    if (stored && !cleared && !absorbed && !htileStored) {
         if (const auto filled = KeysFillMemo(pattern, uniformKeysFill, memoryValueFill)) Graphics::NoteKeysFillOnGpu(base, bytes, *filled);
     }
-    if (profile && stored && !cleared && !absorbed) {
+    if (profile && stored && !cleared && !absorbed && !htileStored) {
         ++(uniform ? uniformFills : patternFills);
         (uniform ? uniformBytes : patternBytes) += bytes;
         if (!uniform) chainCopies += static_cast<std::uint64_t>(std::bit_width((bytes / 16) - 1));
