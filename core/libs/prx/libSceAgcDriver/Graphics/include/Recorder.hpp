@@ -571,6 +571,9 @@ private:
         std::size_t drawDataUsed = 0;
         std::vector<std::function<void()>> completions;
         std::vector<std::pair<std::uint64_t, std::uint64_t>> writes;
+        // The hull of `writes`: overlaps() rejects a range outside it without the scan.
+        std::uint64_t writesLow = ~std::uint64_t{0};
+        std::uint64_t writesHigh = 0;
         std::vector<std::uint64_t> writeNotes;
         std::vector<std::int16_t> writeValues;
         // In-place reads (see NotePendingRead), dying with the batch: a finished batch's reads are done.
