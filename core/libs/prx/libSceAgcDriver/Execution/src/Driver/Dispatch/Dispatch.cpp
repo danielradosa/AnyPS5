@@ -12,10 +12,14 @@
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <set>
+#include <string>
 #include <tuple>
 #include <stdexcept>
 
@@ -143,7 +147,38 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
                 std::lock_guard lock(seenMutex);
                 if (seen.size() < 64 && seen.insert({htile, userData[4], userData[5], threads * 16u}).second) std::fprintf(stderr, "[htile-clear] 0x%llx: %llu bytes (native %zu), word = (old & 0x%08x) | 0x%08x\n", static_cast<unsigned long long>(htile), static_cast<unsigned long long>(threads * 16u), nativeBytes, userData[5], userData[4]);
             }
-            Graphics::NoteHtileDepthClear(htile, static_cast<std::size_t>(threads * 16u), nativeBytes);
+            const bool plain = Graphics::NoteHtileDepthClear(htile, static_cast<std::size_t>(threads * 16u), nativeBytes);
+            // The kernel's effect, word = (word & userData[5]) | userData[4] over its whole range, stored
+            // on the CPU at once when CopyBuffer's CPU rule holds for the HTILE (VulkanDevice::AndOrOnCpu):
+            // the next depth draw's HTILE read and store-back (DepthSurfaceView) then finds no pending GPU
+            // write to wait for. APS5_NO_HTILE_CLEAR_HLE=1 runs the kernel on the GPU as before.
+            static const bool clearHle = std::getenv("APS5_NO_HTILE_CLEAR_HLE") == nullptr;
+            if (clearHle && plain && !pipelineCandidate && nativeBytes != 0 && nativeBytes == threads * 16u && GuestMemory::Accessible(reinterpret_cast<const void*>(htile), nativeBytes, true)) {
+                GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Fill);
+                std::unique_lock gpuLock(GuestMemory::GpuMutex());
+                recordLabelsForPacket(localDevice.get(), submission.queue);
+                if (submission.queue == 0) localDevice->ReapRecorded();
+                const auto refusal = localDevice->AndOrOnCpu(htile, nativeBytes, userData[5], userData[4]);
+                if (profiled) {
+                    static std::array<std::atomic<std::uint64_t>, 16> outcomes{};
+                    static std::atomic<std::int64_t> lastReport{0};
+                    outcomes[static_cast<std::size_t>(std::clamp(refusal, 0, 15))].fetch_add(1, std::memory_order_relaxed);
+                    const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                    auto last = lastReport.load(std::memory_order_relaxed);
+                    if (now - last >= 10 && lastReport.compare_exchange_strong(last, now)) {
+                        static constexpr const char* names[] = {"stored on the CPU", "size", "image", "source pending", "source unsettled", "pending write", "unsettled write", "label", "reader", "shadow"};
+                        std::string line;
+                        for (std::size_t i = 0; i < std::size(names); ++i) line += " " + std::string(names[i]) + " " + std::to_string(outcomes[i].exchange(0));
+                        std::fprintf(stderr, "[htile-clear] (10 s):%s\n", line.c_str());
+                    }
+                }
+                if (refusal == 0) {
+                    gpuLock.unlock();
+                    noteForeignWriter(htile, htile + nativeBytes, submission.queue);
+                    pendingDispatchPhases().outcome = DispatchOutcome::FillHle;
+                    return;
+                }
+            }
         }
         if (!partialLastGroup && indirectArguments == 0 && copyBuffer(queue, submission.queue, packet, std::span(snapshot.code).subspan(codeOffset), userData, compute, localDevice, address)) {
             pendingDispatchPhases().outcome = DispatchOutcome::CopyHle;

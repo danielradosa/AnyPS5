@@ -165,6 +165,11 @@ public:
     };
     using CopyWriterNote = std::function<void(std::span<const std::byte> value, std::uint64_t generation)>;
     CopyOutcome CopyBuffer(std::uint64_t destination, std::uint64_t source, std::size_t bytes, std::size_t cpuMax, std::size_t gpuMax, std::size_t knownMax, std::uint64_t programAddress, std::uint32_t queue, const CopyWriterNote& noteWriter);
+    // Stores word = (word & mask) | value over the dwords of [address, address + bytes) on the CPU at
+    // once when CopyBuffer's CPU rule holds for the range as source and destination (no pending
+    // image results or shadow, no unsettled recorded write, completion store or label, no unexecuted
+    // in-place reader); returns the CopyOutcome refusal, None when stored. Caller holds the GpuMutex.
+    int AndOrOnCpu(std::uint64_t address, std::size_t bytes, std::uint32_t mask, std::uint32_t value);
     // APS5_COPY_VERIFY=1 totals: CPU copies verified, whose source bytes changed over the sync (a
     // producer the rule missed), whose destination bytes were overwritten (a store the rule
     // missed), and whose destination an unsignaled batch read in place (the rule's own answer

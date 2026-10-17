@@ -1,3 +1,4 @@
+#include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
@@ -15,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -67,11 +69,21 @@ void Run(AgcDriver::VulkanDevice& device, GuestBlock& guest, std::uint32_t waveS
     const auto result = ShaderRecompiler::Recompile(request);
     device.Dispatch(result, groups, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));
     device.WaitIdle();
-    for (std::size_t index = 0; index < BlockBytes / 4u; ++index) {
-        const auto original = static_cast<std::uint32_t>(index * 0x9e3779b1u);
-        const auto expected = index < words ? (original & keep) | value : original;
-        Require(data[index] == expected, "a masked global_store_dwordx4 left dword " + std::to_string(index) + " incorrect");
+    const auto check = [&](const char* what) {
+        for (std::size_t index = 0; index < BlockBytes / 4u; ++index) {
+            const auto original = static_cast<std::uint32_t>(index * 0x9e3779b1u);
+            const auto expected = index < words ? (original & keep) | value : original;
+            Require(data[index] == expected, std::string(what) + " left dword " + std::to_string(index) + " incorrect");
+        }
+    };
+    check("a masked global_store_dwordx4");
+    // The driver's CPU form of the HTILE clear kernel (Dispatch.cpp, VulkanDevice::AndOrOnCpu) stores the same words.
+    for (std::size_t index = 0; index < BlockBytes / 4u; ++index) data[index] = static_cast<std::uint32_t>(index * 0x9e3779b1u);
+    {
+        std::lock_guard lock(AgcDriver::GuestMemory::GpuMutex());
+        Require(device.AndOrOnCpu(address, words * 4u, keep, value) == 0, "the idle device refused the CPU masked store");
     }
+    check("the CPU masked store");
 }
 
 }

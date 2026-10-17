@@ -30,7 +30,9 @@ bool DepthPlaneView(const Context& context, std::span<const std::uint32_t> words
 bool DepthSurfaceAt(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource);
 std::uint64_t HtileDepthClearAddress(std::span<const std::uint32_t> code, std::span<const std::uint32_t> userData, const std::array<std::uint32_t, 3>& numThreads);
 std::size_t HtileDepthClearBytes_nid_no_patch(std::span<const std::uint32_t> code, std::span<const std::uint32_t> userData, const ShaderRecompiler::ShaderComputeStageInfo& compute, std::span<const std::uint32_t> packet, std::uint64_t indirectArguments);
-void NoteHtileDepthClear(std::uint64_t htileAddress, std::size_t bytes, std::size_t nativeBytes = 0u);
+// False when the clear touches a native multisample depth surface's sampled metadata (its clear
+// generation is taken before the kernel's write lands), so the kernel must run as recorded.
+bool NoteHtileDepthClear(std::uint64_t htileAddress, std::size_t bytes, std::size_t nativeBytes = 0u);
 bool DepthStencilPlaneAt(std::uint64_t address);
 struct MemoryValueFill {
     std::uint64_t address;

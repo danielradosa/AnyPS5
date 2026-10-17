@@ -2467,6 +2467,25 @@ VulkanDevice::CopyAliasing VulkanDevice::CopyAliasCounts() {
     return {copiesAliased.load(std::memory_order_relaxed), copyAliasCreated.load(std::memory_order_relaxed), copyAliasNoSource.load(std::memory_order_relaxed), copyAliasShape.load(std::memory_order_relaxed), copyAliasRefused.load(std::memory_order_relaxed)};
 }
 
+int VulkanDevice::AndOrOnCpu(std::uint64_t address, std::size_t bytes, std::uint32_t mask, std::uint32_t value) {
+    if (!state->recorder || bytes == 0 || bytes % 4u != 0 || address % 4u != 0) return CopyOutcome::Size;
+    auto& recorder = *state->recorder;
+    const std::array<std::pair<std::uint64_t, std::uint64_t>, 1> ranges{{{address, address + bytes}}};
+    if (Graphics::StorageTexture::AnyPendingOverlaps(ranges)) return CopyOutcome::Image;
+    if (Graphics::AnyShadowedOverlaps(address, bytes)) return CopyOutcome::Shadow;
+    if (recorder.PendingWriteOverlaps(address, bytes)) {
+        if (!recorder.PendingWriteSettled(address, bytes)) return CopyOutcome::DestinationPending;
+        if (state->CopiedWriterOverlaps(address, bytes) || (Graphics::Recorder::PendingCompletionLabels() != 0 && recorder.CompletionLabelIn(address, bytes))) return CopyOutcome::DestinationUnsettled;
+    }
+    if (recorder.PendingLabelIn(address, bytes)) return CopyOutcome::Label;
+    if (Graphics::Recorder::ReadTracking() ? recorder.PendingReadOverlaps(address, bytes) : !recorder.Idle()) return CopyOutcome::Reader;
+    GuestMemory::StoreOwnBytes(address, bytes, [&] {
+        auto* words = reinterpret_cast<std::uint32_t*>(address);
+        for (std::size_t i = 0; i < bytes / 4u; ++i) words[i] = (words[i] & mask) | value;
+    });
+    return CopyOutcome::None;
+}
+
 VulkanDevice::CopyOutcome VulkanDevice::CopyBuffer(std::uint64_t destination, std::uint64_t source, std::size_t bytes, std::size_t cpuMax, std::size_t gpuMax, std::size_t knownMax, std::uint64_t programAddress, std::uint32_t queue, const CopyWriterNote& noteWriter) {
     CopyOutcome outcome{2, false, 0, CopyOutcome::None, false, false, 0, 0, 0, 0, false};
     if (!state->recorder || bytes == 0) return outcome;
