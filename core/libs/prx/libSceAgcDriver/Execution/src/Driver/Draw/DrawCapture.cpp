@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -101,6 +103,19 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
         const auto waited = std::min(Graphics::Recorder::ThreadWaitedMs() - waitedBefore, phaseMs[DrawRowCapture]);
         phaseMs[DrawRowCapture] -= waited;
         phaseMs[DrawRowCaptureHookWaits] += waited;
+    }
+    // APS5_DUMP_PROGRAMS=0x5002bac00,... (diagnostic): the request of each listed draw program, once, for offline replay.
+    static const std::string dumpPrograms = [] {
+        const char* text = std::getenv("APS5_DUMP_PROGRAMS");
+        return text != nullptr ? "," + std::string(text) + "," : std::string();
+    }();
+    if (!dumpPrograms.empty()) {
+        char key[32];
+        std::snprintf(key, sizeof(key), ",0x%llx,", static_cast<unsigned long long>(program.binary.codeAddress));
+        static std::mutex dumpedMutex;
+        static std::set<std::uint64_t> dumped;
+        std::lock_guard dumpedLock(dumpedMutex);
+        if (dumpPrograms.find(key) != std::string::npos && dumped.insert(program.binary.codeAddress).second) static_cast<void>(dumpRequest(program.binary.codeAddress, request));
     }
     if (dumpTarget != 0) {
 
