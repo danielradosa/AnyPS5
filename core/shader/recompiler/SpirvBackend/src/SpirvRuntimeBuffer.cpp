@@ -171,6 +171,17 @@ std::uint32_t hostInBounds(SpirvEmitterState& state, const MemoryResourceAccess&
     return Binary(state, spv::OpLogicalOr, TypeBool(state), Unary(state, spv::OpLogicalNot, TypeBool(state), unaligned), checked);
 }
 
+// A pure read of a direct buffer (not BDA): with robustBuffers it is safe at any address, so a condition on it
+// (lane active, descriptor valid, guest bounds) selects its value instead of branching around it, and the
+// shader's loads can issue together.
+template<typename TFunction>
+std::uint32_t readOrZeroIf(SpirvValueEmitContext& context, const IrValue& instruction, std::uint32_t type, std::uint32_t zero, std::uint32_t condition, TFunction&& read) {
+    auto& state = context.state;
+    if (!state.robustBuffers || context.Memory(instruction).gpuDescriptor) return EmitValueOrDefaultIfCondition(state, condition, type, zero, std::forward<TFunction>(read));
+    const auto value = read();
+    return Select(state, type, condition, value, zero);
+}
+
 std::uint32_t readBuffer(SpirvValueEmitContext& context, const IrValue& instruction, std::uint32_t address, std::uint32_t bits) {
     if (context.Memory(instruction).gpuDescriptor) return EmitBdaRead(context, instruction, address, bits);
     auto& state = context.state;
@@ -353,7 +364,7 @@ std::uint32_t formatted(SpirvValueEmitContext& context, const IrValue& instructi
         return ConstantU32(state, 0u);
     }
     for (std::uint32_t component = 0; component < info.componentCount; ++component) {
-        values[component] = EmitValueOrZeroIfCondition(state, both(state, inBounds, required[component]), [&] {
+        values[component] = readOrZeroIf(context, instruction, TypeU32(state), ConstantU32(state, 0u), both(state, inBounds, required[component]), [&] {
             const auto bits = info.componentBits[component];
             auto raw = readBuffer(context, instruction, addresses[component].guest, info.packedBitfield ? 32u : bits);
             if (bits != 32u) {
@@ -730,14 +741,14 @@ std::uint32_t EmitRuntimeBufferLoad(SpirvValueEmitContext& context, const IrValu
     const auto& memory = context.Memory(instruction);
     const auto type = components == 1u ? TypeU32(state) : TypeU32Composite(state, components);
     const auto zero = components == 1u ? ConstantU32(state, 0u) : ConstantU32CompositeZero(state, components);
-    return EmitValueOrDefaultIfCondition(state, context.Arg(instruction, instruction.ArgumentCount() - 1u), type, zero, [&] {
+    return readOrZeroIf(context, instruction, type, zero, context.Arg(instruction, instruction.ArgumentCount() - 1u), [&] {
         const auto resource = descriptor(context, instruction);
-        if (memory.formatted) return EmitValueOrDefaultIfCondition(state, resource.valid, type, zero, [&] { return formattedDispatch(context, instruction, resource, components, false, 0u); });
+        if (memory.formatted) return readOrZeroIf(context, instruction, type, zero, resource.valid, [&] { return formattedDispatch(context, instruction, resource, components, false, 0u); });
         const auto readComponents = [&] {
             std::array<std::uint32_t, 4> values{};
             for (std::uint32_t component = 0; component < components; ++component) {
                 const auto access = address(context, instruction, resource, component * 4u, memory.dataBits / 8u);
-                values[component] = EmitValueOrZeroIfCondition(state, access.inBounds, [&] { return readBuffer(context, instruction, access.guest, memory.dataBits); });
+                values[component] = readOrZeroIf(context, instruction, TypeU32(state), ConstantU32(state, 0u), access.inBounds, [&] { return readBuffer(context, instruction, access.guest, memory.dataBits); });
             }
             return composite(state, components, values);
         };
@@ -787,7 +798,7 @@ std::uint32_t EmitRuntimeScalarBufferLoad(SpirvValueEmitContext& context, const 
     const auto byte = EmitAndConstant(state, address, ~3u);
     const auto offset = Unary(state, spv::OpUConvert, u64, byte);
     const auto inBounds = both(state, noCarry, both(state, resource.valid, Binary(state, spv::OpULessThanEqual, TypeBool(state), Binary(state, spv::OpIAdd, u64, offset, BdaConstant(state, 4u)), size)));
-    if (!context.Memory(instruction).gpuDescriptor) return EmitValueOrZeroIfCondition(state, inBounds, [&] { return readBuffer(context, instruction, byte, 32u); });
+    if (!context.Memory(instruction).gpuDescriptor) return readOrZeroIf(context, instruction, TypeU32(state), ConstantU32(state, 0u), inBounds, [&] { return readBuffer(context, instruction, byte, 32u); });
     return EmitValueOrZeroIfCondition(state, inBounds, [&] { return readBuffer(context, instruction, AddBdaAddress(context, instruction, resource.base, offset, false), 32u); });
 }
 
