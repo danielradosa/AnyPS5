@@ -104,7 +104,7 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
         phaseMs[DrawRowCapture] -= waited;
         phaseMs[DrawRowCaptureHookWaits] += waited;
     }
-    // APS5_DUMP_PROGRAMS=0x5002bac00,... (diagnostic): the request of each listed draw program, once, for offline replay.
+    // APS5_DUMP_PROGRAMS=0x5002bac00,... or all (diagnostic): the request of each listed draw program, once, for offline replay.
     static const std::string dumpPrograms = [] {
         const char* text = std::getenv("APS5_DUMP_PROGRAMS");
         return text != nullptr ? "," + std::string(text) + "," : std::string();
@@ -115,7 +115,7 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
         static std::mutex dumpedMutex;
         static std::set<std::uint64_t> dumped;
         std::lock_guard dumpedLock(dumpedMutex);
-        if (dumpPrograms.find(key) != std::string::npos && dumped.insert(program.binary.codeAddress).second) static_cast<void>(dumpRequest(program.binary.codeAddress, request));
+        if ((dumpPrograms == ",all," || dumpPrograms.find(key) != std::string::npos) && dumped.insert(program.binary.codeAddress).second) static_cast<void>(dumpRequest(program.binary.codeAddress, request));
     }
     if (dumpTarget != 0) {
 
