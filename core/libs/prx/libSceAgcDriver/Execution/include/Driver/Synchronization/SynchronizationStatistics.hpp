@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <span>
 
 namespace AgcDriver::DriverDetail {
 
@@ -52,6 +53,12 @@ extern std::atomic<std::uint64_t> pollLabelRecords, hookLabelRecords;
 SubmissionCosts& submissionCosts(std::uint32_t queue);
 
 void reportSync();
+
+// APS5_PROFILE_DMA_CHAIN=1 (with APS5_PROFILE_DRAW): every DMA_DATA and memory WAIT_REG_MEM by queue, source and
+// destination (select, address or GDS offset, bytes), with how often its source / destination had recorded GPU writes
+// pending; the [dmachain] line lists the most frequent ones every 10 s, so chains (one's destination = the next one's
+// source or wait address) can be read off.
+void noteDmaChain(std::uint32_t queue, std::uint32_t opcode, std::span<const std::uint32_t> packet);
 
 void countLabelOutcome(int reason);
 

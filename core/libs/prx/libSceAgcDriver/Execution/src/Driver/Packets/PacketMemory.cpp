@@ -128,6 +128,8 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         }
     }
 
+    if (profile) noteDmaChain(submission.queue, opcode, packet);
+
     static const bool cpuStores = std::getenv("APS5_CPU_STORES") != nullptr;
     if (!drainAll && !cpuStores && (opcode == 0x40 || opcode == 0x50 || opcode == 0x83)) {
         constexpr std::size_t gpuStoreLimit = 65536;
