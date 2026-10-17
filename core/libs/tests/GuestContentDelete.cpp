@@ -81,7 +81,7 @@ int main() {
     Require(std::filesystem::exists(clipThumbnail), "the clip's thumbnail is in the library");
 
     Require(Throws<std::logic_error>([&] { sceContentDeleteByPath(picture); }), "deleting before initialization");
-    Require(Throws<std::runtime_error>([] { sceContentDeleteById(1); }), "deleting an id is not implemented");
+    Require(Throws<std::logic_error>([] { sceContentDeleteById(1); }), "deleting an id before initialization");
     Require(Throws<std::invalid_argument>([] { sceContentDeleteInitialize(nullptr); }), "a null initialization parameter");
     ContentDeleteInitParam init{};
     init.heap_size = 0x10000;
@@ -100,7 +100,7 @@ int main() {
     Require(Throws<std::logic_error>([] { sceContentDeleteByPath("/content_delete_source.bin"); }), "a file outside the library");
     Require(Throws<std::logic_error>([] { sceContentDeleteByPath("/_ce/../content_delete_source.bin"); }), "a path leaving the library");
     Require(Throws<std::logic_error>([] { sceContentDeleteByPath("/_ce/"); }), "the library itself");
-    Require(Throws<std::runtime_error>([] { sceContentDeleteById(1); }), "deleting an id is not implemented");
+    Require(Throws<std::logic_error>([] { sceContentDeleteById(1); }) && Throws<std::logic_error>([] { sceContentDeleteById(-1); }), "no content id is in the library");
     Require(std::filesystem::exists(ResolvePath_nid_no_patch("/content_delete_source.bin")), "the source file stays");
     Require(std::filesystem::exists(otherPath), "the other picture still stays");
 
