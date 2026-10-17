@@ -14,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <limits>
 #include <shared_mutex>
 #include <cstdio>
@@ -1190,17 +1191,70 @@ bool RoutesToNativeDepthOwner(const DepthTarget& target) {
     return std::ranges::any_of(depthGuards(), [&](const auto& range) { return range.active->load(std::memory_order_acquire) && target.htileAddress < range.address + range.bytes && range.address < target.htileAddress + bytes; });
 }
 
+// The cost of DepthSurfaceView per call (APS5_PROFILE_DRAW): one [depthview] line per 10 s.
+struct DepthViewProfile {
+    std::atomic<std::uint64_t> calls{0}, totalNs{0}, beforeLocksNs{0}, lockNs{0}, collectNs{0}, pendingNs{0}, pendingTrue{0}, memoNs{0}, memoHits{0}, reads{0}, readNs{0};
+    std::atomic<std::int64_t> lastReport{0};
+};
+
+DepthViewProfile& depthViewProfile() {
+    static DepthViewProfile profile;
+    return profile;
+}
+
+bool depthViewProfiled() {
+    static const bool profiled = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    return profiled;
+}
+
+std::uint64_t depthViewNow() {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void reportDepthView(std::uint64_t now) {
+    auto& p = depthViewProfile();
+    auto last = p.lastReport.load(std::memory_order_relaxed);
+    if (last == 0) {
+        p.lastReport.compare_exchange_strong(last, static_cast<std::int64_t>(now));
+        return;
+    }
+    if (now - static_cast<std::uint64_t>(last) < 10'000'000'000ull || !p.lastReport.compare_exchange_strong(last, static_cast<std::int64_t>(now))) return;
+    const auto calls = p.calls.exchange(0);
+    const auto us = [&](std::atomic<std::uint64_t>& ns) { return calls == 0 ? 0.0 : static_cast<double>(ns.exchange(0)) / 1e3 / static_cast<double>(calls); };
+    const auto total = us(p.totalNs), before = us(p.beforeLocksNs), locks = us(p.lockNs), collect = us(p.collectNs), pending = us(p.pendingNs), memo = us(p.memoNs), read = us(p.readNs);
+    std::fprintf(stderr, "[depthview] (10 s) %llu calls at %.1f us: before the locks %.1f (htile collect %.1f, pending check %.1f with %llu pending, memo %.1f with %llu hits, %llu full reads %.1f), lock waits %.1f, under the locks %.1f\n", static_cast<unsigned long long>(calls), total, before, collect, pending, static_cast<unsigned long long>(p.pendingTrue.exchange(0)), memo, static_cast<unsigned long long>(p.memoHits.exchange(0)), static_cast<unsigned long long>(p.reads.exchange(0)), read, locks, total - before - locks);
+}
+
 VkImageAspectFlags storeBackClearedHtile(const Context& context, const DepthTarget& target) {
     if (target.htileAddress == 0) return 0;
+    const bool profiled = depthViewProfiled();
+    auto& profile = depthViewProfile();
+    auto mark = profiled ? depthViewNow() : 0;
+    const auto lap = [&](std::atomic<std::uint64_t>& into) {
+        if (!profiled) return;
+        const auto now = depthViewNow();
+        into.fetch_add(now - mark, std::memory_order_relaxed);
+        mark = now;
+    };
     const auto bytes = static_cast<std::size_t>(HtileMetadataBytes(target.extent));
     if (!GuestMemory::Accessible(reinterpret_cast<const void*>(target.htileAddress), bytes, true)) return 0;
     const auto collected = GuestMemory::CollectWrites(target.htileAddress, bytes);
+    lap(profile.collectNs);
     auto* recorder = RecorderFor(context);
-    if (recorder == nullptr || !recorder->PendingWriteOverlaps(target.htileAddress, bytes)) {
+    const bool pending = recorder != nullptr && recorder->PendingWriteOverlaps(target.htileAddress, bytes);
+    lap(profile.pendingNs);
+    if (pending && profiled) profile.pendingTrue.fetch_add(1, std::memory_order_relaxed);
+    if (!pending) {
         std::lock_guard lock(htileReadsMutex());
         const auto found = htileReads().find(target.htileAddress);
-        if (found != htileReads().end() && found->second != 0 && GuestMemory::UnchangedSince(target.htileAddress, bytes, found->second)) return 0;
+        if (found != htileReads().end() && found->second != 0 && GuestMemory::UnchangedSince(target.htileAddress, bytes, found->second)) {
+            lap(profile.memoNs);
+            if (profiled) profile.memoHits.fetch_add(1, std::memory_order_relaxed);
+            return 0;
+        }
     }
+    lap(profile.memoNs);
+    if (profiled) profile.reads.fetch_add(1, std::memory_order_relaxed);
     std::vector<std::uint32_t> words(bytes / 4u);
     GuestMemory::Read(target.htileAddress, std::as_writable_bytes(std::span(words)), 4);
     const bool uniform = std::all_of(words.begin(), words.end(), [&](std::uint32_t word) { return word == words.front(); });
@@ -1214,6 +1268,7 @@ VkImageAspectFlags storeBackClearedHtile(const Context& context, const DepthTarg
     }
     std::lock_guard lock(htileReadsMutex());
     htileReads()[target.htileAddress] = generation;
+    lap(profile.readNs);
     return cleared;
 }
 }
@@ -1339,9 +1394,27 @@ float HostDepthBiasConstant(const Context& context, VkFormat format, float const
 }
 
 VkImageView DepthSurfaceView(const Context& context, const DepthTarget& target) {
+    const bool profiled = depthViewProfiled();
+    const auto start = profiled ? depthViewNow() : 0;
     const auto htileCleared = RoutesToNativeDepthOwner(target) ? VkImageAspectFlags{0} : storeBackClearedHtile(context, target);
+    const auto beforeLocks = profiled ? depthViewNow() : 0;
     std::lock_guard gpu(GuestMemory::GpuMutex());
     std::unique_lock lock(surfacesMutex());
+    const auto locked = profiled ? depthViewNow() : 0;
+    struct Done {
+        bool profiled;
+        std::uint64_t start, beforeLocks, locked;
+        ~Done() {
+            if (!profiled) return;
+            auto& p = depthViewProfile();
+            const auto now = depthViewNow();
+            p.calls.fetch_add(1, std::memory_order_relaxed);
+            p.totalNs.fetch_add(now - start, std::memory_order_relaxed);
+            p.beforeLocksNs.fetch_add(beforeLocks - start, std::memory_order_relaxed);
+            p.lockNs.fetch_add(locked - beforeLocks, std::memory_order_relaxed);
+            reportDepthView(now);
+        }
+    } done{profiled, start, beforeLocks, locked};
     const bool cleared = takeClearedHtile(target);
     DepthSurface* surface = nullptr;
     for (const auto& candidate : surfaces()) {
