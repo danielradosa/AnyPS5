@@ -1246,7 +1246,16 @@ VkImageAspectFlags storeBackClearedHtile(const Context& context, const DepthTarg
     auto* recorder = RecorderFor(context);
     const bool pending = recorder != nullptr && recorder->PendingWriteOverlaps(target.htileAddress, bytes);
     lap(profile.pendingNs);
-    if (pending && profiled) profile.pendingTrue.fetch_add(1, std::memory_order_relaxed);
+    if (pending && profiled) {
+        profile.pendingTrue.fetch_add(1, std::memory_order_relaxed);
+        // Which write is pending over the HTILE (diagnostic): one line per distinct writer range shape.
+        if (const auto info = recorder->DescribePendingWrite(target.htileAddress, bytes)) {
+            static std::mutex seenMutex;
+            static std::set<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, bool>> seen;
+            std::lock_guard seenLock(seenMutex);
+            if (seen.size() < 48 && seen.insert({target.htileAddress, info->rangeBegin, info->rangeEnd, info->open}).second) std::fprintf(stderr, "[htile-pending] htile 0x%llx+0x%zx written by 0x%llx..0x%llx (%s batch, %s, %zu batches to finish)\n", static_cast<unsigned long long>(target.htileAddress), bytes, static_cast<unsigned long long>(info->rangeBegin), static_cast<unsigned long long>(info->rangeEnd), info->open ? "open" : "in-flight", info->signaled ? "signaled" : "unsignaled", info->batchesToFinish);
+        }
+    }
     if (!pending) {
         std::lock_guard lock(htileReadsMutex());
         const auto found = htileReads().find(target.htileAddress);

@@ -8,9 +8,11 @@
 #include <algorithm>
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
+#include <array>
 #include <bit>
 #include <cstdlib>
 #include <initializer_list>
+#include <utility>
 #include <optional>
 #include <cstring>
 
@@ -355,7 +357,24 @@ void Driver::storeBufferFill(std::uint32_t queueId, std::uint64_t base, std::siz
     // store-back (DepthSurfaceView) then finds no pending GPU write to wait for (~7-12 ms each).
     // APS5_NO_HTILE_CLEAR_HLE=1 fills it on the GPU as before.
     static const bool htileOnCpu = std::getenv("APS5_NO_HTILE_CLEAR_HLE") == nullptr;
-    const bool htileStored = htileOnCpu && !cleared && !absorbed && uniform && coverage.image == nullptr && bytes <= (4u << 20u) && Graphics::OverlapsDepthHtile(base, bytes) && localDevice->AndOrOnCpu(base, bytes, 0u, pattern[0]) == 0;
+    bool htileStored = false;
+    if (htileOnCpu && !cleared && !absorbed && Graphics::OverlapsDepthHtile(base, bytes)) {
+        // [htile-fill] (APS5_PROFILE_DRAW): 0-9 AndOrOnCpu's answer (CopyOutcome), 10 not uniform, 11 an image covers it, 12 over 4 MiB.
+        const int outcome = !uniform ? 10 : coverage.image != nullptr ? 11 : bytes > (4u << 20u) ? 12 : localDevice->AndOrOnCpu(base, bytes, 0u, pattern[0]);
+        htileStored = outcome == 0;
+        if (profile) {
+            static std::array<std::uint64_t, 13> outcomes{};
+            static auto lastHtileReport = std::chrono::steady_clock::now();
+            ++outcomes[static_cast<std::size_t>(outcome)];
+            if (std::chrono::steady_clock::now() - lastHtileReport >= std::chrono::seconds(10)) {
+                lastHtileReport = std::chrono::steady_clock::now();
+                static constexpr const char* names[] = {"stored on the CPU", "size", "image results", "source pending", "source unsettled", "pending write", "unsettled write", "label", "reader", "shadow", "not uniform", "image", "over 4 MiB"};
+                std::string line;
+                for (std::size_t i = 0; i < outcomes.size(); ++i) line += " " + std::string(names[i]) + " " + std::to_string(std::exchange(outcomes[i], 0));
+                std::fprintf(stderr, "[htile-fill] (10 s):%s\n", line.c_str());
+            }
+        }
+    }
     if (htileStored) ++cpuFills;
     const bool stored = cleared || absorbed || htileStored || localDevice->FillBuffer(base, bytes, pattern);
     phase(FillDevice);
