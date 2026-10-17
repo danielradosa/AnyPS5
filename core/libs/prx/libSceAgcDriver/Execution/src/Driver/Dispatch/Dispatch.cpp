@@ -12,7 +12,11 @@
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "Optimization/ResourceProgram.hpp"
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <set>
+#include <tuple>
 #include <stdexcept>
 
 namespace AgcDriver::DriverDetail {
@@ -132,6 +136,13 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
         if (const auto htile = Graphics::HtileDepthClearAddress(std::span(snapshot.code).subspan(codeOffset), userData, compute.numThreads); htile != 0) {
             const auto threads = (packet[4] & 0x20u) != 0 ? static_cast<std::uint64_t>(packet[1]) : static_cast<std::uint64_t>(packet[1]) * compute.numThreads[0];
             const auto nativeBytes = Graphics::HtileDepthClearBytes_nid_no_patch(std::span(snapshot.code).subspan(codeOffset), userData, compute, packet, indirectArguments);
+            static const bool profiled = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+            static std::mutex seenMutex;
+            static std::set<std::tuple<std::uint64_t, std::uint32_t, std::uint32_t, std::uint64_t>> seen;
+            if (profiled) {
+                std::lock_guard lock(seenMutex);
+                if (seen.size() < 64 && seen.insert({htile, userData[4], userData[5], threads * 16u}).second) std::fprintf(stderr, "[htile-clear] 0x%llx: %llu bytes (native %zu), word = (old & 0x%08x) | 0x%08x\n", static_cast<unsigned long long>(htile), static_cast<unsigned long long>(threads * 16u), nativeBytes, userData[5], userData[4]);
+            }
             Graphics::NoteHtileDepthClear(htile, static_cast<std::size_t>(threads * 16u), nativeBytes);
         }
         if (!partialLastGroup && indirectArguments == 0 && copyBuffer(queue, submission.queue, packet, std::span(snapshot.code).subspan(codeOffset), userData, compute, localDevice, address)) {
