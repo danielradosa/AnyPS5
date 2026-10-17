@@ -210,6 +210,34 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         // APS5_GDS_DRAIN=1 drains as before.
         static const bool gdsDrain = std::getenv("APS5_GDS_DRAIN") != nullptr;
         const bool toGds = opcode == 0x50 && Pm4::DmaDestination(packet) == Pm4::DmaSelectGds;
+        // First as a GPU store into the GDS's host import, recorded into the open batch like a label (Recorder::
+        // RecordStore orders it after every GDS user recorded before and before every one recorded after; its note
+        // makes CPU readers of the GDS wait), never behind completions (reason 5). Debug aid: APS5_GDS_CPU_STORES=1
+        // stores every one on the CPU behind the hook.
+        static const bool gdsCpuStores = std::getenv("APS5_GDS_CPU_STORES") != nullptr;
+        if (drained && toGds && !gdsDrain && !gdsCpuStores) {
+            if (const auto store = Pm4::ResolveGdsStore(packet, gpuStoreLimit)) {
+                const auto bytes = store->Bytes();
+                GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
+                std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                const auto localDevice = device.Load();
+                recordDeferredLabels(localDevice.get(), submission.queue);
+                const auto stamp = ++eventSerial;
+                const auto reason = localDevice != nullptr ? localDevice->WriteLabelOnGpu(store->address, bytes, stamp, submission.queue, true, false) : 4;
+                if (reason == 0 || reason == 1) noteLabelStore(store->address, bytes, stamp, submission.queue);
+                if (reason == 0) {
+                    ++gdsStoresOnGpu;
+                    wroteOnGpu = true;
+                    drained = false;
+                } else if (reason == 1) {
+                    GuestMemory::Write(store->address, bytes, 1);
+                    ++storesOnCpu;
+                    wroteOnGpu = true;
+                    drained = false;
+                }
+                Graphics::Recorder::CloseLabelGroup(GuestMemory::TrackerGeneration());
+            }
+        }
         if (drained && toGds && !gdsDrain) {
             orderedAlready = true;
             drained = false;

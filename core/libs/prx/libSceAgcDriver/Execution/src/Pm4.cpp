@@ -751,6 +751,13 @@ std::optional<StoreWrite> ResolveStore(std::span<const std::uint32_t> packet, co
     }
 }
 
+std::optional<StoreWrite> ResolveGdsStore(std::span<const std::uint32_t> packet, std::size_t limit) {
+    if (((packet[0] >> 8u) & 0xffu) != 0x50 || packet.size() < 7 || dmaDestination(packet) != DmaSelectGds) return std::nullopt;
+    const std::size_t bytes = packet[6] & 0x3ffffffu;
+    if (bytes == 0 || bytes > limit || packet[4] % 4 != 0 || bytes % 4 != 0 || !gdsRange(packet[4], bytes)) return std::nullopt;
+    return StoreWrite{GdsAddress() + packet[4], {}, dmaSourceBytes(packet)};
+}
+
 std::uint32_t DmaSource(std::span<const std::uint32_t> packet) {
     return dmaSource(packet);
 }
