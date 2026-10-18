@@ -322,6 +322,36 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         queuedLabels += Pm4::SampleDumpBlocks;
         sampleDump = false;
     }
+    // APS5_PIPELINE_SAMPLE_DUMPS=1: an occlusion counter dump behind pipelined draws is an ordered commit item (recorded
+    // after the draws whose samples it sums, as a drain would order it) instead of a drain: the hub's ~12 dumps per
+    // present each emptied the pipeline and idled the committer (play1018s: 1833 drains of 6550 per 10 s).
+    static const bool pipelineSampleDumps = std::getenv("APS5_PIPELINE_SAMPLE_DUMPS") != nullptr;
+    if (sampleDump && !drainAll && pipelineSampleDumps && DrawPipeline::Active() && DrawPipeline::Queue0().Busy()) {
+        if (deferredLabels().labels.empty()) {
+            const auto address = Pm4::SampleDumpAddress(packet);
+            const auto queueId = submission.queue;
+            DrawPipeline::Queue0().Enqueue([this, address, queueId] {
+                GuestMemory::SetCurrentPacket(0x46, queueId);
+                bool written = false;
+                {
+                    GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
+                    std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                    if (const auto localDevice = device.Load()) {
+                        recordDeferredLabels(localDevice.get(), queueId);
+                        written = localDevice->DumpSamplesOnGpu(address);
+                    }
+                }
+                if (written) Graphics::Recorder::CountRecordedWork();
+                else dumpSampleCounters(address);
+            }, {{address, address + Pm4::SampleDumpBytes}});
+            // Handled: nothing below records, stores or drains for it.
+            sampleDump = false;
+            wroteOnGpu = true;
+        } else {
+            // keepsDrawPipeline let the packet in undrained: the inline dump below must still follow the queued draws.
+            DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x46);
+        }
+    }
     if (sampleDump && !drainAll) {
         GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
         std::lock_guard gpuLock(GuestMemory::GpuMutex());
