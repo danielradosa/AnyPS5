@@ -3545,6 +3545,9 @@ bool GuestBufferMemory::stagingEligible(const Region& region, bool addressable) 
         if (seen.insert({region.begin, reason}).second) std::fprintf(stderr, "[staging] region 0x%llx+0x%llx (swept %d atomic %d hostBacked %d writable %d): %s\n", static_cast<unsigned long long>(region.begin), static_cast<unsigned long long>(bytes), region.swept ? 1 : 0, region.atomic ? 1 : 0, region.hostBacked ? 1 : 0, region.writable ? 1 : 0, reason);
     }
     if (!stagingAllowed || addressable || region.unstaged || !gpuCopiesEnabled() || region.sparse || region.mirror != nullptr) return false;
+    // APS5_DEFER_COPY_BACK: a region read in place over unpublished slab bytes (a compute pass's results) is staged
+    // too: its copy-in reads them from the slabs in device memory instead of publishing them across the bus.
+    if (DeferCopyBacks() && slabStagingEnabled() && bytes <= writtenShadowMax() && AnyShadowedOverlaps(region.begin, static_cast<std::size_t>(bytes))) return true;
     if (!WritesOverlap(region.begin, static_cast<std::size_t>(bytes))) return false;
     if (region.atomic && atomicStagingEnabled() && bytes <= atomicStageMax()) return true;
     return writtenShadowEnabled() && bytes >= writtenShadowMin() && bytes <= (region.swept ? std::max(writtenShadowMax(), SweptShadowMax) : writtenShadowMax());
@@ -3916,7 +3919,10 @@ void GuestBufferMemory::UploadFinish(bool addressable) {
             // reconcile retires is handed to it (retireImport keeps nothing while the recorder is
             // idle) and outlives the copy.
             static_cast<void>(recorder->Commands());
-            StorageTexture::FlushPending(region.begin, static_cast<std::size_t>(bytes), nullptr, "copied buffer region");
+            // APS5_DEFER_COPY_BACK: a staged copy-in reads fresh units from their slabs (ShadowSources), so the slabs'
+            // unpublished bytes need not reach the import first (scope None, as a storage upload).
+            const bool slabReader = region.deviceLocal && slabStagingEnabled() && DeferCopyBacks();
+            StorageTexture::FlushPending(region.begin, static_cast<std::size_t>(bytes), nullptr, "copied buffer region", slabReader ? PublishScope::None : PublishScope::Whole);
             region.gpuCopy = true;
             gpuCopies.push_back(&region);
             continue;
