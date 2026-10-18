@@ -70,6 +70,27 @@ void DrawPipeline::Enqueue(Commit commit, std::vector<Range> writes, std::uint64
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     std::unique_lock lock(mutex);
     rethrowFailure();
+    // APS5_MERGE_LABEL_ITEMS=1: a label store behind a queued item that is not a label and has not started (the
+    // committer runs only the front) runs as that item's tail, in the same order, instead of as an item of its own:
+    // no slot, no room wait, no committer round trip. The item takes the label's bytes so PendingLabel still answers
+    // them. play1018q: 140k label items per 10 s next to 117k draws, at ~8 us each on the committer.
+    static const bool mergeLabels = std::getenv("APS5_MERGE_LABEL_ITEMS") != nullptr;
+    if (mergeLabels && labelAddress != 0 && items.size() >= 2 && items.back().labelAddress == 0) {
+        auto& last = items.back();
+        last.commit = [first = std::move(last.commit), second = std::move(commit)] {
+            first();
+            second();
+        };
+        last.writes.insert(last.writes.end(), writes.begin(), writes.end());
+        last.labelAddress = labelAddress;
+        last.labelBytes = std::move(labelBytes);
+        ++labelItems;
+        ++mergedLabels;
+        if (labelAddress == lastLabelAddress) ++labelsSameAddress;
+        lastWasLabel = true;
+        lastLabelAddress = labelAddress;
+        return;
+    }
     if (items.size() >= Depth()) {
         if (GuestMemory::GpuMutex().HeldByThisThread()) throw std::runtime_error("draw pipeline full while the enqueuing thread holds the GPU lock");
         const auto start = std::chrono::steady_clock::now();
@@ -81,6 +102,13 @@ void DrawPipeline::Enqueue(Commit commit, std::vector<Range> writes, std::uint64
     }
     depthSum += items.size();
     ++enqueued;
+    if (labelAddress != 0) {
+        ++labelItems;
+        if (lastWasLabel) ++labelsAfterLabel;
+        if (labelAddress == lastLabelAddress) ++labelsSameAddress;
+        lastLabelAddress = labelAddress;
+    }
+    lastWasLabel = labelAddress != 0;
     items.push_back({std::move(commit), std::move(writes), labelAddress, std::move(labelBytes)});
     outstanding.fetch_add(1, std::memory_order_release);
     if (!thread.joinable()) thread = std::thread([this] { run(); });
@@ -111,8 +139,8 @@ void DrawPipeline::report(std::chrono::steady_clock::time_point now) {
     const auto perCommit = commits == 0 ? 0.0 : static_cast<double>(commitNs) / 1e3 / static_cast<double>(commits);
     const auto perDraw = enqueued == 0 ? 0.0 : static_cast<double>(fullWaitNs) / 1e3 / static_cast<double>(enqueued);
     const auto queued = enqueued == 0 ? 0.0 : static_cast<double>(depthSum) / static_cast<double>(enqueued);
-    std::fprintf(stderr, "[draw] pipelined (10 s, depth %zu): %llu commits at %.1f us each on the committer, %llu failed; %llu enqueued behind %.2f on average, waiting %.1f us per draw for room; drains:%s\n", Depth(), static_cast<unsigned long long>(commits), perCommit, static_cast<unsigned long long>(commitErrors), static_cast<unsigned long long>(enqueued), queued, perDraw, drainText.c_str());
-    commits = commitNs = commitErrors = enqueued = fullWaitNs = depthSum = 0;
+    std::fprintf(stderr, "[draw] pipelined (10 s, depth %zu): %llu commits at %.1f us each on the committer, %llu failed; %llu enqueued behind %.2f on average, waiting %.1f us per draw for room; label store items %llu (%llu right after another, %llu to the previous one's address, %llu merged into the item before); drains:%s\n", Depth(), static_cast<unsigned long long>(commits), perCommit, static_cast<unsigned long long>(commitErrors), static_cast<unsigned long long>(enqueued), queued, perDraw, static_cast<unsigned long long>(labelItems), static_cast<unsigned long long>(labelsAfterLabel), static_cast<unsigned long long>(labelsSameAddress), static_cast<unsigned long long>(mergedLabels), drainText.c_str());
+    commits = commitNs = commitErrors = enqueued = fullWaitNs = depthSum = labelItems = labelsAfterLabel = labelsSameAddress = mergedLabels = 0;
     drains = {};
     drainWaitNs = {};
 }

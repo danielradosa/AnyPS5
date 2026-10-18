@@ -71,6 +71,14 @@ private:
     std::array<std::uint64_t, 257> drainOpcodes{};
     std::array<std::atomic<std::uint64_t>, 257> drainRequests{};
     std::uint64_t depthSum = 0;
+    // Label store items ([draw] report): how many follow another label item directly, and how many store to the
+    // same address as the label item before them.
+    std::uint64_t labelItems = 0;
+    std::uint64_t labelsAfterLabel = 0;
+    std::uint64_t labelsSameAddress = 0;
+    std::uint64_t mergedLabels = 0;
+    bool lastWasLabel = false;
+    std::uint64_t lastLabelAddress = 0;
     std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
 };
 
