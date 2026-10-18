@@ -43,11 +43,6 @@ struct HostImport;
 // or mutate freshness); the registry's own mutex is a leaf (lock order GpuMutex -> Imports/Pending ->
 // Shadows -> tracker).
 bool UnitShadowEnabled();
-// APS5_DEFER_COPY_BACK=1 (with slab staging): a staged region's written pieces are copied back into their slabs only,
-// unpublished, instead of into the import as well (GuestBufferMemory::RecordCopyBacks); a host-facing consumer
-// publishes them as it does a storage image's retiles, and Recorder::PendingWriteOverlaps / SyncThrough treat
-// unpublished units as pending writes (a reader that waits for them, then reads the import, gets them published).
-bool DeferCopyBacks();
 
 // None: a device-facing caller (a storage upload reads the slab itself); Whole: a reader of every
 // byte of the range; PartialUnits: a writer of the range (only units it covers partly are published,

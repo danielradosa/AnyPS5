@@ -3545,9 +3545,6 @@ bool GuestBufferMemory::stagingEligible(const Region& region, bool addressable) 
         if (seen.insert({region.begin, reason}).second) std::fprintf(stderr, "[staging] region 0x%llx+0x%llx (swept %d atomic %d hostBacked %d writable %d): %s\n", static_cast<unsigned long long>(region.begin), static_cast<unsigned long long>(bytes), region.swept ? 1 : 0, region.atomic ? 1 : 0, region.hostBacked ? 1 : 0, region.writable ? 1 : 0, reason);
     }
     if (!stagingAllowed || addressable || region.unstaged || !gpuCopiesEnabled() || region.sparse || region.mirror != nullptr) return false;
-    // APS5_DEFER_COPY_BACK: a region read in place over unpublished slab bytes (a compute pass's results) is staged
-    // too: its copy-in reads them from the slabs in device memory instead of publishing them across the bus.
-    if (DeferCopyBacks() && slabStagingEnabled() && bytes <= writtenShadowMax() && AnyShadowedOverlaps(region.begin, static_cast<std::size_t>(bytes))) return true;
     if (!WritesOverlap(region.begin, static_cast<std::size_t>(bytes))) return false;
     if (region.atomic && atomicStagingEnabled() && bytes <= atomicStageMax()) return true;
     return writtenShadowEnabled() && bytes >= writtenShadowMin() && bytes <= (region.swept ? std::max(writtenShadowMax(), SweptShadowMax) : writtenShadowMax());
@@ -3919,10 +3916,7 @@ void GuestBufferMemory::UploadFinish(bool addressable) {
             // reconcile retires is handed to it (retireImport keeps nothing while the recorder is
             // idle) and outlives the copy.
             static_cast<void>(recorder->Commands());
-            // APS5_DEFER_COPY_BACK: a staged copy-in reads fresh units from their slabs (ShadowSources), so the slabs'
-            // unpublished bytes need not reach the import first (scope None, as a storage upload).
-            const bool slabReader = region.deviceLocal && slabStagingEnabled() && DeferCopyBacks();
-            StorageTexture::FlushPending(region.begin, static_cast<std::size_t>(bytes), nullptr, "copied buffer region", slabReader ? PublishScope::None : PublishScope::Whole);
+            StorageTexture::FlushPending(region.begin, static_cast<std::size_t>(bytes), nullptr, "copied buffer region");
             region.gpuCopy = true;
             gpuCopies.push_back(&region);
             continue;
@@ -4238,9 +4232,8 @@ void GuestBufferMemory::RecordCopyBacks(Recorder& recorder) {
             beginRecording();
             recorder.Keep(region.buffer);
             // Exactly the sub-range the shader may write, in place in the import: what the shader
-            // would have stored there itself had the range been bindable. APS5_DEFER_COPY_BACK: the
-            // slab copies below stand for it (a piece a slab refuses goes to the import there).
-            if (!(toSlabs && DeferCopyBacks())) CopyBuffer(context, commands, region.buffer->Handle(), from - region.begin, region.copySource, from - region.copySourceBase, to - from);
+            // would have stored there itself had the range been bindable.
+            CopyBuffer(context, commands, region.buffer->Handle(), from - region.begin, region.copySource, from - region.copySourceBase, to - from);
             countCopyBack(region, to - from);
             if (toSlabs) slabPieces.push_back({&region, from, to});
         }
@@ -4278,7 +4271,6 @@ void GuestBufferMemory::RecordCopyBacks(Recorder& recorder) {
                 auto destination = import != nullptr ? ShadowDestinationFor(context, *import, at, pieceEnd) : std::nullopt;
                 if (!destination.has_value()) {
                     Copies().slabRefusedBytes.fetch_add(pieceEnd - at, std::memory_order_relaxed);
-                    if (DeferCopyBacks()) CopyBuffer(context, commands, region->buffer->Handle(), at - region->begin, region->copySource, at - region->copySourceBase, pieceEnd - at);
                 } else {
                     for (const auto& [seedBegin, seedEnd] : destination->seedUnits) {
                         if (!seeded.insert(seedBegin).second) continue;
@@ -4929,9 +4921,8 @@ void GuestBufferMemory::MarkSlabCopyBacks() {
         if (import != nullptr && import->base == slabCopyBacks[first].importBase) {
             // After the use's own stamps (MarkDirectWrites): every later writer of the import stamps
             // newer, and the units read from the slabs until then. Published: the import copies
-            // recorded beside them hold the same bytes (APS5_DEFER_COPY_BACK: none were, a consumer
-            // publishes them).
-            MarkShadowed(*import, ranges, GuestMemory::CollectWrites(begin, static_cast<std::size_t>(end - begin)), !DeferCopyBacks());
+            // recorded beside them hold the same bytes.
+            MarkShadowed(*import, ranges, GuestMemory::CollectWrites(begin, static_cast<std::size_t>(end - begin)), true);
         } else {
             static std::atomic<int> reports{0};
             if (reports.fetch_add(1, std::memory_order_relaxed) < 4) std::fprintf(stderr, "[buffers] slab staging: the import of 0x%llx+0x%llx retired before its copy-backs were marked; the slabs are not used for them\n", static_cast<unsigned long long>(begin), static_cast<unsigned long long>(end - begin));

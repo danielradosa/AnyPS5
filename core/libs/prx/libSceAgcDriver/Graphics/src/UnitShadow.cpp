@@ -430,11 +430,6 @@ bool UnitShadowEnabled() {
     return enabled;
 }
 
-bool DeferCopyBacks() {
-    static const bool enabled = std::getenv("APS5_DEFER_COPY_BACK") != nullptr && UnitShadowEnabled();
-    return enabled;
-}
-
 bool ShadowVerify() {
     static const bool verify = std::getenv("APS5_SHADOW_VERIFY") != nullptr;
     return verify;
