@@ -3343,7 +3343,7 @@ bool stagingReuseEnabled() {
     return forced >= 0 ? forced != 0 : enabled;
 }
 
-// APS5_SLAB_STAGING=1: a staged region's copy-back stores its written sub-ranges into the import as
+// Slab staging (default on; APS5_SLAB_STAGING=0 = old): a staged region's copy-back stores its written sub-ranges into the import as
 // before and into the import's unit-shadow slabs too, marked fresh and published (slab and import
 // agree) by MarkSlabCopyBacks after the use's own stamps; the next staged copy-in over those units reads
 // them from the slab in device memory instead of across the bus. The import always holds the bytes
@@ -3352,7 +3352,7 @@ bool stagingReuseEnabled() {
 std::atomic<int> slabStagingOverride{-1};
 
 bool slabStagingEnabled() {
-    static const bool enabled = std::getenv("APS5_SLAB_STAGING") != nullptr && std::string_view(std::getenv("APS5_SLAB_STAGING")) != "0";
+    static const bool enabled = std::getenv("APS5_SLAB_STAGING") == nullptr || std::string_view(std::getenv("APS5_SLAB_STAGING")) != "0";
     const auto forced = slabStagingOverride.load(std::memory_order_relaxed);
     return (forced >= 0 ? forced != 0 : enabled) && UnitShadowEnabled() && !stagingReuseEnabled();
 }
