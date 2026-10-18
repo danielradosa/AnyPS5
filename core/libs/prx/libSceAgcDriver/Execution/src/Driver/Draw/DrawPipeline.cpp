@@ -1,6 +1,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
+#include "prx/libSceAgcDriver/Execution/include/ThreadPriority.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -117,6 +118,12 @@ void DrawPipeline::report(std::chrono::steady_clock::time_point now) {
 }
 
 void DrawPipeline::run() {
+    // The committer is the serial stage of every pipelined draw: APS5_THREAD_PRIORITY raises it with the queue workers.
+    try {
+        RaiseWorkerThreadPriority("draw committer");
+    } catch (...) {
+        Driver::Get().ReportFailure(std::current_exception());
+    }
     for (;;) {
         Commit* commit = nullptr;
         {
