@@ -2394,7 +2394,19 @@ int VulkanDevice::WriteLabelOnGpu(std::uint64_t address, std::span<const std::by
     // against queue 0; its label goes behind a completion instead (reason 5, still no wait).
     // Debug aid: APS5_LABEL_REAP_ALL_QUEUES=1 reaps on every queue as before.
     static const bool reapAllQueues = std::getenv("APS5_LABEL_REAP_ALL_QUEUES") != nullptr;
-    if (reapFirst && (queue == 0 || reapAllQueues) && OpportunisticReap()) recorder.Reap();
+    // APS5_LABEL_REAP_US=N: this thread's label reaps at most one per N us (0, the default: every label). The hub
+    // commits ~14k labels per second on the draw committer, each with a fence query, and ~96% of them retire nothing;
+    // a batch the next reap retires a few us later changes no outcome (the label goes to the GPU instead of the CPU).
+    static const auto reapInterval = std::chrono::microseconds(std::getenv("APS5_LABEL_REAP_US") != nullptr ? std::atoi(std::getenv("APS5_LABEL_REAP_US")) : 0);
+    static thread_local std::chrono::steady_clock::time_point lastLabelReap{};
+    const auto reapDue = [&] {
+        if (reapInterval.count() == 0) return true;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastLabelReap < reapInterval) return false;
+        lastLabelReap = now;
+        return true;
+    };
+    if (reapFirst && (queue == 0 || reapAllQueues) && OpportunisticReap() && reapDue()) recorder.Reap();
     if (recorder.Idle()) return 1;
     static const bool drain = std::getenv("APS5_DRAIN_COMPLETION_LABELS") != nullptr;
     const auto context = graphicsContext();
