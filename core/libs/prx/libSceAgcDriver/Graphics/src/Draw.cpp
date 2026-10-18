@@ -2003,6 +2003,38 @@ std::optional<std::string> KnownValidationFailure(const Context& context, std::s
     return std::nullopt;
 }
 
+// APS5_PROFILE_DRAW: rect-list draws by shape, the eight most frequent every 10 s ([rect-draws]). The hub's
+// ~250-370 rect draws per present (full-screen triangle VS, empty PS) took 8.5-10 ms of GPU per present in the
+// per-draw map: which targets, viewports and scissors they cover, and whether they only overwrite depth.
+static void noteRectDraw(const State& state, const Pm4::DrawParameters& draw) {
+    static std::mutex mutex;
+    static std::map<std::string, std::uint64_t> shapes;
+    static std::uint64_t total = 0;
+    static auto last = std::chrono::steady_clock::now();
+    const bool colorWrites = !state.colors.empty() && std::any_of(state.blends.begin(), state.blends.end(), [](const VkPipelineColorBlendAttachmentState& blend) { return blend.colorWriteMask != 0; });
+    char key[320];
+    std::snprintf(key, sizeof(key), "render %ux%ux%u colors %zu%s depth %ux%u fmt %d test %d write %d cmp %d range %.3g..%.3g bias %d stencil %d (%d/%d) viewport %.0f,%.0f %.0fx%.0f scissor %d,%d %ux%u verts %u inst %u",
+        state.renderExtent.width, state.renderExtent.height, state.renderLayers, state.colors.size(), colorWrites ? " written" : "",
+        state.depth ? state.depth->extent.width : 0u, state.depth ? state.depth->extent.height : 0u, state.depth ? static_cast<int>(state.depth->format) : 0,
+        state.depthTest, state.depthWrite, static_cast<int>(state.depthCompare), state.viewport.minDepth, state.viewport.maxDepth, state.depthBias,
+        state.stencilTest, static_cast<int>(state.stencilFront.compareOp), static_cast<int>(state.stencilFront.passOp),
+        state.viewport.x, state.viewport.y, state.viewport.width, state.viewport.height,
+        state.scissor.offset.x, state.scissor.offset.y, state.scissor.extent.width, state.scissor.extent.height, draw.indexCount, draw.instanceCount);
+    std::lock_guard lock(mutex);
+    ++shapes[key];
+    ++total;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds(10)) return;
+    last = now;
+    std::vector<std::pair<std::uint64_t, std::string>> sorted;
+    for (const auto& [shape, count] : shapes) sorted.emplace_back(count, shape);
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::fprintf(stderr, "[rect-draws] (10 s) %llu rect-list draws, %zu shapes; most frequent:\n", static_cast<unsigned long long>(total), sorted.size());
+    for (std::size_t i = 0; i < sorted.size() && i < 8; ++i) std::fprintf(stderr, "[rect-draws]   x%llu %s\n", static_cast<unsigned long long>(sorted[i].first), sorted[i].second.c_str());
+    shapes.clear();
+    total = 0;
+}
+
 void Draw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots, std::shared_ptr<const DrawRecipe>* recipeOut) {
     std::vector<std::uint32_t> stencilReferences;
     for (const auto& shader : shaders) {
@@ -2028,6 +2060,7 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     // APS5_PROFILE_DRAW prints the time of each phase of the draw (microseconds) and the [draws] totals.
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     DrawTimer timer(profile);
+    if (profile && state.rectList) noteRectDraw(state, draw);
     // APS5_TRACE_DRAWS (together with APS5_PROFILE_DRAW; alone it only enables Driver.cpp's own
     // [draw] lines) additionally prints one line per draw with its phases and, for synchronous
     // draws, their inputs: per-draw string building at ~1400 draws per 10 s is itself a cost the
