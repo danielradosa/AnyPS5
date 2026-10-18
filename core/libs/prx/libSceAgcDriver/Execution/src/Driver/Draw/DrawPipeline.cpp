@@ -1,6 +1,8 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
+#include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
+#include "prx/libSceAgcDriver/Execution/include/PerformanceTrace.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ThreadPriority.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -152,6 +154,8 @@ void DrawPipeline::run() {
     } catch (...) {
         Driver::Get().ReportFailure(std::current_exception());
     }
+    // The committer's items (DrawPipeline.Commit) and their Graphics.Draw scopes on the APS5_TRACE_* timeline.
+    if (PerformanceTrace::Configured()) PerformanceTrace::BindThread("draw committer");
     for (;;) {
         Commit* commit = nullptr;
         {
@@ -166,6 +170,7 @@ void DrawPipeline::run() {
         bool failed = false;
         bool shutdown = false;
         try {
+            PerformanceTimer commitTiming("DrawPipeline.Commit");
             if (commit != nullptr) (*commit)();
         } catch (const std::exception&) {
             failed = true;
