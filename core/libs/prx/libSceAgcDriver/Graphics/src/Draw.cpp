@@ -1858,7 +1858,10 @@ void recordDraw(const Context& context, const State& state, const Pm4::DrawParam
     // [gputime] lists passes by target among its programs instead of the draw class.
     static const bool byPass = std::getenv("APS5_GPU_TIME_BY_PASS") != nullptr;
     const auto fragment = std::ranges::find_if(shaders, [](const CompiledShader& shader) { return shader.stage == ShaderRecompiler::ShaderStage::Fragment && shader.program != nullptr; });
-    const auto drawKey = fragment != shaders.end() && fragment->program->PipelineVariantId() != 0 ? fragment->program->PipelineVariantId() | (std::uint64_t{1} << 48u) : std::uint64_t{3};
+    // A draw with an empty pixel shader (depth-only: shadow casters share one system PS) is keyed by its first
+    // stage instead (variant | 2 << 48), so the per-draw map separates them by vertex program.
+    const bool emptyFragment = fragment != shaders.end() && fragment->program->spirv.size() < 128u;
+    const auto drawKey = emptyFragment && shaders.front().program != nullptr && shaders.front().program->PipelineVariantId() != 0 ? shaders.front().program->PipelineVariantId() | (std::uint64_t{2} << 48u) : fragment != shaders.end() && fragment->program->PipelineVariantId() != 0 ? fragment->program->PipelineVariantId() | (std::uint64_t{1} << 48u) : std::uint64_t{3};
     const auto passTimingKey = byDraw ? drawKey : byPass ? passTarget : Recorder::ClassKey(CommandClass::Draw);
     const auto drawTiming = !continued ? recorder->BeginGpuTiming(passTimingKey) : Recorder::NoTiming;
     if (!continued && Recorder::BarrierValidate()) {
