@@ -1123,6 +1123,12 @@ if(BUILD_TESTING)
         set_tests_properties(agc_storage_baseline_settled PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    add_test(NAME agc_slab_staging COMMAND agc_driver_recorder_tests --slab-staging-only)
+    set_tests_properties(agc_slab_staging PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(agc_slab_staging PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test(NAME agc_staging_reuse COMMAND agc_driver_recorder_tests --staging-reuse-only)
     set_tests_properties(agc_staging_reuse PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     if(WIN32)

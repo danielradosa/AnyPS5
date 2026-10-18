@@ -2365,6 +2365,86 @@ bool stagingReuseTests(const Device& device, Recorder& recorder) {
     return true;
 }
 
+// Slab staging (APS5_SLAB_STAGING): a staged region's copy-back stores into the import as before (guest
+// memory holds the results at once) and into its unit-shadow slab; the next use's copy-in then reads
+// every unit of the element from the slab, short of a unit the CPU stored into since, which comes from
+// the import (the store survives the next copy-back of the whole written range).
+bool slabStagingTests(const Device& device, Recorder& recorder) {
+    const auto& context = device.GetContext();
+    constexpr std::size_t bytes = 4u << 20u;
+    if (context.hostImportAlignment == 0 || !AgcDriver::GuestMemory::WriteWatched() || !UnitShadowEnabled()) {
+        std::cout << "host imports, write watching or unit shadows unavailable: slab staging not tested\n";
+        return false;
+    }
+    struct Backing {
+        Recorder& recorder;
+        void* block = nullptr;
+        std::int64_t physical = -1;
+        ~Backing() {
+            recorder.Sync();
+            if (block != nullptr) sceKernelMunmap(block, bytes);
+            if (physical >= 0) sceKernelReleaseDirectMemory(physical, bytes);
+        }
+    } backing{recorder};
+    Require(sceKernelAllocateDirectMemory(0, 0x7fffffffffll, bytes, 65536, 0, &backing.physical) == 0, "allocate the slab staging backing");
+    Require(sceKernelMapDirectMemory(&backing.block, bytes, 0x33, 0, backing.physical, 65536) == 0, "map the slab staging backing for the GPU");
+    auto* guest = static_cast<std::uint8_t*>(backing.block);
+    std::memset(guest, 0x11, bytes);
+    const auto address = reinterpret_cast<std::uint64_t>(backing.block);
+    if (HostImportFor(context, address, bytes) == nullptr || !AgcDriver::GuestMemory::Watched(address, bytes)) {
+        std::cout << "the direct memory is not imported or not write-watched: slab staging not tested\n";
+        return false;
+    }
+    AgcDriver::GuestMemory::CollectWritesUncached(address, bytes);
+    recorder.Activate();
+    GuestBufferMemory::SetSlabStaging(true);
+    struct Restore {
+        ~Restore() { GuestBufferMemory::SetSlabStaging(false); }
+    } restore;
+    constexpr std::size_t offset = 65536 + 4096;
+    constexpr std::size_t elementBytes = 1u << 20u;
+    const auto element = address + offset;
+    const auto barrier = context.Function<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier");
+    const auto fill = context.Function<PFN_vkCmdFillBuffer>("vkCmdFillBuffer");
+    // One use of the element: copied in, the shader's store (a fill of the staging buffer), copied back.
+    const auto use = [&](std::size_t at, std::size_t count, std::uint32_t value) {
+        GuestBufferMemory memory(context);
+        memory.AllowDeviceStaging();
+        memory.AddWritable(element, elementBytes);
+        memory.Upload(false);
+        Require(memory.InPlaceReads().empty(), "the written 1 MiB element was not staged");
+        std::uint32_t adjustment = 0;
+        const auto descriptor = memory.Descriptor(element, elementBytes, adjustment);
+        const auto commands = recorder.Commands();
+        const VkMemoryBarrier copied{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT};
+        barrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &copied, 0, nullptr, 0, nullptr);
+        fill(commands, descriptor.buffer, descriptor.offset + at, count, value);
+        memory.RecordCopyBacks(recorder);
+        recorder.NotePendingWrites(memory.Writes());
+        memory.MarkDirectWrites();
+        memory.MarkSlabCopyBacks();
+        recorder.Sync();
+    };
+    const auto holds = [&](std::size_t from, std::size_t to, std::uint8_t value) {
+        return std::all_of(guest + from, guest + to, [&](std::uint8_t byte) { return byte == value; });
+    };
+    use(0, 4096, 0x22222222u);
+    Require(holds(offset, offset + 4096, 0x22) && holds(0, offset, 0x11) && holds(offset + 4096, bytes, 0x11), "the first use's copy-back did not store exactly its results into guest memory");
+    auto read = GuestBufferMemory::SlabCopyInBytes();
+    use(8192, 4096, 0x33333333u);
+    Require(GuestBufferMemory::SlabCopyInBytes() - read == elementBytes, "the second use's copy-in did not read the whole element from the slab");
+    Require(holds(offset, offset + 4096, 0x22) && holds(offset + 8192, offset + 12288, 0x33), "the second use lost the first use's results or its own");
+    guest[offset + 100000] = 0x5a;
+    AgcDriver::GuestMemory::BumpCollectEpoch();
+    read = GuestBufferMemory::SlabCopyInBytes();
+    use(16384, 4096, 0x44444444u);
+    Require(GuestBufferMemory::SlabCopyInBytes() - read < elementBytes, "a unit the CPU stored into was still read from the slab");
+    Require(guest[offset + 100000] == 0x5a, "the CPU's store did not survive the next copy-back");
+    Require(holds(offset, offset + 4096, 0x22) && holds(offset + 8192, offset + 12288, 0x33) && holds(offset + 16384, offset + 20480, 0x44), "earlier results were lost");
+    Require(holds(0, offset, 0x11) && holds(offset + elementBytes, bytes, 0x11), "bytes outside the element changed");
+    return true;
+}
+
 bool sparseRunImportTests(const Device& device, bool copied) {
     const auto& context = device.GetContext();
     constexpr std::size_t unit = 65536;
@@ -8434,6 +8514,11 @@ int main(int argc, char** argv) {
             lateLabelTests(recorder);
             largeLabelTests(recorder);
             std::cout << "Completion label storage and ordering tests passed\n";
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--slab-staging-only") {
+            if (!slabStagingTests(device, recorder)) return 77;
+            std::cout << "slab staging tests passed\n";
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--staging-reuse-only") {

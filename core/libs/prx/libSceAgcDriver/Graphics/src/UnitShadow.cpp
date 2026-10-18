@@ -697,7 +697,7 @@ std::vector<ShadowRun> ShadowSources(const Context& context, const HostImport& i
     return result;
 }
 
-void MarkShadowed(const HostImport& import, std::span<const ShadowedRange> ranges, std::uint64_t generation) {
+void MarkShadowed(const HostImport& import, std::span<const ShadowedRange> ranges, std::uint64_t generation, bool published) {
     if (!UnitShadowEnabled() || ranges.empty() || generation == 0) return;
     auto& registry = Registry();
     std::uint64_t bytes = 0;
@@ -719,7 +719,7 @@ void MarkShadowed(const HostImport& import, std::span<const ShadowedRange> range
                     continue;
                 }
                 shadow->generation[unit] = generation;
-                shadow->published[unit] = 0;
+                shadow->published[unit] = published ? 1 : 0;
                 current->lastUse = present;
             }
         }

@@ -3343,6 +3343,20 @@ bool stagingReuseEnabled() {
     return forced >= 0 ? forced != 0 : enabled;
 }
 
+// APS5_SLAB_STAGING=1: a staged region's copy-back stores its written sub-ranges into the import as
+// before and into the import's unit-shadow slabs too, marked fresh and published (slab and import
+// agree) by MarkSlabCopyBacks after the use's own stamps; the next staged copy-in over those units reads
+// them from the slab in device memory instead of across the bus. The import always holds the bytes
+// once the copy-back ran, so no reader changes. Off while staging reuse runs (its proof assumes the
+// copy-in it skips).
+std::atomic<int> slabStagingOverride{-1};
+
+bool slabStagingEnabled() {
+    static const bool enabled = std::getenv("APS5_SLAB_STAGING") != nullptr && std::string_view(std::getenv("APS5_SLAB_STAGING")) != "0";
+    const auto forced = slabStagingOverride.load(std::memory_order_relaxed);
+    return (forced >= 0 ? forced != 0 : enabled) && UnitShadowEnabled() && !stagingReuseEnabled();
+}
+
 bool stagingReuseVerified() {
     static const bool enabled = std::getenv("APS5_VERIFY_STAGING_REUSE") != nullptr;
     return enabled;
@@ -3408,6 +3422,12 @@ struct CopyStats {
     std::array<std::atomic<std::uint64_t>, static_cast<std::size_t>(ReuseMiss::Count)> reuseMisses{};
     std::atomic<std::uint64_t> reuseVerified{0};
     std::atomic<std::uint64_t> reuseDiffered{0};
+    // Slab staging: copy-in bytes read from slabs, copy-back bytes stored into slabs, seed bytes copied
+    // import -> slab first, and copy-back bytes a refused slab sent to the import.
+    std::atomic<std::uint64_t> slabInBytes{0};
+    std::atomic<std::uint64_t> slabOutBytes{0};
+    std::atomic<std::uint64_t> slabSeedBytes{0};
+    std::atomic<std::uint64_t> slabRefusedBytes{0};
     std::atomic<std::int64_t> lastStagingReport{0};
 };
 
@@ -3456,6 +3476,15 @@ void reportStaging() {
     lastStaged = staged;
     lastIn = in;
     lastOut = out;
+    if (slabStagingEnabled()) {
+        static std::uint64_t lastSlabIn = 0, lastSlabOut = 0, lastSeed = 0, lastRefused = 0;
+        const auto slabIn = stats.slabInBytes.load(), slabOut = stats.slabOutBytes.load(), seed = stats.slabSeedBytes.load(), refused = stats.slabRefusedBytes.load();
+        AgcDriver::ProfilePrint_nid_no_patch("[buffers] slab staging (10 s): copy-ins read %.0f KiB from slabs, copy-backs stored %.0f KiB into slabs too (%.0f KiB seeded from the import first), %.0f KiB refused a slab\n", (slabIn - lastSlabIn) / 1024.0, (slabOut - lastSlabOut) / 1024.0, (seed - lastSeed) / 1024.0, (refused - lastRefused) / 1024.0);
+        lastSlabIn = slabIn;
+        lastSlabOut = slabOut;
+        lastSeed = seed;
+        lastRefused = refused;
+    }
     if (!stagingReuseEnabled()) return;
     static std::uint64_t lastSkipped = 0, lastSkippedBytes = 0;
     const auto skipped = stats.reuseSkipped.load();
@@ -4082,7 +4111,27 @@ void GuestBufferMemory::recordGpuCopies(std::span<Region* const> copies, bool ad
                 expected.assign(snapshotBytes.begin(), snapshotBytes.end());
             }
         }
-        CopyBuffer(context, commands, copySource, copyOffset, region->buffer->Handle(), 0, bytes);
+        bool fromSlabs = false;
+        if (region->deviceLocal && inputSnapshot == nullptr && slabStagingEnabled()) {
+            // The import's runs and the fresh units' slabs, as a storage upload reads them. A CPU store
+            // stamps only when a collect walks its page: collected first, its unit reads the import.
+            GuestMemory::CollectWrites(region->begin, static_cast<std::size_t>(bytes));
+            auto& state = Imports();
+            std::lock_guard lock(state.mutex);
+            const auto* import = findImport(state, region->begin, region->end);
+            if (import != nullptr && import->buffer == region->copySource && import->base == region->copySourceBase) {
+                const std::pair<std::uint64_t, std::uint64_t> whole{0, bytes};
+                for (const auto& run : ShadowSources(context, *import, region->begin, std::span(&whole, 1), {})) {
+                    CopyBuffer(context, commands, run.buffer, run.offset, region->buffer->Handle(), run.begin, run.end - run.begin);
+                    if (run.slab != nullptr) {
+                        recorder->Keep(run.slab);
+                        Copies().slabInBytes.fetch_add(run.end - run.begin, std::memory_order_relaxed);
+                    }
+                }
+                fromSlabs = true;
+            }
+        }
+        if (!fromSlabs) CopyBuffer(context, commands, copySource, copyOffset, region->buffer->Handle(), 0, bytes);
         if (!expected.empty()) {
             auto readback = std::make_shared<Buffer>(context, expected.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
             RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -4139,6 +4188,32 @@ void GuestBufferMemory::RecordCopyBacks(Recorder& recorder) {
     VkCommandBuffer commands = VK_NULL_HANDLE;
     auto timing = Recorder::NoTiming;
     std::uint64_t copiedBytes = 0;
+    const auto beginRecording = [&] {
+        if (recording) return;
+        commands = recorder.Commands();
+        timing = recorder.BeginGpuTiming(StagingCopyBackKey);
+        // The shader's stores into the buffer (whichever stage made them) precede the copy; a slab
+        // seed also reads the import after every earlier writer of it and writes the slab after
+        // every earlier copy into it.
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+        Recorder::CountBarriers(Recorder::CommandClass::StagingOut);
+        recording = true;
+    };
+    const auto countCopyBack = [&](const Region& region, std::uint64_t bytes) {
+        copiedBytes += bytes;
+        if (!profile) return;
+        Copies().gpuCopyBacks.fetch_add(1, std::memory_order_relaxed);
+        Copies().gpuCopyBackBytes.fetch_add(bytes, std::memory_order_relaxed);
+        if (region.deviceLocal) Copies().stagedOutBytes.fetch_add(bytes, std::memory_order_relaxed);
+    };
+    // APS5_SLAB_STAGING: a staged region's written pieces, recorded after the loop (seeds first).
+    struct SlabPiece {
+        Region* region;
+        std::uint64_t from;
+        std::uint64_t to;
+    };
+    std::vector<SlabPiece> slabPieces;
+    const bool slabs = slabStagingEnabled();
     for (auto& region : regions) {
         if (!region.gpuCopy || region.copiedBack) continue;
         if (merged.empty() && !writes.empty()) {
@@ -4149,28 +4224,18 @@ void GuestBufferMemory::RecordCopyBacks(Recorder& recorder) {
                 else merged.push_back(range);
             }
         }
+        const bool toSlabs = slabs && region.deviceLocal;
         for (const auto& [begin, end] : merged) {
             const auto from = std::max(begin, region.begin);
             const auto to = std::min(end, region.end);
             if (from >= to) continue;
-            if (!recording) {
-                commands = recorder.Commands();
-                timing = recorder.BeginGpuTiming(StagingCopyBackKey);
-                // The shader's stores into the buffer (whichever stage made them) precede the copy.
-                RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-                Recorder::CountBarriers(Recorder::CommandClass::StagingOut);
-                recording = true;
-            }
+            beginRecording();
+            recorder.Keep(region.buffer);
             // Exactly the sub-range the shader may write, in place in the import: what the shader
             // would have stored there itself had the range been bindable.
             CopyBuffer(context, commands, region.buffer->Handle(), from - region.begin, region.copySource, from - region.copySourceBase, to - from);
-            copiedBytes += to - from;
-            recorder.Keep(region.buffer);
-            if (profile) {
-                Copies().gpuCopyBacks.fetch_add(1, std::memory_order_relaxed);
-                Copies().gpuCopyBackBytes.fetch_add(to - from, std::memory_order_relaxed);
-                if (region.deviceLocal) Copies().stagedOutBytes.fetch_add(to - from, std::memory_order_relaxed);
-            }
+            countCopyBack(region, to - from);
+            if (toSlabs) slabPieces.push_back({&region, from, to});
         }
         // Staging reuse: the shadow matches the import after this copy-back only if nothing wrote
         // the region since its fill (a CPU store collected now, or a GPU writer's stamp); the
@@ -4184,6 +4249,50 @@ void GuestBufferMemory::RecordCopyBacks(Recorder& recorder) {
         // HasCopiedWrites, so the caller still registers the CPU write-back that stores the
         // staging bytes, instead of losing the shader's results.
         region.copiedBack = true;
+    }
+    if (!slabPieces.empty()) {
+        // Each piece also split at slab boundaries into the slab its import's unit shadow gives (none
+        // when refused: the import copy above is all); a partly covered unit not fresh is seeded from
+        // the import first, so the rest of the unit holds the import's bytes as well.
+        struct Planned {
+            VkBuffer source;
+            VkBuffer destination;
+            VkBufferCopy copy;
+        };
+        std::vector<Planned> seeds, copies;
+        std::set<std::uint64_t> seeded;
+        auto& state = Imports();
+        std::lock_guard lock(state.mutex);
+        for (const auto& [region, from, to] : slabPieces) {
+            const auto* import = findImport(state, region->begin, region->end);
+            if (import == nullptr || import->buffer != region->copySource || import->base != region->copySourceBase) import = nullptr;
+            for (auto at = from; at < to;) {
+                const auto pieceEnd = import != nullptr ? std::min(to, SlabBoundary(*import, at)) : to;
+                auto destination = import != nullptr ? ShadowDestinationFor(context, *import, at, pieceEnd) : std::nullopt;
+                if (!destination.has_value()) {
+                    Copies().slabRefusedBytes.fetch_add(pieceEnd - at, std::memory_order_relaxed);
+                } else {
+                    for (const auto& [seedBegin, seedEnd] : destination->seedUnits) {
+                        if (!seeded.insert(seedBegin).second) continue;
+                        seeds.push_back({import->buffer, destination->slab->buffer, {seedBegin - import->base, SlabOffset(*import, *destination->slab, seedBegin), seedEnd - seedBegin}});
+                        NoteShadowSeed(seedBegin, seedEnd);
+                        Copies().slabSeedBytes.fetch_add(seedEnd - seedBegin, std::memory_order_relaxed);
+                    }
+                    copies.push_back({region->buffer->Handle(), destination->slab->buffer, {at - region->begin, destination->offset, pieceEnd - at}});
+                    recorder.Keep(destination->slab);
+                    slabCopyBacks.push_back({import->base, {at, pieceEnd, destination->slab}, destination->pin});
+                    Copies().slabOutBytes.fetch_add(pieceEnd - at, std::memory_order_relaxed);
+                }
+                at = pieceEnd;
+            }
+        }
+        const auto copyBuffer = context.Function<PFN_vkCmdCopyBuffer>("vkCmdCopyBuffer");
+        for (const auto& seed : seeds) copyBuffer(commands, seed.source, seed.destination, 1, &seed.copy);
+        if (!seeds.empty()) {
+            RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+            Recorder::CountBarriers(Recorder::CommandClass::StagingOut);
+        }
+        for (const auto& copy : copies) copyBuffer(commands, copy.source, copy.destination, 1, &copy.copy);
     }
     if (!recording) return;
     if (Recorder::BarrierValidate()) recorder.NoteAccess(Recorder::CommandClass::StagingOut, Recorder::Access{{}, merged, {}, VK_PIPELINE_STAGE_TRANSFER_BIT});
@@ -4783,6 +4892,44 @@ void GuestBufferMemory::NoteResidentShadows(const Recorder& recorder) {
 
 void GuestBufferMemory::SetStagingReuse(bool enabled) {
     stagingReuseOverride.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+
+std::uint64_t GuestBufferMemory::SlabCopyInBytes() {
+    return Copies().slabInBytes.load(std::memory_order_relaxed);
+}
+
+void GuestBufferMemory::SetSlabStaging(bool enabled) {
+    slabStagingOverride.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+
+void GuestBufferMemory::MarkSlabCopyBacks() {
+    if (slabCopyBacks.empty()) return;
+    std::sort(slabCopyBacks.begin(), slabCopyBacks.end(), [](const SlabCopyBack& a, const SlabCopyBack& b) { return a.importBase != b.importBase ? a.importBase < b.importBase : a.range.begin < b.range.begin; });
+    auto& state = Imports();
+    std::lock_guard lock(state.mutex);
+    for (std::size_t first = 0; first < slabCopyBacks.size();) {
+        std::vector<ShadowedRange> ranges;
+        auto begin = slabCopyBacks[first].range.begin;
+        auto end = slabCopyBacks[first].range.end;
+        auto last = first;
+        for (; last < slabCopyBacks.size() && slabCopyBacks[last].importBase == slabCopyBacks[first].importBase; ++last) {
+            ranges.push_back(slabCopyBacks[last].range);
+            begin = std::min(begin, slabCopyBacks[last].range.begin);
+            end = std::max(end, slabCopyBacks[last].range.end);
+        }
+        const auto* import = findImport(state, begin, end);
+        if (import != nullptr && import->base == slabCopyBacks[first].importBase) {
+            // After the use's own stamps (MarkDirectWrites): every later writer of the import stamps
+            // newer, and the units read from the slabs until then. Published: the import copies
+            // recorded beside them hold the same bytes.
+            MarkShadowed(*import, ranges, GuestMemory::CollectWrites(begin, static_cast<std::size_t>(end - begin)), true);
+        } else {
+            static std::atomic<int> reports{0};
+            if (reports.fetch_add(1, std::memory_order_relaxed) < 4) std::fprintf(stderr, "[buffers] slab staging: the import of 0x%llx+0x%llx retired before its copy-backs were marked; the slabs are not used for them\n", static_cast<unsigned long long>(begin), static_cast<unsigned long long>(end - begin));
+        }
+        first = last;
+    }
+    slabCopyBacks.clear();
 }
 
 std::uint64_t ImageMirrorSerial(const Context& context, std::uint64_t address, std::size_t bytes) {

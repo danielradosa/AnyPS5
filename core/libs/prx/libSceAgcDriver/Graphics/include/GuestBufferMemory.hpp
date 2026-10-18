@@ -2,6 +2,7 @@
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_GUESTBUFFERMEMORY_HPP
 
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
 #include "BdaAbi.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include <algorithm>
@@ -244,6 +245,14 @@ public:
     void NoteResidentShadows(const Recorder& recorder);
     // Tests: APS5_STAGING_REUSE for this process (the environment is read once otherwise).
     static void SetStagingReuse(bool enabled);
+    // APS5_SLAB_STAGING: after a use's direct-write marks (ShaderResources::MarkGpuWrites), the
+    // copy-backs RecordCopyBacks also put into unit-shadow slabs are marked fresh (and published) at
+    // the generation those marks settled at, so every later import writer stamps newer.
+    void MarkSlabCopyBacks();
+    // Tests: APS5_SLAB_STAGING for this process.
+    static void SetSlabStaging(bool enabled);
+    // Tests: bytes slab-staged copy-ins have read from slabs so far.
+    static std::uint64_t SlabCopyInBytes();
     void AddSnapshot(const GuestMemorySnapshot& snapshot);
     // Upload is the two stages below back to back. UploadPrepare needs no device lock: it merges the
     // regions, binds the image mirrors and host imports that already serve them (an import pointer is
@@ -452,6 +461,14 @@ private:
     std::uint64_t importsEpoch = 0;
     std::uint64_t importFloor = 0;
     std::vector<Region> regions;
+    // APS5_SLAB_STAGING: copy-backs recorded into slabs, awaiting MarkSlabCopyBacks; the pin keeps
+    // the slab from eviction until then.
+    struct SlabCopyBack {
+        std::uint64_t importBase;
+        ShadowedRange range;
+        std::shared_ptr<ShadowSlabPin> pin;
+    };
+    std::vector<SlabCopyBack> slabCopyBacks;
     // Whether `regions` is in ascending address order (true right after AcquireRegistered, whose
     // regions follow the registry's order), so AddSnapshot can search instead of scanning.
     bool regionsSorted = false;

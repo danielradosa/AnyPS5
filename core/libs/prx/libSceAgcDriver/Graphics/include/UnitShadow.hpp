@@ -133,9 +133,10 @@ std::uint64_t SlabBoundary(const HostImport& import, std::uint64_t address);
 // The slab offset of a guest address for a slab returned by ShadowDestinationFor or ShadowSources.
 VkDeviceSize SlabOffset(const HostImport& import, const ShadowSlab& slab, std::uint64_t address);
 // After a retile's copies were recorded: the units of `ranges` (guest) hold the newest bytes at
-// `generation`, unpublished. A unit whose slab is no longer the one the copies went into is not
-// marked (counted `slab lost`). Bumps StorageTexture's pending serial.
-void MarkShadowed(const HostImport& import, std::span<const ShadowedRange> ranges, std::uint64_t generation);
+// `generation`, unpublished (`published`: the same bytes were recorded into the import too, so no
+// publish is owed). A unit whose slab is no longer the one the copies went into is not marked
+// (counted `slab lost`). Bumps StorageTexture's pending serial.
+void MarkShadowed(const HostImport& import, std::span<const ShadowedRange> ranges, std::uint64_t generation, bool published = false);
 // retireImport: publishes the fresh units whose memory `registered` still names as a readable
 // registered range into the (old) import buffer, hands the slabs to the batch and drops the shadow.
 // The import retires because its registration vanished or changed size, so the rest of its memory
