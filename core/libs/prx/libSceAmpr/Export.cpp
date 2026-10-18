@@ -279,6 +279,7 @@ int APS5_VABI wcsrtombs_s_nid_postfix(std::size_t* result, char* destination, st
 int APS5_VABI _Cnd_init_nid_postfix(void** handle);
 int SignalCondition_nid_no_patch(void** handle);
 [[noreturn]] void ThrowCppError_nid_no_patch(int code);
+void StandardStreamOpened_nid_no_patch(std::int64_t index);
 }
 
 static constexpr int DefaultUnexpectedException = static_cast<int>(0xA0020009);
@@ -318,7 +319,6 @@ static void* APS5_VABI PadEntry_nid_no_patch(void* argument) {
 
 static std::mutex standardStreamLock;
 static std::array<GuestLocale::IosBase*, GuestLocale::StandardStreamCount + 2> standardStreams{};
-static std::array<signed char, GuestLocale::StandardStreamCount + 2> standardStreamOpens{};
 
 extern "C" {
 
@@ -928,7 +928,7 @@ void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* stre
     while (index < GuestLocale::StandardStreamCount && standardStreams[index] && standardStreams[index] != stream) ++index;
     stream->standardStream = static_cast<std::int64_t>(index);
     standardStreams[index] = stream;
-    ++standardStreamOpens[index];
+    StandardStreamOpened_nid_no_patch(stream->standardStream);
 }
 
 [[noreturn]] void APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(int code) {

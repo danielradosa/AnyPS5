@@ -316,6 +316,11 @@ void APS5_VABI _ZNSt8ios_baseD2Ev_nid_postfix(GuestLocale::IosBase* self) {
     self->locale = nullptr;
 }
 
+void StandardStreamOpened_nid_no_patch(std::int64_t index) {
+    if (index <= 0 || static_cast<std::uint64_t>(index) >= g_standardStreamOpens.size()) throw std::out_of_range("ios_base::_Addstd: standard stream index out of range");
+    ++std::atomic_ref<signed char>(g_standardStreamOpens[index]);
+}
+
 GuestLocale::IosBase* APS5_VABI SetStreamWidth(GuestLocale::IosBase* stream, std::int32_t width) {
     if (stream == nullptr) throw std::invalid_argument("setw: null stream");
     stream->width = width;

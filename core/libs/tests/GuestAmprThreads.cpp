@@ -57,6 +57,8 @@ void APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(TestPad* pad);
 void APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(TestPad* pad, Pthread* thread);
 void APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(TestPad* pad);
 void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* stream);
+void APS5_VABI _ZNSt8ios_baseD2Ev_nid_postfix(GuestLocale::IosBase* self);
+extern GuestLocale::Implementation* _ZSt21_sceLibcClassicLocale_nid_postfix;
 int APS5_VABI _Thrd_join_nid_postfix(Pthread thread, int* code);
 int APS5_VABI _Thrd_sleep_nid_postfix(const GuestXtime* target, GuestXtime* remaining);
 void APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix(void);
@@ -536,6 +538,11 @@ static void TestAddStandardStream() {
     Require(streams[0].standardStream == 1);
     _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[0]);
     Require(streams[0].standardStream == 1);
+    streams[0].locale = &_ZSt21_sceLibcClassicLocale_nid_postfix;
+    _ZNSt8ios_baseD2Ev_nid_postfix(&streams[0]);
+    Require(streams[0].locale == &_ZSt21_sceLibcClassicLocale_nid_postfix);
+    _ZNSt8ios_baseD2Ev_nid_postfix(&streams[0]);
+    Require(streams[0].locale == nullptr);
     for (std::size_t index = 1; index < streams.size(); ++index) {
         _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[index]);
         Require(streams[index].standardStream == static_cast<std::int64_t>(index < 7 ? index + 1 : 8));
