@@ -7,6 +7,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ParallelCompare.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
 #include "prx/libSceAgcDriver/Graphics/shaders/MeshArguments_spv.h"
 #include "prx/libSceAgcDriver/Graphics/shaders/SampleCounter_spv.h"
 #include "prx/libSceAgcDriver/Graphics/shaders/SampleDumps_spv.h"
@@ -2926,7 +2927,8 @@ bool Recorder::PendingWriteOverlaps(std::uint64_t address, std::size_t bytes) co
     for (const auto& batch : inFlight) {
         if (overlaps(*batch, address, end)) return true;
     }
-    return false;
+    // APS5_DEFER_COPY_BACK: unpublished slab bytes are writes the import still owes (SyncThrough publishes them).
+    return DeferCopyBacks() && AnyShadowedOverlaps(address, bytes);
 }
 
 bool Recorder::OpenWriteOverlaps(std::uint64_t address, std::size_t bytes) const {
@@ -3553,6 +3555,17 @@ void Recorder::FlushDeferredReleases() {
 
 void Recorder::SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUnlocked, std::source_location where) {
     if (bytes == 0) return;
+    // APS5_DEFER_COPY_BACK: a reader that waits for the range's writes reads the import next; the unpublished slab
+    // bytes over it are recorded into the import first (a pending write the wait below then covers).
+    static thread_local bool publishing = false;
+    if (!publishing && DeferCopyBacks() && AnyShadowedOverlaps(address, bytes)) {
+        std::lock_guard gpu(GuestMemory::GpuMutex());
+        publishing = true;
+        struct Reset {
+            ~Reset() { publishing = false; }
+        } reset;
+        PublishShadow(address, bytes, PublishScope::Whole, PublishReason::Hook);
+    }
     const auto end = address + bytes;
     if (completionDepth != 0 && !CompletionStoreSyncs()) {
         // A store made by a completion action (a copied buffer's write-back, GuestBufferMemory::
