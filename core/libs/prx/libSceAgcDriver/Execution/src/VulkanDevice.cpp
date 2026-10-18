@@ -61,6 +61,7 @@
 #include <deque>
 #include <limits>
 #include <list>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -204,6 +205,122 @@ private:
 // The [present] line's counters (see the header); mutated under State::presentMutex.
 VulkanDevice::PresentStatistics presentCounters{};
 
+// The selected device's memory layout and VK_EXT_memory_budget query, for [heaps] and the window title.
+VkPhysicalDeviceMemoryProperties selectedMemory{};
+VkPhysicalDevice selectedPhysical = VK_NULL_HANDLE;
+std::atomic<PFN_vkGetPhysicalDeviceMemoryProperties2> selectedBudgetQuery{nullptr};
+
+// APS5_PROFILE_HEAPS=1 (with APS5_PROFILE_DRAW): vkAllocateMemory / vkFreeMemory go through these wrappers,
+// which keep every live allocation's heap, size, caller and whether it imports existing memory (host
+// pointer, fd or handle: no new pages); [heaps] every 10 s names the heaps' own and imported bytes and the
+// callers holding the most (offsets into this module: addr2line -e libSceAgcDriver.prx <image base + offset>).
+struct HeapAllocation {
+    VkDeviceSize bytes;
+    std::uint32_t type;
+    std::uintptr_t site;
+    bool imported;
+};
+std::mutex heapMutex;
+std::unordered_map<VkDeviceMemory, HeapAllocation> heapAllocations;
+PFN_vkGetDeviceProcAddr realDeviceProc = nullptr;
+std::atomic<PFN_vkAllocateMemory> realAllocate{nullptr};
+std::atomic<PFN_vkFreeMemory> realFree{nullptr};
+
+std::uintptr_t moduleBase() {
+#ifdef _WIN32
+    HMODULE module = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&moduleBase), &module);
+    return reinterpret_cast<std::uintptr_t>(module);
+#else
+    return 0;
+#endif
+}
+
+void reportHeaps() {
+    static auto reported = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - reported < std::chrono::seconds(10)) return;
+    reported = now;
+    struct Total { std::uint64_t count = 0, bytes = 0; };
+    std::array<Total, VK_MAX_MEMORY_HEAPS> own{}, imported{};
+    std::map<std::pair<std::uint32_t, std::uintptr_t>, Total> sites;
+    for (const auto& [memory, allocation] : heapAllocations) {
+        const auto heap = allocation.type < selectedMemory.memoryTypeCount ? selectedMemory.memoryTypes[allocation.type].heapIndex : 0u;
+        auto& total = allocation.imported ? imported[heap] : own[heap];
+        ++total.count;
+        total.bytes += allocation.bytes;
+        if (allocation.imported) continue;
+        auto& site = sites[{heap, allocation.site}];
+        ++site.count;
+        site.bytes += allocation.bytes;
+    }
+    std::vector<std::pair<std::pair<std::uint32_t, std::uintptr_t>, Total>> sorted(sites.begin(), sites.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second.bytes > b.second.bytes; });
+    static const auto base = moduleBase();
+    AgcDriver::ProfilePrint_nid_no_patch("[heaps] live Vulkan memory (MiB):");
+    for (std::uint32_t heap = 0; heap < selectedMemory.memoryHeapCount; ++heap) AgcDriver::ProfilePrint_nid_no_patch(" heap %u own %.0f in %llu, imported %.0f in %llu;", heap, own[heap].bytes / 1048576.0, static_cast<unsigned long long>(own[heap].count), imported[heap].bytes / 1048576.0, static_cast<unsigned long long>(imported[heap].count));
+    AgcDriver::ProfilePrint_nid_no_patch(" own by caller (heap, module offset, count, MiB):");
+    for (std::size_t i = 0; i < sorted.size() && i < 16; ++i) {
+        const auto [heap, site] = sorted[i].first;
+        AgcDriver::ProfilePrint_nid_no_patch(" %u +0x%llx x%llu %.0f", heap, static_cast<unsigned long long>(site >= base ? site - base : site), static_cast<unsigned long long>(sorted[i].second.count), sorted[i].second.bytes / 1048576.0);
+    }
+    AgcDriver::ProfilePrint_nid_no_patch("\n");
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL countedAllocate(VkDevice device, const VkMemoryAllocateInfo* info, const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory) {
+    const auto site = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
+    const auto result = realAllocate.load(std::memory_order_relaxed)(device, info, callbacks, memory);
+    if (result != VK_SUCCESS) return result;
+    bool imported = false;
+    for (auto* next = static_cast<const VkBaseInStructure*>(info->pNext); next != nullptr; next = next->pNext) {
+        imported |= next->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT || next->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR || next->sType == VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR;
+    }
+    std::lock_guard lock(heapMutex);
+    heapAllocations[*memory] = {info->allocationSize, info->memoryTypeIndex, site, imported};
+    reportHeaps();
+    return result;
+}
+
+VKAPI_ATTR void VKAPI_CALL countedFree(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* callbacks) {
+    {
+        std::lock_guard lock(heapMutex);
+        heapAllocations.erase(memory);
+    }
+    realFree.load(std::memory_order_relaxed)(device, memory, callbacks);
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL countedDeviceProc(VkDevice device, const char* name) {
+    const auto function = realDeviceProc(device, name);
+    if (function == nullptr) return nullptr;
+    if (std::strcmp(name, "vkAllocateMemory") == 0) {
+        realAllocate.store(reinterpret_cast<PFN_vkAllocateMemory>(function), std::memory_order_relaxed);
+        return reinterpret_cast<PFN_vkVoidFunction>(&countedAllocate);
+    }
+    if (std::strcmp(name, "vkFreeMemory") == 0) {
+        realFree.store(reinterpret_cast<PFN_vkFreeMemory>(function), std::memory_order_relaxed);
+        return reinterpret_cast<PFN_vkVoidFunction>(&countedFree);
+    }
+    return function;
+}
+
+}
+
+extern "C" void AgcDriverTitleStats_nid_postfix(AgcDriverTitleStats* stats) {
+    const auto counts = VulkanDevice::PresentCounts();
+    *stats = {counts.presents + counts.acquireDrops, counts.gpuBusyMs, counts.gpuGapMs, 0, 0, 0};
+    const auto query = selectedBudgetQuery.load(std::memory_order_acquire);
+    if (query == nullptr) return;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, &budget};
+    query(selectedPhysical, &properties);
+    for (std::uint32_t heap = 0; heap < selectedMemory.memoryHeapCount; ++heap) {
+        if ((selectedMemory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 && stats->deviceBudget == 0) {
+            stats->deviceUsed = budget.heapUsage[heap];
+            stats->deviceBudget = budget.heapBudget[heap];
+        } else if ((selectedMemory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) {
+            stats->hostUsed += budget.heapUsage[heap];
+        }
+    }
 }
 
 // A compute dispatch's Vulkan objects, shared by every dispatch of the same compiled variant and
@@ -1015,6 +1132,10 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         APS5_LOG_OUT("Vulkan surface created surface=%p window=%p", reinterpret_cast<void*>(state->surface), state->window);
     }
     state->deviceProc = state->InstanceFunction<PFN_vkGetDeviceProcAddr>("vkGetDeviceProcAddr");
+    if (std::getenv("APS5_PROFILE_HEAPS") != nullptr && std::getenv("APS5_PROFILE_DRAW") != nullptr) {
+        realDeviceProc = state->deviceProc;
+        state->deviceProc = &countedDeviceProc;
+    }
     const auto enumerate = state->InstanceFunction<PFN_vkEnumeratePhysicalDevices>("vkEnumeratePhysicalDevices");
     std::uint32_t count = 0;
     check(enumerate(state->instance, &count, nullptr), "vkEnumeratePhysicalDevices");
@@ -1115,6 +1236,8 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     state->InstanceFunction<PFN_vkGetPhysicalDeviceMemoryProperties>("vkGetPhysicalDeviceMemoryProperties")(selected, &state->memoryProperties);
     for (std::uint32_t i = 0; i < state->memoryProperties.memoryHeapCount; ++i) APS5_LOG_OUT("Memory heap %u size=%.1f MiB flags=0x%x", i, state->memoryProperties.memoryHeaps[i].size / 1048576.0, state->memoryProperties.memoryHeaps[i].flags);
     for (std::uint32_t i = 0; i < state->memoryProperties.memoryTypeCount; ++i) APS5_LOG_OUT("Memory type %u heap=%u flags=0x%x", i, state->memoryProperties.memoryTypes[i].heapIndex, state->memoryProperties.memoryTypes[i].propertyFlags);
+    selectedMemory = state->memoryProperties;
+    selectedPhysical = selected;
     std::uint32_t extensionCount = 0;
     const auto enumerateDeviceExtensions = state->InstanceFunction<PFN_vkEnumerateDeviceExtensionProperties>("vkEnumerateDeviceExtensionProperties");
     check(enumerateDeviceExtensions(selected, nullptr, &extensionCount, nullptr), "vkEnumerateDeviceExtensionProperties");
@@ -1344,6 +1467,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     state->drawIndirectCount = hasExtension(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
     if (state->drawIndirectCount) deviceExtensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
     state->memoryBudget = hasExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    if (state->memoryBudget) selectedBudgetQuery.store(state->InstanceFunction<PFN_vkGetPhysicalDeviceMemoryProperties2>("vkGetPhysicalDeviceMemoryProperties2"), std::memory_order_release);
     if (!compileOnly) {
         VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
         VkPhysicalDeviceProperties2 idProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &id};
