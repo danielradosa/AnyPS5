@@ -377,6 +377,8 @@ public:
     std::uint64_t GuestBytes() const;
     std::size_t OriginalSnapshotBytes() const { return original.capacity(); }
     VkDeviceSize AllocationBytes() const { return memoryBytes; }
+    // Host bytes of the comparison copies (`original`, `generationBaseline`), for [hostcopies]; read without a lock.
+    std::uint64_t HostCopyBytes() const { return original.capacity() + generationBaseline.capacity(); }
 
 private:
     StorageTexture(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);

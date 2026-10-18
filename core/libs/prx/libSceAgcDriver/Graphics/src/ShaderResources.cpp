@@ -1163,6 +1163,22 @@ TextureCacheUse TextureCacheUsage() {
     return use;
 }
 
+void ReportHostCopies() {
+    std::uint64_t storageBytes = 0, sampledBytes = 0;
+    std::size_t storageCount = 0, sampledCount = 0;
+    {
+        auto& cache = StorageTextures();
+        std::lock_guard lock(cache.mutex);
+        for (const auto& entry : cache.entries) storageBytes += entry.texture->HostCopyBytes(), ++storageCount;
+    }
+    {
+        auto& cache = Textures();
+        std::lock_guard lock(cache.mutex);
+        for (const auto& entry : cache.entries) sampledBytes += entry.bytes.capacity(), sampledCount += entry.bytes.empty() ? 0 : 1;
+    }
+    AgcDriver::ProfilePrint_nid_no_patch("[hostcopies] %zu cached storage images keep %.0f MiB of host copies (original + generation baseline); %zu sampled cache entries keep %.0f MiB of snapshots\n", storageCount, storageBytes / 1048576.0, sampledCount, sampledBytes / 1048576.0);
+}
+
 std::uint64_t SampledTextureCacheBudget(const Context& context) {
     auto& cache = Textures();
     std::lock_guard lock(cache.mutex);

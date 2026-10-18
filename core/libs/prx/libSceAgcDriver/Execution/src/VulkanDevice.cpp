@@ -40,6 +40,7 @@
 #include "prx/libc/include/General.hpp"
 #ifdef _WIN32
 #include <windows.h>
+#include <tlhelp32.h>
 #endif
 #include <atomic>
 #include <chrono>
@@ -266,6 +267,108 @@ void reportHeaps() {
     }
     AgcDriver::ProfilePrint_nid_no_patch("\n");
 }
+
+#ifdef _WIN32
+// APS5_PROFILE_HEAPS (Windows): every loaded module's imports of libstdc++'s operator new and sized operator delete
+// are redirected so each block of 1 MiB or more is kept with its first four calling frames; [hostheap] (with the
+// [present] line) names the stacks holding the most bytes, each frame as module+offset. Unsized deletes of such
+// blocks are not seen (they stay counted), nor blocks taken before the redirect or through malloc.
+struct HostBlock {
+    std::size_t bytes;
+    std::array<std::uintptr_t, 4> frames;
+};
+constexpr std::size_t TrackedHostBlock = std::size_t{1} << 20u;
+std::mutex hostBlockMutex;
+std::unordered_map<void*, HostBlock> hostBlocks;
+std::vector<std::pair<std::uintptr_t, std::uintptr_t>> trackedModules;
+void* (*realNew)(std::size_t) = nullptr;
+
+bool trackedCode(std::uintptr_t address) {
+    for (const auto& [begin, end] : trackedModules) {
+        if (address >= begin + 0x1000 && address < end) return true;
+    }
+    return false;
+}
+void (*realSizedDelete)(void*, std::size_t) = nullptr;
+
+void* trackedNew(std::size_t bytes) {
+    void* block = realNew(bytes);
+    if (bytes < TrackedHostBlock) return block;
+    HostBlock entry{bytes, {}};
+    // The libraries carry no unwind tables (-fno-asynchronous-unwind-tables), so past the direct caller the frames are
+    // found by scanning the stack for values that point just after a call instruction in a tracked module (as crash
+    // reporters do): a stale value can slip in, a frame kept only in a register is missed.
+    entry.frames[0] = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
+    std::size_t kept = 1;
+    const auto* slot = static_cast<const std::uintptr_t*>(__builtin_frame_address(0));
+    MEMORY_BASIC_INFORMATION region{};
+    const auto slots = VirtualQuery(slot, &region, sizeof(region)) == 0 ? 0 : std::min<std::size_t>(512, (reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize - reinterpret_cast<std::uintptr_t>(slot)) / sizeof(std::uintptr_t));
+    for (std::size_t i = 0; i < slots && kept < entry.frames.size(); ++i) {
+        const auto value = slot[i];
+        if (value == entry.frames[kept - 1] || !trackedCode(value)) continue;
+        const auto* code = reinterpret_cast<const std::uint8_t*>(value);
+        const bool afterCall = code[-5] == 0xe8 || (code[-6] == 0xff && (code[-5] & 0x38) == 0x10) || (code[-2] == 0xff && (code[-1] & 0xf8) == 0xd0) || (code[-3] == 0xff && (code[-2] & 0x38) == 0x10);
+        if (afterCall) entry.frames[kept++] = value;
+    }
+    std::lock_guard lock(hostBlockMutex);
+    hostBlocks[block] = entry;
+    return block;
+}
+
+void trackedSizedDelete(void* block, std::size_t bytes) {
+    if (block != nullptr && bytes >= TrackedHostBlock) {
+        std::lock_guard lock(hostBlockMutex);
+        hostBlocks.erase(block);
+    }
+    realSizedDelete(block, bytes);
+}
+
+// Points this module's import slot `name` from `dll` at `replacement` and returns what it held (null: not imported).
+void* redirectImport(HMODULE module, const char* dll, const char* name, void* replacement) {
+    auto* base = reinterpret_cast<std::byte*>(module);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    const auto& imports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    for (auto* descriptor = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + imports.VirtualAddress); imports.VirtualAddress != 0 && descriptor->Name != 0; ++descriptor) {
+        if (_stricmp(reinterpret_cast<const char*>(base + descriptor->Name), dll) != 0 || descriptor->OriginalFirstThunk == 0) continue;
+        auto* names = reinterpret_cast<const IMAGE_THUNK_DATA*>(base + descriptor->OriginalFirstThunk);
+        auto* slots = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor->FirstThunk);
+        for (; names->u1.AddressOfData != 0; ++names, ++slots) {
+            if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
+            if (std::strcmp(reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + names->u1.AddressOfData)->Name, name) != 0) continue;
+            DWORD protection = 0;
+            if (!VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), PAGE_READWRITE, &protection)) return nullptr;
+            auto* original = reinterpret_cast<void*>(slots->u1.Function);
+            slots->u1.Function = reinterpret_cast<ULONG_PTR>(replacement);
+            VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), protection, &protection);
+            return original;
+        }
+    }
+    return nullptr;
+}
+
+void trackHostBlocks() {
+    realNew = reinterpret_cast<void* (*)(std::size_t)>(GetProcAddress(GetModuleHandleW(L"libstdc++-6.dll"), "_Znwy"));
+    realSizedDelete = reinterpret_cast<void (*)(void*, std::size_t)>(GetProcAddress(GetModuleHandleW(L"libstdc++-6.dll"), "_ZdlPvy"));
+    if (realNew == nullptr || realSizedDelete == nullptr) return;
+    hostBlocks.reserve(1u << 16u);
+    std::vector<HMODULE> modules;
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snapshot == INVALID_HANDLE_VALUE) return;
+    MODULEENTRY32W entry{sizeof(entry)};
+    for (bool more = Module32FirstW(snapshot, &entry); more; more = Module32NextW(snapshot, &entry)) modules.push_back(entry.hModule);
+    CloseHandle(snapshot);
+    std::size_t news = 0, deletes = 0;
+    for (auto* module : modules) {
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const std::byte*>(module) + reinterpret_cast<const IMAGE_DOS_HEADER*>(module)->e_lfanew);
+        trackedModules.emplace_back(reinterpret_cast<std::uintptr_t>(module), reinterpret_cast<std::uintptr_t>(module) + nt->OptionalHeader.SizeOfImage);
+    }
+    for (auto* module : modules) {
+        news += redirectImport(module, "libstdc++-6.dll", "_Znwy", reinterpret_cast<void*>(&trackedNew)) != nullptr;
+        deletes += redirectImport(module, "libstdc++-6.dll", "_ZdlPvy", reinterpret_cast<void*>(&trackedSizedDelete)) != nullptr;
+    }
+    std::fprintf(stderr, "[hostheap] tracking blocks of 1 MiB or more: operator new redirected in %zu of %zu modules, sized operator delete in %zu\n", news, modules.size(), deletes);
+}
+#endif
 
 VKAPI_ATTR VkResult VKAPI_CALL countedAllocate(VkDevice device, const VkMemoryAllocateInfo* info, const VkAllocationCallbacks* callbacks, VkDeviceMemory* memory) {
     const auto site = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
@@ -1135,6 +1238,9 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     if (std::getenv("APS5_PROFILE_HEAPS") != nullptr && std::getenv("APS5_PROFILE_DRAW") != nullptr) {
         realDeviceProc = state->deviceProc;
         state->deviceProc = &countedDeviceProc;
+#ifdef _WIN32
+        trackHostBlocks();
+#endif
     }
     const auto enumerate = state->InstanceFunction<PFN_vkEnumeratePhysicalDevices>("vkEnumeratePhysicalDevices");
     std::uint32_t count = 0;
@@ -3493,6 +3599,40 @@ std::size_t VulkanDevice::FlipInFlight() {
 
 VulkanDevice::PresentStatistics VulkanDevice::PresentCounts() {
     return presentCounters;
+}
+
+void VulkanDevice::ReportHostBlocks() {
+#ifdef _WIN32
+    std::map<std::array<std::uintptr_t, 4>, std::pair<std::uint64_t, std::uint64_t>> stacks;
+    std::uint64_t count = 0, bytes = 0;
+    {
+        std::lock_guard lock(hostBlockMutex);
+        for (const auto& [block, entry] : hostBlocks) {
+            auto& stack = stacks[entry.frames];
+            ++stack.first;
+            stack.second += entry.bytes;
+            ++count;
+            bytes += entry.bytes;
+        }
+    }
+    std::vector<std::pair<std::array<std::uintptr_t, 4>, std::pair<std::uint64_t, std::uint64_t>>> sorted(stacks.begin(), stacks.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
+    AgcDriver::ProfilePrint_nid_no_patch("[hostheap] %llu live blocks of 1 MiB or more, %.0f MiB; by stack (MiB, count, module offsets):", static_cast<unsigned long long>(count), bytes / 1048576.0);
+    for (std::size_t i = 0; i < sorted.size() && i < 12; ++i) {
+        const auto& frames = sorted[i].first;
+        AgcDriver::ProfilePrint_nid_no_patch(" %.0f x%llu @", sorted[i].second.second / 1048576.0, static_cast<unsigned long long>(sorted[i].second.first));
+        for (const auto frame : frames) {
+            if (frame == 0) break;
+            HMODULE module = nullptr;
+            char name[MAX_PATH] = "?";
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(frame), &module)) GetModuleFileNameA(module, name, sizeof(name));
+            const char* file = std::strrchr(name, '\\');
+            AgcDriver::ProfilePrint_nid_no_patch(" %s+0x%llx", file != nullptr ? file + 1 : name, static_cast<unsigned long long>(frame - reinterpret_cast<std::uintptr_t>(module)));
+        }
+        AgcDriver::ProfilePrint_nid_no_patch(";");
+    }
+    AgcDriver::ProfilePrint_nid_no_patch("\n");
+#endif
 }
 
 bool VulkanDevice::PresentWaitsForSlots(const DisplayBuffer* buffer) const {
