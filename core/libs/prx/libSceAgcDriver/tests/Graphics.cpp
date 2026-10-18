@@ -4750,6 +4750,11 @@ void sampledTextureBudgetTests() {
     Require(SampledTextureBudget(memory, &reported, 5 * GiB) == 9 * GiB + 128 * MiB, "usage below the cached bytes is not read as no other device memory in use");
     reported.heapUsage[2] = 12 * GiB;
     Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 2 * GiB, "a heap whose other users leave no room does not keep the 2 GiB floor");
+    reported.heapBudget[2] = 7188 * MiB;
+    reported.heapUsage[2] = 7 * GiB;
+    Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 1034 * MiB, "an 8 GB card's 7188 MiB budget does not lower the floor to half of what is left after 5 GiB");
+    reported.heapBudget[2] = 4 * GiB;
+    Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 512 * MiB, "a budget under 5 GiB does not keep the 512 MiB floor");
     memory.memoryHeaps[0].flags = 0;
     memory.memoryHeaps[2].flags = 0;
     Require(SampledTextureBudget(memory, &reported, 0) == 2 * GiB, "a device without a device-local heap does not keep 2 GiB of sampled textures");
@@ -4771,8 +4776,10 @@ void storageTextureBudgetTests() {
     Require(StorageTextureBudget(memory, &reported) == 4 * GiB, "a zero budget for the largest device-local heap did not fall back to a quarter of the heap");
     reported.heapBudget[2] = 10 * GiB;
     Require(StorageTextureBudget(memory, &reported) == 2560 * MiB, "a 10 GiB budget on the 16 GiB heap does not limit the storage image cache to a quarter of the budget");
+    reported.heapBudget[2] = 7188 * MiB;
+    Require(StorageTextureBudget(memory, &reported) == 1034 * MiB, "an 8 GB card's 7188 MiB budget does not limit the storage image cache to half of what is left after 5 GiB");
     reported.heapBudget[2] = 6 * GiB;
-    Require(StorageTextureBudget(memory, &reported) == 1536 * MiB, "a 6 GiB budget on the 16 GiB heap does not limit the storage image cache to a quarter of the budget");
+    Require(StorageTextureBudget(memory, &reported) == 512 * MiB, "a 6 GiB budget does not keep the storage image cache at the 512 MiB floor below half of what is left after 5 GiB");
     reported.heapBudget[2] = 1 * GiB;
     Require(StorageTextureBudget(memory, &reported) == 512 * MiB, "a 1 GiB budget does not keep the 512 MiB floor");
     reported.heapBudget[2] = 40 * GiB;

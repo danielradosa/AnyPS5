@@ -1049,10 +1049,21 @@ std::uint64_t TextureCacheBudget(const VkPhysicalDeviceMemoryProperties& memory)
     return std::max<std::uint64_t>(2048ull << 20u, heap ? memory.memoryHeaps[*heap].size / 4u : 0u);
 }
 
+// The two texture caches share the device-local budget left after 5 GiB for everything else (shadow slabs, depth
+// surfaces, the buffer pool, the driver's own allocations and the pool's margin), half each, at least 512 MiB: on an
+// 8 GB card (7188 MiB budget) Astro's caches at 1.75 + 2 GiB put the heap at the pool's line, its allowance fell to 0,
+// every write-back scratch buffer became a fresh allocation and Windows demoted VRAM (host write-backs ~70x slower,
+// play1018e); at 1 GiB each the hub ran clean, 8% over play1017zf in the same windows (play1018f).
+std::uint64_t TextureCacheShare(std::uint64_t budget) {
+    constexpr std::uint64_t others = 5ull << 30u;
+    return std::max<std::uint64_t>(512ull << 20u, budget > others ? (budget - others) / 2u : 0u);
+}
+
 std::uint64_t StorageTextureBudget(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported) {
     const auto heap = largestDeviceLocalHeap(memory);
     if (reported == nullptr || !heap || reported->heapBudget[*heap] == 0) return TextureCacheBudget(memory);
-    return std::max<std::uint64_t>(512ull << 20u, std::min<std::uint64_t>(TextureCacheBudget(memory), reported->heapBudget[*heap] / 4u));
+    const auto budget = reported->heapBudget[*heap];
+    return std::max<std::uint64_t>(512ull << 20u, std::min({TextureCacheBudget(memory), budget / 4u, TextureCacheShare(budget)}));
 }
 
 std::uint64_t PressureStorageBudget(std::uint64_t normal, std::uint64_t cached, std::uint64_t heapBytes, std::uint64_t adapterUsage, std::uint64_t reserve) {
@@ -1131,7 +1142,7 @@ std::uint64_t SampledTextureBudget(const VkPhysicalDeviceMemoryProperties& memor
     const auto budget = reported->heapBudget[*heap];
     const auto usage = reported->heapUsage[*heap];
     const auto reserved = usage - std::min<std::uint64_t>(usage, textureBytes) + TextureCacheBudget(memory) + budget / 8u;
-    return std::max<std::uint64_t>(2048ull << 20u, budget > reserved ? budget - reserved : 0u);
+    return std::max<std::uint64_t>(std::min<std::uint64_t>(2048ull << 20u, TextureCacheShare(budget)), budget > reserved ? budget - reserved : 0u);
 }
 
 bool SampledBudgetReportDue(std::uint64_t reported, std::uint64_t budget, std::chrono::steady_clock::duration sinceReport) {

@@ -29,6 +29,7 @@ class Recorder;
 void FlushCachedTextures(VkDevice device);
 void ClearCachedTextures(VkDevice device);
 std::uint64_t TextureCacheBudget(const VkPhysicalDeviceMemoryProperties& memory);
+std::uint64_t TextureCacheShare(std::uint64_t budget);
 std::uint64_t StorageTextureBudget(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported);
 std::uint64_t SampledTextureBudget(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported, std::uint64_t textureBytes);
 std::uint64_t PressureStorageBudget(std::uint64_t normal, std::uint64_t cached, std::uint64_t heapBytes, std::uint64_t adapterUsage, std::uint64_t reserve);
