@@ -26,7 +26,6 @@ public:
 
     static DrawPipeline& Queue0();
     static std::size_t Depth();
-    static std::size_t RefillMark();
     static std::size_t QueuedItems();
     static bool& Active();
     static std::atomic<std::uint64_t>& EpochToken();

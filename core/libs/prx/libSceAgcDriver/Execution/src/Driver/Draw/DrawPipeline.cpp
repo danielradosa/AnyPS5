@@ -37,15 +37,6 @@ std::size_t DrawPipeline::Depth() {
     return depth;
 }
 
-// The queue size a full pipeline must drain to before its enqueuer goes on (the committer notifies only then, or
-// when empty for Drain). APS5_PIPELINE_REFILL=1: half the depth, so a saturated committer wakes queue 0 once per
-// half pipeline instead of after every commit (play1018s: notify_all 3.2% of the committer, one wake per draw).
-// Default: Depth() - 1, a wake per commit as before.
-std::size_t DrawPipeline::RefillMark() {
-    static const std::size_t mark = std::getenv("APS5_PIPELINE_REFILL") != nullptr && Depth() >= 2 ? Depth() / 2 : Depth() - 1;
-    return mark;
-}
-
 std::size_t DrawPipeline::QueuedItems() {
     auto& pipeline = Queue0();
     std::lock_guard lock(pipeline.mutex);
@@ -83,7 +74,7 @@ void DrawPipeline::Enqueue(Commit commit, std::vector<Range> writes, std::uint64
         if (GuestMemory::GpuMutex().HeldByThisThread()) throw std::runtime_error("draw pipeline full while the enqueuing thread holds the GPU lock");
         const auto start = std::chrono::steady_clock::now();
         ++idleWaiters;
-        idle.wait(lock, [&] { return items.size() <= RefillMark(); });
+        idle.wait(lock, [&] { return items.size() < Depth(); });
         --idleWaiters;
         fullWaitNs += elapsedNs(start);
         rethrowFailure();
@@ -169,7 +160,7 @@ void DrawPipeline::run() {
         if (failed) ++commitErrors;
         if (fatal != nullptr && failure == nullptr) failure = fatal;
         outstanding.fetch_sub(1, std::memory_order_release);
-        if (idleWaiters != 0 && items.size() <= RefillMark()) idle.notify_all();
+        if (idleWaiters != 0) idle.notify_all();
     }
 }
 
