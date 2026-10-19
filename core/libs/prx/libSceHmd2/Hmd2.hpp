@@ -11,11 +11,13 @@ namespace Hmd2 {
 inline constexpr std::int32_t AlreadyInitialized = static_cast<std::int32_t>(0x8a720001);
 inline constexpr std::int32_t NotInitialized = static_cast<std::int32_t>(0x8a720002);
 inline constexpr std::int32_t InvalidHandle = static_cast<std::int32_t>(0x8a720003);
+inline constexpr std::int32_t Error0004 = static_cast<std::int32_t>(0x8a720004);
 inline constexpr std::int32_t AlreadyOpened = static_cast<std::int32_t>(0x8a720006);
 inline constexpr std::int32_t ParameterNull = static_cast<std::int32_t>(0x8a720008);
 inline constexpr std::int32_t ParameterInvalid = static_cast<std::int32_t>(0x8a720009);
 inline constexpr std::int32_t ReprojectionNotInitialized = static_cast<std::int32_t>(0x8a72000b);
 inline constexpr std::int32_t ReprojectionAlreadyInitialized = static_cast<std::int32_t>(0x8a72000c);
+inline constexpr std::int32_t Error002C = static_cast<std::int32_t>(0x8a72002c);
 inline constexpr std::int32_t VideoOutInvalidValue = static_cast<std::int32_t>(0x80290001);
 inline constexpr std::int32_t VideoOutNoDevice = static_cast<std::int32_t>(0x80290018);
 

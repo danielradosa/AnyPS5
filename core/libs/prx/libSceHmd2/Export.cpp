@@ -8,6 +8,7 @@
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -23,6 +24,22 @@ std::int32_t openHandle = 0;
 std::mutex reprojectionMutex;
 Hmd2::ReprojectionState* reprojectionState = nullptr;
 std::int32_t allowPositionalReprojection = 0;
+
+std::int32_t BeforeInitialize(std::int32_t answer, const char* function) {
+    std::lock_guard lock(stateMutex);
+    if (initialized) throw std::runtime_error(std::string(function) + ": the answer after sceHmd2Initialize is not measured");
+    return answer;
+}
+
+std::int32_t BeforeReprojectionSession(const char* function) {
+    {
+        std::lock_guard lock(reprojectionMutex);
+        if (reprojectionState != nullptr) {
+            throw std::runtime_error(std::string(function) + ": the answer with a reprojection session is not measured");
+        }
+    }
+    return BeforeInitialize(Hmd2::ReprojectionNotInitialized, function);
+}
 
 std::uint32_t CompiledSdkVersion() {
     static const auto* processParameters = static_cast<const std::byte*>(ApplicationProcessParameters_nid_no_patch());
@@ -259,84 +276,74 @@ std::int32_t APS5_VABI sceHmd2SetVibration(std::int32_t handle, std::uint32_t le
     return 0;
 }
 
-int APS5_VABI sceHmd2GazeGetCalibrationData() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeGetCalibrationData() {
+    return BeforeInitialize(Hmd2::ParameterNull, __func__);
 }
 
-int APS5_VABI sceHmd2GazeGetCalibrationDataMaxSize() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeGetCalibrationDataMaxSize(const void* first, const void* second) {
+    (void)first;
+    if (second == nullptr) return Hmd2::ParameterNull;
+    return BeforeInitialize(Hmd2::ParameterInvalid, __func__);
 }
 
-int APS5_VABI sceHmd2ReprojectionClearUserEventEnd() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2ReprojectionClearUserEventEnd() {
+    return BeforeReprojectionSession(__func__);
 }
 
-int APS5_VABI sceHmd2ReprojectionClearUserEventStart() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2ReprojectionClearUserEventStart() {
+    return BeforeReprojectionSession(__func__);
 }
 
-int APS5_VABI sceHmd2ReprojectionGetCurrentOutput() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2ReprojectionGetCurrentOutput() {
+    return BeforeReprojectionSession(__func__);
 }
 
-int APS5_VABI sceHmd2ReprojectionSetUserEventEnd() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2ReprojectionSetUserEventEnd() {
+    return BeforeReprojectionSession(__func__);
 }
 
-int APS5_VABI sceHmd2ReprojectionSetUserEventStart() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2ReprojectionSetUserEventStart() {
+    return BeforeReprojectionSession(__func__);
 }
 
-int APS5_VABI sceHmd2GazeActivateGazeTracking() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeActivateGazeTracking() {
+    return BeforeInitialize(0, __func__);
 }
 
-int APS5_VABI sceHmd2GazeGetDeviceStatus() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeGetDeviceStatus(const void* status) {
+    if (status == nullptr) return Hmd2::ParameterNull;
+    return BeforeInitialize(Hmd2::Error0004, __func__);
 }
 
-int APS5_VABI sceHmd2GazeGetUserCalibrationStatus() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeGetUserCalibrationStatus(const void* status) {
+    if (status == nullptr) return Hmd2::ParameterNull;
+    return BeforeInitialize(Hmd2::Error0004, __func__);
 }
 
-int APS5_VABI sceHmd2GazeInsertRawDataWithHandle() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeInsertRawDataWithHandle(const void* first, const void* second) {
+    (void)first;
+    if (second == nullptr) return Hmd2::ParameterNull;
+    return BeforeInitialize(Hmd2::InvalidHandle, __func__);
 }
 
-int APS5_VABI sceHmd2GazeSetEnabledEye() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeSetEnabledEye() {
+    return BeforeInitialize(Hmd2::Error0004, __func__);
 }
 
-int APS5_VABI sceHmd2GazeSetUserCalibrationData() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeSetUserCalibrationData() {
+    return BeforeInitialize(Hmd2::ParameterNull, __func__);
 }
 
-int APS5_VABI sceHmd2GazeSetUserCalibrationPoint() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeSetUserCalibrationPoint() {
+    return BeforeInitialize(Hmd2::Error0004, __func__);
 }
 
-int APS5_VABI sceHmd2GazeStartUserCalibration() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeStartUserCalibration() {
+    return BeforeInitialize(Hmd2::Error0004, __func__);
 }
 
-int APS5_VABI sceHmd2GazeStopUserCalibration() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeStopUserCalibration() {
+    return BeforeInitialize(Hmd2::Error0004, __func__);
 }
 
 int APS5_VABI sceHmd2ReprojectionSeeThroughDraw() {
@@ -364,24 +371,22 @@ int APS5_VABI sceHmd2SeeThroughCallbackGetPoseDataFunc() {
     return 0;
 }
 
-int APS5_VABI sceHmd2GazeObjectSelectionGetSelectedObject() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeObjectSelectionGetSelectedObject(const void* first, const void* second) {
+    if (first == nullptr || second == nullptr) return Hmd2::ParameterNull;
+    return BeforeInitialize(Hmd2::ParameterInvalid, __func__);
 }
 
-int APS5_VABI sceHmd2GazeObjectSelectionInitialize() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeObjectSelectionInitialize() {
+    return BeforeInitialize(Hmd2::ParameterNull, __func__);
 }
 
-int APS5_VABI sceHmd2GazeObjectSelectionQueryMemory() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeObjectSelectionQueryMemory(const void* first, const void* second) {
+    if (first == nullptr || second == nullptr) return Hmd2::ParameterNull;
+    return BeforeInitialize(Hmd2::ParameterInvalid, __func__);
 }
 
-int APS5_VABI sceHmd2GazeObjectSelectionTerminate() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2GazeObjectSelectionTerminate() {
+    return BeforeInitialize(Hmd2::Error002C, __func__);
 }
 
 int APS5_VABI sceHmd2ReprojectionClear() {
@@ -409,14 +414,13 @@ int APS5_VABI sceHmd2RpeorjectionSetParam() {
     return 0;
 }
 
-int APS5_VABI sceHmd2SetFieldOfView() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2SetFieldOfView(const void* fieldOfView) {
+    if (fieldOfView == nullptr) return Hmd2::ParameterNull;
+    return BeforeInitialize(0, __func__);
 }
 
-int APS5_VABI sceHmd2SetIpdOffset() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2SetIpdOffset() {
+    return BeforeInitialize(0, __func__);
 }
 
 }

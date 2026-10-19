@@ -26,9 +26,29 @@ std::int32_t APS5_VABI sceHmd2ReprojectionSetRenderConfig(std::uint64_t halfRate
 std::int32_t APS5_VABI sceHmd2ReprojectionSetMirroringOption(const void* option);
 std::int32_t APS5_VABI sceHmd2ReprojectionEnableMirroring(const void* param);
 std::int32_t APS5_VABI sceHmd2ReprojectionDisableMirroring();
-int APS5_VABI sceHmd2GazeActivateGazeTracking();
-int APS5_VABI sceHmd2ReprojectionGetCurrentOutput();
-int APS5_VABI sceHmd2SetFieldOfView();
+std::int32_t APS5_VABI sceHmd2GazeActivateGazeTracking();
+std::int32_t APS5_VABI sceHmd2SetIpdOffset();
+std::int32_t APS5_VABI sceHmd2GazeSetEnabledEye();
+std::int32_t APS5_VABI sceHmd2GazeSetUserCalibrationPoint();
+std::int32_t APS5_VABI sceHmd2GazeStartUserCalibration();
+std::int32_t APS5_VABI sceHmd2GazeStopUserCalibration();
+std::int32_t APS5_VABI sceHmd2GazeGetCalibrationData();
+std::int32_t APS5_VABI sceHmd2GazeSetUserCalibrationData();
+std::int32_t APS5_VABI sceHmd2GazeObjectSelectionInitialize();
+std::int32_t APS5_VABI sceHmd2GazeObjectSelectionTerminate();
+std::int32_t APS5_VABI sceHmd2ReprojectionSetUserEventStart();
+std::int32_t APS5_VABI sceHmd2ReprojectionSetUserEventEnd();
+std::int32_t APS5_VABI sceHmd2ReprojectionClearUserEventStart();
+std::int32_t APS5_VABI sceHmd2ReprojectionClearUserEventEnd();
+std::int32_t APS5_VABI sceHmd2ReprojectionGetCurrentOutput();
+std::int32_t APS5_VABI sceHmd2GazeGetDeviceStatus(const void* status);
+std::int32_t APS5_VABI sceHmd2GazeGetUserCalibrationStatus(const void* status);
+std::int32_t APS5_VABI sceHmd2SetFieldOfView(const void* fieldOfView);
+std::int32_t APS5_VABI sceHmd2GazeObjectSelectionQueryMemory(const void* first, const void* second);
+std::int32_t APS5_VABI sceHmd2GazeObjectSelectionGetSelectedObject(const void* first, const void* second);
+std::int32_t APS5_VABI sceHmd2GazeGetCalibrationDataMaxSize(const void* first, const void* second);
+std::int32_t APS5_VABI sceHmd2GazeInsertRawDataWithHandle(const void* first, const void* second);
+int APS5_VABI sceHmd2ReprojectionGetStatus();
 }
 namespace {
 
@@ -195,6 +215,63 @@ void SizeQueriesReturnTheConsoleSizes() {
     Require(work.size == 0x4000 && work.align == 0x100, "mirroring work memory size");
 }
 
+void MeasuredAnswersBeforeInitialization() {
+    std::array<std::uint8_t, 0x4000> zeroed{};
+    const void* buffer = zeroed.data();
+    Require(sceHmd2GazeActivateGazeTracking() == 0, "gaze activation");
+    Require(sceHmd2SetIpdOffset() == 0, "IPD offset");
+    Require(sceHmd2GazeSetEnabledEye() == Hmd2::Error0004, "enabled eye");
+    Require(sceHmd2GazeSetUserCalibrationPoint() == Hmd2::Error0004, "calibration point");
+    Require(sceHmd2GazeStartUserCalibration() == Hmd2::Error0004, "start calibration");
+    Require(sceHmd2GazeStopUserCalibration() == Hmd2::Error0004, "stop calibration");
+    Require(sceHmd2GazeGetCalibrationData() == Hmd2::ParameterNull, "get calibration data");
+    Require(sceHmd2GazeSetUserCalibrationData() == Hmd2::ParameterNull, "set calibration data");
+    Require(sceHmd2GazeObjectSelectionInitialize() == Hmd2::ParameterNull, "object selection initialize");
+    Require(sceHmd2GazeObjectSelectionTerminate() == Hmd2::Error002C, "object selection terminate");
+    Require(sceHmd2ReprojectionSetUserEventStart() == Hmd2::ReprojectionNotInitialized, "user event start");
+    Require(sceHmd2ReprojectionSetUserEventEnd() == Hmd2::ReprojectionNotInitialized, "user event end");
+    Require(sceHmd2ReprojectionClearUserEventStart() == Hmd2::ReprojectionNotInitialized, "clear user event start");
+    Require(sceHmd2ReprojectionClearUserEventEnd() == Hmd2::ReprojectionNotInitialized, "clear user event end");
+    Require(sceHmd2ReprojectionGetCurrentOutput() == Hmd2::ReprojectionNotInitialized, "current output");
+    Require(sceHmd2GazeGetDeviceStatus(nullptr) == Hmd2::ParameterNull, "null gaze device status");
+    Require(sceHmd2GazeGetDeviceStatus(buffer) == Hmd2::Error0004, "gaze device status");
+    Require(sceHmd2GazeGetUserCalibrationStatus(nullptr) == Hmd2::ParameterNull, "null calibration status");
+    Require(sceHmd2GazeGetUserCalibrationStatus(buffer) == Hmd2::Error0004, "calibration status");
+    Require(sceHmd2SetFieldOfView(nullptr) == Hmd2::ParameterNull, "null field of view");
+    Require(sceHmd2SetFieldOfView(buffer) == 0, "set field of view");
+    Require(sceHmd2GazeObjectSelectionQueryMemory(nullptr, buffer) == Hmd2::ParameterNull, "object selection memory, null first");
+    Require(sceHmd2GazeObjectSelectionQueryMemory(buffer, nullptr) == Hmd2::ParameterNull, "object selection memory, null second");
+    Require(sceHmd2GazeObjectSelectionQueryMemory(buffer, buffer) == Hmd2::ParameterInvalid, "object selection memory");
+    Require(sceHmd2GazeObjectSelectionGetSelectedObject(nullptr, buffer) == Hmd2::ParameterNull, "selected object, null first");
+    Require(sceHmd2GazeObjectSelectionGetSelectedObject(buffer, nullptr) == Hmd2::ParameterNull, "selected object, null second");
+    Require(sceHmd2GazeObjectSelectionGetSelectedObject(buffer, buffer) == Hmd2::ParameterInvalid, "selected object");
+    Require(sceHmd2GazeGetCalibrationDataMaxSize(nullptr, buffer) == Hmd2::ParameterInvalid, "calibration size, null first");
+    Require(sceHmd2GazeGetCalibrationDataMaxSize(buffer, nullptr) == Hmd2::ParameterNull, "calibration size, null second");
+    Require(sceHmd2GazeInsertRawDataWithHandle(nullptr, buffer) == Hmd2::InvalidHandle, "raw data, null first");
+    Require(sceHmd2GazeInsertRawDataWithHandle(buffer, nullptr) == Hmd2::ParameterNull, "raw data, null second");
+    for (const auto byte : zeroed) Require(byte == 0, "a measured answer wrote its argument");
+}
+
+template <typename F>
+void RequireRuntimeError(F f, const char* message) {
+    bool threw = false;
+    try {
+        f();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw, message);
+}
+
+void UnmeasuredWithReprojectionSession() {
+    RequireRuntimeError([] { sceHmd2ReprojectionSetUserEventStart(); }, "user event start with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionSetUserEventEnd(); }, "user event end with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionClearUserEventStart(); }, "clear user event start with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionClearUserEventEnd(); }, "clear user event end with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionGetCurrentOutput(); }, "current output with a session did not throw");
+    Require(sceHmd2GazeActivateGazeTracking() == 0, "gaze activation depends on the reprojection session");
+}
+
 int main() {
     SizeQueriesReturnTheConsoleSizes();
     InstallProcessParameters();
@@ -202,28 +279,10 @@ int main() {
     TestBeforeInitialize();
     TestWithoutHeadset();
     CheckUninitialized();
+    MeasuredAnswersBeforeInitialization();
     TestReprojection();
-    bool threw = false;
-    try {
-        sceHmd2GazeActivateGazeTracking();
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    Require(threw, "gaze activation did not throw");
-    threw = false;
-    try {
-        sceHmd2ReprojectionGetCurrentOutput();
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    Require(threw, "reprojection get current output did not throw");
-    threw = false;
-    try {
-        sceHmd2SetFieldOfView();
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    Require(threw, "set field of view did not throw");
+    UnmeasuredWithReprojectionSession();
+    RequireRuntimeError([] { sceHmd2ReprojectionGetStatus(); }, "reprojection status did not throw");
     std::puts("HMD2 tests passed");
     return 0;
 }
