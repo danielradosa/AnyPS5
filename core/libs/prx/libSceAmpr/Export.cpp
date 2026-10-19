@@ -3,7 +3,6 @@
 #include <ctime>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
-#include "prx/libc/include/GuestLocale.hpp"
 #include "prx/libc/include/SonyCrt.hpp"
 #include "prx/libc/include/exceptions/Runtime.hpp"
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
@@ -281,7 +280,6 @@ int APS5_VABI wcsrtombs_s_nid_postfix(std::size_t* result, char* destination, st
 int APS5_VABI _Cnd_init_nid_postfix(void** handle);
 int SignalCondition_nid_no_patch(void** handle);
 [[noreturn]] void ThrowCppError_nid_no_patch(int code);
-void StandardStreamOpened_nid_no_patch(std::int64_t index);
 }
 
 static constexpr int DefaultUnexpectedException = static_cast<int>(0xA0020009);
@@ -319,8 +317,6 @@ static void* APS5_VABI PadEntry_nid_no_patch(void* argument) {
     return reinterpret_cast<void*>(static_cast<std::uintptr_t>(go(pad)));
 }
 
-static std::mutex standardStreamLock;
-static std::array<GuestLocale::IosBase*, GuestLocale::StandardStreamCount + 2> standardStreams{};
 
 extern "C" {
 
@@ -921,16 +917,6 @@ int APS5_VABI sceAmprAmmSubmitCommandBuffer3(void* base, std::uint32_t offset, s
 
 int APS5_VABI sceAmprAmmWaitCommandBufferCompletion(std::uint32_t id) {
     return AmmSubmitted_nid_no_patch(id) ? 0 : SCE_KERNEL_ERROR_ESRCH;
-}
-
-void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* stream) {
-    if (!stream) throw std::invalid_argument("ios_base::_Addstd: null stream");
-    std::lock_guard lock(standardStreamLock);
-    std::size_t index = 1;
-    while (index < GuestLocale::StandardStreamCount && standardStreams[index] && standardStreams[index] != stream) ++index;
-    stream->standardStream = static_cast<std::int64_t>(index);
-    standardStreams[index] = stream;
-    StandardStreamOpened_nid_no_patch(stream->standardStream);
 }
 
 [[noreturn]] void APS5_VABI _ZSt16_Throw_Cpp_errori_nid_postfix(int code) {

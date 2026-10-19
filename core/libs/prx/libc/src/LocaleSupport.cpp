@@ -35,6 +35,8 @@ std::mutex g_localeInitMutex;
 bool g_localeInitialized = false;
 std::vector<GuestLocale::Facet*> g_registeredFacets;
 std::array<signed char, GuestLocale::StandardStreamCount + 2> g_standardStreamOpens{};
+std::mutex g_standardStreamMutex;
+GuestLocale::IosBase* g_standardStreams[GuestLocale::StandardStreamCount + 1] = {};
 
 void APS5_VABI DestroyClassicLocale(GuestLocale::Facet*) {
     throw std::runtime_error("Cannot destroy the classic locale");
@@ -332,6 +334,16 @@ static_assert(sizeof(StreamManipulator) == 0x10);
 
 StreamManipulator APS5_VABI _ZSt4setwi_nid_postfix(std::int32_t width) {
     return {&SetStreamWidth, width};
+}
+
+void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* self) {
+    if (self == nullptr) throw std::invalid_argument("ios_base _Addstd: null stream");
+    std::lock_guard lock(g_standardStreamMutex);
+    for (self->standardStream = 0; ++self->standardStream < static_cast<std::int64_t>(GuestLocale::StandardStreamCount); ) {
+        if (g_standardStreams[self->standardStream] == nullptr || g_standardStreams[self->standardStream] == self) break;
+    }
+    g_standardStreams[self->standardStream] = self;
+    StandardStreamOpened_nid_no_patch(self->standardStream);
 }
 
 // Dinkumware's static locale::_Init(bool) returns the global _Locimp, which the caller copies.

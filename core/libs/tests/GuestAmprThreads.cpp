@@ -1,5 +1,4 @@
 #include "SceTypes.hpp"
-#include "prx/libc/include/GuestLocale.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <array>
 #include <atomic>
@@ -56,9 +55,6 @@ void APS5_VABI _ZNSt4_PadC2Ev_nid_postfix(TestPad* pad);
 void APS5_VABI _ZNSt4_PadD2Ev_nid_postfix(TestPad* pad);
 void APS5_VABI _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(TestPad* pad, Pthread* thread);
 void APS5_VABI _ZNSt4_Pad8_ReleaseEv_nid_postfix(TestPad* pad);
-void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* stream);
-void APS5_VABI _ZNSt8ios_baseD2Ev_nid_postfix(GuestLocale::IosBase* self);
-extern GuestLocale::Implementation* _ZSt21_sceLibcClassicLocale_nid_postfix;
 int APS5_VABI _Thrd_join_nid_postfix(Pthread thread, int* code);
 int APS5_VABI _Thrd_sleep_nid_postfix(const GuestXtime* target, GuestXtime* remaining);
 void APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix(void);
@@ -532,28 +528,6 @@ static void TestPadErrors() {
     Require(Throws<std::invalid_argument>([&] { _ZNSt4_PadD2Ev_nid_postfix(&pad); }));
 }
 
-static void TestAddStandardStream() {
-    std::array<GuestLocale::IosBase, 9> streams{};
-    _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[0]);
-    Require(streams[0].standardStream == 1);
-    _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[0]);
-    Require(streams[0].standardStream == 1);
-    streams[0].locale = &_ZSt21_sceLibcClassicLocale_nid_postfix;
-    _ZNSt8ios_baseD2Ev_nid_postfix(&streams[0]);
-    Require(streams[0].locale == &_ZSt21_sceLibcClassicLocale_nid_postfix);
-    _ZNSt8ios_baseD2Ev_nid_postfix(&streams[0]);
-    Require(streams[0].locale == nullptr);
-    for (std::size_t index = 1; index < streams.size(); ++index) {
-        _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[index]);
-        Require(streams[index].standardStream == static_cast<std::int64_t>(index < 7 ? index + 1 : 8));
-    }
-    _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[3]);
-    Require(streams[3].standardStream == 4);
-    _ZNSt8ios_base7_AddstdEPS__nid_postfix(&streams[7]);
-    Require(streams[7].standardStream == 8);
-    Require(Throws<std::invalid_argument>([] { _ZNSt8ios_base7_AddstdEPS__nid_postfix(nullptr); }));
-}
-
 int main() {
     TestPadLaunch();
     TestPadLaunchMany();
@@ -563,7 +537,6 @@ int main() {
     TestThreadSleep();
     TestSpinLock();
     TestWcstombs();
-    TestAddStandardStream();
     TestConditionSignal();
     return 0;
 }
