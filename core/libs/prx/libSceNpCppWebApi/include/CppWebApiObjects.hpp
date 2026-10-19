@@ -64,4 +64,52 @@ struct Binary {
     void* libContext;
 };
 
+namespace Leaderboards {
+
+struct Entry {
+    std::int32_t referenceCount;
+    std::int32_t rank;
+    std::int32_t serialRank;
+    std::int32_t highestRank;
+    std::int32_t highestSerialRank;
+    std::int32_t pcId;
+    std::int64_t score;
+    std::uint64_t accountId;
+    IntrusivePtr smallData;
+    bool commentSet;
+    bool objectIdSet;
+    bool smallDataSet;
+};
+
+struct GetRankingResponseBody {
+    std::int32_t referenceCount;
+    IntrusivePtr entries;
+};
+
+struct RecordScoreResponseBody {
+    std::int32_t referenceCount;
+    std::int32_t tmpRank;
+    std::int32_t tmpSerialRank;
+};
+
+struct GetBoardDefinitionResponseBody {
+    std::int32_t referenceCount;
+    std::int32_t sortMode;
+    std::int32_t entryLimit;
+    std::int32_t updateMode;
+    std::int32_t largeDataNumLimit;
+    std::int64_t maxScoreLimit;
+    std::int64_t minScoreLimit;
+    std::int64_t largeDataSizeLimit;
+    bool sortModeSet;
+    bool entryLimitSet;
+    bool updateModeSet;
+    bool maxScoreLimitSet;
+    bool minScoreLimitSet;
+    bool largeDataNumLimitSet;
+    bool largeDataSizeLimitSet;
+};
+
+}
+
 }

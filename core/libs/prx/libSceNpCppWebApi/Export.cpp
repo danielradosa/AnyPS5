@@ -17,8 +17,10 @@ using NpCppWebApi::ReferenceCountOffset;
 using NpCppWebApi::VectorBody;
 using NpCppWebApi::VectorBodyMagic;
 using NpCppWebApi::VectorElement;
+using NpCppWebApi::VectorIterator;
 using NpCppWebApi::VectorReferenceCountOffset;
 using CommonString = NpCppWebApi::String;
+namespace Leaderboards = NpCppWebApi::Leaderboards;
 
 extern "C" {
 
@@ -43,11 +45,6 @@ int APS5_VABI _ZN3sce2Np9CppWebApi12Leaderboards2V121GetRankingRequestBody8setUs
 }
 
 int APS5_VABI _ZN3sce2Np9CppWebApi12Leaderboards2V121GetRankingRequestBody9setOffsetERKi() {
- return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi12Leaderboards2V122GetRankingResponseBody10getEntriesEv() {
- NotImplemented_nid_no_patch(__func__);
  return 0;
 }
 
@@ -472,121 +469,12 @@ void APS5_VABI _ZN3sce2Np9CppWebApi6Common6StringD1Ev(CommonString* self) {
     self->bufferSize = 0;
 }
 
-int APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V14UserEEEE8pushBackERKS8_() {
- return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V14UserEEEEC1EPNS2_10LibContextE(void* self) {
-    (void)self;
-    return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V14UserEEEED1Ev(void* self) {
-    (void)self;
-    return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEE3endEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEE5beginEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEEppEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
 int APS5_VABI _ZN3sce2Np9CppWebApi6Common9terminateERNS2_10LibContextE(uint64_t* context) {
     *context = 0;
     return 0;
 }
 
 int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V122GetRankingResponseBody22getLastUpdatedDateTimeEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V123RecordScoreResponseBody10getTmpRankEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V123RecordScoreResponseBody16getTmpSerialRankEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody11getSortModeEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody13getEntryLimitEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody13getUpdateModeEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody13sortModeIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody15entryLimitIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody15updateModeIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody16getMaxScoreLimitEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody16getMinScoreLimitEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody18maxScoreLimitIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody18minScoreLimitIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody20getLargeDataNumLimitEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody21getLargeDataSizeLimitEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody22largeDataNumLimitIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody23largeDataSizeLimitIsSetEv() {
  NotImplemented_nid_no_patch(__func__);
  return 0;
 }
@@ -602,61 +490,6 @@ int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry11getObjectIdEv() {
 }
 
 int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry11getOnlineIdEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry12commentIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry12getAccountIdEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry12getSmallDataEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry13getSerialRankEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry13objectIdIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry14getHighestRankEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry14smallDataIsSetEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry20getHighestSerialRankEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry7getPcIdEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry7getRankEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry8getScoreEv() {
  NotImplemented_nid_no_patch(__func__);
  return 0;
 }
@@ -734,16 +567,6 @@ const char* APS5_VABI _ZNK3sce2Np9CppWebApi6Common6String5c_strEv(const CommonSt
     return self->buffer != nullptr ? self->buffer : "";
 }
 
-int APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEEdeEv() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
-int APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEEneERKS9_() {
- NotImplemented_nid_no_patch(__func__);
- return 0;
-}
-
 static void APS5_VABI DestroyVectorBody(void* object) {
     auto* body = static_cast<VectorBody*>(object);
     if (body->elementKind == VectorElement::IntrusivePtr) {
@@ -817,6 +640,29 @@ static int VectorPushBackString(IntrusivePtr* self, const CommonString* element)
     static_cast<CommonString*>(body->elements)[body->size] = copy;
     body->size += 1;
     return 0;
+}
+
+static const VectorBody* PointerVectorBody(const IntrusivePtr* self) {
+    const auto* body = static_cast<const VectorBody*>(self->object);
+    if (body == nullptr || body->magic != VectorBodyMagic || body->elementKind != VectorElement::IntrusivePtr) return nullptr;
+    return body;
+}
+
+static VectorIterator* VectorBegin(VectorIterator* result, const IntrusivePtr* self) {
+    const VectorBody* body = PointerVectorBody(self);
+    result->element = body != nullptr ? static_cast<IntrusivePtr*>(body->elements) : nullptr;
+    return result;
+}
+
+static VectorIterator* VectorEnd(VectorIterator* result, const IntrusivePtr* self) {
+    const VectorBody* body = PointerVectorBody(self);
+    result->element = body != nullptr ? static_cast<IntrusivePtr*>(body->elements) + body->size : nullptr;
+    return result;
+}
+
+static VectorIterator* IteratorAdvance(VectorIterator* self) {
+    self->element += 1;
+    return self;
 }
 
 // --------------------------------------------------------------------------
@@ -1394,6 +1240,153 @@ int APS5_VABI _ZN3sce2Np9CppWebApi14SessionManager2V120RequestPlayerSession28set
 int APS5_VABI _ZN3sce2Np9CppWebApi6Common11TransactionINS2_15DefaultResponseENS2_12IntrusivePtrINS2_18ResponseHeaderBaseEEEED1Ev(void* self) {
     (void)self;
     return 0;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V123RecordScoreResponseBody10getTmpRankEv(const Leaderboards::RecordScoreResponseBody* self) {
+    return self->tmpRank;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V123RecordScoreResponseBody16getTmpSerialRankEv(const Leaderboards::RecordScoreResponseBody* self) {
+    return self->tmpSerialRank;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody11getSortModeEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->sortMode;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody13getEntryLimitEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->entryLimit;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody13getUpdateModeEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->updateMode;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody13sortModeIsSetEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->sortModeSet;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody15entryLimitIsSetEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->entryLimitSet;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody15updateModeIsSetEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->updateModeSet;
+}
+
+std::int64_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody16getMaxScoreLimitEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->maxScoreLimit;
+}
+
+std::int64_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody16getMinScoreLimitEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->minScoreLimit;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody18maxScoreLimitIsSetEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->maxScoreLimitSet;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody18minScoreLimitIsSetEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->minScoreLimitSet;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody20getLargeDataNumLimitEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->largeDataNumLimit;
+}
+
+std::int64_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody21getLargeDataSizeLimitEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->largeDataSizeLimit;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody22largeDataNumLimitIsSetEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->largeDataNumLimitSet;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V130GetBoardDefinitionResponseBody23largeDataSizeLimitIsSetEv(const Leaderboards::GetBoardDefinitionResponseBody* self) {
+    return self->largeDataSizeLimitSet;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry12commentIsSetEv(const Leaderboards::Entry* self) {
+    return self->commentSet;
+}
+
+std::uint64_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry12getAccountIdEv(const Leaderboards::Entry* self) {
+    return self->accountId;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry13getSerialRankEv(const Leaderboards::Entry* self) {
+    return self->serialRank;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry13objectIdIsSetEv(const Leaderboards::Entry* self) {
+    return self->objectIdSet;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry14getHighestRankEv(const Leaderboards::Entry* self) {
+    return self->highestRank;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry14smallDataIsSetEv(const Leaderboards::Entry* self) {
+    return self->smallDataSet;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry20getHighestSerialRankEv(const Leaderboards::Entry* self) {
+    return self->highestSerialRank;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry7getPcIdEv(const Leaderboards::Entry* self) {
+    return self->pcId;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry7getRankEv(const Leaderboards::Entry* self) {
+    return self->rank;
+}
+
+std::int64_t APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry8getScoreEv(const Leaderboards::Entry* self) {
+    return self->score;
+}
+
+const IntrusivePtr* APS5_VABI _ZNK3sce2Np9CppWebApi12Leaderboards2V15Entry12getSmallDataEv(const Leaderboards::Entry* self) {
+    return &self->smallData;
+}
+
+IntrusivePtr* APS5_VABI _ZN3sce2Np9CppWebApi12Leaderboards2V122GetRankingResponseBody10getEntriesEv(IntrusivePtr* result, Leaderboards::GetRankingResponseBody* self) {
+    CopyIntrusivePtr(result, &self->entries, VectorReferenceCountOffset);
+    return result;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V14UserEEEEC1EPNS2_10LibContextE(IntrusivePtr* self, void* libContext) {
+    self->object = nullptr;
+    self->deleter = nullptr;
+    self->libContext = libContext;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V14UserEEEED1Ev(IntrusivePtr* self) {
+    ReleaseIntrusivePtr(self, VectorReferenceCountOffset);
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V14UserEEEE8pushBackERKS8_(IntrusivePtr* self, const void* element) {
+    return VectorPushBackIntrusivePtr(self, static_cast<const IntrusivePtr*>(element));
+}
+
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEE5beginEv(VectorIterator* result, IntrusivePtr* self) {
+    return VectorBegin(result, self);
+}
+
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEE3endEv(VectorIterator* result, IntrusivePtr* self) {
+    return VectorEnd(result, self);
+}
+
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEEppEv(VectorIterator* self) {
+    return IteratorAdvance(self);
+}
+
+IntrusivePtr* APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEEdeEv(const VectorIterator* self) {
+    return self->element;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_12Leaderboards2V15EntryEEEEneERKS9_(const VectorIterator* self, const VectorIterator* other) {
+    return self->element != other->element;
 }
 
 APS5_EXPORT("+gSMGXHgrPU", sceNpCppWebApiUnknown00);
