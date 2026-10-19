@@ -3,6 +3,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #else
 #include <arpa/inet.h>
 #include <cerrno>
@@ -15,6 +16,9 @@
 #include <sys/socket.h>
 #include <poll.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <netpacket/packet.h>
+#endif
 #endif
 #include <algorithm>
 #include <array>
@@ -27,6 +31,7 @@
 #include <cstddef>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -691,6 +696,51 @@ std::string netstat_report() {
             netstat_endpoint(has_local, local), netstat_endpoint(has_peer, peer), state);
     }
     return report;
+}
+
+struct NetInterfaceStats {
+    std::uint64_t tx_bytes;
+    std::uint64_t rx_bytes;
+    std::uint32_t reserved[12];
+};
+static_assert(sizeof(NetInterfaceStats) == 64 && offsetof(NetInterfaceStats, reserved) == 16);
+
+#ifdef __linux__
+std::uint64_t read_byte_counter(const std::string& path) {
+    std::ifstream file(path);
+    std::uint64_t value = 0;
+    if (!(file >> value)) throw std::runtime_error("sceNetGetInterfaceStats: no byte counter in " + path);
+    return value;
+}
+#endif
+
+void host_traffic(std::uint64_t& sent, std::uint64_t& received) {
+    sent = 0;
+    received = 0;
+#ifdef _WIN32
+    MIB_IF_TABLE2* table = nullptr;
+    if (GetIfTable2(&table) != NO_ERROR) throw std::runtime_error("sceNetGetInterfaceStats: the host interface table is unavailable");
+    for (ULONG index = 0; index < table->NumEntries; ++index) {
+        const auto& row = table->Table[index];
+        if (row.OperStatus != IfOperStatusUp || row.Type == IF_TYPE_SOFTWARE_LOOPBACK || !row.InterfaceAndOperStatusFlags.HardwareInterface) continue;
+        sent += row.OutOctets;
+        received += row.InOctets;
+    }
+    FreeMibTable(table);
+#elif defined(__linux__)
+    ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0) throw std::runtime_error("sceNetGetInterfaceStats: the host interface list is unavailable");
+    const std::unique_ptr<ifaddrs, void (*)(ifaddrs*)> owned(interfaces, freeifaddrs);
+    for (auto* item = interfaces; item; item = item->ifa_next) {
+        if (!item->ifa_addr || item->ifa_addr->sa_family != AF_PACKET) continue;
+        if (!(item->ifa_flags & IFF_UP) || (item->ifa_flags & IFF_LOOPBACK)) continue;
+        const std::string statistics = std::string("/sys/class/net/") + item->ifa_name + "/statistics/";
+        sent += read_byte_counter(statistics + "tx_bytes");
+        received += read_byte_counter(statistics + "rx_bytes");
+    }
+#else
+    throw std::runtime_error("sceNetGetInterfaceStats: host interface byte counters are not implemented on this platform");
+#endif
 }
 
 void write_debug_report(const std::string& report) {
@@ -2040,8 +2090,12 @@ int APS5_VABI sceNetGetStatisticsInfo(NetStatisticsInfo* info, int flags) {
     return 0;
 }
 
-int APS5_VABI sceNetGetInterfaceStats(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceNetGetInterfaceStats(NetInterfaceStats* stats, int flags) {
+    if (!stats) return fail(NET_EINVAL);
+    if (flags != 0) throw std::runtime_error("sceNetGetInterfaceStats: flags " + std::to_string(flags) + " are not supported");
+    NetInterfaceStats result{};
+    host_traffic(result.tx_bytes, result.rx_bytes);
+    *stats = result;
     return 0;
 }
 

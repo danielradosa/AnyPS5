@@ -102,6 +102,7 @@ int APS5_VABI sceNetClearDnsCache(int);
 int APS5_VABI sceNetGetRandom(std::uint32_t*);
 const char* APS5_VABI sceNetGetIfName(std::uint32_t);
 int APS5_VABI sceNetGetStatisticsInfo(void*, int);
+int APS5_VABI sceNetGetInterfaceStats(void*, int);
 int APS5_VABI sceNetEmulationGet(void*, int);
 int APS5_VABI sceNetEmulationSet(void*, int);
 int APS5_VABI sceNetIoctl(int, std::uint64_t, void*);
@@ -942,6 +943,21 @@ static void CheckNetUtilities() {
     Require(statistics[0] == 16777216 && statistics[1] == 16777216 && statistics[2] == 0 && statistics[3] == 0 &&
         statistics[4] == 16777216 && statistics[5] == 16777216 && statistics[6] == -1);
     Require(ThrowsRuntime([&] { sceNetGetStatisticsInfo(statistics.data(), 1); }));
+
+    std::array<std::uint64_t, 9> interfaceStats{};
+    interfaceStats.fill(UINT64_MAX);
+    Require(Failed(sceNetGetInterfaceStats(nullptr, 0), 22));
+#if defined(_WIN32) || defined(__linux__)
+    Require(sceNetGetInterfaceStats(interfaceStats.data(), 0) == 0);
+    Require(std::all_of(interfaceStats.begin() + 2, interfaceStats.begin() + 8, [](std::uint64_t word) { return word == 0; }));
+    Require(interfaceStats[8] == UINT64_MAX);
+    std::array<std::uint64_t, 8> laterStats{};
+    Require(sceNetGetInterfaceStats(laterStats.data(), 0) == 0);
+    Require(laterStats[0] >= interfaceStats[0] && laterStats[1] >= interfaceStats[1]);
+#else
+    Require(ThrowsRuntime([&] { sceNetGetInterfaceStats(interfaceStats.data(), 0); }));
+#endif
+    Require(ThrowsRuntime([&] { sceNetGetInterfaceStats(interfaceStats.data(), 1); }));
 
     std::array<std::uint8_t, 64> emulation{};
     Require(Failed(sceNetEmulationGet(emulation.data(), 0), 45));
