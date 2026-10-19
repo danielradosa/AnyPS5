@@ -90,6 +90,7 @@ target_sources(libc PRIVATE
 
 set_source_files_properties(
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ExtendedMath.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/MathExact.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/NumericHelpers.cpp
         TARGET_DIRECTORY libc PROPERTIES COMPILE_OPTIONS "-frounding-math")
 

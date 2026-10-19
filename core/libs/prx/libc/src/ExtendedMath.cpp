@@ -89,6 +89,9 @@ long double APS5_VABI log10l_nid_postfix(long double value) { return std::log10(
 long double APS5_VABI log1pl_nid_postfix(long double value) { return std::log1p(value); }
 long double APS5_VABI log2l_nid_postfix(long double value) { return std::log2(value); }
 
+long double APS5_VABI sqrtl_nid_postfix(long double value) {
+    return value < 0.L ? DomainError_nid_no_patch() : std::sqrt(value);
+}
 long double APS5_VABI cbrtl_nid_postfix(long double value) { return std::cbrt(value); }
 long double APS5_VABI fabsl_nid_postfix(long double value) { return std::fabs(value); }
 long double APS5_VABI fmaxl_nid_postfix(long double x, long double y) {
@@ -109,6 +112,17 @@ long double APS5_VABI nexttowardl_nid_postfix(long double from, long double to) 
 
 long double APS5_VABI frexpl_nid_postfix(long double value, int* exponent) { return std::isfinite(value) ? std::frexp(value, exponent) : value; }
 long double APS5_VABI ldexpl_nid_postfix(long double value, int exponent) { return std::ldexp(value, exponent); }
+long double APS5_VABI modfl_nid_postfix(long double value, long double* integral) {
+    if (std::isnan(value)) {
+        *integral = value;
+        return value;
+    }
+    if (std::isinf(value)) {
+        *integral = value;
+        return std::copysign(0.L, value);
+    }
+    return std::modf(value, integral);
+}
 long double APS5_VABI scalbnl_nid_postfix(long double value, int exponent) { return std::scalbn(value, exponent); }
 
 }
