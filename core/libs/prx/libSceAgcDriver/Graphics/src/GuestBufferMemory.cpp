@@ -1567,6 +1567,7 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
     entry.memoryBase = base;
     entry.pinnedBytes = bytes;
     entry.backingSerial = entry.ranges.size() == 1 ? entry.range->backingSerial : 0;
+    decideImportWatch(context, state);
 #ifdef _WIN32
     // Drivers pin imported pages, so every page must be committed and accessible.
     bool writable = true;
@@ -1590,13 +1591,15 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
         failures.insert_or_assign(base, ImportFailure{base, bytes, GuestAllocations::Mapped(entry.ranges.begin(), entry.ranges.end())});
         return nullptr;
     }
-    // Resident direct memory (private pages since main's d9852df2a) would be imported directly and so dropped from
+    // Resident direct memory (private pages since main's d9852df2a) that no settle keeps watched (under the settle
+    // floor, or on a driver whose imports leave the write watch) would be imported directly and so dropped from
     // write tracking: every snapshot over it is then compared (Astro's 2 GiB render heap, ~55 GB per 10 s). An alias
     // demotes its runs to section views tracked by write protection, as before; when it cannot be made the range is
     // imported directly. APS5_DIRECT_RESIDENT_IMPORTS=1 always imports directly.
     static const bool directResident = std::getenv("APS5_DIRECT_RESIDENT_IMPORTS") != nullptr;
     std::uintptr_t residentStart = 0, residentEnd = 0;
-    const bool aliasResident = writable && !directResident && GuestArena::GuestArenaResidentSpan_nid_postfix(static_cast<std::uintptr_t>(base), static_cast<std::size_t>(bytes), &residentStart, &residentEnd);
+    const bool settledDirect = state.watchPrivateImports && bytes >= settleFloorBytes;
+    const bool aliasResident = writable && !directResident && !settledDirect && GuestArena::GuestArenaResidentSpan_nid_postfix(static_cast<std::uintptr_t>(base), static_cast<std::size_t>(bytes), &residentStart, &residentEnd);
     if (aliasResident) {
         try {
             entry.alias = GuestArena::GuestArenaMapAlias_nid_postfix(static_cast<std::uintptr_t>(base), static_cast<std::size_t>(bytes));
@@ -1628,7 +1631,6 @@ const HostImport* importRunAt(const Context& context, HostImports& state, Import
         return nullptr;
     }
 #endif
-    decideImportWatch(context, state);
     VkResult result = VK_SUCCESS;
     const char* step = nullptr;
 #ifdef _WIN32
