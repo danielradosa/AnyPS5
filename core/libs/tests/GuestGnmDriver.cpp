@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <source_location>
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libSceGnmDriver/include/Lowering.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
@@ -34,7 +36,12 @@ constexpr std::uint32_t OpIncrementDeCounter = 0x85;
 constexpr std::uint32_t OpWaitOnCeCounter = 0x86;
 constexpr std::uint32_t OpWaitOnDeCounterDiff = 0x88;
 
-void Require(bool value) { if (!value) std::abort(); }
+void Require(bool value, std::source_location where = std::source_location::current()) {
+    if (!value) {
+        std::fprintf(stderr, "GnmDriver check failed at line %u\n", static_cast<unsigned>(where.line()));
+        std::abort();
+    }
+}
 
 bool Throws(const std::function<void()>& call) {
     try {
@@ -160,7 +167,7 @@ void CheckFlips() {
     reserve = Reservation(0x68750779u);
     Require(Throws([&] { GnmDriver::PatchFlip(reserve.data(), label, 2, 1, 0, argument); }));
     reserve = Reservation(GnmDriver::PrepareFlip);
-    reserve[0] = Header(OpNop, GnmDriver::FlipReserveWords - 1);
+    reserve[0] = Header(OpNop, GnmDriver::FlipReserveWords - 2);
     Require(Throws([&] { GnmDriver::PatchFlip(reserve.data(), label, 2, 1, 0, argument); }));
 }
 
