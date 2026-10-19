@@ -172,4 +172,26 @@ struct GetMultiDataStatusesByUserParameter {
 
 }
 
+namespace InGameCatalog {
+
+struct Container {
+    std::int32_t referenceCount;
+    IntrusivePtr children;
+};
+
+struct Product {
+    std::int32_t referenceCount;
+    IntrusivePtr skus;
+    bool skusSet;
+};
+
+struct GetContainerParameter {
+    void* libContext;
+    bool initialized;
+    std::int32_t serviceLabel;
+    bool serviceLabelSet;
+};
+
+}
+
 }
