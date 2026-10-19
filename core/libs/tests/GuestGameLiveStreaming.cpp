@@ -67,13 +67,7 @@ int main() {
         Require(byte == 0);
     }
 
-    bool threwProgramInfo = false;
-    try {
-        sceGameLiveStreamingGetProgramInfo();
-    } catch (const std::runtime_error&) {
-        threwProgramInfo = true;
-    }
-    Require(threwProgramInfo);
+    Require(sceGameLiveStreamingGetProgramInfo() == 0);
 
     Require(sceGameLiveStreamingTerminate() == 0);
 }

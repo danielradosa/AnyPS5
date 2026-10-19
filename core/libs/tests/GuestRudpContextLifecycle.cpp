@@ -15,7 +15,7 @@ int APS5_VABI sceRudpEnableInternalIOThread(std::uint32_t, std::uint32_t);
 int APS5_VABI sceRudpSetEventHandler(GuestRudpEventHandler, void*);
 int APS5_VABI sceRudpCreateContext(GuestRudpEventHandler, void*, int*);
 int APS5_VABI sceRudpBind(int, std::uint16_t, int, std::uint16_t);
-int APS5_VABI sceRudpSetOption(int, int, const void*, std::uint32_t);
+int APS5_VABI sceRudpSetOption(int, int, const void*, std::size_t);
 int APS5_VABI sceRudpInitiate(int, const void*, std::uint32_t, std::uint16_t);
 int APS5_VABI sceRudpGetContextStatus(int, void*, std::uint32_t);
 int APS5_VABI sceRudpWrite(int, const void*, std::uint32_t, int);
@@ -89,7 +89,8 @@ int main() {
 
     Require(sceRudpBind(ctx, 0, 0, 0) == 0);
 
-    Require(sceRudpSetOption(ctx, 0, nullptr, 0) == 0);
+    const std::int32_t maxPayload = 1000;
+    Require(sceRudpSetOption(ctx, 1, &maxPayload, sizeof(maxPayload)) == 0);
 
     Require(sceRudpInitiate(ctx, nullptr, 0, 0) == connRefused);
 
