@@ -39,8 +39,6 @@ int APS5_VABI sceVideoOutVrrPegToFixedRate(int handle, uint64_t arg1, uint64_t a
 int APS5_VABI sceVideoOutVrrUnpegFromFixedRate(int handle);
 int APS5_VABI sceVideoOutSetFlipMaster(int slaveHandle, int masterHandle);
 int APS5_VABI sceVideoOutClearFlipMaster(int slaveHandle);
-int APS5_VABI sceVideoOutGetCurrentOutputMode_(uint64_t bus, void* mode);
-int APS5_VABI sceVideoOutGetHdmiRawEdid_(void* buffer, unsigned long size);
 
 }
 
