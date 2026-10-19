@@ -106,7 +106,7 @@ std::optional<std::int64_t> DirectoryDescriptorUnread(int fd) {
     if (!found) return std::nullopt;
     auto& state = *found;
     std::lock_guard lock(state.mutex);
-    Load(state);
+    Load(state, fd);
     return static_cast<std::int64_t>(state.entries.size()) - static_cast<std::int64_t>(state.cursor);
 }
 

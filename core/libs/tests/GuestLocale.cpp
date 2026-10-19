@@ -184,25 +184,6 @@ static void CheckStreamWidth() {
     RequireException([&] { manipulator.function(nullptr, manipulator.argument); });
 }
 
-static void CheckStreamWidth() {
-    struct GuardedStream {
-        std::uint64_t before = 0x12345678;
-        GuestLocale::IosBase stream{};
-        std::uint64_t after = 0x87654321;
-    } object;
-    object.stream.flags = 0x4000;
-    object.stream.precision = 6;
-    const auto manipulator = _ZSt4setwi_nid_postfix(12);
-    Require(manipulator.argument == 12 && manipulator.function != nullptr);
-    Require(manipulator.function(&object.stream, manipulator.argument) == &object.stream);
-    Require(object.stream.width == 12 && object.stream.flags == 0x4000 && object.stream.precision == 6);
-    Require(object.before == 0x12345678 && object.after == 0x87654321);
-    const auto reset = _ZSt4setwi_nid_postfix(0);
-    reset.function(&object.stream, reset.argument);
-    Require(object.stream.width == 0);
-    RequireException([&] { manipulator.function(nullptr, manipulator.argument); });
-}
-
 static void CheckWideCaseTranslation() {
     const auto* lower = _Getptolower_nid_postfix();
     const auto* upper = _Getptoupper_nid_postfix();
