@@ -101,6 +101,13 @@ constexpr int PcAclPathMax = 60;
 constexpr int PcMacPresent = 63;
 constexpr int PcAclNfs4 = 64;
 constexpr int GuestAtSymlinkNofollow = 0x0200;
+constexpr std::uint16_t GuestFileType = 0170000;
+constexpr std::uint16_t GuestFifo = 0010000;
+constexpr std::uint16_t GuestDirectory = 0040000;
+constexpr std::uint16_t GuestRegular = 0100000;
+constexpr std::uint16_t GuestSocket = 0140000;
+constexpr std::int64_t GuestPosixAsynchronousIo = 200112;
+constexpr std::int64_t GuestPipeBuf = 512;
 
 int GuestFileError(int error) {
     switch (error) {
@@ -122,6 +129,37 @@ int GuestFileError(int error) {
 std::int64_t Fail(int error) {
     *__error_nid_postfix() = error;
     return -1;
+}
+
+std::int64_t PathConfigurationValue(int name, const char* function) {
+    switch (name) {
+    case PcLinkMax: return 32767;
+    case PcNameMax: return static_cast<std::int64_t>(GuestNameMax);
+    case PcPathMax: return static_cast<std::int64_t>(GuestPathMax);
+    case PcPipeBuf: return 512;
+    case PcChownRestricted: return 1;
+    case PcNoTrunc: return 1;
+    case PcFileSizeBits: return 64;
+    case PcRecMaxXferSize: return -1;
+    case PcSymlinkMax: return static_cast<std::int64_t>(GuestPathMax);
+    case PcPrioIo: return 0;
+    case PcSyncIo: return 0;
+    case PcMaxCanon:
+    case PcMaxInput:
+    case PcVdisable:
+    case PcAllocSizeMin:
+    case PcRecIncrXferSize:
+    case PcRecMinXferSize:
+    case PcRecXferAlign:
+    case PcMinHoleSize:
+    case PcAsyncIo:
+    case PcAclExtended:
+    case PcAclPathMax:
+    case PcMacPresent:
+    case PcAclNfs4:
+        throw std::runtime_error(std::string(function) + ": name " + std::to_string(name) + " depends on the console filesystem or kernel configuration");
+    default: return Fail(GuestEinval);
+    }
 }
 
 int GuestError(const std::error_code& error) {
@@ -374,34 +412,23 @@ std::int64_t APS5_VABI pathconf_nid_postfix(const char* path, int name) {
     const auto status = std::filesystem::status(native, error);
     if (error) return Fail(GuestError(error));
     if (!std::filesystem::exists(status)) return Fail(GuestEnoent);
-    switch (name) {
-    case PcLinkMax: return 32767;
-    case PcNameMax: return static_cast<std::int64_t>(GuestNameMax);
-    case PcPathMax: return static_cast<std::int64_t>(GuestPathMax);
-    case PcPipeBuf: return 512;
-    case PcChownRestricted: return 1;
-    case PcNoTrunc: return 1;
-    case PcFileSizeBits: return 64;
-    case PcRecMaxXferSize: return -1;
-    case PcSymlinkMax: return static_cast<std::int64_t>(GuestPathMax);
-    case PcPrioIo: return 0;
-    case PcSyncIo: return 0;
-    case PcMaxCanon:
-    case PcMaxInput:
-    case PcVdisable:
-    case PcAllocSizeMin:
-    case PcRecIncrXferSize:
-    case PcRecMinXferSize:
-    case PcRecXferAlign:
-    case PcMinHoleSize:
-    case PcAsyncIo:
-    case PcAclExtended:
-    case PcAclPathMax:
-    case PcMacPresent:
-    case PcAclNfs4:
-        throw std::runtime_error("pathconf: name " + std::to_string(name) + " depends on the console filesystem or kernel configuration");
-    default: return Fail(GuestEinval);
-    }
+    return PathConfigurationValue(name, "pathconf");
+}
+
+std::int64_t APS5_VABI _fstat_nid_postfix(int d, FileStat* sb);
+
+std::int64_t APS5_VABI _fpathconf_nid_postfix(int fd, int name) {
+    FileStat status{};
+    if (_fstat_nid_postfix(fd, &status) != 0) return -1;
+    if (name == PcAsyncIo) return GuestPosixAsynchronousIo;
+    const auto type = status.st_mode & GuestFileType;
+    if (type == GuestRegular || type == GuestDirectory) return PathConfigurationValue(name, "fpathconf");
+    if (type == GuestFifo || type == GuestSocket) return name == PcPipeBuf ? GuestPipeBuf : Fail(GuestEinval);
+    throw std::runtime_error("fpathconf: descriptor " + std::to_string(fd) + " is not a file, a directory, a pipe or a socket, and the console's answer for its device or object is not known");
+}
+
+std::int64_t APS5_VABI fpathconf_nid_postfix(int fd, int name) {
+    return _fpathconf_nid_postfix(fd, name);
 }
 
 int APS5_VABI link_nid_postfix(const char* existing, const char* created) {
