@@ -1,3 +1,4 @@
+#include "SceTypes.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 
 #include <array>
@@ -16,6 +17,7 @@ int APS5_VABI sceAudioOut2MasteringInit(std::uint32_t);
 int APS5_VABI sceAudioOut2MasteringTerm();
 int APS5_VABI sceAudioOut2MasteringSetParam(const void*, std::uint32_t, std::uint32_t);
 int APS5_VABI sceAudioOut2MasteringGetState(void*, std::uint32_t, std::uintptr_t);
+int APS5_VABI sceAudioOut2SetSystemDebugState(const void*);
 int APS5_VABI sceAudioOut2EnableChat();
 int APS5_VABI sceAudioOut2DisableChat();
 }
@@ -38,16 +40,25 @@ static bool ThrowsRuntimeError(TFunction function) {
 
 namespace {
 
+static_assert(sizeof(AudioOut2MasteringCompressorStates) == 208);
+static_assert(sizeof(AudioOut2MasteringCompressorStatesV2) == 272);
+static_assert(sizeof(AudioOut2MasteringLimiterStates) == 112);
+static_assert(sizeof(AudioOut2MasteringStates) == 336);
+static_assert(sizeof(AudioOut2MasteringStatesV2) == 400);
+
 constexpr int systemUser = 0xFF;
 constexpr int user = 0x10000000;
+constexpr int errorInvalidParam = static_cast<int>(0x80268001);
+constexpr int errorInvalidArgument = static_cast<int>(0x80260502);
 
 void TestSet3DLatency() {
-    Require(sceAudioOut2Set3DLatency(systemUser, 2) == 0, "latency 2 for the system user must be accepted");
-    Require(sceAudioOut2Set3DLatency(systemUser, 2) == 0, "latency 2 must be accepted again");
-    Require(sceAudioOut2Set3DLatency(systemUser, 1) == 0, "latency 1 for the system user must be accepted");
-    Require(ThrowsRuntimeError([] { sceAudioOut2Set3DLatency(systemUser, 0); }), "latency 0 must throw");
-    Require(ThrowsRuntimeError([] { sceAudioOut2Set3DLatency(systemUser, 3); }), "latency 3 must throw");
-    Require(ThrowsRuntimeError([] { sceAudioOut2Set3DLatency(user, 2); }), "a user other than the system user must throw");
+    Require(sceAudioOut2Set3DLatency(systemUser, 0) == 0, "output 0 for the system user must be accepted");
+    Require(sceAudioOut2Set3DLatency(systemUser, 1) == 0, "output 1 for the system user must be accepted");
+    Require(sceAudioOut2Set3DLatency(systemUser, 2) == 0, "output 2 for the system user must be accepted");
+    Require(sceAudioOut2Set3DLatency(systemUser, 2) == 0, "output 2 must be accepted again");
+    Require(sceAudioOut2Set3DLatency(user, 1) == 0, "output 1 for another user must be accepted");
+    Require(sceAudioOut2Set3DLatency(systemUser, 3) == errorInvalidParam, "output 3 must be refused");
+    Require(sceAudioOut2Set3DLatency(systemUser, 0xFFFFFFFFu) == errorInvalidParam, "a large output must be refused");
 }
 
 constexpr int masteringInvalidApiParam = static_cast<int>(0x80268201);
@@ -138,6 +149,13 @@ void TestMasteringTerm() {
     Require(sceAudioOut2MasteringTerm() == 0, "an extra termination must be accepted");
 }
 
+void TestSetSystemDebugState() {
+    const std::uint64_t param[4] = {1, 0, 0, 0};
+    Require(sceAudioOut2SetSystemDebugState(reinterpret_cast<const void*>(param)) == 0, "a debug state must be accepted");
+    Require(sceAudioOut2SetSystemDebugState(reinterpret_cast<const void*>(param)) == 0, "a debug state must be accepted again");
+    Require(sceAudioOut2SetSystemDebugState(nullptr) == errorInvalidArgument, "a null debug state is refused");
+}
+
 void TestEnableChat() {
     Require(sceAudioOut2EnableChat() == 0, "enabling chat must be accepted");
     Require(sceAudioOut2EnableChat() == 0, "enabling chat again must be accepted");
@@ -156,6 +174,7 @@ int main() {
     TestMasteringSetParam();
     TestMasteringGetState();
     TestMasteringTerm();
+    TestSetSystemDebugState();
     TestEnableChat();
     return 0;
 }

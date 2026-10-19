@@ -1,6 +1,6 @@
 # Project technical debt
 
-Entries about one library or component are in [debt](debt/), one file per library or component, under the same sections as this page. Entries that belong to none stay here.
+Entries about one library or component are in [debt](debt/), one file per library or component, under the same sections as this page. Entries that belong to none stay here. An entry may end with `Closes when:` and the measurement, title or test that would close it, such as `Closes when: measured on a PS5`, so the entries a contributor can re-check are found by searching for it.
 
 ### Build
 
@@ -21,7 +21,7 @@ Throughout the project, every function at every stage either **does exactly what
 - Font, Http2, Net, Ssl, SystemService and libkernel exports imported by PPSA12544 and added without an implementation have unknown signatures
 - NpEntitlementAccess exports imported by PPSA12544's Unity plugins and added without an implementation have unknown signatures
 - Acm, GameLiveStreaming, Net, NpEntitlementAccess, NpManager and libkernel exports imported by PPSA14632 and added without an implementation are declared without parameters
-- Acm, GameLiveStreaming, Net, NpEntitlementAccess, VoiceQoS, WebBrowserDialog and libkernel exports imported by PPSA14632 and added without an implementation are declared without parameters
+- Acm, GameLiveStreaming, Net, NpEntitlementAccess, VoiceQoS, WebBrowserDialog and libkernel exports imported by PPSA14632 and added without an implementation are declared without parameters; of the VoiceQoS ones only those still throwing remain so
 
 ### Functional
 

@@ -67,7 +67,7 @@ std::size_t RecordSize(const Frame& frame) {
 
 extern "C" {
 
-int APS5_VABI sceLibcBacktraceGetBufferSize(int limit, int* count, std::size_t* size) {
+int APS5_VABI sceLibcBacktraceGetBufferSize_nid_postfix(int limit, int* count, std::size_t* size) {
     if (count == nullptr || size == nullptr) throw std::invalid_argument("sceLibcBacktraceGetBufferSize: null output");
     const auto frames = CaptureFrames(limit);
     std::size_t total = 0;
@@ -77,7 +77,7 @@ int APS5_VABI sceLibcBacktraceGetBufferSize(int limit, int* count, std::size_t* 
     return 0;
 }
 
-int APS5_VABI sceLibcBacktraceSelf(int limit, void* buffer, std::size_t size, int* count) {
+int APS5_VABI sceLibcBacktraceSelf_nid_postfix(int limit, void* buffer, std::size_t size, int* count) {
     if (buffer == nullptr || count == nullptr) throw std::invalid_argument("sceLibcBacktraceSelf: null argument");
     const auto frames = CaptureFrames(limit);
     auto* cursor = static_cast<std::byte*>(buffer);
@@ -121,7 +121,7 @@ extern "C" std::vector<std::string> GuestBacktrace_nid_no_patch(const void* fram
 
 extern "C" {
 
-int APS5_VABI sceLibcBacktraceGetBufferSize(int limit, int* count, std::size_t* size) {
+int APS5_VABI sceLibcBacktraceGetBufferSize_nid_postfix(int limit, int* count, std::size_t* size) {
     (void)limit;
     (void)count;
     (void)size;
@@ -129,7 +129,7 @@ int APS5_VABI sceLibcBacktraceGetBufferSize(int limit, int* count, std::size_t* 
     return 0;
 }
 
-int APS5_VABI sceLibcBacktraceSelf(int limit, void* buffer, std::size_t size, int* count) {
+int APS5_VABI sceLibcBacktraceSelf_nid_postfix(int limit, void* buffer, std::size_t size, int* count) {
     (void)limit;
     (void)buffer;
     (void)size;

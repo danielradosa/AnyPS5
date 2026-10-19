@@ -6,6 +6,8 @@
 
 namespace {
 
+constexpr int POSIX_PROCESS_PRIVATE = 0;
+
 int toPosix(int result) {
     if (result == 0)
         return 0;
@@ -73,8 +75,9 @@ int APS5_VABI pthread_condattr_getclock_nid_postfix(const PthreadCondattr* attr,
 
 int APS5_VABI pthread_condattr_setpshared_nid_postfix(PthreadCondattr* attr, int pshared) {
     if (!attr || !*attr) return PosixThread::GUEST_EINVAL;
-    if (pshared != 0 && pshared != 1) return PosixThread::GUEST_EINVAL;
-    return toPosix(scePthreadCondattrSetpshared(attr, pshared));
+    if (pshared != POSIX_PROCESS_PRIVATE) return PosixThread::GUEST_EINVAL;
+    (*attr)->_pshared = pshared;
+    return 0;
 }
 
 int APS5_VABI pthread_condattr_getpshared_nid_postfix(const PthreadCondattr* attr, int* pshared) {

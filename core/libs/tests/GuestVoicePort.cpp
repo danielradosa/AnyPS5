@@ -42,12 +42,13 @@ struct ResourceProbe {
 };
 
 static void RequireResourceInfo() {
-    ResourceProbe probe{{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF}, 0xA5A5};
+    ResourceProbe probe{{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF}, 0xA5A5};
     Require(sceVoiceGetResourceInfo(&probe.info) == 0);
-    Require(probe.info.max_in_voice_port == 7);
-    Require(probe.info.max_out_voice_port == 7);
-    Require(probe.info.max_in_device_port == 1);
-    Require(probe.info.max_out_device_port == 1);
+    Require(probe.info.max_voice_input_ports == 7);
+    Require(probe.info.max_voice_output_ports == 7);
+    Require(probe.info.max_device_input_ports == 1);
+    Require(probe.info.max_device_output_ports == 1);
+    Require(probe.info.max_ports == 64);
     Require(probe.after == 0xA5A5);
 }
 

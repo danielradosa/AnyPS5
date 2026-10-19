@@ -9,8 +9,8 @@
 #include <vector>
 
 extern "C" {
-int APS5_VABI sceLibcBacktraceGetBufferSize(int, int*, std::size_t*);
-int APS5_VABI sceLibcBacktraceSelf(int, void*, std::size_t, int*);
+int APS5_VABI sceLibcBacktraceGetBufferSize_nid_postfix(int, int*, std::size_t*);
+int APS5_VABI sceLibcBacktraceSelf_nid_postfix(int, void*, std::size_t, int*);
 }
 
 namespace {
@@ -73,12 +73,12 @@ std::size_t Used(const std::vector<Record>& records) {
 
     int count = -1;
     std::size_t size = 0;
-    Require(sceLibcBacktraceGetBufferSize(-1, &count, &size) == 0, "GetBufferSize failed");
+    Require(sceLibcBacktraceGetBufferSize_nid_postfix(-1, &count, &size) == 0, "GetBufferSize failed");
     Require(count > 1 && size >= static_cast<std::size_t>(count) * NameOffset, "GetBufferSize reported too little");
 
     std::vector<unsigned char> buffer(size + 64, Fill);
     int written = -1;
-    Require(sceLibcBacktraceSelf(-1, buffer.data(), size, &written) == 0, "Self failed");
+    Require(sceLibcBacktraceSelf_nid_postfix(-1, buffer.data(), size, &written) == 0, "Self failed");
     Require(written == count, "Self wrote a different count than GetBufferSize reported");
     const auto records = Parse(buffer, size, written);
     Require(Used(records) == size, "Self used a different size than GetBufferSize reported");
@@ -90,9 +90,9 @@ std::size_t Used(const std::vector<Record>& records) {
     Require(dladdr(reinterpret_cast<void*>(address), &caller) != 0 && caller.dli_saddr == self.dli_saddr, "first frame is not the caller");
 
     for (const int limit : {0, 1, 2}) {
-        Require(sceLibcBacktraceGetBufferSize(limit, &count, &size) == 0 && count == limit, "GetBufferSize ignored the frame limit");
+        Require(sceLibcBacktraceGetBufferSize_nid_postfix(limit, &count, &size) == 0 && count == limit, "GetBufferSize ignored the frame limit");
         std::vector<unsigned char> limited(size + 64, Fill);
-        Require(sceLibcBacktraceSelf(limit, limited.data(), limited.size(), &written) == 0 && written == limit, "Self ignored the frame limit");
+        Require(sceLibcBacktraceSelf_nid_postfix(limit, limited.data(), limited.size(), &written) == 0 && written == limit, "Self ignored the frame limit");
         const auto limitedRecords = Parse(limited, limited.size(), written);
         Require(Used(limitedRecords) == size, "limited Self used a different size than GetBufferSize reported");
         for (int index = 0; index < limit; ++index) Require(limitedRecords[index].module == records[index].module, "limited frames differ from the full trace");
@@ -102,7 +102,7 @@ std::size_t Used(const std::vector<Record>& records) {
     for (const std::size_t available : {std::size_t{0}, first - 1, first, first + records[1].bytes - 1, first + records[1].bytes}) {
         std::vector<unsigned char> small(available + 64, Fill);
         written = -1;
-        Require(sceLibcBacktraceSelf(-1, small.data(), available, &written) == 0, "Self with a small buffer failed");
+        Require(sceLibcBacktraceSelf_nid_postfix(-1, small.data(), available, &written) == 0, "Self with a small buffer failed");
         const int expected = available < first ? 0 : available < first + records[1].bytes ? 1 : 2;
         Require(written == expected, "Self with a small buffer wrote the wrong number of records");
         const auto smallRecords = Parse(small, available, written);

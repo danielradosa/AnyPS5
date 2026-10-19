@@ -7,6 +7,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -117,7 +118,7 @@ void EqueueDescriptorClosed(int descriptor);
 void KqueueDescriptorClosed(int descriptor);
 bool IsKqueueDescriptor(int descriptor);
 KernelEqueueRef FindKqueueDescriptor(int descriptor);
-int KqueuePendingEvents(int descriptor);
+std::optional<bool> KqueueReadable(int descriptor);
 void KqueueSignalSent(int signal);
 int MakeDescriptorEvent(int descriptor, int16_t filter, uint16_t flags, uint32_t fflags, int64_t data, void* udata, KernelEqueueEvent& event);
 void SetDescriptorWatch(KernelEqueueEvent& event, uint32_t fflags, int64_t data);

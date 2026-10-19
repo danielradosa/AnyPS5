@@ -154,6 +154,7 @@ void SizeCase() {
 void RunCase() {
     const std::uint64_t size = SizeFor(1, 2, true);
     void* memory = ::operator new((size + 255) & ~std::uint64_t{255}, std::align_val_t{256});
+    Require(memory != nullptr, "allocation failed");
     alignas(64) static unsigned char manager[0x100];
     Construct(manager);
     const ConfigParams badHandler{1, 0x00021fff, 0x00010000, 0x2bc, nullptr, 0, 0x1fff, 0x50, 0};

@@ -25,6 +25,7 @@ endif()
 target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/General.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AppArchive.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/CreationMask.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FailureReport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/specifics/gcc/StackGuard.cpp
@@ -45,8 +46,6 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ExtendedMath.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/MathExact.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/NumericHelpers.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Rounding.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Backtrace.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Random.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FloatBuiltins.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/HostEntropy.cpp
@@ -54,6 +53,7 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Time.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AtomicBuiltins.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FileAndHeap.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/HostErrno.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/FileLock.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/StdioExtras.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/StandardStreams.cpp
@@ -91,7 +91,6 @@ target_sources(libc PRIVATE
 set_source_files_properties(
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ExtendedMath.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/NumericHelpers.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/Rounding.cpp
         TARGET_DIRECTORY libc PROPERTIES COMPILE_OPTIONS "-frounding-math")
 
 target_sources(libc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/BinaryWordIo.cpp)
@@ -99,6 +98,8 @@ target_sources(libc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/BinaryWordIo.cpp)
 target_include_directories(libc PRIVATE
         ${LIBS_INCLUDE_DIR}
 )
+
+target_link_libraries(libc PRIVATE zarchive)
 
 target_sources(libc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/FloatingPoint.cpp)
 
@@ -151,6 +152,14 @@ if(BUILD_TESTING)
         set_tests_properties(guest_rounding PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    if(UNIX)
+        add_test_executable(guest_fopen_errors_tests ${LIBS_INCLUDE_DIR}/tests/GuestFopenErrors.cpp)
+        target_include_directories(guest_fopen_errors_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_fopen_errors_tests PRIVATE libc)
+        add_test(NAME guest_fopen_errors COMMAND guest_fopen_errors_tests)
+        set_tests_properties(guest_fopen_errors PROPERTIES TIMEOUT 20)
+    endif()
+
     add_test_executable(guest_allocating_strings_tests ${LIBS_INCLUDE_DIR}/tests/GuestAllocatingStrings.cpp)
     target_include_directories(guest_allocating_strings_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_allocating_strings_tests PRIVATE libc)
@@ -160,6 +169,20 @@ if(BUILD_TESTING)
         set_tests_properties(guest_allocating_strings PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+
+    add_test_executable(guest_app_archive_tests ${LIBS_INCLUDE_DIR}/tests/GuestAppArchive.cpp)
+    target_include_directories(guest_app_archive_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_app_archive_tests PRIVATE libc zarchive)
+    configure_windows_unwind(guest_app_archive_tests)
+    foreach(mode present absent damaged invalid)
+        add_test(NAME guest_app_archive_${mode} COMMAND guest_app_archive_tests ${mode})
+        set_tests_properties(guest_app_archive_${mode} PROPERTIES TIMEOUT 20)
+        if(WIN32)
+            set_tests_properties(guest_app_archive_${mode} PROPERTIES ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+        endif()
+    endforeach()
+
     add_test_executable(guest_array_callbacks_tests ${LIBS_INCLUDE_DIR}/tests/GuestArrayCallbacks.cpp)
     target_include_directories(guest_array_callbacks_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_array_callbacks_tests PRIVATE libc)
@@ -245,6 +268,15 @@ if(BUILD_TESTING)
     add_test(NAME file_position COMMAND file_position_tests)
     if(WIN32)
         set_tests_properties(file_position PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+    if(WIN32)
+        add_test_executable(guest_fopen_long_host_path_tests ${LIBS_INCLUDE_DIR}/tests/GuestFopenLongHostPath.cpp)
+        target_include_directories(guest_fopen_long_host_path_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_fopen_long_host_path_tests PRIVATE libc)
+        configure_windows_unwind(guest_fopen_long_host_path_tests)
+        add_test(NAME guest_fopen_long_host_path COMMAND guest_fopen_long_host_path_tests)
+        set_tests_properties(guest_fopen_long_host_path PROPERTIES TIMEOUT 20 ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test_executable(guest_wide_formatting_tests ${LIBS_INCLUDE_DIR}/tests/GuestWideFormatting.cpp)
@@ -453,6 +485,16 @@ if(BUILD_TESTING)
         set_tests_properties(guest_path_case PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    add_test_executable(guest_path_drive_component_tests ${LIBS_INCLUDE_DIR}/tests/GuestPathDriveComponent.cpp)
+    target_include_directories(guest_path_drive_component_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_path_drive_component_tests PRIVATE libc)
+    configure_windows_unwind(guest_path_drive_component_tests)
+    add_test(NAME guest_path_drive_component COMMAND guest_path_drive_component_tests)
+    set_tests_properties(guest_path_drive_component PROPERTIES TIMEOUT 20)
+    if(WIN32)
+        set_tests_properties(guest_path_drive_component PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test_executable(guest_directory_tests ${LIBS_INCLUDE_DIR}/tests/GuestDirectory.cpp)
     target_include_directories(guest_directory_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_directory_tests PRIVATE libc)
@@ -591,8 +633,9 @@ if(BUILD_TESTING)
     configure_windows_unwind(guest_standard_stream_tests)
     add_test(NAME guest_standard_streams COMMAND guest_standard_stream_tests)
     add_test(NAME guest_standard_streams_closed_stdout COMMAND guest_standard_stream_tests --closed-stdout)
+    add_test(NAME guest_standard_streams_exclusive_stdout COMMAND guest_standard_stream_tests --exclusive-stdout)
     if(WIN32)
-        set_tests_properties(guest_standard_streams guest_standard_streams_closed_stdout PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(guest_standard_streams guest_standard_streams_closed_stdout guest_standard_streams_exclusive_stdout PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test_executable(file_streams_tests ${LIBS_INCLUDE_DIR}/tests/FileStreams.cpp)
@@ -848,9 +891,19 @@ if(BUILD_TESTING)
     add_test(NAME application_heap_invalid_metadata COMMAND application_heap_tests invalid)
     add_test(NAME application_heap_default COMMAND application_heap_tests default)
     add_test(NAME application_heap_exit_order COMMAND application_heap_tests exit-order)
+    add_test(NAME application_heap_scripting COMMAND application_heap_tests scripting)
     add_test(NAME application_heap_lazy COMMAND application_heap_tests lazy)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(guest_sdk_heap_fixture MODULE ${LIBS_INCLUDE_DIR}/tests/GuestSdkHeap.cpp)
+        add_library(guest_sdk_heap_partial_fixture MODULE ${LIBS_INCLUDE_DIR}/tests/GuestSdkHeap.cpp)
+        target_compile_definitions(guest_sdk_heap_partial_fixture PRIVATE SDK_HEAP_PARTIAL)
+        set_target_properties(application_heap_tests PROPERTIES ENABLE_EXPORTS ON)
+        add_dependencies(application_heap_tests guest_sdk_heap_fixture guest_sdk_heap_partial_fixture)
+        add_test(NAME application_heap_guest_sdk COMMAND application_heap_tests sdk $<TARGET_FILE:guest_sdk_heap_fixture>)
+        add_test(NAME application_heap_guest_sdk_partial COMMAND application_heap_tests sdk-partial $<TARGET_FILE:guest_sdk_heap_partial_fixture>)
+    endif()
     if(WIN32)
-        set_tests_properties(application_heap_replacement application_heap_invalid_metadata application_heap_default application_heap_exit_order application_heap_lazy
+        set_tests_properties(application_heap_replacement application_heap_invalid_metadata application_heap_default application_heap_exit_order application_heap_scripting application_heap_lazy
             PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test_executable(guest_allocator_failures_tests ${LIBS_INCLUDE_DIR}/tests/GuestAllocatorFailures.cpp)
@@ -1028,6 +1081,15 @@ if(MINGW)
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>"
             PASS_REGULAR_EXPRESSION "kept failure report ran[^~]*aborting[^~]*SIGABRT. on thread[^~]*all threads:"
             FAIL_REGULAR_EXPRESSION "kept failure report ran[^~]*kept failure report ran")
+        add_test(NAME windows_crash_stack_words COMMAND windows_backtrace_report_tests fault)
+        set_tests_properties(windows_crash_stack_words PROPERTIES TIMEOUT 20
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>;APS5_CRASH_STACK_BYTES=set:2048"
+            PASS_REGULAR_EXPRESSION "FATAL: unhandled exception 0xc0000005[^~]*stack words from rsp[^~]*data at stack words that point outside the stack[^~]*c0ffee0000000000 c0ffee0000000001 c0ffee0000000002 c0ffee0000000003 c0ffee0000000004 c0ffee0000000005 c0ffee0000000006 c0ffee0000000007")
+        add_test(NAME windows_crash_without_stack_words COMMAND windows_backtrace_report_tests fault)
+        set_tests_properties(windows_crash_without_stack_words PROPERTIES TIMEOUT 20
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>;APS5_CRASH_STACK_BYTES=unset:"
+            PASS_REGULAR_EXPRESSION "FATAL: unhandled exception 0xc0000005"
+            FAIL_REGULAR_EXPRESSION "stack words from rsp;data at stack words")
     endif()
 endif()
 

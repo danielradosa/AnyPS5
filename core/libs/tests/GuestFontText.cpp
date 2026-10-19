@@ -13,9 +13,6 @@ int APS5_VABI sceFontTextSourceSetDefaultFont(FontTextSource*, FontHandle);
 int APS5_VABI sceFontCreateString(const FontMemory*, FontTextSource*, const FontCreateStringDetail*, FontString*);
 int APS5_VABI sceFontDestroyString(FontString*);
 FontTextCharacter* APS5_VABI sceFontStringRefersTextCharacters(FontString, std::uint32_t*);
-FontTextCodes* APS5_VABI sceFontCharactersRefersTextCodes(const FontTextCharacter*, const FontTextCharacter*, FontTextCodes*);
-FontTextCodes* APS5_VABI sceFontTextCodesStepNext(FontTextCodes*);
-FontTextCodes* APS5_VABI sceFontTextCodesStepBack(FontTextCodes*);
 int APS5_VABI sceFontCharacterGetSyllableStringState(const FontTextCharacter*, int*);
 int APS5_VABI sceFontCreateWords(const FontMemory*, FontTextSource*, const void*, FontWords*);
 int APS5_VABI sceFontDestroyWords(FontWords*);
@@ -78,10 +75,6 @@ static Text CreateText(const FontMemory& memory, const std::vector<std::uint32_t
     text.characters = sceFontStringRefersTextCharacters(text.string, &text.count);
     Require(text.characters != nullptr && text.count == codes.size());
     return text;
-}
-
-static bool StepIs(const FontTextCodes* step, const FontTextCodes* codes, std::uint32_t code, const std::uint32_t* order) {
-    return step == codes && step->textCode == code && step->textOrder == order;
 }
 
 static bool StateIs(const FontTextCharacter* character, int expected) {
@@ -175,30 +168,6 @@ int main() {
     const std::vector<std::uint32_t> latin{'A', 'b', ' ', 0x00E9, 0x4E00};
     Text text = CreateText(memory, latin, font);
     FontTextCharacter* characters = text.characters;
-
-    FontTextCodes codes{};
-    Require(StepIs(sceFontCharactersRefersTextCodes(&characters[0], &characters[3], &codes), &codes, 'A', &latin[0]));
-    Require(StepIs(sceFontTextCodesStepNext(&codes), &codes, 'b', &latin[1]));
-    Require(StepIs(sceFontTextCodesStepNext(&codes), &codes, ' ', &latin[2]));
-    Require(sceFontTextCodesStepNext(&codes) == nullptr && codes.textCode == ' ');
-    Require(StepIs(sceFontTextCodesStepBack(&codes), &codes, 'b', &latin[1]));
-    Require(StepIs(sceFontTextCodesStepBack(&codes), &codes, 'A', &latin[0]));
-    Require(sceFontTextCodesStepBack(&codes) == nullptr && codes.textCode == 'A');
-    Require(StepIs(sceFontTextCodesStepNext(&codes), &codes, 'b', &latin[1]));
-
-    Require(StepIs(sceFontCharactersRefersTextCodes(&characters[3], nullptr, &codes), &codes, 0x00E9, &latin[3]));
-    Require(StepIs(sceFontTextCodesStepNext(&codes), &codes, 0x4E00, &latin[4]));
-    Require(sceFontTextCodesStepNext(&codes) == nullptr);
-    Require(StepIs(sceFontTextCodesStepBack(&codes), &codes, 0x00E9, &latin[3]));
-
-    Require(Throws([&] { sceFontCharactersRefersTextCodes(&characters[1], &characters[1], &codes); }) && StepIs(&codes, &codes, 0x00E9, &latin[3]));
-    Require(sceFontCharactersRefersTextCodes(nullptr, &characters[1], &codes) == nullptr && StepIs(&codes, &codes, 0x00E9, &latin[3]));
-    Require(sceFontCharactersRefersTextCodes(&characters[0], nullptr, nullptr) == nullptr);
-    Require(sceFontTextCodesStepNext(nullptr) == nullptr);
-    Require(sceFontTextCodesStepBack(nullptr) == nullptr);
-    FontTextCodes unset{};
-    Require(Throws([&] { sceFontTextCodesStepNext(&unset); }));
-    Require(Throws([&] { sceFontTextCodesStepBack(&unset); }));
 
     for (std::uint32_t i = 0; i < text.count; ++i) Require(StateIs(&characters[i], 0));
     int state = 7;

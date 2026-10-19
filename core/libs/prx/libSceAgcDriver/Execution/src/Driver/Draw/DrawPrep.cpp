@@ -269,6 +269,7 @@ bool Driver::beginDrawPrep(const Submission& submission, const QueueState& queue
         drawPrep.submission = &submission;
         drawPrep.scratch = queue;
         drawPrep.target = localDevice->Target();
+        drawPrep.context = localDevice->graphicsContext();
         drawPrep.deviceSerial = localDevice->Serial();
         drawPrep.pipelineLibraries = localDevice->GraphicsPipelineLibraries();
         drawPrep.listRestart = localDevice->PrimitiveListRestart();
@@ -535,7 +536,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
         std::shared_ptr<const DrawDecode> decode = entry != nullptr ? entry->decode : nullptr;
         timer.Mark(ProbeLookup);
         if (decode == nullptr) {
-            decode = decodeDraw(scratch, submission);
+            decode = decodeDraw(scratch, submission, *drawPrep.context);
             if (timer.on) ++keyProbe().decodes;
         }
         timer.Mark(ProbeDecode);
@@ -572,7 +573,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
         }
         timer.Mark(ProbeVertexInfo);
         drawPrep.capturing = true;
-        ShaderMemory shaderMemory(memory, &prepPendingWrite, nullptr, nullptr, &prepRead);
+        ShaderMemory shaderMemory(memory, &prepPendingWrite, nullptr, nullptr, nullptr, &prepRead);
         std::vector<StageCapture> stageCaptures(programs.size());
         std::uint32_t pushCursor = 0;
         for (std::size_t i = 0; i < programs.size(); ++i) {

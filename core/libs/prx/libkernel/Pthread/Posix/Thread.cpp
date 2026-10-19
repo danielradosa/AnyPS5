@@ -9,7 +9,7 @@
 #include "Common.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include <atomic>
-#include <chrono>
+#include <mutex>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -259,6 +259,9 @@ int APS5_VABI pthread_rename_np_nid_postfix(Pthread thread, const char* name) {
 int APS5_VABI pthread_getname_np_nid_postfix(Pthread thread, char* name) {
     if (!thread) return PosixThread::GUEST_ESRCH;
     if (!name) return PosixThread::GUEST_EFAULT;
+    // A joined thread answers ESRCH on the console (PS5 firmware 13.60); the object is retained
+    // after scePthreadJoin, so _joined tells it apart from a live thread.
+    if (thread->_joined.load(std::memory_order_acquire)) return PosixThread::GUEST_ESRCH;
     return PosixThread::ToErrno(scePthreadGetname(thread, name));
 }
 
@@ -324,7 +327,15 @@ void APS5_VABI pthread_yield_nid_postfix(void) {
 
 unsigned int APS5_VABI sleep_nid_postfix(unsigned int seconds) {
     ThreadCancel::Check();
-    std::this_thread::sleep_for(std::chrono::seconds(seconds));
+    {
+        const auto deadline = TimedWait::DeadlineNanos(static_cast<std::uint64_t>(seconds) * 1000000ULL);
+        std::mutex mutex;
+        TimedWait::Condition condition;
+        std::unique_lock lock(mutex);
+        while (!ThreadCancel::Requested()) {
+            if (!ThreadCancel::Wait(condition, lock, deadline)) break;
+        }
+    }
     ThreadCancel::Check();
     return 0;
 }

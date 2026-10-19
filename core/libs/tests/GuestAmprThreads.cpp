@@ -491,11 +491,11 @@ static void APS5_VABI ExitWithSystemErrorCode() {
 }
 
 template <typename TCall>
-static int GuestSystemErrorCode(TCall call) {
+static int TerminateExitCode(GuestTerminate handler, TCall call) {
     const pid_t child = fork();
     Require(child >= 0);
     if (child == 0) {
-        _ZSt13set_terminatePFvvE_nid_postfix(ExitWithSystemErrorCode);
+        _ZSt13set_terminatePFvvE_nid_postfix(handler);
         call();
         _exit(2);
     }
@@ -519,7 +519,7 @@ static void TestPadErrors() {
     Require(Throws<std::invalid_argument>([&] { _ZNSt4_Pad7_LaunchEPP7pthread_nid_postfix(&pad, nullptr); }));
     Require(!pad.started && order.load() == 0);
 #ifndef _WIN32
-    Require(GuestSystemErrorCode([&] { _ZNSt4_Pad8_ReleaseEv_nid_postfix(&pad); }) == GuestEbusy);
+    Require(TerminateExitCode(ExitWithSystemErrorCode, [&] { _ZNSt4_Pad8_ReleaseEv_nid_postfix(&pad); }) == GuestEbusy);
 #endif
     Require(!pad.started);
 

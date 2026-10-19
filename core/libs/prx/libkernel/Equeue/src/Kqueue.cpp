@@ -373,14 +373,12 @@ KernelEqueueRef FindKqueueDescriptor(int descriptor) {
     return FindKqueue(descriptor);
 }
 
-int KqueuePendingEvents(int descriptor) {
+std::optional<bool> KqueueReadable(int descriptor) {
     const auto queue = FindKqueue(descriptor);
-    if (!queue) {
-        return -1;
-    }
+    if (!queue) return std::nullopt;
     int count = 0;
     queue->CountPending(&count, true);
-    return count;
+    return count > 0;
 }
 
 void KqueueSignalSent(int signal) {

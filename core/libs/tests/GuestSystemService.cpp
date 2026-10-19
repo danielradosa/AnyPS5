@@ -9,6 +9,8 @@
 extern "C" int APS5_VABI sceSystemServiceGetHdrToneMapLuminance(SystemServiceHdrToneMapLuminance* luminance);
 extern "C" int APS5_VABI sceSystemServiceParamGetString(int paramId, char* buf, std::size_t bufSize);
 extern "C" int APS5_VABI sceSystemServiceLaunchApp(const char* titleId, const char* const* arguments, const void* param);
+extern "C" int APS5_VABI sceSystemServiceAddLocalProcessForPsmKit(const char* path, const char* const* arguments, const void* param);
+extern "C" int APS5_VABI sceSystemServiceKillLocalProcessForPsmKit(int handle);
 
 namespace {
 
@@ -19,6 +21,16 @@ void Require(bool value) { if (!value) std::abort(); }
 bool ParamGetStringThrows(int paramId, char* buf, std::size_t bufSize) {
     try {
         static_cast<void>(sceSystemServiceParamGetString(paramId, buf, bufSize));
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+template<typename TCall>
+bool Throws(TCall call) {
+    try {
+        static_cast<void>(call());
     } catch (const std::runtime_error&) {
         return true;
     }
@@ -37,6 +49,13 @@ extern "C" int APS5_VABI sceSystemServiceLaunchWebBrowser(const char* uri, void*
 extern "C" int APS5_VABI sceSystemServiceShowControllerSettings(void);
 extern "C" int APS5_VABI sceSystemServiceOpenChallengeActivity(void);
 extern "C" int APS5_VABI sceSystemServiceOpenTournamentOccurrence(void);
+extern "C" int APS5_VABI sceSystemServiceGetStatus(SystemServiceStatus* status);
+extern "C" int APS5_VABI sceSystemServiceGetDisplaySafeAreaInfo(SystemServiceDisplaySafeAreaInfo* info);
+extern "C" int APS5_VABI sceSystemServiceGetNoticeScreenSkipFlag(bool* value);
+extern "C" int APS5_VABI sceSystemServiceSetNoticeScreenSkipFlag(void);
+extern "C" int APS5_VABI sceSystemServiceDisableNoticeScreenSkipFlagAutoSet(void);
+extern "C" int APS5_VABI sceSystemServiceHideSplashScreen(void);
+extern "C" int APS5_VABI sceSystemServiceReceiveEvent(SystemServiceEvent* event);
 
 int main() {
     Require(sceSystemServicePowerTick() == SYSTEM_SERVICE_OK);
@@ -63,6 +82,13 @@ int main() {
     Require(sceSystemServiceLaunchWebBrowser("", nullptr) == browserUnavailable);
     Require(sceSystemServiceLaunchWebBrowser(nullptr, nullptr) == browserUnavailable);
     Require(sceSystemServiceLaunchApp(nullptr, nullptr, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    const char* childArguments[] = {"/app0/child.bin", nullptr};
+    unsigned char processParam[0x90];
+    std::memset(processParam, 0x5a, sizeof(processParam));
+    Require(Throws([&] { return sceSystemServiceAddLocalProcessForPsmKit("/app0/child.bin", childArguments, processParam); }));
+    for (unsigned char byte : processParam) Require(byte == 0x5a);
+    Require(Throws([] { return sceSystemServiceAddLocalProcessForPsmKit(nullptr, nullptr, nullptr); }));
+    Require(Throws([] { return sceSystemServiceKillLocalProcessForPsmKit(1); }));
     Require(sceSystemServiceGetHdrToneMapLuminance(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
     SystemServiceHdrToneMapLuminance luminance{-1.0f, -1.0f, -1.0f};
     Require(sceSystemServiceGetHdrToneMapLuminance(&luminance) == SYSTEM_SERVICE_OK);
@@ -88,4 +114,27 @@ int main() {
     std::memset(exact, 'x', sizeof(exact));
     Require(sceSystemServiceParamGetString(SYSTEM_SERVICE_PARAM_ID_SYSTEM_NAME, exact, sizeof(exact)) == SYSTEM_SERVICE_OK);
     Require(std::memcmp(exact, "PS5", sizeof(exact)) == 0);
+
+    Require(sceSystemServiceGetStatus(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    SystemServiceStatus status;
+    std::memset(&status, 0x5a, sizeof(status));
+    Require(sceSystemServiceGetStatus(&status) == SYSTEM_SERVICE_OK);
+    Require(status.event_num == 0 && !status.is_system_ui_overlaid && !status.is_in_background_execution && !status.is_vr_play_area_overlaid);
+    for (unsigned char byte : status.reserved) Require(byte == 0);
+    Require(sceSystemServiceGetDisplaySafeAreaInfo(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    SystemServiceDisplaySafeAreaInfo safeArea;
+    std::memset(&safeArea, 0x5a, sizeof(safeArea));
+    Require(sceSystemServiceGetDisplaySafeAreaInfo(&safeArea) == SYSTEM_SERVICE_OK);
+    Require(safeArea.ratio == 1.0f);
+    for (unsigned char byte : safeArea.reserved) Require(byte == 0);
+    Require(sceSystemServiceGetNoticeScreenSkipFlag(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    bool skip = true;
+    Require(sceSystemServiceGetNoticeScreenSkipFlag(&skip) == SYSTEM_SERVICE_OK && !skip);
+    Require(sceSystemServiceSetNoticeScreenSkipFlag() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceDisableNoticeScreenSkipFlagAutoSet() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceHideSplashScreen() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceReceiveEvent(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    SystemServiceEvent event;
+    event.event_type = 7;
+    Require(sceSystemServiceReceiveEvent(&event) == SYSTEM_SERVICE_ERROR_NO_EVENT);
 }

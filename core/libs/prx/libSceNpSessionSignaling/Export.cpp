@@ -158,4 +158,14 @@ int APS5_VABI sceNpSessionSignalingGetGroupFromSessionId(uint32_t contextId, con
     return SCE_NP_SESSION_SIGNALING_ERROR_GRP_NOT_FOUND;
 }
 
+int APS5_VABI sceNpSessionSignalingGetGroupInfo() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress2() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
 }

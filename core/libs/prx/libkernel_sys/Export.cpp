@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -11,7 +12,7 @@
 #include <string_view>
 #include <system_error>
 #include <sys/stat.h>
-#ifdef __linux__
+#ifndef _WIN32
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -38,10 +39,23 @@
 extern "C" int* APS5_VABI __error_nid_postfix();
 
 namespace {
+#ifdef _WIN32
+extern "C" _invalid_parameter_handler _set_thread_local_invalid_parameter_handler(_invalid_parameter_handler);
+static void IgnoreInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, std::uintptr_t) {}
+static int GuestFstat(int fd) {
+    const auto previous = _set_thread_local_invalid_parameter_handler(IgnoreInvalidParameter);
+    struct _stat64 status{};
+    const int result = ::_fstat64(fd, &status);
+    _set_thread_local_invalid_parameter_handler(previous);
+    return result;
+}
+#endif
+
 constexpr int GuestEnoent = 2;
 constexpr int GuestEperm = 1;
 constexpr int GuestEio = 5;
 constexpr int GuestEacces = 13;
+constexpr int GuestEbadf = 9;
 constexpr int GuestEfault = 14;
 constexpr int GuestEnotdir = 20;
 constexpr int GuestEisdir = 21;
@@ -414,7 +428,7 @@ int APS5_VABI fchdir_nid_postfix(int fd) {
     int error = 0;
     const char* path = GetDirectoryDescriptorPath_nid_no_patch(fd, &error);
     if (path == nullptr) return static_cast<int>(Fail(error));
-#ifdef __linux__
+#ifndef _WIN32
     if (::faccessat(fd, ".", X_OK, AT_EACCESS) != 0) return static_cast<int>(Fail(errno));
 #endif
     error = SetWorkingDirectory_nid_no_patch(path);
@@ -444,6 +458,19 @@ int APS5_VABI symlink_nid_postfix(const char* target, const char* created) {
     if (std::strlen(target) >= GuestPathMax) return static_cast<int>(Fail(GuestEnametoolong));
     if (*target == '\0' || *created == '\0') return static_cast<int>(Fail(GuestEnoent));
     if (std::strlen(created) >= GuestPathMax || HasLongComponent(created)) return static_cast<int>(Fail(GuestEnametoolong));
+    if (*target != '/') {
+        const std::filesystem::path relative(target);
+        if (relative.has_root_name() || relative.has_root_directory()) {
+            NotImplemented_nid_no_patch("symlink: targets rooted outside the guest tree");
+            return -1;
+        }
+        for (const auto& part : relative) {
+            if (part == "..") {
+                NotImplemented_nid_no_patch("symlink: parent-directory targets");
+                return -1;
+            }
+        }
+    }
     std::filesystem::path native;
     if (const int error = ResolvePathError_nid_no_patch(created, native)) return static_cast<int>(Fail(error));
     std::error_code error;
@@ -514,6 +541,7 @@ int APS5_VABI openat_nid_postfix(int fd, const char* path, int flags, ...) {
         va_end(arguments);
 #endif
     }
+    if (File::InvalidOpenFlags(flags)) return static_cast<int>(Fail(GuestEinval));
     if (path == nullptr) return static_cast<int>(Fail(GuestEfault));
     if (*path == '\0') return static_cast<int>(Fail(GuestEnoent));
     if (fd == GuestAtFdcwd || *path == '/') return open_nid_postfix(path, flags, mode);
@@ -596,6 +624,19 @@ int APS5_VABI fchmodat_nid_postfix(int fd, const char* path, int mode, int flag)
     if (::chmod(native.c_str(), static_cast<mode_t>(mode & 07777)) != 0) return static_cast<int>(Fail(GuestFileError(errno)));
 #endif
     RecordWrittenPath_nid_no_patch(native);
+    return 0;
+}
+
+int APS5_VABI fchown_nid_postfix(int fd, std::uint32_t uid, std::uint32_t gid) {
+    constexpr std::uint32_t Unchanged = 0xFFFFFFFFu;
+    if (uid != 0 && uid != Unchanged) NotImplemented_nid_no_patch("fchown: an owner other than the guest user");
+    if (gid != 0 && gid != Unchanged) NotImplemented_nid_no_patch("fchown: a group other than the guest group");
+#ifdef _WIN32
+    if (GuestFstat(fd) != 0) return static_cast<int>(Fail(GuestEbadf));
+#else
+    struct stat status{};
+    if (::fstat(fd, &status) != 0) return static_cast<int>(Fail(GuestEbadf));
+#endif
     return 0;
 }
 

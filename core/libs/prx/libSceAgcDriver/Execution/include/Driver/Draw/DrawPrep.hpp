@@ -2,6 +2,7 @@
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_EXECUTION_INCLUDE_DRIVER_DRAWPREP_HPP
 
 #include "prx/libSceAgcDriver/Execution/include/QueueState.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
 #include "Recompiler.hpp"
 #include <array>
 #include <atomic>
@@ -34,6 +35,7 @@ struct DrawPrepState {
     const Submission* submission = nullptr;
     QueueState scratch;
     std::optional<ShaderRecompiler::SpirvTarget> target;
+    std::optional<Graphics::Context> context;
     std::uint64_t deviceSerial = 0;
     bool pipelineLibraries = false;
     bool listRestart = false;

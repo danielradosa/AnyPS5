@@ -761,10 +761,13 @@ struct AvPlayerVideoEx {
     std::uint8_t luma_bit_depth;
     std::uint8_t chroma_bit_depth;
     bool video_full_range_flag;
-    std::uint8_t reserved1[37];
+    std::uint8_t reserved1[5];
+    double frame_rate;
+    std::uint8_t reserved2[24];
 };
 static_assert(sizeof(AvPlayerVideoEx) == 80);
 static_assert(offsetof(AvPlayerVideoEx, crop_left_offset) == 20 && offsetof(AvPlayerVideoEx, pitch) == 36);
+static_assert(offsetof(AvPlayerVideoEx, frame_rate) == 48);
 
 struct AvPlayerTimedTextEx {
     std::uint8_t language_code[4];
@@ -999,17 +1002,18 @@ struct VoicePortInfo {
     std::uint16_t reserved;
 };
 
+struct VoiceResourceInfo {
+    std::uint16_t max_voice_input_ports;
+    std::uint16_t max_voice_output_ports;
+    std::uint16_t max_device_input_ports;
+    std::uint16_t max_device_output_ports;
+    std::uint16_t max_ports;
+};
+
 struct VoiceStartParam {
     void* container;
     std::uint32_t mem_size;
     std::uint8_t reserved[32 - sizeof(void*) - sizeof(std::uint32_t)];
-};
-
-struct VoiceResourceInfo {
-    std::uint16_t max_in_voice_port;
-    std::uint16_t max_out_voice_port;
-    std::uint16_t max_in_device_port;
-    std::uint16_t max_out_device_port;
 };
 
 struct PadTouchPadInformation {
@@ -1365,7 +1369,7 @@ struct NetCtlIfStat {
     std::uint32_t reserved[8];
 };
 
-using NetCtlCallback = void (*)(int, void*);
+using NetCtlCallback = void (APS5_VABI *)(int, void*);
 
 struct HttpEpoll;
 using HttpEpollHandle = HttpEpoll*;
@@ -1476,10 +1480,6 @@ struct NpUniversalDataSystemMemoryStat {
     std::size_t current_inuse_size;
 };
 
-struct NpUniversalDataSystemEvent {};
-struct NpUniversalDataSystemEventPropertyObject {};
-struct NpUniversalDataSystemEventPropertyArray {};
-
 struct NpUniversalDataSystemStorageStat {
     std::size_t in_events;
     std::size_t out_events;
@@ -1496,6 +1496,11 @@ constexpr std::uint32_t NP_GAME_INTENT_TYPE_MAX_SIZE = 64;
 struct NpGameIntentData {
     std::uint8_t data[NP_GAME_INTENT_DATA_MAX_SIZE];
     std::uint8_t padding[7];
+};
+
+struct NpGameIntentInitParam {
+    std::size_t size;
+    std::uint8_t reserved[32];
 };
 
 struct NpGameIntentInfo {

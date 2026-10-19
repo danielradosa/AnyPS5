@@ -16,6 +16,7 @@ int APS5_VABI sceNpWebApi2Initialize(int, std::size_t);
 int APS5_VABI sceNpWebApi2Terminate(int);
 int APS5_VABI sceNpWebApi2GetMemoryPoolStats(int, NpWebApi2MemoryPoolStats*);
 int APS5_VABI sceNpWebApi2PushEventCreateHandle(int);
+int APS5_VABI sceNpWebApi2PushEventAbortHandle(int, int);
 int APS5_VABI sceNpWebApi2PushEventSetHandleTimeout(int, int, std::uint32_t);
 int APS5_VABI sceNpWebApi2PushEventAbortHandle(int, int);
 int APS5_VABI sceNpWebApi2PushEventDeleteHandle(int, int);
@@ -79,6 +80,8 @@ int main() {
     Require(Throws([&] { sceNpWebApi2GetMemoryPoolStats(context, nullptr); }));
     const int handle = sceNpWebApi2PushEventCreateHandle(context);
     Require(handle > 0);
+    Require(sceNpWebApi2PushEventAbortHandle(context, handle) == 0);
+    Require(sceNpWebApi2PushEventAbortHandle(context, handle + 1000) == 0);
     Require(sceNpWebApi2PushEventSetHandleTimeout(context, handle, 30000) == 0);
     constexpr int invalidArgument = static_cast<int>(0x80553402);
     constexpr int requestNotFound = static_cast<int>(0x80553406);
@@ -95,6 +98,7 @@ int main() {
     Require(sceNpWebApi2AddWebTraceTag(request, "trace") == requestNotFound);
     Require(sceNpWebApi2Terminate(context) == 0);
     Require(Throws([&] { sceNpWebApi2GetMemoryPoolStats(context, &stats); }));
+    Require(Throws([&] { sceNpWebApi2PushEventAbortHandle(context, handle); }));
     Require(Throws([&] { sceNpWebApi2PushEventSetHandleTimeout(context, handle, 30000); }));
     Require(sceNpWebApi2Terminate(other) == 0);
     return 0;

@@ -57,6 +57,16 @@ std::int32_t APS5_VABI sceVrTracker2Finalize() {
     return initialized.exchange(false) ? 0 : SCE_VR_TRACKER2_ERROR_NOT_INIT;
 }
 
+int APS5_VABI sceVrTracker2GetCoordinateSystem() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVrTracker2GetPlayAreaBoundaryGeometry() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
 std::int32_t APS5_VABI sceVrTracker2ResetLocalCoordinate() {
     return NoDevice();
 }

@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -63,7 +65,7 @@ struct PthreadCondattrPrivate {
 };
 
 struct PthreadCondPrivate {
-    TimedWait::Condition _cv;
+    std::shared_ptr<TimedWait::Condition> _cv = std::make_shared<TimedWait::Condition>();
     int _clockid = 0;
 };
 
@@ -143,6 +145,9 @@ struct PthreadPrivate {
     void* _retval;
     bool _detached;
     bool _adopted;
+    Pthread* _handleStorage;
+    std::atomic<bool> _joined;
+        bool _joining = false;
     std::mutex _join_mtx;
     TimedWait::Condition _join_cv;
     std::atomic<bool> cancelPending{false};
@@ -158,6 +163,9 @@ struct PthreadPrivate {
 bool GuestThreadStack(std::uintptr_t address, std::uintptr_t* start, std::uintptr_t* end);
 bool GuestThreadStackHostRangeOverlaps(std::uintptr_t start, std::uintptr_t end);
 void NoteGuestStackProtection(std::uintptr_t start, std::size_t bytes, bool readWrite);
+#ifdef _WIN32
+bool ReplaceGuestThreadStack(std::uintptr_t start, std::size_t bytes, bool readWrite, const std::function<bool()>& replace);
+#endif
 int GuestThreadCpuClockId(const PthreadPrivate* thread);
 bool GuestThreadCpuNanos(int cpuClockThread, std::uint64_t* nanos);
 bool GuestThreadAffinity(std::int64_t tid, KernelCpumask* mask);
@@ -168,5 +176,7 @@ bool GuestThreadIsLive(const PthreadPrivate* thread);
 bool LiveGuestThreadExists(std::int64_t tid);
 bool SetGuestThreadAffinityIfLive(PthreadPrivate* thread, KernelCpumask mask);
 bool SetGuestThreadAffinityByTid(std::int64_t tid, KernelCpumask mask);
+bool GetLiveGuestThreadAffinity_nid_no_patch(std::int64_t tid, KernelCpumask& mask);
+bool SetLiveGuestThreadAffinity_nid_no_patch(std::int64_t tid, KernelCpumask mask);
 
 #endif

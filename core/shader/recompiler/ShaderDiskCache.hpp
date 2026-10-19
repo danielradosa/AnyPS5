@@ -13,7 +13,7 @@
 
 namespace ShaderRecompiler::ShaderDiskCache {
 
-inline constexpr std::uint32_t FormatVersion = 37;
+inline constexpr std::uint32_t FormatVersion = 41;
 
 enum class LoadStatus {
     Loaded,
@@ -81,6 +81,8 @@ void BuildSpecializedKey(std::span<const std::uint32_t> module, std::span<const 
 void StoreSpecialized(std::vector<std::byte> key, std::vector<std::uint32_t> spirv);
 [[nodiscard]] double SpecializedStoreMinMs();
 void Flush();
+void Shutdown();
+[[nodiscard]] unsigned Writers();
 [[nodiscard]] Counters Totals();
 
 }

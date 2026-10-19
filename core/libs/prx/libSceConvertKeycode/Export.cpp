@@ -13,6 +13,8 @@ constexpr std::uint32_t kStatusModifiers = 0xff00u;
 constexpr std::uint32_t kStatusLeds = 0x70000u;
 constexpr std::uint32_t kIgnoredStateBits = 0x4000000u;
 constexpr std::int32_t kKeyboardTypeEnglishUs = 4;
+constexpr std::uint16_t kKeycodeBackslash = 0x31;
+constexpr std::uint16_t kKeycodeNonUsBackslash = 0x64;
 }  // namespace
 
 extern "C" {
@@ -43,7 +45,7 @@ int APS5_VABI sceConvertKeycodeGetCharacter(std::uint16_t keycode, std::uint32_t
         throw std::runtime_error(std::string(__func__) + ": unsupported status bits " + std::to_string(status & ~(kStatusModifiers | kStatusLeds | kIgnoredStateBits)));
     if (keyboardType != 0 && keyboardType != kKeyboardTypeEnglishUs)
         throw std::runtime_error(std::string(__func__) + ": keyboard type " + std::to_string(keyboardType) + " not implemented");
-    *character = static_cast<char16_t>(Keyboard::Character(false, (status & kStatusLeds) >> 16, (status & kStatusModifiers) >> 8, keycode));
+    *character = static_cast<char16_t>(Keyboard::Character(false, (status & kStatusLeds) >> 16, (status & kStatusModifiers) >> 8, keycode == kKeycodeNonUsBackslash ? kKeycodeBackslash : keycode));
     return 0;
 }
 

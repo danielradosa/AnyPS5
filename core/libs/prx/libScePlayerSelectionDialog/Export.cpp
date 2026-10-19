@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -71,6 +72,7 @@ int APS5_VABI scePlayerSelectionDialogGetResult(void* result) {
 
 int APS5_VABI scePlayerSelectionDialogClose(void) {
  if (g_status.load() == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
+ g_status = COMMON_DIALOG_STATUS_FINISHED;
  return 0;
 }
 

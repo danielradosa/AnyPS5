@@ -74,4 +74,5 @@ int main() {
     Require(scePlayerSelectionDialogTerminate() == kErrNotInitialized);
     Require(scePlayerSelectionDialogGetStatus() == kStatusNone);
     Require(scePlayerSelectionDialogUpdateStatus() == kStatusNone);
+    Require(scePlayerSelectionDialogClose() == kErrNotInitialized);
 }

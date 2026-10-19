@@ -76,6 +76,23 @@ static void CheckRand48() {
     Require(mrand48_nid_postfix() == jrand48_nid_postfix(expectedSeed), "mrand48 matches jrand48 on initialized seed");
     Require(drand48_nid_postfix() == erand48_nid_postfix(expectedSeed), "drand48 fourth value matches erand48");
 
+    const std::uint16_t parameters[7] = {1, 0, 0, 3, 0, 0, 5};
+    lcong48_nid_postfix(parameters);
+    Require(lrand48_nid_postfix() == 0 && mrand48_nid_postfix() == 0, "lcong48 sets seed, multiplier and addend");
+    std::uint16_t high[3] = {0, 0, 1};
+    Require(jrand48_nid_postfix(high) == 196608 && SeedIs(high, 5, 0, 3), "lcong48 multiplier scales the seed");
+    std::uint16_t custom[3] = {2, 0, 0};
+    Require(nrand48_nid_postfix(custom) == 0 && SeedIs(custom, 11, 0, 0), "lcong48 parameters apply to nrand48");
+    const std::uint16_t newSeed[3] = {0x330e, 0xabcd, 0x1234};
+    std::uint16_t* const echoed = seed48_nid_postfix(newSeed);
+    Require(SeedIs(echoed, 0x330e, 0xabcd, 0x1234), "seed48 returns a copy of the new seed");
+    std::uint16_t again[3] = {0x330e, 0xabcd, 0x1234};
+    Require(drand48_nid_postfix() == erand48_nid_postfix(again), "seed48 restores the default multiplier and addend");
+    lcong48_nid_postfix(parameters);
+    srand48_nid_postfix(0x1234abcd);
+    std::uint16_t reset[3] = {0x330e, 0xabcd, 0x1234};
+    Require(lrand48_nid_postfix() == nrand48_nid_postfix(reset), "srand48 restores the default multiplier and addend");
+
 #ifndef _WIN32
     std::uint16_t guest[3] = {0x1234, 0x5678, 0x9abc};
     unsigned short host[3] = {0x1234, 0x5678, 0x9abc};
@@ -98,20 +115,10 @@ static void CheckRand48Parameters() {
     srand48_nid_postfix(0x1234abcd);
     const std::uint16_t seed[3]{0x1234, 0x5678, 0x9abc};
     const auto original = std::array<std::uint16_t, 3>{seed[0], seed[1], seed[2]};
-    auto* previous = seed48_nid_postfix(seed);
-    Require(SeedIs(previous, 0x330e, 0xabcd, 0x1234), "seed48 returns the previous internal seed");
+    seed48_nid_postfix(seed);
     std::uint16_t external[3]{seed[0], seed[1], seed[2]};
     Require(drand48_nid_postfix() == erand48_nid_postfix(external), "seed48 replaces all 48 seed bits");
     Require(std::equal(original.begin(), original.end(), seed), "seed48 preserves its input");
-    auto* nextPrevious = seed48_nid_postfix(seed);
-    Require(nextPrevious == previous && SeedIs(previous, external[0], external[1], external[2]), "seed48 reuses its return storage and saves the advanced seed");
-
-    srand48_nid_postfix(0x1234abcd);
-    const std::uint16_t restore[3]{1, 2, 3};
-    auto* saved = seed48_nid_postfix(restore);
-    drand48_nid_postfix();
-    seed48_nid_postfix(saved);
-    Require(SeedIs(seed48_nid_postfix(restore), 0xe678, 0xabc6, 0x7126), "seed48 saves the previous seed before reading an aliased argument");
 
     const std::uint16_t parameters[7]{0x1234, 0x5678, 0x9abc, 0x4321, 0x8765, 0xcba9, 0xfedc};
     lcong48_nid_postfix(parameters);
@@ -140,17 +147,6 @@ static void CheckRand48Parameters() {
     Require(drand48_nid_postfix() == 0x657eb7255101p-48, "srand48 restores the default recurrence");
 
 #ifndef _WIN32
-    ::srand48(0x1234abcd);
-    unsigned short hostRestore[3]{1, 2, 3};
-    unsigned short* hostSaved = ::seed48(hostRestore);
-    ::drand48();
-    ::seed48(hostSaved);
-    srand48_nid_postfix(0x1234abcd);
-    saved = seed48_nid_postfix(restore);
-    drand48_nid_postfix();
-    seed48_nid_postfix(saved);
-    Require(drand48_nid_postfix() == ::drand48(), "aliased seed48 matches the host");
-
     ::lcong48(const_cast<unsigned short*>(parameters));
     lcong48_nid_postfix(parameters);
     unsigned short host[3]{0xabcd, 0x1234, 0x9876};

@@ -1,11 +1,16 @@
-#include "prx/libc/include/general/VabiMacros.hpp"
+#include "ProcessParametersFixture.hpp"
+#include "prx/libSceHmd/Hmd.hpp"
+#include "prx/libSceHmd2/Hmd2.hpp"
+#include "prx/libSceUserService/UserService.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <initializer_list>
+#include <stdexcept>
 
 struct Hmd2SizeAlign {
     std::uint64_t size;
@@ -13,15 +18,6 @@ struct Hmd2SizeAlign {
 };
 
 extern "C" {
-std::int32_t APS5_VABI sceHmd2Initialize(const void* param);
-std::int32_t APS5_VABI sceHmd2Terminate();
-std::int32_t APS5_VABI sceHmd2Open(std::int32_t userId, std::int32_t type, std::int32_t index, const void* param);
-std::int32_t APS5_VABI sceHmd2Close(std::int32_t handle);
-std::int32_t APS5_VABI sceHmd2GetDeviceInformation(void* info);
-std::int32_t APS5_VABI sceHmd2GetDeviceInformationByHandle(std::int32_t handle, void* info);
-std::int32_t APS5_VABI sceHmd2GetFieldOfView(std::int32_t handle, void* fieldOfView);
-std::int32_t APS5_VABI sceHmd2GetFieldOfViewWithoutHandle(void* fieldOfView);
-std::int32_t APS5_VABI sceHmd2SetVibration(std::int32_t handle, std::int32_t strength);
 std::int32_t APS5_VABI sceHmd2GazeGetResult(const void* param, void* result);
 std::int32_t APS5_VABI sceHmd2GazeGetResultForFoveatedRendering();
 std::int32_t APS5_VABI sceHmd2ReprojectionInitialize(const void* param, const void* reserved);
@@ -45,13 +41,13 @@ Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQueryDisplayBufferSizeAlign();
 Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign();
 Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign();
 Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign();
+int APS5_VABI sceHmd2GazeActivateGazeTracking();
+int APS5_VABI sceHmd2ReprojectionGetCurrentOutput();
+int APS5_VABI sceHmd2SetFieldOfView();
 }
-
 namespace {
 
-constexpr auto NotInitialized = static_cast<std::int32_t>(0x81110002);
-constexpr auto ParameterNull = static_cast<std::int32_t>(0x81110008);
-constexpr auto UnsupportedFeature = static_cast<std::int32_t>(0x81110016);
+alignas(16) std::array<std::byte, 0x40> process{};
 
 void Require(bool condition, const char* message) {
     if (!condition) {
@@ -87,51 +83,90 @@ void CheckUninitialized() {
     std::uint8_t param[0x48]{};
     std::uint64_t time = 0x1234;
 
-    Require(sceHmd2GetDeviceInformation(nullptr) == ParameterNull, "null device information");
-    Require(sceHmd2GetDeviceInformation(output) == NotInitialized, "device information before initialization");
-    Require(sceHmd2GetFieldOfViewWithoutHandle(nullptr) == ParameterNull, "null field of view without handle");
-    Require(sceHmd2GetFieldOfViewWithoutHandle(output) == NotInitialized, "field of view before initialization");
-    for (const std::int32_t handle : {0, 1, -1, 0x0f000000}) {
-        Require(sceHmd2GetFieldOfView(handle, nullptr) == ParameterNull, "null field of view");
-        Require(sceHmd2GetFieldOfView(handle, output) == NotInitialized, "handle field of view");
-        Require(sceHmd2GetDeviceInformationByHandle(handle, output) == NotInitialized, "handle information");
-        Require(sceHmd2Close(handle) == NotInitialized, "close");
-        Require(sceHmd2SetVibration(handle, 25) == NotInitialized, "vibration");
-    }
+    Require(sceHmd2GazeGetResult(param, output) == Hmd2::NotInitialized, "gaze result");
     Require(std::memcmp(output, untouched, sizeof(output)) == 0, "failed query wrote output");
-
-    Require(sceHmd2Open(1, 0, 0, nullptr) == NotInitialized, "open before initialization");
-    Require(sceHmd2GazeGetResult(param, output) == NotInitialized, "gaze result");
-    Require(sceHmd2GazeGetResultForFoveatedRendering() == NotInitialized, "foveated gaze result");
-    Require(sceHmd2ReprojectionInitialize(param, nullptr) == NotInitialized, "reprojection initialize");
-    Require(sceHmd2ReprojectionEnableVrMode(0x2000f) == NotInitialized, "enable VR mode");
-    Require(sceHmd2ReprojectionBeginFrame(1) == NotInitialized, "begin frame");
-    Require(sceHmd2ReprojectionGetPredictedDisplayTime(1, &time) == NotInitialized, "predicted display time");
+    Require(sceHmd2GazeGetResultForFoveatedRendering() == Hmd2::NotInitialized, "foveated gaze result");
+    Require(sceHmd2ReprojectionInitialize(param, nullptr) == Hmd2::NotInitialized, "reprojection initialize");
+    Require(sceHmd2ReprojectionEnableVrMode(0x2000f) == Hmd2::NotInitialized, "enable VR mode");
+    Require(sceHmd2ReprojectionBeginFrame(1) == Hmd2::NotInitialized, "begin frame");
+    Require(sceHmd2ReprojectionGetPredictedDisplayTime(1, &time) == Hmd2::NotInitialized, "predicted display time");
     Require(time == 0x1234, "failed display time query wrote output");
-    Require(sceHmd2ReprojectionSetParam(0, 1, param, nullptr) == NotInitialized, "set param");
-    Require(sceHmd2ReprojectionSetParamWithBuffer() == NotInitialized, "set param with buffer");
-    Require(sceHmd2ReprojectionSetRenderConfig(1, 0, 0) == NotInitialized, "render config");
-    Require(sceHmd2ReprojectionSetAllowPositionalReprojection() == NotInitialized, "positional reprojection");
-    Require(sceHmd2ReprojectionSetTiming() == NotInitialized, "timing");
-    Require(sceHmd2ReprojectionSetMirroringOption(param) == NotInitialized, "mirroring option");
-    Require(sceHmd2ReprojectionEnableMirroring(param) == NotInitialized, "enable mirroring");
-    Require(sceHmd2ReprojectionDisableMirroring() == NotInitialized, "disable mirroring");
-    Require(sceHmd2ReprojectionDisableVrMode() == NotInitialized, "disable VR mode");
-    Require(sceHmd2ReprojectionTerminate() == NotInitialized, "reprojection terminate");
-    Require(sceHmd2Terminate() == NotInitialized, "terminate");
+    Require(sceHmd2ReprojectionSetParam(0, 1, param, nullptr) == Hmd2::NotInitialized, "set param");
+    Require(sceHmd2ReprojectionSetParamWithBuffer() == Hmd2::NotInitialized, "set param with buffer");
+    Require(sceHmd2ReprojectionSetRenderConfig(1, 0, 0) == Hmd2::NotInitialized, "render config");
+    Require(sceHmd2ReprojectionSetAllowPositionalReprojection() == Hmd2::NotInitialized, "positional reprojection");
+    Require(sceHmd2ReprojectionSetTiming() == Hmd2::NotInitialized, "timing");
+    Require(sceHmd2ReprojectionSetMirroringOption(param) == Hmd2::NotInitialized, "mirroring option");
+    Require(sceHmd2ReprojectionEnableMirroring(param) == Hmd2::NotInitialized, "enable mirroring");
+    Require(sceHmd2ReprojectionDisableMirroring() == Hmd2::NotInitialized, "disable mirroring");
+    Require(sceHmd2ReprojectionDisableVrMode() == Hmd2::NotInitialized, "disable VR mode");
+    Require(sceHmd2ReprojectionTerminate() == Hmd2::NotInitialized, "reprojection terminate");
     CheckSizeQueries();
+}
+void InstallProcessParameters() {
+    const std::uint64_t size = process.size();
+    const std::uint32_t magic = 0x4942524f;
+    std::memcpy(process.data(), &size, sizeof(size));
+    std::memcpy(process.data() + 8, &magic, sizeof(magic));
+    Require(ProcessParametersFixture::Install(process.data(), process.size()), "process parameters were not installed");
+}
+
+void TestBeforeInitialize() {
+    Hmd2::DeviceInformation info;
+    std::memset(&info, 0xcc, sizeof(info));
+    Require(sceHmd2GetDeviceInformation(&info) == Hmd2::NotInitialized, "device information before initialization");
+    const Hmd2::DeviceInformation cleared{};
+    Require(std::memcmp(&info, &cleared, sizeof(info)) == 0, "device information was not cleared before the initialization check");
+    Require(sceHmd2GetDeviceInformation(nullptr) == Hmd2::ParameterNull, "null device information before initialization");
+    Hmd2::FieldOfView fieldOfView{};
+    Require(sceHmd2GetFieldOfViewWithoutHandle(&fieldOfView) == Hmd2::NotInitialized, "field of view before initialization");
+    Require(sceHmd2GetFieldOfView(0, &fieldOfView) == Hmd2::InvalidHandle, "field of view of handle 0 before initialization");
+    Require(sceHmd2GetDeviceInformationByHandle(0, &info) == Hmd2::NotInitialized, "device information of handle 0 before initialization");
+    Require(sceHmd2Open(USER_SERVICE_INITIAL_USER_ID, 0, 0, nullptr) == Hmd2::NotInitialized, "open before initialization");
+    Require(sceHmd2Close(0) == Hmd2::NotInitialized, "close before initialization");
+    Require(sceHmd2Terminate() == Hmd2::NotInitialized, "terminate before initialization");
+    Require(sceHmd2SetVibration(0, 0) == 0, "vibration of the unopened handle 0 failed");
+}
+
+void TestWithoutHeadset() {
+    const std::uint8_t param[16]{};
+    Require(sceHmd2Initialize(param) == Hmd::UnsupportedFeature, "initialization without a headset did not fail");
+    Require(sceHmd2Initialize(nullptr) == Hmd::UnsupportedFeature, "initialization without a param did not fail as unsupported");
+    Require(sceHmd2Open(USER_SERVICE_INITIAL_USER_ID, 0, 0, nullptr) == Hmd2::NotInitialized, "open without a headset did not fail");
+    Hmd2::DeviceInformation info;
+    Require(sceHmd2GetDeviceInformation(&info) == Hmd2::NotInitialized, "device information without a headset");
+    Require(sceHmd2Terminate() == Hmd2::NotInitialized, "terminate after the failed initialization");
 }
 
 }
 
 int main() {
-    const std::uint8_t param[16]{};
+    InstallProcessParameters();
     CheckUninitialized();
-    Require(sceHmd2Initialize(param) == UnsupportedFeature, "initialization did not report the unsupported feature");
-    Require(sceHmd2Initialize(nullptr) == UnsupportedFeature, "initialization without a param did not report the unsupported feature");
+    TestBeforeInitialize();
+    TestWithoutHeadset();
     CheckUninitialized();
-    Require(sceHmd2Initialize(param) == UnsupportedFeature, "repeated initialization changed its result");
-    CheckUninitialized();
+    bool threw = false;
+    try {
+        sceHmd2GazeActivateGazeTracking();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw, "gaze activation did not throw");
+    threw = false;
+    try {
+        sceHmd2ReprojectionGetCurrentOutput();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw, "reprojection get current output did not throw");
+    threw = false;
+    try {
+        sceHmd2SetFieldOfView();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw, "set field of view did not throw");
     std::puts("HMD2 tests passed");
     return 0;
 }

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <set>
@@ -193,6 +194,25 @@ int APS5_VABI sceAudio3dPortGetQueueLevel(uint32_t port_id, uint32_t* queue_leve
     const std::uint32_t level = QueueLevel();
     if (queue_level != nullptr) *queue_level = level;
     if (queue_available != nullptr) *queue_available = g_port.queue_depth - level;
+    return 0;
+}
+
+int APS5_VABI sceAudio3dPortGetAttributesSupported(uint32_t port_id, uint32_t* attributes, uint32_t* num_attributes) {
+    std::lock_guard lock(g_mutex);
+    if (num_attributes == nullptr) return AUDIO3D_ERROR_INVALID_PARAMETER;
+    if (!PortIsOpen(port_id)) return AUDIO3D_ERROR_INVALID_PORT;
+    constexpr std::uint32_t supported[]{
+        AUDIO3D_ATTRIBUTE_LATE_REVERB_LEVEL,
+        AUDIO3D_ATTRIBUTE_DOWNMIX_SPREAD_RADIUS,
+        AUDIO3D_ATTRIBUTE_DOWNMIX_SPREAD_HEIGHT_AWARE,
+    };
+    if (attributes == nullptr) {
+        *num_attributes = std::size(supported);
+        return 0;
+    }
+    const std::uint32_t count = std::min<std::uint32_t>(*num_attributes, std::size(supported));
+    std::copy_n(std::begin(supported), count, attributes);
+    *num_attributes = count;
     return 0;
 }
 
@@ -437,15 +457,6 @@ int APS5_VABI sceAudio3dPortGetParameters(uint32_t port_id, Audio3dOpenParameter
     out->buffer_mode = g_port.buffer_mode;
     out->pad = 0;
     out->num_beds = g_port.num_beds;
-    return 0;
-}
-
-int APS5_VABI sceAudio3dPortGetAttributesSupported(uint32_t port_id, uint32_t* capabilities, uint32_t* num_capabilities) {
-    (void)capabilities;
-    std::lock_guard lock(g_mutex);
-    if (!PortIsOpen(port_id)) return AUDIO3D_ERROR_INVALID_PORT;
-    if (num_capabilities == nullptr) return AUDIO3D_ERROR_INVALID_PARAMETER;
-    *num_capabilities = 0;
     return 0;
 }
 

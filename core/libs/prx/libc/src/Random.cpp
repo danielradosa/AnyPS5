@@ -100,6 +100,7 @@ constexpr std::uint64_t DefaultRand48Multiplier = 0x5deece66dull;
 constexpr std::uint16_t DefaultRand48Addend = 0xb;
 std::uint64_t g_rand48Multiplier = DefaultRand48Multiplier;
 std::uint16_t g_rand48Addend = DefaultRand48Addend;
+std::uint16_t g_seed48Result[3]{};
 
 std::uint64_t NextRand48(std::uint16_t* seed, const char* function) {
     if (seed == nullptr) throw std::invalid_argument(std::string(function) + ": null seed");
@@ -158,20 +159,17 @@ void APS5_VABI srand48_nid_postfix(std::int64_t seedval) {
 std::uint16_t* APS5_VABI seed48_nid_postfix(const std::uint16_t* seed) {
     if (seed == nullptr) throw std::invalid_argument("seed48: null seed");
     std::lock_guard lock(g_randomLock);
-    static std::uint16_t previous[3];
-    std::memcpy(previous, g_rand48Seed, sizeof(previous));
-    std::memcpy(g_rand48Seed, seed, sizeof(g_rand48Seed));
+    for (int index = 0; index < 3; ++index) g_rand48Seed[index] = g_seed48Result[index] = seed[index];
     g_rand48Multiplier = DefaultRand48Multiplier;
     g_rand48Addend = DefaultRand48Addend;
-    return previous;
+    return g_seed48Result;
 }
 
 void APS5_VABI lcong48_nid_postfix(const std::uint16_t* parameters) {
     if (parameters == nullptr) throw std::invalid_argument("lcong48: null parameters");
     std::lock_guard lock(g_randomLock);
-    std::memcpy(g_rand48Seed, parameters, sizeof(g_rand48Seed));
-    g_rand48Multiplier = (static_cast<std::uint64_t>(parameters[5]) << 32) |
-        (static_cast<std::uint64_t>(parameters[4]) << 16) | parameters[3];
+    for (int index = 0; index < 3; ++index) g_rand48Seed[index] = parameters[index];
+    g_rand48Multiplier = parameters[3] | (static_cast<std::uint64_t>(parameters[4]) << 16) | (static_cast<std::uint64_t>(parameters[5]) << 32);
     g_rand48Addend = parameters[6];
 }
 

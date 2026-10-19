@@ -55,7 +55,7 @@ std::optional<DrawVerdict> Driver::precheckRegisters(const QueueState& queue, co
             const auto primitive = queue.userConfig.find(0x242);
             const std::uint32_t allOnes = drawParameters.indexSize == 2 ? 0xffffu : 0xffffffffu;
             const auto type = primitive == queue.userConfig.end() ? 0u : primitive->second & 0x3fu;
-            const bool strip = type == 3 || type == 5 || type == 6;
+            const bool strip = type == 3 || type == 5 || type == 6 || type == 21;
             const bool list = type == 1 || type == 2 || type == 4;
             if (!strip && !(list && listRestart())) {
                 rejected = "AGC graphics: primitive restart is only supported for strips, and for lists with VK_EXT_primitive_topology_list_restart";

@@ -4,9 +4,8 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/PreciseWait.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
-#include "prx/libkernel/File/include/DirectoryDescriptor.hpp"
+#include "prx/libkernel/File/include/DescriptorControl.hpp"
 #include "prx/libkernel/File/include/File.hpp"
-#include "prx/libkernel/File/include/HostPipe.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libkernel/Socket/include/SocketPoll.hpp"
 #include "prx/libkernel/Socket/include/SocketSelectDeadline.hpp"
@@ -17,17 +16,10 @@
 #include <cerrno>
 #include <chrono>
 #include <stdexcept>
-#include <thread>
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <io.h>
-#else
+#ifndef _WIN32
 #include <poll.h>
 #endif
 
@@ -37,7 +29,6 @@ constexpr int GuestEbadf = 9;
 constexpr int GuestEinval = 22;
 constexpr int SelectDescriptorLimit = 1024;
 constexpr int SelectPollSliceMilliseconds = 10;
-constexpr std::int64_t PipeAtomicBytes = 512;
 
 struct GuestTimeval {
     std::int64_t seconds;
@@ -68,56 +59,20 @@ int KernelSockets(KernelSocketPoll::Entry* entries, int count, int timeoutMillis
     return GuestSockets::Poll(entries, count, timeoutMilliseconds);
 }
 
-template <typename TReadiness>
-int PollBySlices(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds, TReadiness readiness) {
+int Kqueues(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
     for (;;) {
         int ready = 0;
         for (int index = 0; index < count; ++index) {
-            const short revents = readiness(entries[index].descriptor, entries[index].events);
-            if (revents < 0) return -GuestEbadf;
-            entries[index].revents = revents;
-            if (revents != 0) ++ready;
+            auto& entry = entries[index];
+            const auto readable = KqueueReadable(entry.descriptor);
+            entry.revents = !readable ? KernelSocketPoll::Unknown : *readable ? static_cast<short>(entry.events & KernelSocketPoll::Readable) : short{0};
+            if (entry.revents != 0) ++ready;
         }
-        const auto now = std::chrono::steady_clock::now();
-        if (ready > 0 || now >= deadline) return ready;
-        std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(std::chrono::milliseconds(1), deadline - now));
+        if (ready > 0 || std::chrono::steady_clock::now() >= deadline) return ready;
+        PreciseSleepUntil(std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
     }
 }
-
-int KernelQueues(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds) {
-    return PollBySlices(entries, count, timeoutMilliseconds, [](int descriptor, short events) -> short {
-        const int pending = KqueuePendingEvents(descriptor);
-        if (pending < 0) return -1;
-        return static_cast<short>(pending > 0 ? events & KernelSocketPoll::Readable : 0);
-    });
-}
-
-#ifdef _WIN32
-
-short HostDescriptorEvents(int descriptor, short events) {
-    if (!DescriptorIsOpen_nid_no_patch(descriptor)) return -1;
-    const short both = static_cast<short>(events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable));
-    if (File::DirectoryDescriptorPath(descriptor)) return both;
-    if (const auto pipe = File::QueryHostPipe(descriptor)) {
-        const bool readable = (pipe->readEnd && pipe->available > 0) || pipe->peerClosed;
-        const bool writable = pipe->peerClosed || !pipe->writeEnd || pipe->space >= PipeAtomicBytes;
-        short revents = 0;
-        if (readable) revents = static_cast<short>(revents | (events & KernelSocketPoll::Readable));
-        if (writable) revents = static_cast<short>(revents | (events & KernelSocketPoll::Writable));
-        if (pipe->peerClosed) revents = static_cast<short>(revents | KernelSocketPoll::HangUp);
-        return revents;
-    }
-    const DWORD type = ::GetFileType(reinterpret_cast<HANDLE>(::_get_osfhandle(descriptor)));
-    if (type == FILE_TYPE_DISK || type == FILE_TYPE_CHAR) return both;
-    throw std::runtime_error("select: descriptor " + std::to_string(descriptor) + " has an unknown host type");
-}
-
-int HostDescriptors(KernelSocketPoll::Entry* entries, int count, int timeoutMilliseconds) {
-    return PollBySlices(entries, count, timeoutMilliseconds, HostDescriptorEvents);
-}
-
-#endif
 
 #ifndef _WIN32
 
@@ -151,6 +106,23 @@ int HostPoll(KernelSocketPoll::Entry* descriptors, int count, int timeoutMillise
         descriptors[index].revents = KernelEventFlags(native[index].revents);
     }
     return result;
+}
+
+#else
+
+int HostPoll(KernelSocketPoll::Entry* descriptors, int count, int timeoutMilliseconds) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
+    for (;;) {
+        int ready = 0;
+        for (int index = 0; index < count; ++index) {
+            auto& entry = descriptors[index];
+            if (!DescriptorIsOpen_nid_no_patch(entry.descriptor)) return -GuestEbadf;
+            if (!GuestSockets::PipeReady(entry.descriptor, entry.events, entry.revents)) entry.revents = KernelSocketPoll::Unknown;
+            if (entry.revents != 0) ++ready;
+        }
+        if (ready > 0 || std::chrono::steady_clock::now() >= deadline) return ready;
+        PreciseSleepUntil(std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
+    }
 }
 
 #endif
@@ -219,6 +191,7 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
         return -1;
     }
     PollGroup kernel{&KernelSockets, {}, {}};
+    PollGroup kqueues{&Kqueues, {}, {}};
     PollGroup net{nullptr, {}, {}};
     std::vector<KernelSocketPoll::Entry> devices;
     std::vector<KernelSocketPoll::Entry> requested;
@@ -232,8 +205,13 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
             kernel.entries.push_back({descriptor, events, 0});
             kernel.slots.push_back(requested.size());
             requested.push_back({descriptor, events, 0});
-        } else if (File::IsRandomDevice(descriptor)) devices.push_back({descriptor, events, static_cast<short>(events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable))});
+        } else if (IsKqueueDescriptor(descriptor)) {
+            kqueues.entries.push_back({descriptor, events, 0});
+            kqueues.slots.push_back(requested.size());
+            requested.push_back({descriptor, events, 0});
+        } else if (File::IsRandomDevice(descriptor)) devices.push_back({descriptor, events, static_cast<short>((events & KernelSocketPoll::Readable) != 0 ? KernelSocketPoll::Readable : events)});
         else if (descriptor <= 2) devices.push_back({descriptor, events, static_cast<short>(descriptor == 0 ? 0 : events & KernelSocketPoll::Writable)});
+        else if (File::IsVnode(descriptor)) devices.push_back({descriptor, events, static_cast<short>(events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable))});
         else {
             net.entries.push_back({descriptor, events, 0});
             net.slots.push_back(requested.size());
@@ -244,13 +222,9 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
     const bool devicesReady = std::any_of(devices.begin(), devices.end(), [](const auto& entry) { return entry.revents != 0; });
     std::vector<PollGroup> groups;
     if (!kernel.entries.empty()) groups.push_back(std::move(kernel));
+    if (!kqueues.entries.empty()) groups.push_back(std::move(kqueues));
     if (!net.entries.empty()) {
-        PollGroup queues{&KernelQueues, {}, {}};
-#ifdef _WIN32
-        PollGroup hosts{&HostDescriptors, {}, {}};
-#else
         PollGroup hosts{&HostPoll, {}, {}};
-#endif
         net.poll = g_socketPoller.load();
         if (net.poll != nullptr) {
             for (auto& socket : net.entries) socket.revents = 0;
@@ -266,15 +240,24 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
                 continue;
             }
             const int descriptor = net.entries[index].descriptor;
-            auto& group = IsKqueueDescriptor(descriptor) ? queues : hosts;
-            group.entries.push_back({descriptor, net.entries[index].events, 0});
-            group.slots.push_back(net.slots[index]);
+            hosts.entries.push_back({descriptor, net.entries[index].events, 0});
+            hosts.slots.push_back(net.slots[index]);
             net.entries.erase(net.entries.begin() + static_cast<std::ptrdiff_t>(index));
             net.slots.erase(net.slots.begin() + static_cast<std::ptrdiff_t>(index));
         }
         if (!net.entries.empty()) groups.push_back(std::move(net));
-        if (!hosts.entries.empty()) groups.push_back(std::move(hosts));
-        if (!queues.entries.empty()) groups.push_back(std::move(queues));
+        if (!hosts.entries.empty()) {
+            const int probe = HostPoll(hosts.entries.data(), static_cast<int>(hosts.entries.size()), 0);
+            if (probe < 0) {
+                *__error_nid_postfix() = -probe;
+                return -1;
+            }
+            for (const auto& entry : hosts.entries) {
+                if ((entry.revents & KernelSocketPoll::Unknown) != 0)
+                    throw std::runtime_error("select: descriptor " + std::to_string(entry.descriptor) + " is neither a socket, a pipe, a file, a directory nor a kqueue");
+            }
+            groups.push_back(std::move(hosts));
+        }
     }
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = limit == nullptr ? std::chrono::steady_clock::time_point::max()
@@ -307,12 +290,19 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
                 if (groups.size() == 1 || groupReady > 0 || std::chrono::steady_clock::now() >= sliceEnd) break;
             }
         }
-        int ready = 0;
-        for (const auto& entry : requested) {
-            if ((entry.revents & KernelSocketPoll::Unknown) != 0) {
+        if (std::any_of(requested.begin(), requested.end(), [](const auto& entry) { return (entry.revents & KernelSocketPoll::Unknown) != 0; })) {
+            for (const auto& entry : requested) {
+                if ((entry.revents & KernelSocketPoll::Unknown) == 0 || DescriptorIsOpen_nid_no_patch(entry.descriptor)) continue;
                 *__error_nid_postfix() = GuestEbadf;
                 return -1;
             }
+            if (limit == nullptr) return select_nid_postfix(nfds, readfds, writefds, exceptfds, nullptr);
+            const auto remaining = std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::microseconds>(deadline - std::chrono::steady_clock::now()).count());
+            const GuestTimeval rest{remaining / 1000000, remaining % 1000000};
+            return select_nid_postfix(nfds, readfds, writefds, exceptfds, &rest);
+        }
+        int ready = 0;
+        for (const auto& entry : requested) {
             const bool readable = (entry.events & KernelSocketPoll::Readable) != 0 && (entry.revents & (KernelSocketPoll::Readable | KernelSocketPoll::HangUp | KernelSocketPoll::Error)) != 0;
             const bool writable = (entry.events & KernelSocketPoll::Writable) != 0 && (entry.revents & (KernelSocketPoll::Writable | KernelSocketPoll::Error)) != 0;
             const bool urgent = (entry.events & KernelSocketPoll::Urgent) != 0 && (entry.revents & KernelSocketPoll::Urgent) != 0;

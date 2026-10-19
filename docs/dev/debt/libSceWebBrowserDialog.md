@@ -7,3 +7,5 @@
 ### Functional
 
 - [Web browser dialog](../../../core/libs/prx/libSceWebBrowserDialog/Export.cpp) (libSceWebBrowserDialog) shows nothing: `sceWebBrowserDialogOpen` and `sceWebBrowserDialogOpenForPredeterminedContent` finish at once and the result reports that the user canceled; the domains the predetermined content allows are not read. Cookies set with `sceWebBrowserDialogSetCookie` are kept until `sceWebBrowserDialogResetCookie`, but no page is loaded, so they are never sent
+### Silent stubs
+- [libSceWebBrowserDialog](../../../core/libs/prx/libSceWebBrowserDialog/Export.cpp) - `sceWebBrowserDialogOpen` and `sceWebBrowserDialogOpenForPredeterminedContent` run the common-dialog state machine without displaying an interactive browser, and `sceWebBrowserDialogGetResult` reports that the user cancelled. Minecraft Bedrock (PPSA17221) imports `sceWebBrowserDialogOpenForPredeterminedContent` (#5744). The real export takes a second argument, the allow-list of up to twenty addresses (SharpProspero `docs/dialogs.md`); it is not read here, so no address filtering is modelled, and the exact validation order and codes with a null second argument are unverified.
