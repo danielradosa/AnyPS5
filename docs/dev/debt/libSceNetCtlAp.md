@@ -1,0 +1,5 @@
+# libSceNetCtlAp technical debt
+
+### Functional
+
+- [libSceNetCtlAp](../../../core/libs/prx/libSceNetCtlAp/Export.cpp) (libSceNetCtlAp) - no access point is brought up: the state stays stopped (0), no callback fires, `GetResult` gives error 0, and `GetInfo`, `GetConnectInfo` and `Stop` fail with `NOT_STARTED` (`0x8041298F`) after their argument checks. Prototypes, the 152- and 184-byte size fields, eight callback slots, event types 1 to 4, the 8-character option string and the error codes follow [SharpProspero](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Net/NetCtlAp.cs) and [orbital](https://github.com/AlexAltea/orbital/blob/cc408367da6a6ebbf5ac1ac559fefeadc73b2831/tools/ida/db_types.json). Unverified on hardware: a second `Init` returning 0, the order of the argument checks, a null option string being accepted, a failed registration leaving the id untouched (SharpProspero names an invalid id of -1), and `Stop` failing on a stopped access point
