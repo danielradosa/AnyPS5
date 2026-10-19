@@ -20,12 +20,10 @@ const char* Text(const std::uint8_t* bytes) {
     return reinterpret_cast<const char*>(bytes);
 }
 
-std::size_t TerminatedLength(const char* function, const char* text, std::size_t capacity, const char* what) {
-    const std::size_t length = ::strnlen(text, capacity);
-    if (length == capacity) {
+void RequireTerminator(const char* function, const char* text, std::size_t capacity, const char* what) {
+    if (::strnlen(text, capacity) == capacity) {
         throw std::runtime_error(std::string(function) + ": " + what + " without a terminator in its first " + std::to_string(capacity) + " bytes");
     }
-    return length;
 }
 
 }
@@ -36,7 +34,7 @@ int APS5_VABI sceNotificationSend(int type, std::uint8_t flag, std::uint8_t* mes
     (void)type;
     (void)flag;
     if (message == nullptr || *message == 0) return NOTIFICATION_ERROR_BAD_MESSAGE;
-    TerminatedLength(__func__, Text(message), MessageCapacity, "a message");
+    RequireTerminator(__func__, Text(message), MessageCapacity, "a message");
     WriteLogLine(stderr, "[notification] %s\n", Text(message));
     return 0;
 }
@@ -45,9 +43,9 @@ int APS5_VABI sceNotificationSendById(int type, std::uint8_t flag, std::uint8_t*
     (void)type;
     (void)flag;
     if (id == nullptr) APS5_INVALID_ARG_EX;
-    TerminatedLength(__func__, Text(id), IdCapacity, "an id");
+    RequireTerminator(__func__, Text(id), IdCapacity, "an id");
     if (jsonData == nullptr || *jsonData == 0) return NOTIFICATION_ERROR_BAD_MESSAGE;
-    TerminatedLength(__func__, Text(jsonData), MessageCapacity, "a message");
+    RequireTerminator(__func__, Text(jsonData), MessageCapacity, "a message");
     WriteLogLine(stderr, "[notification] %s: %s\n", Text(id), Text(jsonData));
     return 0;
 }
