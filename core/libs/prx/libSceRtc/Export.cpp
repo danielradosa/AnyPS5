@@ -5,6 +5,8 @@
 #include <cstring>
 #include <ctime>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -661,28 +663,28 @@ static int checkSettableTick(const RtcTick* tick) {
     return tick->tick < UNIX_EPOCH_TICK ? SCE_RTC_ERROR_INVALID_VALUE : 0;
 }
 
+[[noreturn]] static void refuseClockChange(const char* function, const char* clock, const RtcTick* tick) {
+    throw std::runtime_error(std::string(function) + ": setting the " + clock + " clock to tick " + std::to_string(tick->tick) + " is not supported, the host clock is not changed");
+}
+
 int APS5_VABI sceRtcSetCurrentTick(const RtcTick* tick) {
     if (const int result = checkSettableTick(tick); result != 0) return result;
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    refuseClockChange(__func__, "system", tick);
 }
 
 int APS5_VABI sceRtcSetCurrentNetworkTick(const RtcTick* tick) {
     if (const int result = checkSettableTick(tick); result != 0) return result;
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    refuseClockChange(__func__, "network", tick);
 }
 
 int APS5_VABI sceRtcSetCurrentAdNetworkTick(const RtcTick* tick) {
     if (const int result = checkSettableTick(tick); result != 0) return result;
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    refuseClockChange(__func__, "ad network", tick);
 }
 
 int APS5_VABI sceRtcSetCurrentDebugNetworkTick(const RtcTick* tick) {
     if (const int result = checkSettableTick(tick); result != 0) return result;
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    refuseClockChange(__func__, "debug network", tick);
 }
 
 int APS5_VABI sceRtcSetConf(int first, int second, int third, int fourth) {

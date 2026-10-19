@@ -7,6 +7,8 @@
 #include <exception>
 #include <initializer_list>
 #include <limits>
+#include <stdexcept>
+#include <string>
 
 extern "C" {
 int APS5_VABI sceRtcCheckValid(const RtcDateTime*);
@@ -61,6 +63,9 @@ int APS5_VABI sceRtcFormatRFC3339PreciseLocalTime(char*, const RtcTick*, int);
 int APS5_VABI sceRtcCompareTick(const RtcTick*, const RtcTick*);
 int APS5_VABI sceRtcGetCurrentAdNetworkTick(RtcTick*);
 int APS5_VABI sceRtcSetCurrentTick(const RtcTick*);
+int APS5_VABI sceRtcSetCurrentNetworkTick(const RtcTick*);
+int APS5_VABI sceRtcSetCurrentAdNetworkTick(const RtcTick*);
+int APS5_VABI sceRtcSetCurrentDebugNetworkTick(const RtcTick*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -612,6 +617,16 @@ int main() {
         Require(sceRtcGetCurrentAdNetworkTick(&current) == 0 && current.tick > unixEpochTick);
         Require(sceRtcGetCurrentAdNetworkTick(nullptr) == invalidPointer);
         RtcTick tooEarly{unixEpochTick - 1};
-        Require(sceRtcSetCurrentTick(&tooEarly) == invalidValue && sceRtcSetCurrentTick(nullptr) == invalidPointer);
+        RtcTick epoch{unixEpochTick};
+        for (auto set : {sceRtcSetCurrentTick, sceRtcSetCurrentNetworkTick, sceRtcSetCurrentAdNetworkTick, sceRtcSetCurrentDebugNetworkTick}) {
+            Require(set(&tooEarly) == invalidValue && set(nullptr) == invalidPointer);
+            bool refused = false;
+            try {
+                set(&epoch);
+            } catch (const std::runtime_error& error) {
+                refused = std::string(error.what()).find("clock to tick " + std::to_string(unixEpochTick) + " is not supported") != std::string::npos;
+            }
+            Require(refused);
+        }
     }
 }
