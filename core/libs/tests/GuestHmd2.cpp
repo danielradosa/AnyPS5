@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <exception>
 #include <initializer_list>
 #include <stdexcept>
 
@@ -27,10 +26,6 @@ std::int32_t APS5_VABI sceHmd2ReprojectionSetRenderConfig(std::uint64_t halfRate
 std::int32_t APS5_VABI sceHmd2ReprojectionSetMirroringOption(const void* option);
 std::int32_t APS5_VABI sceHmd2ReprojectionEnableMirroring(const void* param);
 std::int32_t APS5_VABI sceHmd2ReprojectionDisableMirroring();
-Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQueryDisplayBufferSizeAlign();
-Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign();
-Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign();
-Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign();
 int APS5_VABI sceHmd2GazeActivateGazeTracking();
 int APS5_VABI sceHmd2ReprojectionGetCurrentOutput();
 int APS5_VABI sceHmd2SetFieldOfView();
@@ -44,24 +39,6 @@ void Require(bool condition, const char* message) {
         std::fprintf(stderr, "HMD2: %s\n", message);
         std::abort();
     }
-}
-
-template <typename F>
-void RequireThrows(F f, const char* message) {
-    bool threw = false;
-    try {
-        f();
-    } catch (const std::exception&) {
-        threw = true;
-    }
-    Require(threw, message);
-}
-
-void CheckSizeQueries() {
-    RequireThrows([] { sceHmd2ReprojectionQueryDisplayBufferSizeAlign(); }, "display buffer size");
-    RequireThrows([] { sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign(); }, "see-through buffer size");
-    RequireThrows([] { sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign(); }, "mirroring work memory size");
-    RequireThrows([] { sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign(); }, "mirroring display buffer size");
 }
 
 void CheckUninitialized() {
@@ -86,7 +63,6 @@ void CheckUninitialized() {
     Require(sceHmd2ReprojectionDisableMirroring() == Hmd2::NotInitialized, "disable mirroring");
     Require(sceHmd2ReprojectionDisableVrMode() == Hmd2::NotInitialized, "disable VR mode");
     Require(sceHmd2ReprojectionTerminate() == Hmd2::NotInitialized, "reprojection terminate");
-    CheckSizeQueries();
 }
 void InstallProcessParameters() {
     const std::uint64_t size = process.size();
@@ -208,7 +184,19 @@ void TestReprojection() {
 
 }
 
+void SizeQueriesReturnTheConsoleSizes() {
+    const auto display = sceHmd2ReprojectionQueryDisplayBufferSizeAlign();
+    Require(display.size == 0x6000000 && display.align == 0x10000, "display buffer size");
+    const auto seeThrough = sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign();
+    Require(seeThrough.size == 0x1106000 && seeThrough.align == 0x100, "see-through buffer size");
+    const auto mirroring = sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign();
+    Require(mirroring.size == 0x5FA0000 && mirroring.align == 0x10000, "mirroring display buffer size");
+    const auto work = sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign();
+    Require(work.size == 0x4000 && work.align == 0x100, "mirroring work memory size");
+}
+
 int main() {
+    SizeQueriesReturnTheConsoleSizes();
     InstallProcessParameters();
     CheckUninitialized();
     TestBeforeInitialize();
