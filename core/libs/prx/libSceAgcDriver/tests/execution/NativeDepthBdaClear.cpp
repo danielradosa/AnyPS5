@@ -49,7 +49,7 @@ public:
 #ifdef _WIN32
         block = static_cast<std::uint8_t*>(GuestArena::GuestArenaAllocate_nid_postfix(BlockBytes, BlockBytes));
         Require(block != nullptr, "cannot allocate the native depth BDA clear block");
-        section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, BlockBytes, nullptr);
+        section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, BlockBytes, nullptr);
         Require(section != nullptr, "cannot create the native depth BDA clear backing");
         GuestArena::GuestArenaMapDirect_nid_postfix(block, BlockBytes, section, 0, PAGE_READWRITE);
 #else
