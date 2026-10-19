@@ -15,14 +15,18 @@ namespace {
 
 constexpr std::uint32_t MinimumHeapSize = 1024 * 1024;
 
+void CheckInitParams(const char* function, const BgftInitParams* params) {
+    if (params == nullptr || params->heap == nullptr || params->heapSize < MinimumHeapSize || params->reserved != 0) {
+        throw std::invalid_argument(std::string(function) + ": the service takes a heap of at least 1 MiB and a zero reserved word");
+    }
+}
+
 }
 
 extern "C" {
 
 int APS5_VABI sceBgftServiceInit(const BgftInitParams* params) {
-    if (params == nullptr || params->heap == nullptr || params->heapSize < MinimumHeapSize || params->reserved != 0) {
-        throw std::invalid_argument(std::string(__func__) + ": the service takes a heap of at least 1 MiB and a zero reserved word");
-    }
+    CheckInitParams(__func__, params);
     return 0;
 }
 int APS5_VABI sceBgftServiceTerm(void) {
@@ -124,8 +128,8 @@ int APS5_VABI sceBgftServiceIntDownloadUnregisterTask() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-int APS5_VABI sceBgftServiceIntInit() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceBgftServiceIntInit(const BgftInitParams* params) {
+    CheckInitParams(__func__, params);
     return 0;
 }
 

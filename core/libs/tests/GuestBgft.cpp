@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <stdexcept>
 #include <vector>
 
@@ -14,6 +15,7 @@ struct BgftInitParams {
 
 extern "C" {
 int APS5_VABI sceBgftServiceInit(const BgftInitParams* params);
+int APS5_VABI sceBgftServiceIntInit(const BgftInitParams* params);
 int APS5_VABI sceBgftServiceTerm(void);
 int APS5_VABI sceBgftServiceDownloadPauseTaskAll(void);
 int APS5_VABI sceBgftServiceDownloadResumeTaskAll(void);
@@ -30,12 +32,16 @@ void Require(bool value, const char* what) {
 }
 
 bool Rejected(const BgftInitParams* params) {
-    try {
-        sceBgftServiceInit(params);
-    } catch (const std::invalid_argument&) {
-        return true;
+    for (auto init : {sceBgftServiceInit, sceBgftServiceIntInit}) {
+        bool threw = false;
+        try {
+            init(params);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        if (!threw) return false;
     }
-    return false;
+    return true;
 }
 
 }
@@ -52,6 +58,7 @@ int main() {
     BgftInitParams reserved{heap.data(), minimum, 1};
     Require(Rejected(&reserved), "a non-zero reserved word was accepted");
     Require(sceBgftServiceInit(&params) == 0, "initialization failed");
+    Require(sceBgftServiceIntInit(&params) == 0, "internal initialization failed");
     Require(sceBgftServiceDownloadStartTaskAll() == 0, "starting every task failed");
     Require(sceBgftServiceDownloadPauseTaskAll() == 0, "pausing every task failed");
     Require(sceBgftServiceDownloadResumeTaskAll() == 0, "resuming every task failed");
