@@ -1,32 +1,43 @@
 #include <cstdint>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
+struct BgftInitParams {
+    void* heap;
+    std::uint32_t heapSize;
+    std::int32_t reserved;
+};
+
+namespace {
+
+constexpr std::uint32_t MinimumHeapSize = 1024 * 1024;
+
+}
+
 extern "C" {
 
-int APS5_VABI sceBgftServiceInit(void* params) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceBgftServiceInit(const BgftInitParams* params) {
+    if (params == nullptr || params->heap == nullptr || params->heapSize < MinimumHeapSize || params->reserved != 0) {
+        throw std::invalid_argument(std::string(__func__) + ": the service takes a heap of at least 1 MiB and a zero reserved word");
+    }
     return 0;
 }
 int APS5_VABI sceBgftServiceTerm(void) {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-int APS5_VABI sceBgftServiceDownloadPauseTaskAll() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceBgftServiceDownloadPauseTaskAll(void) {
     return 0;
 }
-int APS5_VABI sceBgftServiceDownloadResumeTaskAll() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceBgftServiceDownloadResumeTaskAll(void) {
     return 0;
 }
-int APS5_VABI sceBgftServiceDownloadStartTaskAll() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceBgftServiceDownloadStartTaskAll(void) {
     return 0;
 }
-int APS5_VABI sceBgftServiceDownloadStopTaskAll() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceBgftServiceDownloadStopTaskAll(void) {
     return 0;
 }
 int APS5_VABI sceBgftServiceDownloadFindActivePatchTask() {
