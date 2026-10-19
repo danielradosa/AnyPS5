@@ -8,6 +8,7 @@
 #include "prx/libc/include/General.hpp"
 #include "H264Fixture.hpp"
 #include "HevcFixture.hpp"
+#include "Vp9Fixture.hpp"
 
 struct ComputeMemoryInfo {
     std::uint64_t thisSize;
@@ -154,6 +155,27 @@ struct HevcPictureInfo {
     std::uint32_t frameCropBottomOffset;
 };
 
+struct Vp9PictureInfo {
+    std::uint64_t thisSize;
+    bool isValid;
+    std::uint64_t ptsData;
+    std::uint64_t dtsData;
+    std::uint64_t attachedData;
+    std::uint32_t profile;
+    std::uint32_t level;
+    std::uint32_t keyFrameFlag;
+    std::uint32_t intraOnly;
+    std::uint8_t bitDepth;
+    std::uint8_t colorRange;
+    std::uint32_t colorSpace;
+    std::uint32_t numFrames;
+    std::uint32_t frameWidth;
+    std::uint32_t frameHeight;
+    std::uint32_t renderWidth;
+    std::uint32_t renderHeight;
+};
+
+static_assert(sizeof(Vp9PictureInfo) == 0x58 && offsetof(Vp9PictureInfo, colorSpace) == 0x3c);
 static_assert(sizeof(HevcPictureInfo) == 0xb8 && offsetof(HevcPictureInfo, idrPictureFlag) == 0x93 && offsetof(HevcPictureInfo, frameCroppingFlag) == 0xa5);
 static_assert(sizeof(DecoderConfigInfo) == 0x50 && sizeof(OutputInfo) == 0x38 && offsetof(OutputInfo, isLastFrame) == 9 && offsetof(OutputInfo, pictureCount) == 0xb && sizeof(AvcPictureInfo) == 0x78);
 
@@ -172,6 +194,8 @@ int APS5_VABI sceVdecswTrySyncDecodeOutput(std::uint64_t, OutputInfo*);
 int APS5_VABI sceVdecswSyncDecodeOutput(std::uint64_t, OutputInfo*);
 int APS5_VABI sceVdecswGetAvcPictureInfo(const OutputInfo*, AvcPictureInfo*, AvcPictureInfo*);
 int APS5_VABI sceVdecswGetHevcPictureInfo(const OutputInfo*, HevcPictureInfo*);
+int APS5_VABI sceVdecswGetPictureInfo(const OutputInfo*, void*, void*);
+int APS5_VABI sceVdecswGetVp9PictureInfo(const OutputInfo*, Vp9PictureInfo*);
 int APS5_VABI sceVdecswFinalizeDecodeSequence(std::uint64_t);
 int APS5_VABI sceVdecswResetDecoder(std::uint64_t);
 }
@@ -180,15 +204,27 @@ namespace {
 
 using namespace H264Fixture;
 using namespace HevcFixture;
+using namespace Vp9Fixture;
 
 constexpr int OutputPending = static_cast<int>(0x81510115u);
 constexpr int InputQueueEmpty = static_cast<int>(0x81510116u);
 constexpr std::uint32_t CodecAvc = 1;
 constexpr std::uint32_t CodecHevc = 974921;
+constexpr std::uint32_t CodecVp9 = 2382845;
 constexpr std::array<std::size_t, 6> HevcDisplayOrderUnits{0, 3, 2, 1, 5, 4};
 
 void check(bool condition, const std::string& message) {
     if (!condition) throw std::runtime_error(message);
+}
+
+template <typename TAction>
+bool throws(TAction action) {
+    try {
+        action();
+    } catch (const std::exception&) {
+        return true;
+    }
+    return false;
 }
 
 struct Session {
@@ -244,6 +280,8 @@ void testDecode() {
             check(!output.isErrorFrame && !output.isDiscardedFrame && output.pictureCount == 1 && output.frameWidth == Width && output.frameHeight == CodedHeight && output.frameBuffer == buffers[pictures % 2].data(), "unexpected picture geometry");
             AvcPictureInfo info{sizeof(AvcPictureInfo)};
             check(sceVdecswGetAvcPictureInfo(&output, &info, nullptr) == 0 && info.isValid, "picture info missing");
+            AvcPictureInfo generic{sizeof(AvcPictureInfo)};
+            check(sceVdecswGetPictureInfo(&output, &generic, nullptr) == 0 && generic.isValid && generic.ptsData == info.ptsData && generic.picWidthInMbsMinus1 == info.picWidthInMbsMinus1 && generic.frameCropBottomOffset == info.frameCropBottomOffset, "generic picture info differs from the H.264 picture info");
             const auto unit = DisplayOrderUnits[pictures];
             check(info.ptsData == 1000 + unit && info.dtsData == unit && info.attachedData == 0xa0 + unit && info.idrPictureFlag == (pictures == 0 ? 1 : 0) && info.profileIdc == 100, "pictures out of display order");
             check(info.picWidthInMbsMinus1 == Width / 16 - 1 && info.picHeightInMapUnitsMinus1 == CodedHeight / 16 - 1 && info.frameMbsOnlyFlag == 1 && info.frameCroppingFlag == 1 && info.frameCropLeftOffset == 0 && info.frameCropRightOffset == 0 && info.frameCropTopOffset == 0 && info.frameCropBottomOffset == (CodedHeight - Height) / 2, "picture geometry in the picture info is wrong");
@@ -290,6 +328,10 @@ void testHevc() {
             check(pictures < HevcHashes.size() && output.codecType == CodecHevc && output.pictureCount == 1 && output.frameWidth == Width && output.frameHeight == Height, "unexpected HEVC picture geometry");
             HevcPictureInfo info{sizeof(HevcPictureInfo)};
             check(sceVdecswGetHevcPictureInfo(&output, &info) == 0 && info.isValid, "HEVC picture info missing");
+            HevcPictureInfo generic{sizeof(HevcPictureInfo)};
+            check(sceVdecswGetPictureInfo(&output, &generic, nullptr) == 0 && generic.isValid && generic.ptsData == info.ptsData && generic.generalLevelIdc == info.generalLevelIdc && generic.picHeightInLumaSamples == info.picHeightInLumaSamples, "generic picture info differs from the HEVC picture info");
+            Vp9PictureInfo vp9{sizeof(Vp9PictureInfo)};
+            check(throws([&] { sceVdecswGetVp9PictureInfo(&output, &vp9); }), "VP9 picture info was returned for an HEVC picture");
             const auto unit = HevcDisplayOrderUnits[pictures];
             check(info.ptsData == 1000 + unit && info.dtsData == unit && info.attachedData == 0xa0 + unit, "HEVC pictures out of display order");
             check(info.idrPictureFlag == (pictures == 0 ? 1 : 0) && info.irapPictureFlag == (pictures == 0 ? 1 : 0), "HEVC random access flags differ");
@@ -379,6 +421,68 @@ void testSyncWrappers() {
         hevcThrows = true;
     }
     check(hevcThrows, "HEVC picture info was returned for an H.264 picture");
+    Vp9PictureInfo vp9{sizeof(Vp9PictureInfo)};
+    check(throws([&] { sceVdecswGetVp9PictureInfo(&output, &vp9); }), "VP9 picture info was returned for an H.264 picture");
+}
+
+void testVp9() {
+    Session session(CodecVp9, 0, 0);
+    const auto units = ivfFrames();
+    check(units.size() == Vp9Hashes.size(), "unexpected VP9 frame count");
+    std::vector<std::uint8_t> buffer(session.memory.maxFrameBufferSize);
+    std::size_t pictures = 0;
+    bool ended = false;
+    const auto drain = [&] {
+        for (;;) {
+            const FrameBuffer frame{sizeof(FrameBuffer), buffer.data(), buffer.size()};
+            check(sceVdecswSetDecodeOutput(session.decoder, &frame) == 0, "VP9 output buffer was rejected");
+            OutputInfo output{sizeof(OutputInfo)};
+            const auto status = sceVdecswTrySyncDecodeOutput(session.decoder, &output);
+            if (status == OutputPending) return;
+            check(status == 0, "VP9 output sync failed");
+            if (!output.isValid) {
+                check(output.isLastFrame && output.pictureCount == 0, "a VP9 output without a picture is not the end of the sequence");
+                Vp9PictureInfo none{sizeof(Vp9PictureInfo)};
+                check(sceVdecswGetVp9PictureInfo(&output, &none) == 0 && !none.isValid, "VP9 picture info was returned for an output without a picture");
+                check(sceVdecswGetPictureInfo(&output, &none, nullptr) == 0 && !none.isValid, "generic picture info was returned for an output without a picture");
+                ended = true;
+                return;
+            }
+            check(pictures < Vp9Hashes.size() && output.codecType == CodecVp9 && output.pictureCount == 1 && output.frameWidth == Width && output.frameHeight == Height, "unexpected VP9 picture geometry");
+            Vp9PictureInfo info{sizeof(Vp9PictureInfo)};
+            check(sceVdecswGetVp9PictureInfo(&output, &info) == 0 && info.isValid && info.thisSize == sizeof(Vp9PictureInfo), "VP9 picture info missing");
+            check(info.ptsData == 1000 + pictures && info.dtsData == pictures && info.attachedData == 0xa0 + pictures, "VP9 picture timestamps differ");
+            check(info.profile == 0 && info.bitDepth == 8 && info.colorSpace == 0 && info.colorRange == 0 && info.numFrames == 1 && info.intraOnly == 0 && info.keyFrameFlag == (pictures == 0 ? 1u : 0u), "VP9 coded header metadata differs");
+            check(info.frameWidth == Width && info.frameHeight == Height && info.renderWidth == Width && info.renderHeight == Height, "VP9 picture dimensions differ");
+            Vp9PictureInfo generic{sizeof(Vp9PictureInfo)};
+            check(sceVdecswGetPictureInfo(&output, &generic, nullptr) == 0 && generic.isValid && generic.ptsData == info.ptsData && generic.keyFrameFlag == info.keyFrameFlag && generic.frameWidth == info.frameWidth, "generic picture info differs from the VP9 picture info");
+            AvcPictureInfo avc{sizeof(AvcPictureInfo)};
+            check(throws([&] { sceVdecswGetAvcPictureInfo(&output, &avc, nullptr); }), "AVC picture info was returned for a VP9 picture");
+            HevcPictureInfo hevc{sizeof(HevcPictureInfo)};
+            check(throws([&] { sceVdecswGetHevcPictureInfo(&output, &hevc); }), "HEVC picture info was returned for a VP9 picture");
+            check(hashNv12(buffer.data(), output.framePitch, output.frameHeight) == Vp9Hashes[pictures], "VP9 picture " + std::to_string(pictures) + " differs from the reference");
+            ++pictures;
+        }
+    };
+    for (std::size_t unit = 0; unit < units.size(); ++unit) {
+        const InputData input{sizeof(InputData), units[unit].data(), units[unit].size(), 1000 + unit, unit, 0xa0 + unit};
+        check(sceVdecswSetDecodeInput(session.decoder, &input) == 0, "VP9 decode input was rejected");
+        InputResult consumed{sizeof(InputResult)};
+        check(sceVdecswTrySyncDecodeInput(session.decoder, &consumed) == 0 && consumed.decodedAu == units[unit].data(), "a VP9 frame was not consumed");
+        drain();
+    }
+    check(sceVdecswFinalizeDecodeSequence(session.decoder) == 0, "VP9 finalize failed");
+    while (!ended) drain();
+    check(pictures == Vp9Hashes.size(), "missing VP9 pictures after finalizing the sequence");
+    OutputInfo missing{sizeof(OutputInfo)};
+    missing.pictureCount = 1;
+    missing.codecType = CodecVp9;
+    missing.frameBuffer = &missing;
+    Vp9PictureInfo info{sizeof(Vp9PictureInfo)};
+    check(throws([&] { sceVdecswGetVp9PictureInfo(&missing, &info); }), "VP9 picture info was returned for a frame buffer no decoder returned");
+    check(throws([&] { sceVdecswGetVp9PictureInfo(nullptr, &info); }), "a null VP9 output info was accepted");
+    check(throws([&] { sceVdecswGetPictureInfo(nullptr, &info, nullptr); }), "a null generic output info was accepted");
+    check(throws([&] { sceVdecswGetPictureInfo(&missing, nullptr, nullptr); }), "a null generic picture info was accepted");
 }
 
 }
@@ -390,6 +494,7 @@ int main() {
         testHevcCrop();
         testWithoutOutput();
         testSyncWrappers();
+        testVp9();
         std::puts("Vdecsw tests passed");
         return 0;
     } catch (const std::exception& error) {
