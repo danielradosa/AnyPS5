@@ -35,6 +35,7 @@ int APS5_VABI sceKernelFchmod(int, unsigned short);
 int APS5_VABI fchmod_nid_postfix(int, int);
 int APS5_VABI chmod_nid_postfix(const char*, int);
 int APS5_VABI chflags_nid_postfix(const char*, std::uint64_t);
+int APS5_VABI nmount_nid_postfix(const void*, unsigned int, int);
 int APS5_VABI futimes_nid_postfix(int, const KernelTimeval*);
 int APS5_VABI sceKernelFutimes(int, const KernelTimeval*);
 int APS5_VABI socket_nid_postfix(int, int, int);
@@ -163,6 +164,72 @@ static std::string CaptureStderr(const std::function<void()>& action) {
     }
     std::fclose(capture);
     return output;
+}
+
+struct MountVector {
+    const void* base;
+    std::size_t length;
+};
+
+static MountVector MountText(const char* text) {
+    return {text, std::strlen(text) + 1};
+}
+
+static int NmountError(const std::vector<MountVector>& vectors, int flags = 0) {
+    *__error_nid_postfix() = 0;
+    Require(nmount_nid_postfix(vectors.data(), static_cast<unsigned int>(vectors.size()), flags) == -1);
+    return *__error_nid_postfix();
+}
+
+static bool NmountThrows(const std::vector<MountVector>& vectors, int flags, const char* expected) {
+    try {
+        nmount_nid_postfix(vectors.data(), static_cast<unsigned int>(vectors.size()), flags);
+    } catch (const std::runtime_error& error) {
+        return std::strstr(error.what(), expected) != nullptr;
+    }
+    return false;
+}
+
+static void TestNmount() {
+    constexpr int Einval = 22;
+    constexpr int Efault = 14;
+    constexpr int Enametoolong = 63;
+    const std::vector<MountVector> mount{MountText("fstype"), MountText("exfatfs"), MountText("fspath"), MountText("/system_ex"),
+        MountText("from"), MountText("/dev/ssd0.system_ex")};
+    Require(nmount_nid_postfix(mount.data(), 3, 0) == -1 && *__error_nid_postfix() == Einval);
+    Require(nmount_nid_postfix(mount.data(), 2, 0) == -1 && *__error_nid_postfix() == Einval);
+    Require(nmount_nid_postfix(mount.data(), 1026, 0) == -1 && *__error_nid_postfix() == Einval);
+    Require(nmount_nid_postfix(nullptr, 4, 0) == -1 && *__error_nid_postfix() == Efault);
+    Require(NmountError({MountText("fstype"), MountText("exfatfs"), {"fspath", 6}, MountText("/system_ex")}) == Einval);
+    Require(NmountError({MountText("fstype"), MountText("exfatfs"), {nullptr, 7}, MountText("/system_ex")}) == Efault);
+    Require(NmountError({MountText("fstype"), {nullptr, 8}, MountText("fspath"), MountText("/system_ex")}) == Efault);
+    const std::string huge(64 * 1024, 'x');
+    Require(NmountError({MountText("fstype"), {huge.c_str(), huge.size() + 1}, MountText("fspath"), MountText("/system_ex")}) == Einval);
+    char message[32];
+    std::memset(message, 'z', sizeof(message));
+    Require(NmountError({MountText("fstype"), {"exfatfs", 7}, MountText("fspath"), MountText("/system_ex"), MountText("errmsg"),
+        {message, sizeof(message)}}) == Einval);
+    Require(std::strcmp(message, "Invalid fstype") == 0 && message[sizeof(message) - 1] == '\0');
+    std::memset(message, 'z', sizeof(message));
+    Require(NmountError({MountText("fstype"), MountText("exfatfs"), MountText("nofspath"), {nullptr, 0}, MountText("errmsg"),
+        {message, sizeof(message)}}) == Einval);
+    Require(std::strcmp(message, "Invalid fspath") == 0);
+    Require(NmountError({MountText("fstype"), MountText("exfatfs"), MountText("fspath"), MountText("/system_ex"), MountText("nofstype"),
+        {nullptr, 0}}) == Einval);
+    Require(NmountError({MountText("fstype"), MountText("a-file-system-type"), MountText("fspath"), MountText("/system_ex")}) == Enametoolong);
+    const std::string longPath = "/" + std::string(87, 'p');
+    Require(NmountError({MountText("fstype"), MountText("exfatfs"), MountText("fspath"), MountText(longPath.c_str())}) == Enametoolong);
+    Require(NmountThrows(mount, 0, "mounting exfatfs at /system_ex (flags 0x0)"));
+    const std::vector<MountVector> update{MountText("fstype"), MountText("ufs"), MountText("fspath"), MountText("/system_ex"),
+        MountText("update"), {nullptr, 0}};
+    Require(NmountThrows(update, 0, "updating the ufs mount at /system_ex"));
+    Require(NmountThrows(mount, 0x10000, "updating the exfatfs mount at /system_ex (flags 0x10000)"));
+    const std::vector<MountVector> dotted{MountText("fstype"), MountText("ufs"), MountText("fspath"), MountText("/system_ex"),
+        MountText("x.ro"), {nullptr, 0}, MountText("x.rw"), {nullptr, 0}, MountText("errmsg"), {message, sizeof(message)}};
+    Require(NmountThrows(dotted, 0, "mounting ufs at /system_ex"));
+    const std::vector<MountVector> repeated{MountText("fstype"), MountText("ufs"), MountText("fspath"), MountText("/old"),
+        MountText("fspath"), MountText("/system_ex"), MountText("update"), {nullptr, 0}, MountText("noupdate"), {nullptr, 0}};
+    Require(NmountThrows(repeated, 0, "mounting ufs at /system_ex"));
 }
 
 static void TestParentTraversal() {
@@ -398,6 +465,7 @@ static void TestMissingPathListsDirectoryOnce() {
 #endif
 
 int main() {
+    TestNmount();
     TestParentTraversal();
     TestRelinkedModuleNames();
     TestRelinkedModuleNameCase();

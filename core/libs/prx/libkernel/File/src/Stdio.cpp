@@ -27,6 +27,7 @@
 #include <cerrno>
 #include <cstring>
 #include <cstdarg>
+#include <cstdio>
 #include <deque>
 #include <filesystem>
 #include <memory>
@@ -34,6 +35,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -595,6 +597,48 @@ static constexpr std::pair<std::uint64_t, const char*> GUEST_FILE_FLAGS[] = {
     {0x00200000, "SF_SNAPSHOT"}};
 static constexpr std::uint64_t GUEST_SF_SNAPSHOT = 0x00200000;
 
+struct MountOption {
+    std::string name;
+    unsigned int pair;
+    const KernelIovec* value;
+};
+
+static bool IsReadOnlyMountOption(std::string_view name) {
+    return name == "ro" || name == "rdonly" || name == "norw";
+}
+
+static bool IsReadWriteMountOption(std::string_view name) {
+    return name == "rw" || name == "noro";
+}
+
+static bool EqualMountOptions(const std::string& firstName, const std::string& secondName) {
+    std::string_view first(firstName);
+    std::string_view second(secondName);
+    if (first == second) return true;
+    if (first.starts_with("no") && first.substr(2) == second) return true;
+    if (second.starts_with("no") && first == second.substr(2)) return true;
+    for (std::size_t dot = first.find('.'); dot != std::string_view::npos; dot = first.find('.')) {
+        const std::size_t prefix = dot + 1;
+        if (second.substr(0, prefix) != first.substr(0, prefix)) break;
+        first.remove_prefix(prefix);
+        second.remove_prefix(prefix);
+        if (first.starts_with("no") && first.substr(2) == second) return true;
+        if (second.starts_with("no") && first == second.substr(2)) return true;
+    }
+    return (IsReadOnlyMountOption(first) || IsReadWriteMountOption(first)) && (IsReadOnlyMountOption(second) || IsReadWriteMountOption(second));
+}
+
+static const MountOption* FindMountOption(const std::vector<MountOption>& options, const char* name) {
+    for (const auto& option : options) {
+        if (option.name == name) return &option;
+    }
+    return nullptr;
+}
+
+static bool TerminatedMountValue(const MountOption* option) {
+    return option != nullptr && option->value->length > 0 && static_cast<const char*>(option->value->base)[option->value->length - 1] == '\0';
+}
+
 static std::string FileFlagNames(std::uint64_t flags) {
     std::string names;
     for (const auto& [flag, name] : GUEST_FILE_FLAGS) {
@@ -630,11 +674,58 @@ int APS5_VABI chflags_nid_postfix(const char* path, std::uint64_t flags) {
 }
 
 int APS5_VABI nmount_nid_postfix(const KernelIovec* iov, unsigned int niov, int flags) {
-    (void)iov;
-    (void)niov;
-    (void)flags;
-    NotImplemented_nid_no_patch("nmount: mounting file systems");
-    return -1;
+    constexpr unsigned int MaximumVectors = 1024;
+    constexpr std::size_t MaximumArgumentBytes = 64 * 1024;
+    constexpr std::size_t KernelOptionBytes = 48;
+    constexpr std::size_t FilesystemNameBytes = 16;
+    constexpr std::size_t MountPathBytes = 88;
+    constexpr unsigned int MountUpdate = 0x10000;
+    if ((niov & 1) != 0 || niov < 4 || niov > MaximumVectors) return PosixFailure(GUEST_EINVAL);
+    if (iov == nullptr) return PosixFailure(GUEST_EFAULT);
+    std::uint64_t total = 0;
+    for (unsigned int i = 0; i < niov; ++i) {
+        if (iov[i].length > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) - total) return PosixFailure(GUEST_EINVAL);
+        total += iov[i].length;
+    }
+    std::vector<MountOption> options;
+    std::size_t used = 0;
+    for (unsigned int i = 0; i < niov; i += 2) {
+        const auto& name = iov[i];
+        const auto& value = iov[i + 1];
+        used += KernelOptionBytes + value.length + name.length;
+        if (used > MaximumArgumentBytes || value.length > MaximumArgumentBytes || name.length > MaximumArgumentBytes) return PosixFailure(GUEST_EINVAL);
+        if (name.length != 0 && name.base == nullptr) return PosixFailure(GUEST_EFAULT);
+        if (name.length == 0 || static_cast<const char*>(name.base)[name.length - 1] != '\0') return PosixFailure(GUEST_EINVAL);
+        if (value.length != 0 && value.base == nullptr) return PosixFailure(GUEST_EFAULT);
+        options.push_back({std::string(static_cast<const char*>(name.base)), i / 2, &value});
+    }
+    for (std::size_t last = options.size(); last-- > 0;) {
+        for (std::size_t earlier = last; earlier-- > 0;) {
+            if (EqualMountOptions(options[last].name, options[earlier].name)) {
+                options.erase(options.begin() + static_cast<std::ptrdiff_t>(earlier));
+                --last;
+            }
+        }
+    }
+    const MountOption* errorMessage = FindMountOption(options, "errmsg");
+    const auto invalid = [&](const char* message) {
+        if (errorMessage != nullptr && errorMessage->value->length > 0) {
+            std::strncpy(static_cast<char*>(errorMessage->value->base), message, errorMessage->value->length);
+        }
+        return PosixFailure(GUEST_EINVAL);
+    };
+    const MountOption* type = FindMountOption(options, "fstype");
+    if (!TerminatedMountValue(type)) return invalid("Invalid fstype");
+    const MountOption* path = FindMountOption(options, "fspath");
+    if (!TerminatedMountValue(path)) return invalid("Invalid fspath");
+    if (type->value->length > FilesystemNameBytes || path->value->length > MountPathBytes) return PosixFailure(GUEST_ENAMETOOLONG);
+    const std::string fstype(static_cast<const char*>(type->value->base));
+    const std::string fspath(static_cast<const char*>(path->value->base));
+    char requested[24];
+    std::snprintf(requested, sizeof(requested), "0x%x", static_cast<unsigned int>(flags));
+    const bool update = (static_cast<unsigned int>(flags) & MountUpdate) != 0 || FindMountOption(options, "update") != nullptr;
+    throw std::runtime_error(std::string("nmount: ") + (update ? "updating the " + fstype + " mount at " : "mounting " + fstype + " at ") + fspath + " (flags " +
+        requested + ") is not supported, the guest filesystem has no mount points");
 }
 
 int APS5_VABI close_nid_postfix(int d) {
