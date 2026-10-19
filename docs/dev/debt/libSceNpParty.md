@@ -1,0 +1,5 @@
+# libSceNpParty technical debt
+
+### Unknown function info
+
+- [sceNpPartyGetState](../../../core/libs/prx/libSceNpParty/Export.cpp) (libSceNpParty) - the `(state*)` signature, the 16-bit state and `NOT_IN_PARTY` (2) follow [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/23c41333822fe8eca4c609b43119180af63ae4ac/src/core/libraries/np/np_party.cpp#L62-L66) (PS4, [np_party.h](https://github.com/shadps4-emu/shadPS4/blob/23c41333822fe8eca4c609b43119180af63ae4ac/src/core/libraries/np/np_party.h#L14-L17)). NP is always signed out here, so the user is never in a party and every call reports `NOT_IN_PARTY`. No `sceNpPartyInitialize` is exported, so the call does not check initialization, and a null state throws, as the console's code for it is unknown (shadPS4 does not check it); `0x80552503` (`NOT_INITIALIZED`) and `0x80552504` (`INVALID_ARGUMENT`) from shadPS4's [np_error.h](https://github.com/shadps4-emu/shadPS4/blob/23c41333822fe8eca4c609b43119180af63ae4ac/src/core/libraries/np/np_error.h#L403-L406) are not returned. Console behaviour is unverified
