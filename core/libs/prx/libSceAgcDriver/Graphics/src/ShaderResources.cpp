@@ -3059,9 +3059,8 @@ bool ShaderResources::fastRevalidate(std::uint64_t serialBefore, std::span<const
         if (image == nullptr) return fail(FastFail::NoRecord);
         const auto& own = image->Descriptor();
         const auto address = own.baseAddress;
-        if (DepthSurfaceAt(address)) return fail(FastFail::NoRecord);
         const auto bytes = static_cast<std::size_t>(image->GuestBytes());
-        if (DepthSurfaceOverlaps(context.device, address, bytes)) {
+        if (DepthSurfaceAt(address) || DepthSurfaceOverlaps(context.device, address, bytes)) {
             depthGuardRefusals.fetch_add(1, std::memory_order_relaxed);
             return fail(FastFail::Depth);
         }
@@ -3167,9 +3166,8 @@ bool ShaderResources::fastRevalidateEach() {
         const auto& own = image->Descriptor();
         if (own.dccAddress != 0) return false;
         const auto address = own.baseAddress;
-        if (DepthSurfaceAt(address)) return false;
         const auto bytes = static_cast<std::size_t>(image->GuestBytes());
-        if (DepthSurfaceOverlaps(context.device, address, bytes)) {
+        if (DepthSurfaceAt(address) || DepthSurfaceOverlaps(context.device, address, bytes)) {
             depthGuardRefusals.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
