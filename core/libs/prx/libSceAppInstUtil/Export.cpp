@@ -1,16 +1,16 @@
 #include <cstdint>
 #include <cstddef>
+#include <string_view>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
 
 extern "C" {
 
 int APS5_VABI sceAppInstUtilInitialize(void) {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 int APS5_VABI sceAppInstUtilTerminate(void) {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 int APS5_VABI sceAppInstUtilAppInstallAll(void* reserved) {
@@ -30,7 +30,8 @@ int APS5_VABI sceAppInstUtilAppIsInUpdating() {
     return 0;
 }
 int APS5_VABI sceAppInstUtilAppExists(const char* titleId, int32_t* exists) {
-    NotImplemented_nid_no_patch(__func__);
+    if (titleId == nullptr || exists == nullptr) APS5_INVALID_ARG_EX;
+    *exists = std::string_view(titleId) == GetAppTitleId_nid_postfix().value ? 1 : 0;
     return 0;
 }
 int APS5_VABI sceAppInstUtilAppGetSize() {
