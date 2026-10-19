@@ -127,6 +127,16 @@ int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, uint32_t fflags,
 void VnodeOpened(int descriptor);
 void VnodeRead(int descriptor);
 void VnodeClosing(int descriptor);
+
+struct VnodeClose {
+    uint64_t volume = 0;
+    uint64_t index = 0;
+    uintptr_t ident = 0;
+    uint32_t hint = 0;
+};
+
+VnodeClose VnodeClosePending(int descriptor);
+void VnodeClosed(const VnodeClose& close);
 extern "C" {
 
 KernelEqueueRef EqueuePin_nid_postfix(KernelEqueue eq);

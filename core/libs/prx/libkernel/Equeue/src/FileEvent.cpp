@@ -1,5 +1,6 @@
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libkernel/File/include/DescriptorControl.hpp"
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
@@ -776,19 +777,12 @@ bool OpenedForWriting(int descriptor) {
 }
 #endif
 
-void DeliverAccess(int descriptor, std::uint32_t hint, bool skipOwn) {
-    if (g_accessWatchCount.load() == 0) {
-        return;
-    }
-    const auto identity = DescriptorIdentity(descriptor);
-    if (!identity) {
-        return;
-    }
+void DeliverAccess(const FileIdentity& identity, std::uint32_t hint, std::optional<std::uintptr_t> skip) {
     std::vector<std::shared_ptr<VnodeWatch>> targets;
     {
         std::lock_guard lock(g_accessLock);
         for (const auto& entry : g_accessWatches) {
-            if (!(entry.identity == *identity) || (skipOwn && entry.ident == static_cast<std::uintptr_t>(descriptor))) {
+            if (!(entry.identity == identity) || (skip && entry.ident == *skip)) {
                 continue;
             }
             if (auto watch = entry.watch.lock()) {
@@ -798,6 +792,15 @@ void DeliverAccess(int descriptor, std::uint32_t hint, bool skipOwn) {
     }
     for (const auto& watch : targets) {
         watch->Deliver(hint);
+    }
+}
+
+void DeliverAccess(int descriptor, std::uint32_t hint) {
+    if (g_accessWatchCount.load() == 0) {
+        return;
+    }
+    if (const auto identity = DescriptorIdentity(descriptor)) {
+        DeliverAccess(*identity, hint, std::nullopt);
     }
 }
 
@@ -889,18 +892,32 @@ int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, std::uint32_t ff
 }
 
 void VnodeOpened(int descriptor) {
-    DeliverAccess(descriptor, NOTE_OPEN, false);
+    DeliverAccess(descriptor, NOTE_OPEN);
 }
 
 void VnodeRead(int descriptor) {
-    DeliverAccess(descriptor, NOTE_READ, false);
+    DeliverAccess(descriptor, NOTE_READ);
+}
+
+VnodeClose VnodeClosePending(int descriptor) {
+    if (g_accessWatchCount.load() == 0 || !File::LastDescriptorOfOpenFile(descriptor)) {
+        return {};
+    }
+    const auto identity = DescriptorIdentity(descriptor);
+    if (!identity) {
+        return {};
+    }
+    return {identity->volume, identity->index, static_cast<std::uintptr_t>(descriptor), OpenedForWriting(descriptor) ? NOTE_CLOSE_WRITE : NOTE_CLOSE};
+}
+
+void VnodeClosed(const VnodeClose& close) {
+    if (close.hint != 0) {
+        DeliverAccess(FileIdentity{close.volume, close.index}, close.hint, close.ident);
+    }
 }
 
 void VnodeClosing(int descriptor) {
-    if (g_accessWatchCount.load() == 0) {
-        return;
-    }
-    DeliverAccess(descriptor, OpenedForWriting(descriptor) ? NOTE_CLOSE_WRITE : NOTE_CLOSE, true);
+    VnodeClosed(VnodeClosePending(descriptor));
 }
 
 extern "C" {
