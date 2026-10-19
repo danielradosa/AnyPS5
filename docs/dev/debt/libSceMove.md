@@ -6,4 +6,4 @@
 
 ### Unknown function info
 
-- [libSceMove](../../../core/libs/prx/libSceMove/Export.cpp) (libSceMove) - the exports are in the [PS5 3.20 export inventory](https://github.com/DNNDHH/PS5-3.20_Libs/blob/b2a77c09cd71c01f34c790cfbe98c751a13262ad/libSceMove.c); the signatures are PS4 ones from [orbital](https://github.com/AlexAltea/orbital/blob/cc408367da6a6ebbf5ac1ac559fefeadc73b2831/tools/ida/db_types.json#L1312-L1321), plus `sceMoveGetExtensionPortInfo(int32_t handle, void* data)` from shadPS4, unverified on a PS5
+- [libSceMove](../../../core/libs/prx/libSceMove/Export.cpp) (libSceMove) - the export names are in sharpemu's PS5 name list ([scripts/ps5_names.txt](https://github.com/sharpemu/sharpemu/blob/85393c2ef87c101294229492595dcc32e9a3c92d/scripts/ps5_names.txt)) and their NIDs match the aerolib NID list; the signatures are PS4 ones from [orbital](https://github.com/AlexAltea/orbital/blob/cc408367da6a6ebbf5ac1ac559fefeadc73b2831/tools/ida/db_types.json#L1312-L1321), plus `sceMoveGetExtensionPortInfo(int32_t handle, void* data)` from shadPS4, unverified on a PS5
