@@ -8,6 +8,7 @@
 #include "Optimization/RequestMemoryView.hpp"
 #include "Recompiler.hpp"
 #include "RdnaDecoder/RdnaInstructionDecoder.hpp"
+#include "ShaderDiskCache.hpp"
 
 #if ANYPS5_ENABLE_SPIRV_TOOLS
 #include "spirv-tools/libspirv.hpp"
@@ -236,5 +237,6 @@ int main(int argc, char** argv) {
             ++failures;
         }
     }
+    ShaderRecompiler::ShaderDiskCache::Shutdown();
     return failures == 0 ? 0 : 1;
 }

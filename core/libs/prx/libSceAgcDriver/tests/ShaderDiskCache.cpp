@@ -970,6 +970,7 @@ std::vector<std::byte> exitKey(const std::vector<std::uint32_t>& module) {
 int runStoreAndExit() {
     const auto module = exitModule();
     ShaderDiskCache::StoreSpecialized(exitKey(module), module);
+    ShaderDiskCache::Shutdown();
     return 0;
 }
 
@@ -980,7 +981,7 @@ void verifyStoreDrainedAtExit(const char* self) {
     const std::string command = "\"" + std::string(self) + "\" --store-and-exit";
     require(std::system(command.c_str()) == 0, "the storing process failed");
     std::vector<std::uint32_t> loaded;
-    require(ShaderDiskCache::LoadSpecialized(key, loaded) && loaded == module, "a specialized module queued right before the process returned from main was not written");
+    require(ShaderDiskCache::LoadSpecialized(key, loaded) && loaded == module, "a specialized module queued right before the process shut the cache down and returned from main was not written");
     std::filesystem::remove(ShaderDiskCache::EntryDirectory() / ShaderDiskCache::EntryName(key));
 }
 
