@@ -1,4 +1,5 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 
@@ -15,6 +16,16 @@ int APS5_VABI sceRazorCpuFlushOccurred(std::uint64_t* timeSpentInFlush);
 int APS5_VABI sceRazorCpuPlotValue(const char* series, float value);
 int APS5_VABI sceRazorCpuWriteBookmark(const char* label, const char* description);
 int APS5_VABI sceRazorCpuSync(void);
+void APS5_VABI sceRazorCpuDisableFiberUserMarkers(void);
+int APS5_VABI sceRazorCpuInitDataTags(void* buffer, std::size_t size);
+int APS5_VABI sceRazorCpuShutdownDataTags(void);
+std::size_t APS5_VABI sceRazorCpuGetDataTagStorageSize(std::uint32_t tagCount);
+int APS5_VABI sceRazorCpuTagArray(const char* label, std::uint32_t category, const void* array, std::size_t bufferSize, std::size_t elementSize);
+int APS5_VABI sceRazorCpuTagBuffer(const char* label, std::uint32_t category, const void* buffer, std::size_t bufferSize);
+int APS5_VABI sceRazorCpuResizeTaggedBuffer(std::uint32_t category, const void* buffer, std::size_t newBufferSize);
+int APS5_VABI sceRazorCpuUnTagBuffer(std::uint32_t category, const void* buffer);
+int APS5_VABI sceRazorCpuBeginLogicalFileAccess(const char* filename, std::uint64_t tag, std::uint64_t size, std::uint8_t operation);
+int APS5_VABI sceRazorCpuEndLogicalFileAccess(void);
 }
 
 namespace {
@@ -46,5 +57,30 @@ int main() {
     Require(sceRazorCpuWriteBookmark("read timeout", nullptr) == 0);
     Require(sceRazorCpuSync() == 0);
     Require(sceRazorCpuSync() == 0);
+    Require(sceRazorCpuIsCapturing() == 0);
+    sceRazorCpuDisableFiberUserMarkers();
+    Require(sceRazorCpuPushMarkerStatic("fiber", 0x80ffffffu, 0) == 0);
+    Require(sceRazorCpuPopMarker() == 0);
+    Require(sceRazorCpuGetDataTagStorageSize(0) == 0);
+    Require(sceRazorCpuGetDataTagStorageSize(64) == 0);
+    unsigned char storage[64] = {};
+    Require(sceRazorCpuInitDataTags(storage, sizeof(storage)) == 0);
+    Require(sceRazorCpuInitDataTags(nullptr, 0) == 0);
+    std::uint32_t elements[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    Require(sceRazorCpuTagArray("elements", 1, elements, sizeof(elements), sizeof(elements[0])) == 0);
+    Require(sceRazorCpuTagBuffer("raw", 2, storage, sizeof(storage)) == 0);
+    Require(sceRazorCpuResizeTaggedBuffer(2, storage, 32) == 0);
+    Require(sceRazorCpuUnTagBuffer(2, storage) == 0);
+    Require(sceRazorCpuUnTagBuffer(1, elements) == 0);
+    Require(sceRazorCpuUnTagBuffer(3, nullptr) == 0);
+    Require(elements[0] == 1 && elements[7] == 8);
+    for (unsigned char byte : storage) Require(byte == 0);
+    Require(sceRazorCpuShutdownDataTags() == 0);
+    Require(sceRazorCpuShutdownDataTags() == 0);
+    Require(sceRazorCpuBeginLogicalFileAccess("/app0/data.bin", 0x1122334455667788ull, 4096, 0) == 0);
+    Require(sceRazorCpuEndLogicalFileAccess() == 0);
+    Require(sceRazorCpuBeginLogicalFileAccess("/data/save.bin", 0, 512, 1) == 0);
+    Require(sceRazorCpuEndLogicalFileAccess() == 0);
+    Require(sceRazorCpuEndLogicalFileAccess() == 0);
     Require(sceRazorCpuIsCapturing() == 0);
 }
