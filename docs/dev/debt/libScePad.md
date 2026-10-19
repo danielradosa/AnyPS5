@@ -17,7 +17,7 @@
 - [scePadGetAccessibilityControllerState](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - the value a console reports for a DualSense is not measured; the emulated pad, which is not an Access controller, reports 0. The name hashes to NID `zBsgF0q8DIM`. In the OS 10.01 system module the `(int handle, uint32_t* state)` function returns `0x80920005` before `scePadInit`, then `INVALID_ARG` for a NULL `state` and `INVALID_HANDLE` for a bad handle, and otherwise asks the pad driver for a per-device value of the device behind the handle: 0 when no device is behind it, 1 when the driver has no answer, else the driver's value. What the values mean is unknown
 - [scePadSetTriggerEffectExt](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadLastLotusButtonData](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
-- [scePadReadStateExt](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
+- [scePadReadStateExt](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - reads through `scePadReadState`, with the same handle check, argument error and current sample, as scePadReadExt does through scePadRead; whether the console's Ext read adds anything for special controllers is unknown, since none opens here. The `(int handle, ScePadData* data)` signature comes from [OpenOrbis](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/0a1aaf9dd4a92695538bdeb09fb056d06dd11725/include/orbis/Pad.h#L78)
 - [scePadSetExtensionReport](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadGetExtensionUnitInfo](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadEnableExtensionPort](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
@@ -103,7 +103,7 @@
 - [scePadGetInfoByPortType](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadResetLightBarAll](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadResetLightBarAllByPortType](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
-- [scePadSetLightBarForTracker](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
+- [scePadSetLightBarForTracker](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - sets the light bar through `scePadSetLightBar`, as [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/23c41333822fe8eca4c609b43119180af63ae4ac/src/core/libraries/pad/pad.cpp#L598-L607) sets the controller's light bar colour for the PS4 call with the same `(int handle, const ScePadLightBarParam* param)` signature; a null param returns `INVALID_ARG` like the other pad calls, where shadPS4 does not check it. Whether the console keeps the tracking colour apart from the one scePadSetLightBar sets, or restores it on scePadResetLightBar, is unknown
 - [scePadReadForTracker](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadReadBlasterForTracker](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadResetOrientationForTracker](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
@@ -115,7 +115,7 @@
 - [scePadIsDS4Connected](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadIsBlasterConnected](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadIsMoveConnected](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
-- [scePadGetBluetoothAddress](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
+- [scePadGetBluetoothAddress](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - the byte order of the 64-bit address is unverified: the emulated pad's six address bytes are copied in the order scePadGetInfo reports them into the low six bytes, and the top two are zero. The `(int handle, uint64_t* address)` signature comes from [OpenOrbis](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/0a1aaf9dd4a92695538bdeb09fb056d06dd11725/include/orbis/Pad.h#L37); a bad handle returns `INVALID_HANDLE` before a null address returns `INVALID_ARG`, the order of scePadGetControllerInformation
 - [scePadIsMoveReproductionModel](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadReadAstonForTracker](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature
 - [scePadGetAstonModel](../../../core/libs/prx/libScePad/Export.cpp) (libScePad) - unknown signature

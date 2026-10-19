@@ -346,9 +346,8 @@ int APS5_VABI scePadLastLotusButtonData(void) {
     return 0;
 }
 
-int APS5_VABI scePadReadStateExt(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI scePadReadStateExt(int handle, PadData* data) {
+    return scePadReadState(handle, data);
 }
 
 int APS5_VABI scePadSetExtensionReport(void) {
@@ -776,9 +775,8 @@ int APS5_VABI scePadResetLightBarAllByPortType(void) {
     return 0;
 }
 
-int APS5_VABI scePadSetLightBarForTracker(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI scePadSetLightBarForTracker(int handle, const PadLightBarParam* param) {
+    return scePadSetLightBar(handle, param);
 }
 
 int APS5_VABI scePadReadForTracker(void) {
@@ -836,9 +834,12 @@ int APS5_VABI scePadIsMoveConnected(void) {
     return 0;
 }
 
-int APS5_VABI scePadGetBluetoothAddress(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI scePadGetBluetoothAddress(int handle, std::uint64_t* address) {
+    if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
+    if (address == nullptr) return PAD_ERROR_INVALID_ARG;
+    *address = 0;
+    std::memcpy(address, PAD_BD_ADDRESS, sizeof(PAD_BD_ADDRESS));
+    return PAD_OK;
 }
 
 int APS5_VABI scePadIsMoveReproductionModel(void) {

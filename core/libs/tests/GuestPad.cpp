@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -38,6 +39,11 @@ int APS5_VABI scePadSetAngularVelocityDeadbandState(int, bool);
 int APS5_VABI scePadSetAngularVelocityBiasCorrectionState(int, bool);
 int APS5_VABI scePadIsRemoteController(int, bool*);
 int APS5_VABI scePadGetAccessibilityControllerState(int, std::uint32_t*);
+int APS5_VABI scePadGetInfo_nid_postfix(PadInfo*);
+int APS5_VABI scePadGetBluetoothAddress(int, std::uint64_t*);
+int APS5_VABI scePadReadStateExt(int, PadData*);
+int APS5_VABI scePadSetLightBarForTracker(int, const PadLightBarParam*);
+int APS5_VABI scePadResetLightBar(int);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -267,6 +273,57 @@ static void CheckReadExt(int handle) {
     Require(scePadReadExt(handle, data, 4) == 1);
 }
 
+static void CheckReadStateExt(int handle) {
+    PadData data{};
+    Require(scePadReadStateExt(0, &data) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadReadStateExt(handle + 1, &data) == PAD_ERROR_INVALID_HANDLE);
+    bool nullThrew = false;
+    try { scePadReadStateExt(handle, nullptr); } catch (const std::invalid_argument&) { nullThrew = true; }
+    Require(nullThrew);
+    PadInputState pressed;
+    pressed.buttons = static_cast<std::uint32_t>(Pad::PadButton::Cross);
+    pressed.sticks[0] = 7;
+    PadPublishInput_nid_postfix(pressed);
+    Require(scePadReadStateExt(handle, &data) == PAD_OK);
+    Require(data.buttons == pressed.buttons && data.left_stick_x == 7 && data.connected);
+    Require(scePadReadStateExt(handle, &data) == PAD_OK);
+    Require(data.buttons == pressed.buttons);
+    PadPublishInput_nid_postfix(PadInputState{});
+    Require(scePadReadStateExt(handle, &data) == PAD_OK);
+    Require(data.buttons == 0 && data.left_stick_x == 128);
+    PadData drained[64]{};
+    scePadRead_nid_postfix(handle, drained, 64);
+}
+
+static void CheckBluetoothAddress(int handle) {
+    std::uint64_t address = 7;
+    Require(scePadGetBluetoothAddress(handle + 1, &address) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadGetBluetoothAddress(handle + 1, nullptr) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadGetBluetoothAddress(handle, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(address == 7);
+    Require(scePadGetBluetoothAddress(handle, &address) == PAD_OK);
+    Require(address == 0x0000F40151378CDCull);
+    PadInfo info{};
+    Require(scePadGetInfo_nid_postfix(&info) == PAD_OK);
+    Require(std::memcmp(&address, info.padTypeInfo[0].bluetoothMacAddress, 6) == 0);
+}
+
+static void CheckLightBarForTracker(int handle) {
+    std::uint32_t seen = 0;
+    PadOutputState output;
+    PadFetchOutput_nid_postfix(&seen, &output);
+    const PadLightBarParam color{0x20, 0x40, 0xff};
+    Require(scePadSetLightBarForTracker(handle + 1, &color) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadSetLightBarForTracker(handle, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(!PadFetchOutput_nid_postfix(&seen, &output));
+    Require(scePadSetLightBarForTracker(handle, &color) == PAD_OK);
+    Require(PadFetchOutput_nid_postfix(&seen, &output));
+    Require(output.lightBarValid && output.lightBar[0] == 0x20 && output.lightBar[1] == 0x40 && output.lightBar[2] == 0xff);
+    Require(scePadResetLightBar(handle) == PAD_OK);
+    Require(PadFetchOutput_nid_postfix(&seen, &output));
+    Require(!output.lightBarValid);
+}
+
 static void CheckReadStateHandle(int handle) {
     PadData data{};
     Require(scePadReadState(0, &data) == PAD_ERROR_INVALID_HANDLE);
@@ -481,6 +538,9 @@ int main() {
     CheckPartialTrigger();
     CheckReadQueue(handle);
     CheckReadExt(handle);
+    CheckReadStateExt(handle);
+    CheckBluetoothAddress(handle);
+    CheckLightBarForTracker(handle);
     CheckReadStateHandle(handle);
     CheckRemoteController(handle);
     CheckOutputReport(handle);
