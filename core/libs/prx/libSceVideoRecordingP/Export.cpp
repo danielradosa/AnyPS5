@@ -171,12 +171,7 @@ int APS5_VABI sceVideoRecordingOpen(const char* path, const void* param, void* h
 }
 
 int APS5_VABI sceVideoRecordingOpen2(const char* path, const void* param, void* heap, int heapSize) {
- (void)path;
- (void)param;
- (void)heap;
- (void)heapSize;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    return sceVideoRecordingOpen(path, param, heap, heapSize);
 }
 
 int APS5_VABI sceVideoRecordingQueryHddSize2(const void* param) {
@@ -191,9 +186,7 @@ int APS5_VABI sceVideoRecordingQueryMemSize(const void* param) {
 }
 
 int APS5_VABI sceVideoRecordingQueryMemSize2(const void* param) {
- (void)param;
- NotImplemented_nid_no_patch(__func__);
- return 0;
+    return sceVideoRecordingQueryMemSize(param);
 }
 
 int APS5_VABI sceVideoRecordingRestModeProcessGetStatus(void* status) {

@@ -7,6 +7,8 @@
 
 extern "C" int APS5_VABI sceVideoRecordingQueryMemSize(const void* param);
 extern "C" int APS5_VABI sceVideoRecordingOpen(const char* path, const void* param, void* heap, int heapSize);
+extern "C" int APS5_VABI sceVideoRecordingQueryMemSize2(const void* param);
+extern "C" int APS5_VABI sceVideoRecordingOpen2(const char* path, const void* param, void* heap, int heapSize);
 extern "C" int APS5_VABI sceVideoRecordingGetStatus(void);
 extern "C" int APS5_VABI sceVideoRecordingSetInfo(int32_t info, const void* data, size_t size);
 extern "C" int APS5_VABI sceVideoRecordingGetInfo(int32_t info, void* data, size_t size);
@@ -58,6 +60,13 @@ int main() {
     Require(Throws([&] { sceVideoRecordingOpen(path, nullptr, heap.data(), static_cast<int>(heap.size())); }));
     Require(sceVideoRecordingOpen(path, param.data(), heap.data(), static_cast<int>(heap.size())) == ERROR_UNSUPPORTED);
     Require(sceVideoRecordingOpen(path, param.data(), nullptr, memSize) == ERROR_UNSUPPORTED);
+    Require(sceVideoRecordingGetStatus() == STATUS_NONE);
+    RequireNoRecording();
+    Require(Throws([] { sceVideoRecordingQueryMemSize2(nullptr); }));
+    Require(sceVideoRecordingQueryMemSize2(param.data()) == ERROR_UNSUPPORTED);
+    Require(Throws([&] { sceVideoRecordingOpen2(nullptr, param.data(), heap.data(), static_cast<int>(heap.size())); }));
+    Require(Throws([&] { sceVideoRecordingOpen2(path, nullptr, heap.data(), static_cast<int>(heap.size())); }));
+    Require(sceVideoRecordingOpen2(path, param.data(), heap.data(), static_cast<int>(heap.size())) == ERROR_UNSUPPORTED);
     Require(sceVideoRecordingGetStatus() == STATUS_NONE);
     RequireNoRecording();
 
