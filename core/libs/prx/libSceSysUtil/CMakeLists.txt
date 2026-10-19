@@ -1,0 +1,15 @@
+add_library(libSceSysUtil SHARED EXCLUDE_FROM_ALL Export.cpp)
+target_include_directories(libSceSysUtil PRIVATE ${LIBS_INCLUDE_DIR})
+configure_windows_unwind(libSceSysUtil)
+
+if(BUILD_TESTING)
+    add_test_executable(guest_sys_util_tests ${LIBS_INCLUDE_DIR}/tests/GuestSysUtil.cpp)
+    target_include_directories(guest_sys_util_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_sys_util_tests PRIVATE libSceSysUtil libc)
+    configure_windows_unwind(guest_sys_util_tests)
+    add_test(NAME guest_sys_util COMMAND guest_sys_util_tests)
+    if(WIN32)
+        set_tests_properties(guest_sys_util PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceSysUtil>")
+    endif()
+endif()
