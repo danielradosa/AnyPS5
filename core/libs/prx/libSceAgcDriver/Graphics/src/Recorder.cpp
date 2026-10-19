@@ -3035,10 +3035,10 @@ bool Recorder::OpenWriteOverlaps(std::uint64_t address, std::size_t bytes) const
     return bytes != 0 && open != nullptr && overlaps(*open, address, address + bytes);
 }
 
-std::uint64_t Recorder::PendingWriterSerial(std::uint64_t address, std::size_t bytes) const {
+std::uint64_t Recorder::PendingWriterSerial(std::uint64_t address, std::size_t bytes, bool leasesOnly) const {
     if (bytes == 0) return 0;
     const auto end = address + bytes;
-    const auto writes = [&](const Batch& batch) { return overlaps(batch, address, end) || readOverlap(batch, address, end, ReadKind::AddressBased).has_value(); };
+    const auto writes = [&](const Batch& batch) { return (!leasesOnly && overlaps(batch, address, end)) || readOverlap(batch, address, end, ReadKind::AddressBased).has_value(); };
     if (open != nullptr && writes(*open)) return OpenSerial();
     for (auto it = inFlight.rbegin(); it != inFlight.rend(); ++it) {
         if (writes(**it)) return (*it)->serial;

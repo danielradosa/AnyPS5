@@ -3865,10 +3865,11 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
         for (const auto& texture : flush) std::fprintf(stderr, "[flush] image 0x%llx+0x%llx for %s 0x%llx+0x%zx\n", static_cast<unsigned long long>(texture->descriptor.baseAddress), static_cast<unsigned long long>(texture->guestBytes), reason, static_cast<unsigned long long>(address), bytes);
     }
     std::lock_guard gpu(GuestMemory::GpuMutex());
-    if (auto* recorder = Recorder::Active(); recorder != nullptr && !Recorder::InCompletion() && recorder->PendingWriterSerial(address, bytes) != 0) {
+    static const bool leasesOnly = std::getenv("APS5_FLUSH_WAITS_FOR_LEASES") != nullptr;
+    if (auto* recorder = Recorder::Active(); recorder != nullptr && !Recorder::InCompletion() && recorder->PendingWriterSerial(address, bytes, leasesOnly) != 0) {
         try {
             recorder->Reap();
-            if (const auto writer = recorder->PendingWriterSerial(address, bytes); writer == recorder->OpenSerial()) {
+            if (const auto writer = recorder->PendingWriterSerial(address, bytes, leasesOnly); writer == recorder->OpenSerial()) {
                 Recorder::CountSync(recorder->OpenWriteOverlaps(address, bytes) ? 1 : 3);
                 recorder->Sync();
             } else if (writer != 0) {
