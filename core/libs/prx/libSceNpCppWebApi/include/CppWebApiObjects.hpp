@@ -112,4 +112,28 @@ struct GetBoardDefinitionResponseBody {
 
 }
 
+namespace SessionManager {
+
+struct PostPlayerSessionsResponseBody {
+    std::int32_t referenceCount;
+    IntrusivePtr playerSessions;
+};
+
+struct GetUsersAccountIdPlayerSessionsInvitationsResponseBody {
+    std::int32_t referenceCount;
+    IntrusivePtr invitations;
+    bool invitationsSet;
+};
+
+struct UsersPlayerSessionsInvitationForRead {
+    std::int32_t referenceCount;
+    IntrusivePtr from;
+    bool fromSet;
+    bool sessionIdSet;
+    bool invitationIdSet;
+    bool receivedTimestampSet;
+};
+
+}
+
 }

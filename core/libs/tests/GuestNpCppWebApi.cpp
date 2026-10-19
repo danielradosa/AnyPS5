@@ -10,6 +10,7 @@ using NpCppWebApi::IntrusivePtr;
 using NpCppWebApi::VectorIterator;
 using NpCppWebApi::VectorObject;
 namespace Leaderboards = NpCppWebApi::Leaderboards;
+namespace SessionManager = NpCppWebApi::SessionManager;
 
 extern "C" {
 std::uint64_t APS5_VABI _ZNK3sce2Np9CppWebApi6Common6Binary4sizeEv(const Binary*);
@@ -54,6 +55,31 @@ void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_
 void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_12Leaderboards2V15EntryEEEEEED1Ev(IntrusivePtr*);
 void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_12Leaderboards2V15EntryEEptEv(const IntrusivePtr*);
 void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6BinaryEEptEv(const IntrusivePtr*);
+bool APS5_VABI _ZNK3sce2Np9CppWebApi14SessionManager2V154GetUsersAccountIdPlayerSessionsInvitationsResponseBody16invitationsIsSetEv(const SessionManager::GetUsersAccountIdPlayerSessionsInvitationsResponseBody*);
+bool APS5_VABI _ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead14sessionIdIsSetEv(const SessionManager::UsersPlayerSessionsInvitationForRead*);
+bool APS5_VABI _ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead17invitationIdIsSetEv(const SessionManager::UsersPlayerSessionsInvitationForRead*);
+bool APS5_VABI _ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead22receivedTimestampIsSetEv(const SessionManager::UsersPlayerSessionsInvitationForRead*);
+bool APS5_VABI _ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead9fromIsSetEv(const SessionManager::UsersPlayerSessionsInvitationForRead*);
+IntrusivePtr* APS5_VABI _ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead7getFromEv(IntrusivePtr*, const SessionManager::UsersPlayerSessionsInvitationForRead*);
+IntrusivePtr* APS5_VABI _ZN3sce2Np9CppWebApi14SessionManager2V130PostPlayerSessionsResponseBody17getPlayerSessionsEv(IntrusivePtr*, SessionManager::PostPlayerSessionsResponseBody*);
+IntrusivePtr* APS5_VABI _ZN3sce2Np9CppWebApi14SessionManager2V154GetUsersAccountIdPlayerSessionsInvitationsResponseBody14getInvitationsEv(IntrusivePtr*, SessionManager::GetUsersAccountIdPlayerSessionsInvitationsResponseBody*);
+IntrusivePtr* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V113PlayerSessionEEEEixEm(IntrusivePtr*, std::uint64_t);
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEE5beginEv(VectorIterator*, IntrusivePtr*);
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEE3endEv(VectorIterator*, IntrusivePtr*);
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEppEv(VectorIterator*);
+IntrusivePtr* APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEdeEv(const VectorIterator*);
+bool APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEneERKS9_(const VectorIterator*, const VectorIterator*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEEC1EPNS2_10LibContextE(IntrusivePtr*, void*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEED1Ev(IntrusivePtr*);
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEE8pushBackERKS8_(IntrusivePtr*, const IntrusivePtr*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V110FromMemberEEptEv(const IntrusivePtr*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V110FromMemberEED1Ev(IntrusivePtr*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEptEv(const IntrusivePtr*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V113PlayerSessionEEptEv(const IntrusivePtr*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEEEdeEv(const IntrusivePtr*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEEED1Ev(IntrusivePtr*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V113PlayerSessionEEEEEEdeEv(const IntrusivePtr*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V113PlayerSessionEEEEEED1Ev(IntrusivePtr*);
 }
 
 namespace {
@@ -217,6 +243,132 @@ void TestEmptyEntriesVector() {
     Require(vector.object == nullptr);
 }
 
+constexpr std::size_t PlainObjectSize = 0x40;
+
+std::int32_t PlainCount(const unsigned char* object) {
+    std::int32_t value;
+    std::memcpy(&value, object, sizeof(value));
+    return value;
+}
+
+void PlainObject(unsigned char* object) {
+    std::memset(object, 0x5a, PlainObjectSize);
+    const std::int32_t count = 1;
+    std::memcpy(object, &count, sizeof(count));
+}
+
+void TestInvitationAccessors() {
+    int context = 0;
+    deleterCalls = 0;
+    alignas(8) unsigned char from[PlainObjectSize];
+    PlainObject(from);
+    SessionManager::UsersPlayerSessionsInvitationForRead invitation{};
+    invitation.referenceCount = 1;
+    invitation.from = {from, CountDelete, &context};
+    invitation.fromSet = true;
+    invitation.sessionIdSet = true;
+    invitation.invitationIdSet = false;
+    invitation.receivedTimestampSet = true;
+    Require(_ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead9fromIsSetEv(&invitation));
+    Require(_ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead14sessionIdIsSetEv(&invitation));
+    Require(!_ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead17invitationIdIsSetEv(&invitation));
+    Require(_ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead22receivedTimestampIsSetEv(&invitation));
+
+    IntrusivePtr result;
+    std::memset(&result, 0xa5, sizeof(result));
+    Require(_ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead7getFromEv(&result, &invitation) == &result);
+    Require(result.object == from && result.deleter == CountDelete && result.libContext == &context);
+    Require(PlainCount(from) == 2);
+    Require(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V110FromMemberEEptEv(&result) == from);
+    _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V110FromMemberEED1Ev(&result);
+    Require(PlainCount(from) == 1 && deleterCalls == 0);
+
+    SessionManager::UsersPlayerSessionsInvitationForRead anonymous{};
+    anonymous.from = {nullptr, nullptr, &context};
+    Require(!_ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead9fromIsSetEv(&anonymous));
+    Require(_ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead7getFromEv(&result, &anonymous) == &result);
+    Require(result.object == nullptr && result.libContext == &context);
+}
+
+void TestInvitationsIterate() {
+    int context = 0;
+    deleterCalls = 0;
+    SessionManager::UsersPlayerSessionsInvitationForRead invitations[2] = {};
+    VectorObject vector{};
+    vector.referenceCount = 1;
+    _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEEC1EPNS2_10LibContextE(&vector.handle, &context);
+    for (auto& invitation : invitations) {
+        invitation.referenceCount = 1;
+        const IntrusivePtr pointer{&invitation, CountDelete, &context};
+        Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEE8pushBackERKS8_(&vector.handle, &pointer) == 0);
+    }
+    invitations[1].sessionIdSet = true;
+
+    SessionManager::GetUsersAccountIdPlayerSessionsInvitationsResponseBody body{1, {&vector, CountDelete, &context}, true};
+    Require(_ZNK3sce2Np9CppWebApi14SessionManager2V154GetUsersAccountIdPlayerSessionsInvitationsResponseBody16invitationsIsSetEv(&body));
+    IntrusivePtr result;
+    Require(_ZN3sce2Np9CppWebApi14SessionManager2V154GetUsersAccountIdPlayerSessionsInvitationsResponseBody14getInvitationsEv(&result, &body) == &result);
+    Require(result.object == &vector && vector.referenceCount == 2);
+
+    auto* list = static_cast<IntrusivePtr*>(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEEEdeEv(&result));
+    Require(list == &vector.handle);
+    VectorIterator iterator{};
+    VectorIterator end{};
+    Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEE5beginEv(&iterator, list) == &iterator);
+    Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEE3endEv(&end, list) == &end);
+    int seen = 0;
+    for (; _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEneERKS9_(&iterator, &end); _ZN3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEppEv(&iterator)) {
+        const auto* invitation = static_cast<const SessionManager::UsersPlayerSessionsInvitationForRead*>(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEptEv(_ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEdeEv(&iterator)));
+        Require(invitation == &invitations[seen]);
+        Require(_ZNK3sce2Np9CppWebApi14SessionManager2V136UsersPlayerSessionsInvitationForRead14sessionIdIsSetEv(invitation) == (seen == 1));
+        ++seen;
+    }
+    Require(seen == 2);
+
+    _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEEED1Ev(&result);
+    Require(vector.referenceCount == 1);
+    _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEED1Ev(&vector.handle);
+    for (const auto& invitation : invitations) Require(invitation.referenceCount == 1);
+    Require(deleterCalls == 0);
+
+    SessionManager::GetUsersAccountIdPlayerSessionsInvitationsResponseBody none{1, {nullptr, nullptr, &context}, false};
+    Require(!_ZNK3sce2Np9CppWebApi14SessionManager2V154GetUsersAccountIdPlayerSessionsInvitationsResponseBody16invitationsIsSetEv(&none));
+}
+
+void TestPlayerSessionsIndex() {
+    int context = 0;
+    deleterCalls = 0;
+    alignas(8) unsigned char sessions[3][PlainObjectSize];
+    VectorObject vector{};
+    vector.referenceCount = 1;
+    _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEEC1EPNS2_10LibContextE(&vector.handle, &context);
+    Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V113PlayerSessionEEEEixEm(&vector.handle, 0) == nullptr);
+    for (auto& session : sessions) {
+        PlainObject(session);
+        const IntrusivePtr pointer{session, CountDelete, &context};
+        Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEE8pushBackERKS8_(&vector.handle, &pointer) == 0);
+    }
+
+    SessionManager::PostPlayerSessionsResponseBody body{1, {&vector, CountDelete, &context}};
+    IntrusivePtr result;
+    Require(_ZN3sce2Np9CppWebApi14SessionManager2V130PostPlayerSessionsResponseBody17getPlayerSessionsEv(&result, &body) == &result);
+    Require(result.object == &vector && vector.referenceCount == 2);
+    auto* list = static_cast<IntrusivePtr*>(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V113PlayerSessionEEEEEEdeEv(&result));
+    for (std::uint64_t index = 0; index < 3; ++index) {
+        IntrusivePtr* element = _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V113PlayerSessionEEEEixEm(list, index);
+        Require(element != nullptr);
+        Require(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_14SessionManager2V113PlayerSessionEEptEv(element) == sessions[index]);
+        Require(PlainCount(sessions[index]) == 2);
+    }
+    Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V113PlayerSessionEEEEixEm(list, 3) == nullptr);
+
+    _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V113PlayerSessionEEEEEED1Ev(&result);
+    Require(vector.referenceCount == 1);
+    _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEED1Ev(&vector.handle);
+    for (const auto& session : sessions) Require(PlainCount(session) == 1);
+    Require(deleterCalls == 0);
+}
+
 }
 
 int main() {
@@ -225,5 +377,8 @@ int main() {
     TestScoreAndBoardDefinitionGetters();
     TestRankingEntriesIterate();
     TestEmptyEntriesVector();
+    TestInvitationAccessors();
+    TestInvitationsIterate();
+    TestPlayerSessionsIndex();
     return 0;
 }
