@@ -629,14 +629,16 @@ int APS5_VABI fchmodat_nid_postfix(int fd, const char* path, int mode, int flag)
 
 int APS5_VABI fchown_nid_postfix(int fd, std::uint32_t uid, std::uint32_t gid) {
     constexpr std::uint32_t Unchanged = 0xFFFFFFFFu;
-    if (uid != 0 && uid != Unchanged) NotImplemented_nid_no_patch("fchown: an owner other than the guest user");
-    if (gid != 0 && gid != Unchanged) NotImplemented_nid_no_patch("fchown: a group other than the guest group");
 #ifdef _WIN32
     if (GuestFstat(fd) != 0) return static_cast<int>(Fail(GuestEbadf));
 #else
     struct stat status{};
     if (::fstat(fd, &status) != 0) return static_cast<int>(Fail(GuestEbadf));
 #endif
+    if ((uid != 0 && uid != Unchanged) || (gid != 0 && gid != Unchanged)) {
+        throw std::runtime_error("fchown: giving descriptor " + std::to_string(fd) + " owner " + std::to_string(uid) + " and group " + std::to_string(gid) +
+            " is not supported, the host keeps no guest ownership");
+    }
     return 0;
 }
 
