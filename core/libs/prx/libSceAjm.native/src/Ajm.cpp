@@ -449,8 +449,8 @@ std::int32_t InitializeInstance(Instance& instance, const std::uint8_t* paramete
         if (channels == 0 || channels > 8 || sampleRate == 0) return AJM_RESULT_INVALID_PARAMETER;
         std::uint32_t mappingFamily = 0;
         if (size >= 12) std::memcpy(&mappingFamily, parameters + 8, sizeof(mappingFamily));
-        if (sampleRate != 48000) NotImplemented_nid_no_patch("sceAjmBatchJobInitialize (Opus sample rate other than 48000)");
-        if (mappingFamily > 1 && mappingFamily != 255) NotImplemented_nid_no_patch("sceAjmBatchJobInitialize (Opus mapping family other than 0, 1 or 255)");
+        if (sampleRate != 48000) throw std::runtime_error("sceAjmBatchJobInitialize: Opus sample rate other than 48000");
+        if (mappingFamily > 1 && mappingFamily != 255) throw std::runtime_error("sceAjmBatchJobInitialize: Opus mapping family other than 0, 1 or 255");
         if (mappingFamily == 0 && channels > 2) return AJM_RESULT_INVALID_PARAMETER;
         instance.opusChannels = channels;
         instance.opusMappingFamily = mappingFamily;
@@ -1551,7 +1551,7 @@ void ClearContext(Instance& instance) {
 }
 
 void CheckAacFlags(std::uint64_t flags) {
-    if ((flags >> 32u) & ~((M4AAC_ENABLE_SBR_DECODE | M4AAC_ENABLE_NONDELAY_OUTPUT | M4AAC_SURROUND_INTERLEAVE_ORDERS) >> 32u)) NotImplemented_nid_no_patch("sceAjmInstanceCreate (M4AAC codec flags other than ENABLE_SBR_DECODE, ENABLE_NONDELAY_OUTPUT and the surround interleave orders)");
+    if ((flags >> 32u) & ~((M4AAC_ENABLE_SBR_DECODE | M4AAC_ENABLE_NONDELAY_OUTPUT | M4AAC_SURROUND_INTERLEAVE_ORDERS) >> 32u)) throw std::runtime_error("sceAjmInstanceCreate: M4AAC codec flags other than ENABLE_SBR_DECODE, ENABLE_NONDELAY_OUTPUT and the surround interleave orders");
 }
 
 std::size_t ControlInitializeSize(std::uint32_t codec) {
@@ -1560,7 +1560,7 @@ std::size_t ControlInitializeSize(std::uint32_t codec) {
     case CODEC_AT9: return 8;
     case CODEC_M4AAC: return 8;
     case CODEC_OPUS: return 12;
-    default: NotImplemented_nid_no_patch("sceAjmBatchJobControl (INITIALIZE for a codec other than MP3, ATRAC9, M4AAC and Opus)"); return 0;
+    default: throw std::runtime_error("sceAjmBatchJobControl: INITIALIZE for a codec other than MP3, ATRAC9, M4AAC and Opus");
     }
 }
 
@@ -1570,7 +1570,7 @@ void Control(Instance& instance, const JobHeader& job, const AjmBuffer* inputs) 
     const std::size_t gaplessSize = (job.flags & SIDEBAND_GAPLESS_DECODE) ? sizeof(SidebandGaplessDecode) : 0;
     const std::size_t resampleSize = (job.flags & CONTROL_RESAMPLE) ? sizeof(SidebandResampleParameters) : 0;
     const std::size_t initializeSize = (job.flags & CONTROL_INITIALIZE) ? ControlInitializeSize(instance.codec) : 0;
-    if (inputSize != gaplessSize + resampleSize + initializeSize) NotImplemented_nid_no_patch("sceAjmBatchJobControl (sideband input size other than the gapless decode, the resample parameters and the codec's initialize parameters)");
+    if (inputSize != gaplessSize + resampleSize + initializeSize) throw std::runtime_error("sceAjmBatchJobControl: sideband input size other than the gapless decode, the resample parameters and the codec's initialize parameters");
     SidebandResampleParameters resample{};
     if (resampleSize) {
         std::memcpy(&resample, input + gaplessSize, sizeof(resample));

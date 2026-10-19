@@ -101,14 +101,14 @@ extern "C" {
 std::int32_t APS5_VABI scePsmlMfsrGetContextBufferRequirement1100(void* requirement, const void* param) {
  (void)requirement;
  (void)param;
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
 std::int32_t APS5_VABI scePsmlMfsrCreateContext1100(void** context, const void* param) {
  (void)context;
  (void)param;
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
@@ -116,7 +116,7 @@ std::int32_t APS5_VABI scePsmlMfsrGetDispatchMfsrPacket1100(void* context, void*
  (void)context;
  (void)commandBuffer;
  (void)param;
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
@@ -172,7 +172,7 @@ std::int32_t APS5_VABI scePsmlMfsrReleaseContext(void* context) {
 std::int32_t APS5_VABI scePsmlMfsrCreateContext1300(void** context, const void* param) {
  (void)context;
  (void)param;
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
@@ -180,32 +180,32 @@ std::int32_t APS5_VABI scePsmlMfsrGetDispatchMfsrPacket1300(void* context, void*
  (void)context;
  (void)commandBuffer;
  (void)param;
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
 std::int32_t APS5_VABI scePsmlMfsrGetDispatchMfsrPacketSizeInDwords() {
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
 std::int32_t APS5_VABI scePsmlMfsrSelectConfig() {
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
 std::int32_t APS5_VABI scePsmlMfsrGetMipmapBias() {
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
 std::int32_t APS5_VABI scePsmlMfsrRequestCapture() {
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
 std::int32_t APS5_VABI scePsmlMfsrIsCaptureInProgress() {
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
@@ -213,7 +213,7 @@ std::int32_t APS5_VABI scePsmlMfsrGetDispatchMfsrPacket1000(void* context, void*
  (void)context;
  (void)commandBuffer;
  (void)param;
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
@@ -221,7 +221,7 @@ std::int32_t APS5_VABI scePsmlMfsrGetDispatchMfsrPacket900(void* context, void* 
  (void)context;
  (void)commandBuffer;
  (void)param;
- if (g_mfsrInitialized) NotImplemented_nid_no_patch(__func__);
+ if (g_mfsrInitialized) throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
  return SCE_PSML_ERROR_NOT_INITIALIZED;
 }
 
@@ -263,13 +263,11 @@ int APS5_VABI scePsmlMfsr2Init() {
 }
 
 int APS5_VABI scePsmlMfsrEnableSpecularAA() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+ throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
 }
 
 int APS5_VABI scePsmlMfsrEnableQuality8K() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+ throw std::runtime_error(std::string(__func__) + ": the MFSR upscaler is not present on the host");
 }
 
 }

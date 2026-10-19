@@ -13,7 +13,7 @@ std::int32_t APS5_VABI sceBluetoothHidRegisterDevice(std::uint16_t vendorId, std
 std::int32_t APS5_VABI sceBluetoothHidUnregisterDevice(std::uint16_t vendorId, std::uint16_t productId);
 std::int32_t APS5_VABI sceBluetoothHidGetDeviceName(std::uint64_t handle, void* name);
 std::int32_t APS5_VABI sceBluetoothHidGetInputReport(void* report, std::uint32_t reportId);
-std::int32_t APS5_VABI sceBluetoothHidSetOutputReport(std::uint64_t handle, std::uint32_t reportId, const void* data, std::uint64_t length);
+std::int32_t APS5_VABI sceBluetoothHidSetOutputReport(std::uint64_t handle, std::uint32_t reportId, void* data, std::uint64_t length);
 }
 
 namespace {

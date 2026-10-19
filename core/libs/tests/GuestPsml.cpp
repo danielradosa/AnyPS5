@@ -26,6 +26,8 @@ std::int32_t APS5_VABI scePsmlMfsrSelectConfig();
 std::int32_t APS5_VABI scePsmlMfsrGetMipmapBias();
 std::int32_t APS5_VABI scePsmlMfsrRequestCapture();
 std::int32_t APS5_VABI scePsmlMfsrIsCaptureInProgress();
+std::int32_t APS5_VABI scePsmlMfsrEnableSpecularAA();
+std::int32_t APS5_VABI scePsmlMfsrEnableQuality8K();
 std::int32_t APS5_VABI scePsmlMfsr2ReleaseSharedResources();
 std::int32_t APS5_VABI scePsmlMfsr2GetSharedResourcesInitRequirement();
 std::int32_t APS5_VABI scePsmlMfsr2GetContextInitRequirement();
@@ -215,16 +217,20 @@ void RefusedAfterInit() {
     std::array<std::uint8_t, 0x158> param{};
     std::array<std::uint32_t, 64> dwords{};
     CommandBuffer commandBuffer{dwords.data(), static_cast<std::uint32_t>(dwords.size())};
-    Require(Throws([&] { scePsmlMfsrGetContextBufferRequirement1100(&requirement, param.data()); }, "not implemented"));
-    Require(Throws([&] { scePsmlMfsrCreateContext1300(&context, param.data()); }, "not implemented"));
-    Require(Throws([&] { scePsmlMfsrGetDispatchMfsrPacket900(&foreign, &commandBuffer, param.data()); }, "not implemented"));
-    Require(Throws([&] { scePsmlMfsrGetDispatchMfsrPacket1000(&foreign, &commandBuffer, param.data()); }, "not implemented"));
-    Require(Throws([&] { scePsmlMfsrGetDispatchMfsrPacket1300(&foreign, &commandBuffer, param.data()); }, "not implemented"));
-    Require(Throws([] { scePsmlMfsrGetDispatchMfsrPacketSizeInDwords(); }, "not implemented"));
-    Require(Throws([] { scePsmlMfsrSelectConfig(); }, "not implemented"));
-    Require(Throws([] { scePsmlMfsrGetMipmapBias(); }, "not implemented"));
-    Require(Throws([] { scePsmlMfsrRequestCapture(); }, "not implemented"));
-    Require(Throws([] { scePsmlMfsrIsCaptureInProgress(); }, "not implemented"));
+    Require(Throws([&] { scePsmlMfsrGetContextBufferRequirement1100(&requirement, param.data()); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([&] { scePsmlMfsrCreateContext1100(&context, param.data()); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([&] { scePsmlMfsrGetDispatchMfsrPacket1100(&foreign, &commandBuffer, param.data()); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([&] { scePsmlMfsrCreateContext1300(&context, param.data()); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([&] { scePsmlMfsrGetDispatchMfsrPacket900(&foreign, &commandBuffer, param.data()); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([&] { scePsmlMfsrGetDispatchMfsrPacket1000(&foreign, &commandBuffer, param.data()); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([&] { scePsmlMfsrGetDispatchMfsrPacket1300(&foreign, &commandBuffer, param.data()); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([] { scePsmlMfsrGetDispatchMfsrPacketSizeInDwords(); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([] { scePsmlMfsrSelectConfig(); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([] { scePsmlMfsrGetMipmapBias(); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([] { scePsmlMfsrRequestCapture(); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([] { scePsmlMfsrIsCaptureInProgress(); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([] { scePsmlMfsrEnableSpecularAA(); }, "the MFSR upscaler is not present on the host"));
+    Require(Throws([] { scePsmlMfsrEnableQuality8K(); }, "the MFSR upscaler is not present on the host"));
 }
 
 }

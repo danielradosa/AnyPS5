@@ -20,6 +20,10 @@ std::mutex stateMutex;
 bool initialized = false;
 std::int32_t openHandle = 0;
 
+std::mutex reprojectionMutex;
+Hmd2::ReprojectionState* reprojectionState = nullptr;
+std::int32_t allowPositionalReprojection = 0;
+
 std::uint32_t CompiledSdkVersion() {
     static const auto* processParameters = static_cast<const std::byte*>(ApplicationProcessParameters_nid_no_patch());
     std::uint32_t version;
@@ -41,12 +45,6 @@ std::int32_t GetDeviceInformation(Hmd2::DeviceInformation* info) {
     return 0;
 }
 
-struct Hmd2SizeAlign {
-    std::uint64_t size;
-    std::uint64_t align;
-};
-static_assert(sizeof(Hmd2SizeAlign) == 16);
-
 }
 
 extern "C" {
@@ -56,7 +54,7 @@ int APS5_VABI sceHmd2ReprojectionGetStatus() {
     return 0;
 }
 
-Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign() {
+Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign() {
     NotImplemented_nid_no_patch(__func__);
     return {};
 }
@@ -150,17 +148,21 @@ std::int32_t APS5_VABI sceHmd2ReprojectionEnableMirroring(const void* param) {
     return SCE_HMD2_ERROR_NOT_INITIALIZED;
 }
 
-std::int32_t APS5_VABI sceHmd2ReprojectionEnableVrMode(std::uint64_t mode) {
-    (void)mode;
-    return SCE_HMD2_ERROR_NOT_INITIALIZED;
+std::int32_t APS5_VABI sceHmd2ReprojectionEnableVrMode(std::uint64_t outputMode) {
+    std::lock_guard lock(reprojectionMutex);
+    if (reprojectionState == nullptr) return Hmd2::ReprojectionNotInitialized;
+    if (outputMode != Hmd2::OutputMode89_91Hz && outputMode != Hmd2::OutputMode119_88Hz) {
+        return Hmd2::VideoOutInvalidValue;
+    }
+    return Hmd2::VideoOutNoDevice;
 }
 
-Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign() {
+Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign() {
     NotImplemented_nid_no_patch(__func__);
     return {};
 }
 
-Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign() {
+Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringWorkMemorySizeAlign() {
     NotImplemented_nid_no_patch(__func__);
     return {};
 }
@@ -171,24 +173,47 @@ std::int32_t APS5_VABI sceHmd2ReprojectionGetPredictedDisplayTime(std::uint64_t 
     return SCE_HMD2_ERROR_NOT_INITIALIZED;
 }
 
-std::int32_t APS5_VABI sceHmd2ReprojectionInitialize(const void* param, const void* reserved) {
+std::int32_t APS5_VABI sceHmd2ReprojectionInitialize(const Hmd2::ReprojectionInitializeParam* param) {
+    std::lock_guard lock(reprojectionMutex);
+    if (reprojectionState != nullptr) return Hmd2::ReprojectionAlreadyInitialized;
+    if (param == nullptr || param->reprojectionBuffer == nullptr || param->displayBuffer == nullptr) {
+        return Hmd2::ParameterNull;
+    }
+    if (param->seeThroughBuffer != nullptr) {
+        throw std::runtime_error("sceHmd2ReprojectionInitialize: see-through buffer not supported");
+    }
+    auto* state = static_cast<Hmd2::ReprojectionState*>(param->reprojectionBuffer);
+    state->outputMode = 0;
+    state->timingUs = param->reprojectionTiming != 0
+                          ? static_cast<std::uint32_t>(param->reprojectionTiming)
+                          : Hmd2::ReprojectionTimingDefault;
+    reprojectionState = state;
+    return 0;
+}
+
+Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQueryBufferSizeAlign() {
+    std::lock_guard lock(reprojectionMutex);
+    if (allowPositionalReprojection == 0) {
+        return Hmd2::SizeAlign{Hmd2::ReprojectionBufferSize, Hmd2::ReprojectionBufferAlign};
+    }
+    return Hmd2::SizeAlign{Hmd2::ReprojectionPositionalBufferSize
+                               + static_cast<std::uint64_t>(allowPositionalReprojection)
+                                     * Hmd2::ReprojectionPositionalBufferSizeStep,
+                           Hmd2::ReprojectionPositionalBufferAlign};
+}
+
+Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQueryDisplayBufferSizeAlign() {
+    NotImplemented_nid_no_patch(__func__);
+    return {};
+}
+
+std::int32_t APS5_VABI sceHmd2ReprojectionSetAllowPositionalReprojection(std::int32_t mode, std::uint64_t param, std::int32_t flags) {
     (void)param;
-    (void)reserved;
-    return SCE_HMD2_ERROR_NOT_INITIALIZED;
-}
-
-Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQueryBufferSizeAlign() {
-    NotImplemented_nid_no_patch(__func__);
-    return {};
-}
-
-Hmd2SizeAlign APS5_VABI sceHmd2ReprojectionQueryDisplayBufferSizeAlign() {
-    NotImplemented_nid_no_patch(__func__);
-    return {};
-}
-
-std::int32_t APS5_VABI sceHmd2ReprojectionSetAllowPositionalReprojection() {
-    return SCE_HMD2_ERROR_NOT_INITIALIZED;
+    (void)flags;
+    std::lock_guard lock(reprojectionMutex);
+    if (mode < 0 || mode > Hmd2::AllowPositionalReprojectionMax) return Hmd2::ParameterInvalid;
+    allowPositionalReprojection = mode;
+    return 0;
 }
 
 std::int32_t APS5_VABI sceHmd2ReprojectionSetMirroringOption(const void* option) {
@@ -217,8 +242,14 @@ std::int32_t APS5_VABI sceHmd2ReprojectionSetRenderConfig(std::uint64_t halfRate
     return SCE_HMD2_ERROR_NOT_INITIALIZED;
 }
 
-std::int32_t APS5_VABI sceHmd2ReprojectionSetTiming() {
-    return SCE_HMD2_ERROR_NOT_INITIALIZED;
+std::int32_t APS5_VABI sceHmd2ReprojectionSetTiming(std::int32_t timing) {
+    std::lock_guard lock(reprojectionMutex);
+    if (reprojectionState == nullptr) return Hmd2::ReprojectionNotInitialized;
+    if (timing < Hmd2::ReprojectionTimingMin || timing > Hmd2::ReprojectionTimingMax) {
+        throw std::runtime_error("sceHmd2ReprojectionSetTiming: timing out of range");
+    }
+    reprojectionState->timingUs = static_cast<std::uint32_t>((timing + 99) / 100 * 100);
+    return 0;
 }
 
 std::int32_t APS5_VABI sceHmd2ReprojectionTerminate() {

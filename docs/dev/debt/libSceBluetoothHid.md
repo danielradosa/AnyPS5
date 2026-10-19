@@ -2,7 +2,7 @@
 
 ### Silent stubs
 
-- [libSceBluetoothHid](../../../core/libs/prx/libSceBluetoothHid/Export.cpp) implements only the no-device path: initialization and callback and device registration succeed, the callback is never called because no device connects, and calls that need a connected device throw
+- [libSceBluetoothHid](../../../core/libs/prx/libSceBluetoothHid/Export.cpp) implements only the no-device path: initialization and callback and device registration succeed, the callback is never called because no device connects, and calls that need a connected device (`sceBluetoothHidGetDeviceName`, `sceBluetoothHidGetInputReport`, `sceBluetoothHidSetOutputReport`) throw
 
 ### Unknown function info
 
