@@ -1,0 +1,9 @@
+# libSceNotification technical debt
+
+### Silent stubs
+
+- [sceNotificationSend, sceNotificationSendById, sceNotificationShowPsButtonPersistentBanner, sceNotificationHidePsButtonPersistentBanner](../../../core/libs/prx/libSceNotification/Export.cpp) (libSceNotification) - AnyPS5 has no notification service or PS button banner, so a notification is written to the host's standard error as a `[notification]` line, as [sceKernelSendNotificationRequest](../../../core/libs/prx/libkernel/System/src/Notification.cpp) does (the JSON text as given, after its id for `sceNotificationSendById`), showing the banner writes its JSON configuration and hiding a shown banner writes one line; nothing is drawn, and the calls succeed
+
+### Unknown function info
+
+- [libSceNotification](../../../core/libs/prx/libSceNotification/Export.cpp) - the signatures follow [SharpProspero](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Notification/SceNotification.cs#L8-L36), recovered from the module: a type, a flag and the text (`sceNotificationSendById` adds an id of up to 0x20 bytes before a JSON body), messages of up to 0x1800 bytes, a banner configuration that is `{}` when null, and `0x81980001` for a bad or empty message. [SharpProspero's payload wrapper](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Payload/Services/Notification.cs#L66-L97) passes a user id (`0xFE` for the system) and whether the notification is logged as the type and the flag; neither is read here. A null or empty message or body returns `0x81980001`; a message or body without a terminator in its first 0x1800 bytes, an id without one in its first 0x20 bytes and a null id throw, as what the console counts as a bad message beyond an empty one, and its code for a bad id, are unknown. The JSON is not parsed, so a malformed toast template is accepted
