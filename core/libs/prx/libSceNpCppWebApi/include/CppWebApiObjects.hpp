@@ -64,6 +64,10 @@ struct Binary {
     void* libContext;
 };
 
+struct ParameterObject {
+    void* state;
+};
+
 namespace Leaderboards {
 
 struct Entry {
@@ -132,6 +136,38 @@ struct UsersPlayerSessionsInvitationForRead {
     bool sessionIdSet;
     bool invitationIdSet;
     bool receivedTimestampSet;
+};
+
+}
+
+namespace TitleCloudStorage {
+
+struct DataStatus {
+    std::int32_t referenceCount;
+    std::int32_t slotId;
+    std::int64_t dataSize;
+    IntrusivePtr owner;
+};
+
+struct GetMultiDataStatusesResponseBody {
+    std::int32_t referenceCount;
+    std::int32_t totalDataStatusCount;
+    IntrusivePtr dataStatusList;
+};
+
+struct DownloadDataParameter {
+    void* libContext;
+    bool initialized;
+    char* requiredText;
+    std::int32_t requiredNumber;
+    char* objectId;
+};
+
+struct GetMultiDataStatusesByUserParameter {
+    void* libContext;
+    bool initialized;
+    char* requiredText[2];
+    char* fields;
 };
 
 }

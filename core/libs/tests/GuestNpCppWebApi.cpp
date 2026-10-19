@@ -7,10 +7,12 @@
 
 using NpCppWebApi::Binary;
 using NpCppWebApi::IntrusivePtr;
+using NpCppWebApi::ParameterObject;
 using NpCppWebApi::VectorIterator;
 using NpCppWebApi::VectorObject;
 namespace Leaderboards = NpCppWebApi::Leaderboards;
 namespace SessionManager = NpCppWebApi::SessionManager;
+namespace TitleCloudStorage = NpCppWebApi::TitleCloudStorage;
 
 extern "C" {
 std::uint64_t APS5_VABI _ZNK3sce2Np9CppWebApi6Common6Binary4sizeEv(const Binary*);
@@ -80,6 +82,41 @@ void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_
 void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V136UsersPlayerSessionsInvitationForReadEEEEEED1Ev(IntrusivePtr*);
 void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V113PlayerSessionEEEEEEdeEv(const IntrusivePtr*);
 void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_14SessionManager2V113PlayerSessionEEEEEED1Ev(IntrusivePtr*);
+bool APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEneERKS9_(const VectorIterator*, const VectorIterator*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEC1Ev(IntrusivePtr*);
+int APS5_VABI _ZNK3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE11getResponseERS8_(const void*, IntrusivePtr*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_17TitleCloudStorage2V110DataStatusEEEEEEdeEv(const IntrusivePtr*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEED1Ev(IntrusivePtr*);
+IntrusivePtr* APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V132GetMultiDataStatusesResponseBody17getDataStatusListEv(IntrusivePtr*, TitleCloudStorage::GetMultiDataStatusesResponseBody*);
+std::int64_t APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus11getDataSizeEv(const TitleCloudStorage::DataStatus*);
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEE5beginEv(VectorIterator*, IntrusivePtr*);
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEppEv(VectorIterator*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEptEv(const IntrusivePtr*);
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common13ConstIteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEED2Ev(VectorIterator*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_17TitleCloudStorage2V110DataStatusEEEEEED1Ev(IntrusivePtr*);
+IntrusivePtr* APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEdeEv(const VectorIterator*);
+IntrusivePtr* APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus8getOwnerEv(IntrusivePtr*, const TitleCloudStorage::DataStatus*);
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V15OwnerEED1Ev(IntrusivePtr*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V15OwnerEEptEv(const IntrusivePtr*);
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEE3endEv(VectorIterator*, IntrusivePtr*);
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common15TransactionBaseINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE5startEPNS2_10LibContextE(void*, void*);
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEptEv(const IntrusivePtr*);
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common15TransactionBaseINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE6finishEv(void*);
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEED1Ev(void*);
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEEC1Ev(void*);
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V132GetMultiDataStatusesResponseBody23getTotalDataStatusCountEv(const TitleCloudStorage::GetMultiDataStatusesResponseBody*);
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus9getSlotIdEv(const TitleCloudStorage::DataStatus*);
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi26getMultiDataStatusesByUserEiRKNS4_37ParameterToGetMultiDataStatusesByUserERNS1_6Common11TransactionINS8_12IntrusivePtrINS3_32GetMultiDataStatusesResponseBodyEEENSA_INS8_18ResponseHeaderBaseEEEEE(int, const void*, void*);
+void APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadDataC1Ev(ParameterObject*);
+void APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadDataD1Ev(ParameterObject*);
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData10initializeEPNS1_6Common10LibContextEPKci(ParameterObject*, void*, const char*, std::int32_t);
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData11setobjectIdEPKc(ParameterObject*, const char*);
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData9terminateEv(ParameterObject*);
+void APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUserC1Ev(ParameterObject*);
+void APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUserD1Ev(ParameterObject*);
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser10initializeEPNS1_6Common10LibContextEPKcSA_(ParameterObject*, void*, const char*, const char*);
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser9setfieldsEPKc(ParameterObject*, const char*);
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser9terminateEv(ParameterObject*);
 }
 
 namespace {
@@ -369,6 +406,162 @@ void TestPlayerSessionsIndex() {
     Require(deleterCalls == 0);
 }
 
+constexpr int NotSignedIn = static_cast<int>(0x80552907);
+
+struct ParameterStorage {
+    alignas(8) unsigned char bytes[0x20];
+};
+
+ParameterObject* FreshParameter(ParameterStorage& storage) {
+    std::memset(storage.bytes, 0xa5, sizeof(storage.bytes));
+    return reinterpret_cast<ParameterObject*>(storage.bytes);
+}
+
+bool ParameterTailIntact(const ParameterStorage& storage) {
+    for (std::size_t index = sizeof(ParameterObject); index < sizeof(storage.bytes); ++index) {
+        if (storage.bytes[index] != 0xa5) return false;
+    }
+    return true;
+}
+
+bool SameText(const char* stored, const char* expected) {
+    return stored != nullptr && std::strcmp(stored, expected) == 0;
+}
+
+void TestDownloadDataParameterKeepsValues() {
+    int context = 0;
+    ParameterStorage storage;
+    ParameterObject* parameter = FreshParameter(storage);
+    _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadDataC1Ev(parameter);
+    Require(parameter->state == nullptr && ParameterTailIntact(storage));
+
+    char account[] = "me";
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData10initializeEPNS1_6Common10LibContextEPKci(parameter, &context, account, 3) == 0);
+    account[0] = 'x';
+    const auto* state = static_cast<const TitleCloudStorage::DownloadDataParameter*>(parameter->state);
+    Require(state != nullptr && state->initialized && state->libContext == &context);
+    Require(SameText(state->requiredText, "me") && state->requiredNumber == 3 && state->objectId == nullptr);
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData11setobjectIdEPKc(parameter, "save0") == 0);
+    Require(SameText(state->objectId, "save0"));
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData11setobjectIdEPKc(parameter, "save1") == 0);
+    Require(SameText(state->objectId, "save1"));
+    Require(ParameterTailIntact(storage));
+
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData9terminateEv(parameter) == 0);
+    Require(parameter->state == nullptr);
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData9terminateEv(parameter) == 0);
+
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData11setobjectIdEPKc(parameter, "early") == 0);
+    state = static_cast<const TitleCloudStorage::DownloadDataParameter*>(parameter->state);
+    Require(state != nullptr && !state->initialized && SameText(state->objectId, "early"));
+    _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadDataD1Ev(parameter);
+    Require(parameter->state == nullptr && ParameterTailIntact(storage));
+}
+
+void TestMultiDataStatusesParameterKeepsValues() {
+    int context = 0;
+    ParameterStorage storage;
+    ParameterObject* parameter = FreshParameter(storage);
+    _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUserC1Ev(parameter);
+    Require(parameter->state == nullptr);
+
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser10initializeEPNS1_6Common10LibContextEPKcSA_(parameter, &context, "me", "slot1,slot2") == 0);
+    const auto* state = static_cast<const TitleCloudStorage::GetMultiDataStatusesByUserParameter*>(parameter->state);
+    Require(state != nullptr && state->initialized && state->libContext == &context);
+    Require(SameText(state->requiredText[0], "me") && SameText(state->requiredText[1], "slot1,slot2"));
+    Require(state->fields == nullptr);
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser9setfieldsEPKc(parameter, "objectId,dataSize") == 0);
+    Require(SameText(state->fields, "objectId,dataSize"));
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser10initializeEPNS1_6Common10LibContextEPKcSA_(parameter, &context, "other", nullptr) == 0);
+    Require(SameText(state->requiredText[0], "other") && state->requiredText[1] == nullptr);
+    Require(SameText(state->fields, "objectId,dataSize"));
+    Require(ParameterTailIntact(storage));
+
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser9terminateEv(parameter) == 0);
+    Require(parameter->state == nullptr);
+    _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUserD1Ev(parameter);
+    Require(parameter->state == nullptr && ParameterTailIntact(storage));
+}
+
+void TestMultiDataStatusesRequestFailsOffline() {
+    int context = 0;
+    alignas(8) unsigned char transaction[0x40] = {};
+    Require(_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEEC1Ev(transaction) == 0);
+    ParameterStorage storage;
+    ParameterObject* parameter = FreshParameter(storage);
+    _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUserC1Ev(parameter);
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser10initializeEPNS1_6Common10LibContextEPKcSA_(parameter, &context, "me", "slot1") == 0);
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi26getMultiDataStatusesByUserEiRKNS4_37ParameterToGetMultiDataStatusesByUserERNS1_6Common11TransactionINS8_12IntrusivePtrINS3_32GetMultiDataStatusesResponseBodyEEENSA_INS8_18ResponseHeaderBaseEEEEE(1, parameter, transaction) == NotSignedIn);
+    Require(_ZN3sce2Np9CppWebApi6Common15TransactionBaseINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE5startEPNS2_10LibContextE(transaction, &context) == NotSignedIn);
+    IntrusivePtr response;
+    _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEC1Ev(&response);
+    Require(response.object == nullptr && response.deleter == nullptr && response.libContext == nullptr);
+    Require(_ZNK3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE11getResponseERS8_(transaction, &response) == NotSignedIn);
+    Require(response.object == nullptr);
+    Require(_ZN3sce2Np9CppWebApi6Common15TransactionBaseINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE6finishEv(transaction) == 0);
+    _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEED1Ev(&response);
+    Require(_ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEED1Ev(transaction) == 0);
+    _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUserD1Ev(parameter);
+}
+
+void TestDataStatusListIterate() {
+    int context = 0;
+    deleterCalls = 0;
+    alignas(8) unsigned char owner[PlainObjectSize];
+    PlainObject(owner);
+    TitleCloudStorage::DataStatus statuses[2] = {};
+    statuses[0] = {1, 0, 4096, {owner, CountDelete, &context}};
+    statuses[1] = {1, 1, 0x100000000LL, {nullptr, nullptr, &context}};
+    VectorObject vector{};
+    vector.referenceCount = 1;
+    _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEEC1EPNS2_10LibContextE(&vector.handle, &context);
+    for (auto& status : statuses) {
+        const IntrusivePtr pointer{&status, CountDelete, &context};
+        Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEE8pushBackERKS8_(&vector.handle, &pointer) == 0);
+    }
+
+    TitleCloudStorage::GetMultiDataStatusesResponseBody body{1, 2, {&vector, CountDelete, &context}};
+    const IntrusivePtr bodyPointer{&body, CountDelete, &context};
+    auto* bodyObject = static_cast<TitleCloudStorage::GetMultiDataStatusesResponseBody*>(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEptEv(&bodyPointer));
+    Require(bodyObject == &body);
+    Require(_ZNK3sce2Np9CppWebApi17TitleCloudStorage2V132GetMultiDataStatusesResponseBody23getTotalDataStatusCountEv(bodyObject) == 2);
+    IntrusivePtr list;
+    Require(_ZN3sce2Np9CppWebApi17TitleCloudStorage2V132GetMultiDataStatusesResponseBody17getDataStatusListEv(&list, bodyObject) == &list);
+    Require(list.object == &vector && vector.referenceCount == 2);
+
+    auto* handle = static_cast<IntrusivePtr*>(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_17TitleCloudStorage2V110DataStatusEEEEEEdeEv(&list));
+    VectorIterator iterator{};
+    VectorIterator end{};
+    Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEE5beginEv(&iterator, handle) == &iterator);
+    Require(_ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEE3endEv(&end, handle) == &end);
+    int seen = 0;
+    for (; _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEneERKS9_(&iterator, &end); _ZN3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEppEv(&iterator)) {
+        const auto* status = static_cast<const TitleCloudStorage::DataStatus*>(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEptEv(_ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEdeEv(&iterator)));
+        Require(status == &statuses[seen]);
+        Require(_ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus9getSlotIdEv(status) == seen);
+        ++seen;
+    }
+    Require(seen == 2);
+    Require(_ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus11getDataSizeEv(&statuses[0]) == 4096);
+    Require(_ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus11getDataSizeEv(&statuses[1]) == 0x100000000LL);
+    Require(_ZN3sce2Np9CppWebApi6Common13ConstIteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEED2Ev(&iterator) == 0);
+    Require(_ZN3sce2Np9CppWebApi6Common13ConstIteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEED2Ev(&end) == 0);
+
+    IntrusivePtr ownerPointer;
+    Require(_ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus8getOwnerEv(&ownerPointer, &statuses[0]) == &ownerPointer);
+    Require(_ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V15OwnerEEptEv(&ownerPointer) == owner && PlainCount(owner) == 2);
+    _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V15OwnerEED1Ev(&ownerPointer);
+    Require(PlainCount(owner) == 1 && deleterCalls == 0);
+    Require(_ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus8getOwnerEv(&ownerPointer, &statuses[1]) == &ownerPointer);
+    Require(ownerPointer.object == nullptr);
+
+    _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_17TitleCloudStorage2V110DataStatusEEEEEED1Ev(&list);
+    Require(vector.referenceCount == 1);
+    _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_14SessionManager2V120RequestPlayerSessionEEEED1Ev(&vector.handle);
+    for (const auto& status : statuses) Require(status.referenceCount == 1);
+    Require(deleterCalls == 0);
+}
+
 }
 
 int main() {
@@ -380,5 +573,9 @@ int main() {
     TestInvitationAccessors();
     TestInvitationsIterate();
     TestPlayerSessionsIndex();
+    TestDownloadDataParameterKeepsValues();
+    TestMultiDataStatusesParameterKeepsValues();
+    TestMultiDataStatusesRequestFailsOffline();
+    TestDataStatusListIterate();
     return 0;
 }

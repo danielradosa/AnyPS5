@@ -13,6 +13,7 @@ static constexpr int SCE_NP_WEBAPI_ERROR_NOT_SIGNED_IN = static_cast<int>(0x8055
 
 using NpCppWebApi::Binary;
 using NpCppWebApi::IntrusivePtr;
+using NpCppWebApi::ParameterObject;
 using NpCppWebApi::ReferenceCountOffset;
 using NpCppWebApi::VectorBody;
 using NpCppWebApi::VectorBodyMagic;
@@ -22,6 +23,7 @@ using NpCppWebApi::VectorReferenceCountOffset;
 using CommonString = NpCppWebApi::String;
 namespace Leaderboards = NpCppWebApi::Leaderboards;
 namespace SessionManager = NpCppWebApi::SessionManager;
+namespace TitleCloudStorage = NpCppWebApi::TitleCloudStorage;
 
 extern "C" {
 
@@ -205,24 +207,6 @@ int APS5_VABI _ZN3sce2Np9CppWebApi12Leaderboards2V19RecordApi26ParameterToRecord
 
 int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi12downloadDataEiRKNS4_23ParameterToDownloadDataERNS1_6Common21DownStreamTransactionINS8_12IntrusivePtrINS4_27DownloadDataResponseHeadersEEEEE() {
  return SCE_NP_WEBAPI_ERROR_NOT_SIGNED_IN;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData10initializeEPNS1_6Common10LibContextEPKci() {
- return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData9terminateEv() {
- return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadDataC1Ev(void* self) {
-    (void)self;
-    return 0;
-}
-
-int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadDataD1Ev(void* self) {
-    (void)self;
-    return 0;
 }
 
 int APS5_VABI _ZN3sce2Np9CppWebApi6Common10InitParamsC1Ev(void* self) {
@@ -1385,33 +1369,222 @@ bool APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_14Se
     return self->element != other->element;
 }
 
-APS5_EXPORT("+gSMGXHgrPU", sceNpCppWebApiUnknown00);
-int APS5_VABI sceNpCppWebApiUnknown00(void) {
-    NotImplemented_nid_no_patch("+gSMGXHgrPU");
+static int CopyParameterText(char** slot, const char* text) {
+    char* copy = nullptr;
+    if (text != nullptr) {
+        const std::size_t length = std::strlen(text) + 1;
+        copy = static_cast<char*>(std::malloc(length));
+        if (copy == nullptr) return SCE_NP_WEBAPI_ERROR_OUT_OF_MEMORY;
+        std::memcpy(copy, text, length);
+    }
+    std::free(*slot);
+    *slot = copy;
     return 0;
 }
 
-APS5_EXPORT("-XNfwZTFkWw", sceNpCppWebApiUnknown01);
-int APS5_VABI sceNpCppWebApiUnknown01(void) {
-    NotImplemented_nid_no_patch("-XNfwZTFkWw");
+static TitleCloudStorage::DownloadDataParameter* DownloadDataState(ParameterObject* self) {
+    if (self->state == nullptr) self->state = std::calloc(1, sizeof(TitleCloudStorage::DownloadDataParameter));
+    return static_cast<TitleCloudStorage::DownloadDataParameter*>(self->state);
+}
+
+static void ReleaseDownloadDataState(ParameterObject* self) {
+    auto* state = static_cast<TitleCloudStorage::DownloadDataParameter*>(self->state);
+    if (state != nullptr) {
+        std::free(state->requiredText);
+        std::free(state->objectId);
+        std::free(state);
+    }
+    self->state = nullptr;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadDataC1Ev(ParameterObject* self) {
+    self->state = nullptr;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadDataD1Ev(ParameterObject* self) {
+    ReleaseDownloadDataState(self);
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData10initializeEPNS1_6Common10LibContextEPKci(ParameterObject* self, void* libContext, const char* text, std::int32_t number) {
+    auto* state = DownloadDataState(self);
+    if (state == nullptr) return SCE_NP_WEBAPI_ERROR_OUT_OF_MEMORY;
+    const int result = CopyParameterText(&state->requiredText, text);
+    if (result != 0) return result;
+    state->libContext = libContext;
+    state->requiredNumber = number;
+    state->initialized = true;
     return 0;
 }
 
-APS5_EXPORT("0f5+eBcgB14", sceNpCppWebApiUnknown02);
-int APS5_VABI sceNpCppWebApiUnknown02(void) {
-    NotImplemented_nid_no_patch("0f5+eBcgB14");
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData11setobjectIdEPKc(ParameterObject* self, const char* objectId) {
+    auto* state = DownloadDataState(self);
+    if (state == nullptr) return SCE_NP_WEBAPI_ERROR_OUT_OF_MEMORY;
+    return CopyParameterText(&state->objectId, objectId);
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi23ParameterToDownloadData9terminateEv(ParameterObject* self) {
+    ReleaseDownloadDataState(self);
     return 0;
 }
 
-APS5_EXPORT("1iq5Jtw4jVs", sceNpCppWebApiUnknown03);
-int APS5_VABI sceNpCppWebApiUnknown03(void) {
-    NotImplemented_nid_no_patch("1iq5Jtw4jVs");
+static TitleCloudStorage::GetMultiDataStatusesByUserParameter* MultiDataStatusesState(ParameterObject* self) {
+    if (self->state == nullptr) self->state = std::calloc(1, sizeof(TitleCloudStorage::GetMultiDataStatusesByUserParameter));
+    return static_cast<TitleCloudStorage::GetMultiDataStatusesByUserParameter*>(self->state);
+}
+
+static void ReleaseMultiDataStatusesState(ParameterObject* self) {
+    auto* state = static_cast<TitleCloudStorage::GetMultiDataStatusesByUserParameter*>(self->state);
+    if (state != nullptr) {
+        std::free(state->requiredText[0]);
+        std::free(state->requiredText[1]);
+        std::free(state->fields);
+        std::free(state);
+    }
+    self->state = nullptr;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUserC1Ev(ParameterObject* self) {
+    self->state = nullptr;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUserD1Ev(ParameterObject* self) {
+    ReleaseMultiDataStatusesState(self);
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser10initializeEPNS1_6Common10LibContextEPKcSA_(ParameterObject* self, void* libContext, const char* first, const char* second) {
+    auto* state = MultiDataStatusesState(self);
+    if (state == nullptr) return SCE_NP_WEBAPI_ERROR_OUT_OF_MEMORY;
+    int result = CopyParameterText(&state->requiredText[0], first);
+    if (result == 0) result = CopyParameterText(&state->requiredText[1], second);
+    if (result != 0) return result;
+    state->libContext = libContext;
+    state->initialized = true;
     return 0;
 }
 
-APS5_EXPORT("1wpCXuFzH10", sceNpCppWebApiUnknown04);
-int APS5_VABI sceNpCppWebApiUnknown04(void) {
-    NotImplemented_nid_no_patch("1wpCXuFzH10");
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser9setfieldsEPKc(ParameterObject* self, const char* fields) {
+    auto* state = MultiDataStatusesState(self);
+    if (state == nullptr) return SCE_NP_WEBAPI_ERROR_OUT_OF_MEMORY;
+    return CopyParameterText(&state->fields, fields);
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi37ParameterToGetMultiDataStatusesByUser9terminateEv(ParameterObject* self) {
+    ReleaseMultiDataStatusesState(self);
+    return 0;
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V17DataApi26getMultiDataStatusesByUserEiRKNS4_37ParameterToGetMultiDataStatusesByUserERNS1_6Common11TransactionINS8_12IntrusivePtrINS3_32GetMultiDataStatusesResponseBodyEEENSA_INS8_18ResponseHeaderBaseEEEEE() {
+    return SCE_NP_WEBAPI_ERROR_NOT_SIGNED_IN;
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEEC1Ev(void* self) {
+    (void)self;
+    return 0;
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEED1Ev(void* self) {
+    (void)self;
+    return 0;
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common15TransactionBaseINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE5startEPNS2_10LibContextE() {
+    return SCE_NP_WEBAPI_ERROR_NOT_SIGNED_IN;
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common15TransactionBaseINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE6finishEv() {
+    return 0;
+}
+
+int APS5_VABI _ZNK3sce2Np9CppWebApi6Common11TransactionINS2_12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEENS4_INS2_18ResponseHeaderBaseEEEE11getResponseERS8_() {
+    return SCE_NP_WEBAPI_ERROR_NOT_SIGNED_IN;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEC1Ev(IntrusivePtr* self) {
+    *self = {};
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEED1Ev(IntrusivePtr* self) {
+    ReleaseIntrusivePtr(self, ReferenceCountOffset);
+}
+
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V132GetMultiDataStatusesResponseBodyEEptEv(const IntrusivePtr* self) {
+    return self->object;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_17TitleCloudStorage2V110DataStatusEEEEEED1Ev(IntrusivePtr* self) {
+    ReleaseIntrusivePtr(self, VectorReferenceCountOffset);
+}
+
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_17TitleCloudStorage2V110DataStatusEEEEEEdeEv(const IntrusivePtr* self) {
+    return self->object;
+}
+
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEptEv(const IntrusivePtr* self) {
+    return self->object;
+}
+
+void APS5_VABI _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V15OwnerEED1Ev(IntrusivePtr* self) {
+    ReleaseIntrusivePtr(self, ReferenceCountOffset);
+}
+
+void* APS5_VABI _ZNK3sce2Np9CppWebApi6Common12IntrusivePtrINS1_17TitleCloudStorage2V15OwnerEEptEv(const IntrusivePtr* self) {
+    return self->object;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V132GetMultiDataStatusesResponseBody23getTotalDataStatusCountEv(const TitleCloudStorage::GetMultiDataStatusesResponseBody* self) {
+    return self->totalDataStatusCount;
+}
+
+IntrusivePtr* APS5_VABI _ZN3sce2Np9CppWebApi17TitleCloudStorage2V132GetMultiDataStatusesResponseBody17getDataStatusListEv(IntrusivePtr* result, TitleCloudStorage::GetMultiDataStatusesResponseBody* self) {
+    CopyIntrusivePtr(result, &self->dataStatusList, VectorReferenceCountOffset);
+    return result;
+}
+
+std::int64_t APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus11getDataSizeEv(const TitleCloudStorage::DataStatus* self) {
+    return self->dataSize;
+}
+
+std::int32_t APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus9getSlotIdEv(const TitleCloudStorage::DataStatus* self) {
+    return self->slotId;
+}
+
+IntrusivePtr* APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus8getOwnerEv(IntrusivePtr* result, const TitleCloudStorage::DataStatus* self) {
+    CopyIntrusivePtr(result, &self->owner, ReferenceCountOffset);
+    return result;
+}
+
+int APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V110DataStatus11getObjectIdEv() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI _ZNK3sce2Np9CppWebApi17TitleCloudStorage2V15Owner12getAccountIdEv() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEE5beginEv(VectorIterator* result, IntrusivePtr* self) {
+    return VectorBegin(result, self);
+}
+
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common6VectorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEE3endEv(VectorIterator* result, IntrusivePtr* self) {
+    return VectorEnd(result, self);
+}
+
+VectorIterator* APS5_VABI _ZN3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEppEv(VectorIterator* self) {
+    return IteratorAdvance(self);
+}
+
+IntrusivePtr* APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEdeEv(const VectorIterator* self) {
+    return self->element;
+}
+
+bool APS5_VABI _ZNK3sce2Np9CppWebApi6Common8IteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEEneERKS9_(const VectorIterator* self, const VectorIterator* other) {
+    return self->element != other->element;
+}
+
+int APS5_VABI _ZN3sce2Np9CppWebApi6Common13ConstIteratorINS2_12IntrusivePtrINS1_17TitleCloudStorage2V110DataStatusEEEED2Ev(void* self) {
+    (void)self;
     return 0;
 }
 
@@ -1427,18 +1600,6 @@ int APS5_VABI sceNpCppWebApiUnknown06(void) {
     return 0;
 }
 
-APS5_EXPORT("8dWkWjo5EeE", sceNpCppWebApiUnknown07);
-int APS5_VABI sceNpCppWebApiUnknown07(void) {
-    NotImplemented_nid_no_patch("8dWkWjo5EeE");
-    return 0;
-}
-
-APS5_EXPORT("BHvfIGdarBQ", sceNpCppWebApiUnknown08);
-int APS5_VABI sceNpCppWebApiUnknown08(void) {
-    NotImplemented_nid_no_patch("BHvfIGdarBQ");
-    return 0;
-}
-
 APS5_EXPORT("Fxxr5lYBfl4", sceNpCppWebApiUnknown09);
 int APS5_VABI sceNpCppWebApiUnknown09(void) {
     NotImplemented_nid_no_patch("Fxxr5lYBfl4");
@@ -1451,33 +1612,9 @@ int APS5_VABI sceNpCppWebApiUnknown10(void) {
     return 0;
 }
 
-APS5_EXPORT("PsX657reZeo", sceNpCppWebApiUnknown11);
-int APS5_VABI sceNpCppWebApiUnknown11(void) {
-    NotImplemented_nid_no_patch("PsX657reZeo");
-    return 0;
-}
-
-APS5_EXPORT("RvH9AZ5rCkQ", sceNpCppWebApiUnknown12);
-int APS5_VABI sceNpCppWebApiUnknown12(void) {
-    NotImplemented_nid_no_patch("RvH9AZ5rCkQ");
-    return 0;
-}
-
-APS5_EXPORT("SR3BKonD8yk", sceNpCppWebApiUnknown13);
-int APS5_VABI sceNpCppWebApiUnknown13(void) {
-    NotImplemented_nid_no_patch("SR3BKonD8yk");
-    return 0;
-}
-
 APS5_EXPORT("TSoQhYKyq5g", sceNpCppWebApiUnknown14);
 int APS5_VABI sceNpCppWebApiUnknown14(void) {
     NotImplemented_nid_no_patch("TSoQhYKyq5g");
-    return 0;
-}
-
-APS5_EXPORT("TgsJjQqp+2k", sceNpCppWebApiUnknown15);
-int APS5_VABI sceNpCppWebApiUnknown15(void) {
-    NotImplemented_nid_no_patch("TgsJjQqp+2k");
     return 0;
 }
 
@@ -1499,21 +1636,9 @@ int APS5_VABI sceNpCppWebApiUnknown18(void) {
     return 0;
 }
 
-APS5_EXPORT("ZwjmbSr4Cxc", sceNpCppWebApiUnknown19);
-int APS5_VABI sceNpCppWebApiUnknown19(void) {
-    NotImplemented_nid_no_patch("ZwjmbSr4Cxc");
-    return 0;
-}
-
 APS5_EXPORT("b7leY-LNVnI", sceNpCppWebApiUnknown20);
 int APS5_VABI sceNpCppWebApiUnknown20(void) {
     NotImplemented_nid_no_patch("b7leY-LNVnI");
-    return 0;
-}
-
-APS5_EXPORT("c3J9K9XbQqE", sceNpCppWebApiUnknown21);
-int APS5_VABI sceNpCppWebApiUnknown21(void) {
-    NotImplemented_nid_no_patch("c3J9K9XbQqE");
     return 0;
 }
 
@@ -1529,27 +1654,9 @@ int APS5_VABI sceNpCppWebApiUnknown23(void) {
     return 0;
 }
 
-APS5_EXPORT("d1eEjWR60wk", sceNpCppWebApiUnknown24);
-int APS5_VABI sceNpCppWebApiUnknown24(void) {
-    NotImplemented_nid_no_patch("d1eEjWR60wk");
-    return 0;
-}
-
-APS5_EXPORT("epwr+cBCIFs", sceNpCppWebApiUnknown25);
-int APS5_VABI sceNpCppWebApiUnknown25(void) {
-    NotImplemented_nid_no_patch("epwr+cBCIFs");
-    return 0;
-}
-
 APS5_EXPORT("eruduJ0KrT0", sceNpCppWebApiUnknown26);
 int APS5_VABI sceNpCppWebApiUnknown26(void) {
     NotImplemented_nid_no_patch("eruduJ0KrT0");
-    return 0;
-}
-
-APS5_EXPORT("fG06a38iao8", sceNpCppWebApiUnknown27);
-int APS5_VABI sceNpCppWebApiUnknown27(void) {
-    NotImplemented_nid_no_patch("fG06a38iao8");
     return 0;
 }
 
@@ -1565,36 +1672,6 @@ int APS5_VABI sceNpCppWebApiUnknown29(void) {
     return 0;
 }
 
-APS5_EXPORT("kz2Z38yTLq0", sceNpCppWebApiUnknown30);
-int APS5_VABI sceNpCppWebApiUnknown30(void) {
-    NotImplemented_nid_no_patch("kz2Z38yTLq0");
-    return 0;
-}
-
-APS5_EXPORT("lB8driFKaoU", sceNpCppWebApiUnknown31);
-int APS5_VABI sceNpCppWebApiUnknown31(void) {
-    NotImplemented_nid_no_patch("lB8driFKaoU");
-    return 0;
-}
-
-APS5_EXPORT("mCsV7izOkjY", sceNpCppWebApiUnknown32);
-int APS5_VABI sceNpCppWebApiUnknown32(void) {
-    NotImplemented_nid_no_patch("mCsV7izOkjY");
-    return 0;
-}
-
-APS5_EXPORT("n1yCLMxpseQ", sceNpCppWebApiUnknown33);
-int APS5_VABI sceNpCppWebApiUnknown33(void) {
-    NotImplemented_nid_no_patch("n1yCLMxpseQ");
-    return 0;
-}
-
-APS5_EXPORT("nL9vSVq-29s", sceNpCppWebApiUnknown34);
-int APS5_VABI sceNpCppWebApiUnknown34(void) {
-    NotImplemented_nid_no_patch("nL9vSVq-29s");
-    return 0;
-}
-
 APS5_EXPORT("nmz5JYKcMfY", sceNpCppWebApiUnknown35);
 int APS5_VABI sceNpCppWebApiUnknown35(void) {
     NotImplemented_nid_no_patch("nmz5JYKcMfY");
@@ -1604,12 +1681,6 @@ int APS5_VABI sceNpCppWebApiUnknown35(void) {
 APS5_EXPORT("oHRl7a+zdMU", sceNpCppWebApiUnknown36);
 int APS5_VABI sceNpCppWebApiUnknown36(void) {
     NotImplemented_nid_no_patch("oHRl7a+zdMU");
-    return 0;
-}
-
-APS5_EXPORT("pSpO3hPNv64", sceNpCppWebApiUnknown37);
-int APS5_VABI sceNpCppWebApiUnknown37(void) {
-    NotImplemented_nid_no_patch("pSpO3hPNv64");
     return 0;
 }
 
@@ -1637,33 +1708,9 @@ int APS5_VABI sceNpCppWebApiUnknown41(void) {
     return 0;
 }
 
-APS5_EXPORT("umm5m+mXiZs", sceNpCppWebApiUnknown42);
-int APS5_VABI sceNpCppWebApiUnknown42(void) {
-    NotImplemented_nid_no_patch("umm5m+mXiZs");
-    return 0;
-}
-
 APS5_EXPORT("uwhztB49KOQ", sceNpCppWebApiUnknown43);
 int APS5_VABI sceNpCppWebApiUnknown43(void) {
     NotImplemented_nid_no_patch("uwhztB49KOQ");
-    return 0;
-}
-
-APS5_EXPORT("w4K4nTYwhVE", sceNpCppWebApiUnknown44);
-int APS5_VABI sceNpCppWebApiUnknown44(void) {
-    NotImplemented_nid_no_patch("w4K4nTYwhVE");
-    return 0;
-}
-
-APS5_EXPORT("wFcm6bgWB9Q", sceNpCppWebApiUnknown45);
-int APS5_VABI sceNpCppWebApiUnknown45(void) {
-    NotImplemented_nid_no_patch("wFcm6bgWB9Q");
-    return 0;
-}
-
-APS5_EXPORT("wp8+c84G5Xw", sceNpCppWebApiUnknown46);
-int APS5_VABI sceNpCppWebApiUnknown46(void) {
-    NotImplemented_nid_no_patch("wp8+c84G5Xw");
     return 0;
 }
 
@@ -1685,18 +1732,6 @@ int APS5_VABI sceNpCppWebApiUnknown49(void) {
     return 0;
 }
 
-APS5_EXPORT("3bjEFf8OhTs", sceNpCppWebApiUnknown50);
-int APS5_VABI sceNpCppWebApiUnknown50(void) {
-    NotImplemented_nid_no_patch("3bjEFf8OhTs");
-    return 0;
-}
-
-APS5_EXPORT("6FK4IOnANkc", sceNpCppWebApiUnknown51);
-int APS5_VABI sceNpCppWebApiUnknown51(void) {
-    NotImplemented_nid_no_patch("6FK4IOnANkc");
-    return 0;
-}
-
 APS5_EXPORT("EJAOHYWUki4", sceNpCppWebApiUnknown52);
 int APS5_VABI sceNpCppWebApiUnknown52(void) {
     NotImplemented_nid_no_patch("EJAOHYWUki4");
@@ -1709,12 +1744,6 @@ int APS5_VABI sceNpCppWebApiUnknown53(void) {
     return 0;
 }
 
-APS5_EXPORT("G3h-NDHnyW4", sceNpCppWebApiUnknown54);
-int APS5_VABI sceNpCppWebApiUnknown54(void) {
-    NotImplemented_nid_no_patch("G3h-NDHnyW4");
-    return 0;
-}
-
 APS5_EXPORT("H0XjNhflED4", sceNpCppWebApiUnknown55);
 int APS5_VABI sceNpCppWebApiUnknown55(void) {
     NotImplemented_nid_no_patch("H0XjNhflED4");
@@ -1724,12 +1753,6 @@ int APS5_VABI sceNpCppWebApiUnknown55(void) {
 APS5_EXPORT("IbWx007Acn4", sceNpCppWebApiUnknown56);
 int APS5_VABI sceNpCppWebApiUnknown56(void) {
     NotImplemented_nid_no_patch("IbWx007Acn4");
-    return 0;
-}
-
-APS5_EXPORT("Is+nI7Hq9jU", sceNpCppWebApiUnknown57);
-int APS5_VABI sceNpCppWebApiUnknown57(void) {
-    NotImplemented_nid_no_patch("Is+nI7Hq9jU");
     return 0;
 }
 
@@ -1760,24 +1783,6 @@ int APS5_VABI sceNpCppWebApiUnknown61(void) {
 APS5_EXPORT("RbvteD35X-8", sceNpCppWebApiUnknown62);
 int APS5_VABI sceNpCppWebApiUnknown62(void) {
     NotImplemented_nid_no_patch("RbvteD35X-8");
-    return 0;
-}
-
-APS5_EXPORT("XCtf+23QT0k", sceNpCppWebApiUnknown63);
-int APS5_VABI sceNpCppWebApiUnknown63(void) {
-    NotImplemented_nid_no_patch("XCtf+23QT0k");
-    return 0;
-}
-
-APS5_EXPORT("a4q15LI1a4E", sceNpCppWebApiUnknown64);
-int APS5_VABI sceNpCppWebApiUnknown64(void) {
-    NotImplemented_nid_no_patch("a4q15LI1a4E");
-    return 0;
-}
-
-APS5_EXPORT("eT4TQB7OsLA", sceNpCppWebApiUnknown65);
-int APS5_VABI sceNpCppWebApiUnknown65(void) {
-    NotImplemented_nid_no_patch("eT4TQB7OsLA");
     return 0;
 }
 
