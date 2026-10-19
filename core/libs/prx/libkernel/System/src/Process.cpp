@@ -505,10 +505,7 @@ int APS5_VABI execv_nid_postfix(const char* path, char* const* arguments) {
 }
 
 int APS5_VABI execve_nid_postfix(const char* path, char* const* arguments, char* const* environment) {
-    (void)path;
-    (void)arguments;
-    (void)environment;
-    NotImplemented_nid_no_patch("execve: executable replacement");
+    *__error_nid_postfix() = execveError(path, arguments, environment);
     return -1;
 }
 

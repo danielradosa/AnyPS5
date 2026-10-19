@@ -446,8 +446,11 @@ int OpenHostWatch(int descriptor, std::uint32_t, HostWatch& host) {
     if (S_ISFIFO(status.st_mode) || S_ISSOCK(status.st_mode)) {
         return GUEST_EINVAL;
     }
+    if (S_ISCHR(status.st_mode)) {
+        return descriptor > 2 ? GUEST_ENODEV : GUEST_EINVAL;
+    }
     if (!S_ISREG(status.st_mode) && !S_ISDIR(status.st_mode)) {
-        NotImplemented_nid_no_patch("EVFILT_VNODE: a descriptor that is not a file or a directory");
+        throw std::runtime_error("EVFILT_VNODE: descriptor " + std::to_string(descriptor) + " has an unsupported host type");
     }
     host.target = ::fcntl(descriptor, F_DUPFD_CLOEXEC, 0);
     if (host.target < 0) {
