@@ -18,4 +18,14 @@ if(BUILD_TESTING)
         set_tests_properties(guest_np_cpp_web_api_string PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+
+    add_test_executable(guest_np_cpp_web_api_tests ${LIBS_INCLUDE_DIR}/tests/GuestNpCppWebApi.cpp)
+    target_include_directories(guest_np_cpp_web_api_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_np_cpp_web_api_tests PRIVATE libSceNpCppWebApi libc)
+    configure_windows_unwind(guest_np_cpp_web_api_tests)
+    add_test(NAME guest_np_cpp_web_api COMMAND guest_np_cpp_web_api_tests)
+    if(WIN32)
+        set_tests_properties(guest_np_cpp_web_api PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
 endif()
