@@ -7,7 +7,6 @@
 #include <stdexcept>
 
 extern "C" {
-int APS5_VABI sceAudioPropagationPathGetNumPoints();
 int APS5_VABI sceAudioPropagationSystemLock();
 int APS5_VABI sceAudioPropagationMaterialInit();
 }
@@ -123,6 +122,26 @@ int main() {
     Require(sceAudioPropagationSourceGetAudioPathCount(source, &count) == 0 && count == 0, "source reports audio paths");
     AudioPropagationHandle path = 0;
     RequireThrows<std::invalid_argument>([&] { sceAudioPropagationSourceGetAudioPath(source, 0, &path); }, "audio path without paths");
+    AudioPropagation::AudioPath audioPath{};
+    audioPath.desc = {AudioPropagation::AudioPathId, AudioPropagation::AudioPathSize};
+    audioPath.numPoints = 2;
+    for (auto& point : audioPath.points) point.desc = {AudioPropagation::AudioPathPointId, AudioPropagation::AudioPathPointSize};
+    const AudioPropagation::AudioPath pathCopy = audioPath;
+    RequireThrows<std::invalid_argument>([&] { sceAudioPropagationSourceSetAudioPath(source, &audioPath, 1.0f); }, "set an audio path on a source handle");
+    RequireThrows<std::invalid_argument>([&] { sceAudioPropagationSourceSetAudioPath(path, &audioPath, 1.0f); }, "set an unknown audio path");
+    RequireThrows<std::invalid_argument>([&] { sceAudioPropagationSourceSetAudioPath(path, nullptr, 1.0f); }, "set an audio path without data");
+    audioPath.desc.size = AudioPropagation::AudioPathSize - 8;
+    RequireThrows<std::invalid_argument>([&] { sceAudioPropagationSourceSetAudioPath(path, &audioPath, 1.0f); }, "audio path with a wrong descriptor size");
+    audioPath.desc.size = AudioPropagation::AudioPathSize;
+    audioPath.numPoints = AudioPropagation::MaxAudioPathPoints + 1;
+    RequireThrows<std::invalid_argument>([&] { sceAudioPropagationSourceSetAudioPath(path, &audioPath, 1.0f); }, "audio path with too many points");
+    audioPath.numPoints = pathCopy.numPoints;
+    Require(std::memcmp(&audioPath, &pathCopy, sizeof(audioPath)) == 0, "audio path data was written");
+    std::uint32_t points = 7;
+    RequireThrows<std::invalid_argument>([&] { sceAudioPropagationPathGetNumPoints(path, &points); }, "points of an unknown audio path");
+    RequireThrows<std::invalid_argument>([&] { sceAudioPropagationPathGetNumPoints(source, &points); }, "points of a source handle");
+    RequireThrows<std::invalid_argument>([&] { sceAudioPropagationPathGetNumPoints(path, nullptr); }, "points without output");
+    Require(points == 7, "audio path point count was written");
 
     std::uint8_t rays[AudioPropagation::RaySize * 2]{};
     count = 7;
@@ -233,7 +252,6 @@ int main() {
     Require(sceAudioPropagationSystemCreate(options, &memory, &system) == 0, "memory reuse after destroy failed");
     Require(sceAudioPropagationSystemDestroy(system) == 0, "second destroy failed");
 
-    RequireThrows<std::runtime_error>([&] { sceAudioPropagationPathGetNumPoints(); }, "path get num points throw");
     RequireThrows<std::runtime_error>([&] { sceAudioPropagationSystemLock(); }, "system lock throw");
     RequireThrows<std::runtime_error>([&] { sceAudioPropagationMaterialInit(); }, "material init throw");
 

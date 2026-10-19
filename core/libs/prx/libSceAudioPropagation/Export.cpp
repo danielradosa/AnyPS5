@@ -111,6 +111,10 @@ void requireNoPropagation(bool none, const char* function) {
     if (!none) throw std::runtime_error(std::string(function) + ": rays or audio paths are outside the no-propagation model");
 }
 
+[[noreturn]] void unknownAudioPath(AudioPropagationHandle path, const char* function) {
+    throw std::invalid_argument(std::string(function) + ": audio path " + std::to_string(path) + " is unknown (sources have no audio paths)");
+}
+
 }
 
 extern "C" {
@@ -292,12 +296,11 @@ std::int32_t APS5_VABI sceAudioPropagationSourceSetAudioPaths(AudioPropagationHa
     return 0;
 }
 
-std::int32_t APS5_VABI sceAudioPropagationSourceSetAudioPath(AudioPropagationHandle path, const void* data, float gain) {
-    static_cast<void>(path);
-    static_cast<void>(data);
+std::int32_t APS5_VABI sceAudioPropagationSourceSetAudioPath(AudioPropagationHandle path, const AudioPath* data, float gain) {
     static_cast<void>(gain);
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    requireDescriptor(data != nullptr ? &data->desc : nullptr, AudioPathId, AudioPathSize, __func__);
+    require(data->numPoints <= MaxAudioPathPoints, __func__);
+    unknownAudioPath(path, __func__);
 }
 
 std::int32_t APS5_VABI sceAudioPropagationSourceRender(AudioPropagationHandle system, const RenderInfo* infos, std::uint32_t count) {
@@ -316,9 +319,9 @@ std::int32_t APS5_VABI sceAudioPropagationSourceRender(AudioPropagationHandle sy
     return 0;
 }
 
-int APS5_VABI sceAudioPropagationPathGetNumPoints() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceAudioPropagationPathGetNumPoints(AudioPropagationHandle path, std::uint32_t* outNumPoints) {
+    require(outNumPoints != nullptr, __func__);
+    unknownAudioPath(path, __func__);
 }
 
 int APS5_VABI sceAudioPropagationReportApi() {
