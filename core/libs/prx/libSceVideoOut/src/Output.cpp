@@ -86,6 +86,17 @@ static void validateOpenParam(const void* param) {
     }
 }
 
+static constexpr int32_t VIDEO_OUT_CURSOR_NUM_MAX = 2;
+
+static void validateCursor(const char* function, int32_t handle, int32_t index) {
+    if (!VideoOutDriver::Get().HasConfig(handle)) {
+        throw std::runtime_error(std::string(function) + ": VIDEO_OUT_ERROR_INVALID_HANDLE");
+    }
+    if (index < 0 || index >= VIDEO_OUT_CURSOR_NUM_MAX) {
+        throw std::runtime_error(std::string(function) + ": VIDEO_OUT_ERROR_INVALID_INDEX");
+    }
+}
+
 extern "C" {
 
 int APS5_VABI sceVideoOutOpen(int userId, int busType, int index, const void* param) try {
@@ -422,6 +433,51 @@ int APS5_VABI sceVideoOutClearFlipMaster(int slaveHandle) try {
 
 int APS5_VABI sceVideoOutAddVrrStatusFlagsPrivilege() {
     return 0;
+}
+
+int APS5_VABI sceVideoOutCursorEnable(int32_t handle, int32_t index, const void* address) try {
+    if (address == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_ADDRESS");
+    }
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutCursorDisable(int32_t handle, int32_t index) try {
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutCursorSetImageAddress(int32_t handle, int32_t index, const void* address) try {
+    if (address == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_ADDRESS");
+    }
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutCursorSetPosition(int32_t handle, int32_t index, uint32_t posX, uint32_t posY) try {
+    (void)posX;
+    (void)posY;
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutCursorSetHotSpot(int32_t handle, int32_t index, uint32_t hotX, uint32_t hotY) try {
+    (void)hotX;
+    (void)hotY;
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
 }
 
 }
