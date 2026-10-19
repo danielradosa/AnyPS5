@@ -2420,7 +2420,7 @@ if(BUILD_TESTING)
     endif()
     set_tests_properties(agc_driver_draw_cache_reuse PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_NO_DRAW_PREP=1")
     # Its counters expect the worker to learn each entry; the draw-prep thread would insert some first.
-    set_tests_properties(agc_driver_draw_cache_relocation PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_NO_DRAW_PREP=1")
+    set_tests_properties(agc_driver_draw_cache_relocation agc_driver_mesh_draw_relocation PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_NO_DRAW_PREP=1")
     add_test(NAME agc_driver_draw_cache_reuse_off COMMAND agc_driver_draw_cache_reuse_tests)
     set_tests_properties(agc_driver_draw_cache_reuse_off PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_NO_GPL=1;APS5_NO_DRAW_PREP=1" SKIP_RETURN_CODE 77)
     add_test(NAME agc_driver_draw_cache_reuse_verify COMMAND agc_driver_draw_cache_reuse_tests)
