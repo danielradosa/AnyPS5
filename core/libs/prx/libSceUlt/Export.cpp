@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "SceTypes.hpp"
+#include "prx/libc/include/General.hpp"
 #include "SceUltTypes.hpp"
 
 extern "C" int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg, const char* name);
