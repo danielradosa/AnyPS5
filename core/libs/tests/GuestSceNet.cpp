@@ -16,6 +16,7 @@
 #include "SceTypes.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -97,6 +98,79 @@ int APS5_VABI sceNetUsleep(int);
 void APS5_VABI sceNetGetSystemTime(std::uint64_t*);
 const char* APS5_VABI sceNetInetNtop(int, const void*, char*, std::uint32_t);
 int* APS5_VABI sceNetErrnoLoc(void);
+int APS5_VABI sceNetClearDnsCache(int);
+int APS5_VABI sceNetGetRandom(std::uint32_t*);
+const char* APS5_VABI sceNetGetIfName(std::uint32_t);
+int APS5_VABI sceNetGetStatisticsInfo(void*, int);
+int APS5_VABI sceNetEmulationGet(void*, int);
+int APS5_VABI sceNetEmulationSet(void*, int);
+int APS5_VABI sceNetIoctl(int, std::uint64_t, void*);
+void* APS5_VABI sceNetMemoryAllocate(std::int64_t, int);
+void APS5_VABI sceNetMemoryFree(void*);
+int APS5_VABI sceNetThreadCreate(Pthread*, const void*, const char*);
+void APS5_VABI sceNetThreadExit(void);
+int APS5_VABI sceNetThreadJoin(Pthread);
+int APS5_VABI sceNetAddrConfig6Start(void);
+int APS5_VABI sceNetAddrConfig6Stop(void);
+int APS5_VABI sceNetConfigAddArp(void);
+int APS5_VABI sceNetConfigAddArpWithInterface(void);
+int APS5_VABI sceNetConfigDelArp(void);
+int APS5_VABI sceNetConfigDelArpWithInterface(void);
+int APS5_VABI sceNetConfigAddIfaddr(void);
+int APS5_VABI sceNetConfigAddIfaddr6(void);
+int APS5_VABI sceNetConfigDelIfaddr(void);
+int APS5_VABI sceNetConfigDelIfaddr6(void);
+int APS5_VABI sceNetConfigSetIfaddr(void);
+int APS5_VABI sceNetConfigSetIfaddr6(void);
+int APS5_VABI sceNetConfigSetIfaddr6WithFlags(void);
+int APS5_VABI sceNetConfigSetIfLinkLocalAddr6(void);
+int APS5_VABI sceNetConfigAddMRoute(void);
+int APS5_VABI sceNetConfigDelMRoute(void);
+int APS5_VABI sceNetConfigAddRoute(void);
+int APS5_VABI sceNetConfigAddRoute6(void);
+int APS5_VABI sceNetConfigAddRouteWithInterface(void);
+int APS5_VABI sceNetConfigDelRoute(void);
+int APS5_VABI sceNetConfigDelRoute6(void);
+int APS5_VABI sceNetConfigDelDefaultRoute(void);
+int APS5_VABI sceNetConfigDelDefaultRoute6(void);
+int APS5_VABI sceNetConfigDelDefaultRouteDev(void);
+int APS5_VABI sceNetConfigSetDefaultRoute(void);
+int APS5_VABI sceNetConfigSetDefaultRoute6(void);
+int APS5_VABI sceNetConfigSetDefaultRouteDev(void);
+int APS5_VABI sceNetConfigFlushRoute(void);
+int APS5_VABI sceNetConfigFlushRoute6(void);
+int APS5_VABI sceNetConfigCleanUpAllInterfaces(void);
+int APS5_VABI sceNetConfigDownInterface(void);
+int APS5_VABI sceNetConfigUpInterface(void);
+int APS5_VABI sceNetConfigUpInterfaceWithFlags(void);
+int APS5_VABI sceNetConfigSetIfFlags(void);
+int APS5_VABI sceNetConfigUnsetIfFlags(void);
+int APS5_VABI sceNetConfigSetIfmtu(void);
+int APS5_VABI sceNetConfigSetDefaultScope(void);
+int APS5_VABI sceNetConfigEtherSetLinkMode(void);
+int APS5_VABI sceNetConfigWlanAdhocClearWakeOnWlan(void);
+int APS5_VABI sceNetConfigWlanAdhocCreate(void);
+int APS5_VABI sceNetConfigWlanAdhocJoin(void);
+int APS5_VABI sceNetConfigWlanAdhocLeave(void);
+int APS5_VABI sceNetConfigWlanAdhocPspEmuClearWakeOnWlan(void);
+int APS5_VABI sceNetConfigWlanAdhocPspEmuSetWakeOnWlan(void);
+int APS5_VABI sceNetConfigWlanAdhocScanJoin(void);
+int APS5_VABI sceNetConfigWlanAdhocSetExtInfoElement(void);
+int APS5_VABI sceNetConfigWlanAdhocSetWakeOnWlan(void);
+int APS5_VABI sceNetConfigWlanApStart(void);
+int APS5_VABI sceNetConfigWlanApStop(void);
+int APS5_VABI sceNetConfigWlanBackgroundScanStart(void);
+int APS5_VABI sceNetConfigWlanBackgroundScanStop(void);
+int APS5_VABI sceNetConfigWlanDiagSetAntenna(void);
+int APS5_VABI sceNetConfigWlanDiagSetTxFixedRate(void);
+int APS5_VABI sceNetConfigWlanInfraLeave(void);
+int APS5_VABI sceNetConfigWlanInfraScanJoin(void);
+int APS5_VABI sceNetConfigWlanScan(void);
+int APS5_VABI sceNetConfigWlanSetDeviceConfig(void);
+int APS5_VABI sceNetDhcpStart(void);
+int APS5_VABI sceNetDhcpStop(void);
+int APS5_VABI sceNetPppoeStart(void);
+int APS5_VABI sceNetPppoeStop(void);
 }
 
 struct NetIovec {
@@ -764,6 +838,207 @@ static void CheckInetPtonEx() {
     }
 }
 
+template <typename TCall>
+static bool ThrowsRuntime(TCall call) {
+    try {
+        call();
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+static void CheckRefusedConfiguration() {
+    using ConfigurationCall = int (APS5_VABI*)(void);
+    const ConfigurationCall calls[] = {
+        sceNetAddrConfig6Start,
+        sceNetAddrConfig6Stop,
+        sceNetConfigAddArp,
+        sceNetConfigAddArpWithInterface,
+        sceNetConfigDelArp,
+        sceNetConfigDelArpWithInterface,
+        sceNetConfigAddIfaddr,
+        sceNetConfigAddIfaddr6,
+        sceNetConfigDelIfaddr,
+        sceNetConfigDelIfaddr6,
+        sceNetConfigSetIfaddr,
+        sceNetConfigSetIfaddr6,
+        sceNetConfigSetIfaddr6WithFlags,
+        sceNetConfigSetIfLinkLocalAddr6,
+        sceNetConfigAddMRoute,
+        sceNetConfigDelMRoute,
+        sceNetConfigAddRoute,
+        sceNetConfigAddRoute6,
+        sceNetConfigAddRouteWithInterface,
+        sceNetConfigDelRoute,
+        sceNetConfigDelRoute6,
+        sceNetConfigDelDefaultRoute,
+        sceNetConfigDelDefaultRoute6,
+        sceNetConfigDelDefaultRouteDev,
+        sceNetConfigSetDefaultRoute,
+        sceNetConfigSetDefaultRoute6,
+        sceNetConfigSetDefaultRouteDev,
+        sceNetConfigFlushRoute,
+        sceNetConfigFlushRoute6,
+        sceNetConfigCleanUpAllInterfaces,
+        sceNetConfigDownInterface,
+        sceNetConfigUpInterface,
+        sceNetConfigUpInterfaceWithFlags,
+        sceNetConfigSetIfFlags,
+        sceNetConfigUnsetIfFlags,
+        sceNetConfigSetIfmtu,
+        sceNetConfigSetDefaultScope,
+        sceNetConfigEtherSetLinkMode,
+        sceNetConfigWlanAdhocClearWakeOnWlan,
+        sceNetConfigWlanAdhocCreate,
+        sceNetConfigWlanAdhocJoin,
+        sceNetConfigWlanAdhocLeave,
+        sceNetConfigWlanAdhocPspEmuClearWakeOnWlan,
+        sceNetConfigWlanAdhocPspEmuSetWakeOnWlan,
+        sceNetConfigWlanAdhocScanJoin,
+        sceNetConfigWlanAdhocSetExtInfoElement,
+        sceNetConfigWlanAdhocSetWakeOnWlan,
+        sceNetConfigWlanApStart,
+        sceNetConfigWlanApStop,
+        sceNetConfigWlanBackgroundScanStart,
+        sceNetConfigWlanBackgroundScanStop,
+        sceNetConfigWlanDiagSetAntenna,
+        sceNetConfigWlanDiagSetTxFixedRate,
+        sceNetConfigWlanInfraLeave,
+        sceNetConfigWlanInfraScanJoin,
+        sceNetConfigWlanScan,
+        sceNetConfigWlanSetDeviceConfig,
+        sceNetDhcpStart,
+        sceNetDhcpStop,
+        sceNetPppoeStart,
+        sceNetPppoeStop,
+    };
+    for (const auto call : calls) {
+        *sceNetErrnoLoc() = 0;
+        Require(Failed(call(), 1));
+    }
+}
+
+static void CheckNetUtilities() {
+    Require(sceNetClearDnsCache(0) == 0);
+    Require(ThrowsRuntime([] { sceNetClearDnsCache(1); }));
+
+    Require(Failed(sceNetGetRandom(nullptr), 22));
+    std::array<std::uint32_t, 8> random{};
+    for (auto& value : random) Require(sceNetGetRandom(&value) == 0);
+    Require(std::any_of(random.begin() + 1, random.end(), [&](std::uint32_t value) { return value != random[0]; }));
+
+    Require(std::strcmp(sceNetGetIfName(0), "lo0") == 0);
+    Require(std::strcmp(sceNetGetIfName(1), "eth0") == 0);
+    Require(std::strcmp(sceNetGetIfName(4), "wlan0") == 0);
+    Require(std::strcmp(sceNetGetIfName(9), "pppoe0") == 0);
+    *sceNetErrnoLoc() = 0;
+    const char* missing = sceNetGetIfName(10);
+    Require(missing != nullptr && *missing == '\0' && *sceNetErrnoLoc() == 22);
+
+    std::array<std::int32_t, 7> statistics{-1, -1, -1, -1, -1, -1, -1};
+    Require(Failed(sceNetGetStatisticsInfo(nullptr, 0), 14));
+    Require(sceNetGetStatisticsInfo(statistics.data(), 0) == 0);
+    Require(statistics[0] == 16777216 && statistics[1] == 16777216 && statistics[2] == 0 && statistics[3] == 0 &&
+        statistics[4] == 16777216 && statistics[5] == 16777216 && statistics[6] == -1);
+    Require(ThrowsRuntime([&] { sceNetGetStatisticsInfo(statistics.data(), 1); }));
+
+    std::array<std::uint8_t, 64> emulation{};
+    Require(Failed(sceNetEmulationGet(emulation.data(), 0), 45));
+    Require(Failed(sceNetEmulationSet(emulation.data(), 0), 45));
+    Require(Failed(sceNetEmulationGet(nullptr, 1), 45));
+
+    Require(sceNetMemoryAllocate(0, 0) == nullptr && sceNetMemoryAllocate(-1, 2) == nullptr);
+    auto* plain = static_cast<std::uint8_t*>(sceNetMemoryAllocate(64, 0));
+    Require(plain != nullptr);
+    std::memset(plain, 0xa5, 64);
+    sceNetMemoryFree(plain);
+    auto* zeroed = static_cast<std::uint8_t*>(sceNetMemoryAllocate(4096, 2));
+    Require(zeroed != nullptr && std::all_of(zeroed, zeroed + 4096, [](std::uint8_t byte) { return byte == 0; }));
+    sceNetMemoryFree(zeroed);
+    sceNetMemoryFree(nullptr);
+    Require(ThrowsRuntime([] { sceNetMemoryAllocate(16, 1); }));
+}
+
+struct TestNetThreadParam {
+    void (APS5_VABI* entry)(void*);
+    void* arg;
+    std::uint64_t reserved;
+    std::uint32_t flags;
+};
+
+static void APS5_VABI CountNetThread(void* arg) {
+    ++*static_cast<std::atomic<int>*>(arg);
+}
+
+static void APS5_VABI ExitNetThread(void* arg) {
+    ++*static_cast<std::atomic<int>*>(arg);
+    sceNetThreadExit();
+    std::abort();
+}
+
+static void CheckNetThreads() {
+    std::atomic<int> runs{0};
+    TestNetThreadParam param{CountNetThread, &runs, 0, 0};
+    Pthread thread = nullptr;
+    Require(sceNetThreadCreate(&thread, &param, "guest-net-thread") == 0 && thread != nullptr);
+    Require(sceNetThreadJoin(thread) == 0 && runs == 1);
+    param.flags = 1;
+    Require(sceNetThreadCreate(&thread, &param, "guest-net-thread-exit") == 0);
+    Require(sceNetThreadJoin(thread) == 0 && runs == 2);
+    TestNetThreadParam exiting{ExitNetThread, &runs, 0, 0};
+    Require(sceNetThreadCreate(&thread, &exiting, nullptr) == 0);
+    Require(sceNetThreadJoin(thread) == 0 && runs == 3);
+    Require(Failed(sceNetThreadCreate(&thread, nullptr, "guest-net-thread-none"), 22));
+    *sceNetErrnoLoc() = 0;
+    Require(sceNetThreadJoin(nullptr) == static_cast<int>(0x80020016) && *sceNetErrnoLoc() == 205);
+    param.flags = 2;
+    Require(ThrowsRuntime([&] { sceNetThreadCreate(&thread, &param, nullptr); }));
+    TestNetThreadParam empty{nullptr, nullptr, 0, 0};
+    Require(ThrowsRuntime([&] { sceNetThreadCreate(&thread, &empty, nullptr); }));
+    Require(runs == 3);
+}
+
+static void CheckIoctl() {
+    constexpr std::uint64_t fionbio = 0x8004667e;
+    constexpr std::uint64_t fionread = 0x4004667f;
+    constexpr std::uint64_t fioclex = 0x20006601;
+    const int s = sceNetSocket("guest-net-ioctl", 2, 2, 17);
+    Require(s >= 0);
+    std::array<std::uint8_t, 16> address{16, 2, 0, 0, 127, 0, 0, 1};
+    Require(sceNetBind_nid_postfix(s, address.data(), address.size()) == 0);
+    std::uint32_t length = address.size();
+    Require(sceNetGetsockname(s, address.data(), &length) == 0 && length == 16);
+    int value = 1;
+    int nbio = -1;
+    std::uint32_t size = sizeof(nbio);
+    Require(sceNetIoctl(s, fionbio, &value) == 0);
+    Require(sceNetGetsockopt(s, 0xffff, 0x1200, &nbio, &size) == 0 && nbio == 1);
+    value = 0;
+    Require(sceNetIoctl(s, fionbio, &value) == 0);
+    Require(sceNetGetsockopt(s, 0xffff, 0x1200, &nbio, &size) == 0 && nbio == 0);
+    int pending = -1;
+    Require(sceNetIoctl(s, fionread, &pending) == 0 && pending == 0);
+    Require(sceNetSendto(s, "hello", 5, 0, address.data(), address.size()) == 5);
+    for (int attempt = 0; attempt < 200 && pending == 0; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        Require(sceNetIoctl(s, fionread, &pending) == 0);
+    }
+    Require(pending == 5);
+    Require(Failed(sceNetIoctl(s, fionread, nullptr), 14));
+    Require(Failed(sceNetIoctl(s, fionbio, nullptr), 14));
+    Require(ThrowsRuntime([&] { sceNetIoctl(s, fioclex, &value); }));
+    Require(sceNetSocketClose(s) == 0);
+    Require(Failed(sceNetIoctl(s, fionread, &pending), 9));
+
+    const int kernel = socket_nid_postfix(2, 2, 0);
+    Require(kernel >= 0);
+    value = 1;
+    Require(sceNetIoctl(kernel, fionbio, &value) == 0);
+    Require(Failed(sceNetIoctl(kernel, fioclex, &value), 25));
+    Require(close_nid_postfix(kernel) == 0);
+}
+
 static void CheckSystemTime() {
     *sceNetErrnoLoc() = 22;
     sceNetGetSystemTime(nullptr);
@@ -1222,6 +1497,10 @@ int main() {
     CheckInetPtonEx();
     CheckUsleep();
     CheckSystemTime();
+    CheckRefusedConfiguration();
+    CheckNetUtilities();
+    CheckNetThreads();
+    CheckIoctl();
     CheckEpollIdent();
     CheckLinkLocalAllNodesIpv6();
     CheckUnboundSocketName();
