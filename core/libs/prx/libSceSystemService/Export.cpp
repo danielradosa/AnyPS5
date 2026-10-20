@@ -26,6 +26,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libSceSystemService/SystemService.hpp"
+#include "prx/libSceUserService/UserService.hpp"
 #include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
 #include "prx/libSceAgcDriver/Execution/include/HostHdr.hpp"
 
@@ -477,6 +478,49 @@ int APS5_VABI sceLncUtilKillApp(std::uint32_t appId) {
   throw std::runtime_error("sceLncUtilKillApp: app ID " + std::to_string(appId) + " is not the running title's");
  }
  LibcExit_nid_no_patch(0);
+}
+
+int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted(int userId, bool* isAdjusted) {
+ if (isAdjusted == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
+ if (userId != USER_SERVICE_INITIAL_USER_ID) {
+  throw std::runtime_error("sceSystemServiceIsEyeToEyeDistanceAdjusted: user " + std::to_string(userId) + " is not the signed-in user");
+ }
+ *isAdjusted = false;
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceShowEyeToEyeDistanceSetting(void) {
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceEnablePersonalEyeToEyeDistanceSetting(void) {
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceDisablePersonalEyeToEyeDistanceSetting(void) {
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceEnableSuspendConfirmationDialog(void) {
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceDisableSuspendConfirmationDialog(void) {
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceLaunchEventDetails(int userId, const char* eventId) {
+ (void)userId;
+ (void)eventId;
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceLaunchTournamentsTeamProfile(int userId, const char* teamId, const char* eventId, const char* teamPlatform) {
+ (void)userId;
+ (void)teamId;
+ (void)eventId;
+ (void)teamPlatform;
+ return SYSTEM_SERVICE_OK;
 }
 
 }

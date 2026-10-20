@@ -1722,32 +1722,12 @@ int APS5_VABI sceSystemServiceDisablePartyVoice() {
     return 0;
 }
 
-int APS5_VABI sceSystemServiceDisablePersonalEyeToEyeDistanceSetting() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSystemServiceDisableSuspendConfirmationDialog() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceSystemServiceDisableSuspendNotification() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceDisableVoiceRecognition() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSystemServiceEnablePersonalEyeToEyeDistanceSetting() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSystemServiceEnableSuspendConfirmationDialog() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -1912,11 +1892,6 @@ int APS5_VABI sceSystemServiceIsBgmPlaying() {
     return 0;
 }
 
-int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceSystemServiceIsGameLiveStreamingOnAir() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -1947,22 +1922,12 @@ int APS5_VABI sceSystemServiceKillLocalProcessForPs2Emu() {
     return 0;
 }
 
-int APS5_VABI sceSystemServiceLaunchEventDetails() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceSystemServiceLaunchStore() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceLaunchTournamentList() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSystemServiceLaunchTournamentsTeamProfile() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -2103,11 +2068,6 @@ int APS5_VABI sceSystemServiceShowClosedCaptionSettings() {
 }
 
 int APS5_VABI sceSystemServiceShowErrorDialog() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSystemServiceShowEyeToEyeDistanceSetting() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

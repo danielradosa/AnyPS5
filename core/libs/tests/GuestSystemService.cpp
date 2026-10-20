@@ -1,5 +1,6 @@
 #include "SceTypes.hpp"
 #include "prx/libSceSystemService/SystemService.hpp"
+#include "prx/libSceUserService/UserService.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -12,6 +13,14 @@ extern "C" int APS5_VABI sceSystemServiceGetAppId(const char* titleId);
 extern "C" int APS5_VABI sceSystemServiceGetAppTitleId(int appId, char* titleId);
 extern "C" int APS5_VABI sceSystemServiceGetMainAppTitleId(char* titleId);
 extern "C" int APS5_VABI sceLncUtilGetAppTitleId(std::uint32_t appId, char* titleId);
+extern "C" int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted(int userId, bool* isAdjusted);
+extern "C" int APS5_VABI sceSystemServiceShowEyeToEyeDistanceSetting(void);
+extern "C" int APS5_VABI sceSystemServiceEnablePersonalEyeToEyeDistanceSetting(void);
+extern "C" int APS5_VABI sceSystemServiceDisablePersonalEyeToEyeDistanceSetting(void);
+extern "C" int APS5_VABI sceSystemServiceEnableSuspendConfirmationDialog(void);
+extern "C" int APS5_VABI sceSystemServiceDisableSuspendConfirmationDialog(void);
+extern "C" int APS5_VABI sceSystemServiceLaunchEventDetails(int userId, const char* eventId);
+extern "C" int APS5_VABI sceSystemServiceLaunchTournamentsTeamProfile(int userId, const char* teamId, const char* eventId, const char* teamPlatform);
 extern "C" int APS5_VABI sceSystemServiceParamGetString(int paramId, char* buf, std::size_t bufSize);
 extern "C" int APS5_VABI sceSystemServiceLaunchApp(const char* titleId, const char* const* arguments, const void* param);
 extern "C" int APS5_VABI sceSystemServiceAddLocalProcessForPsmKit(const char* path, const char* const* arguments, const void* param);
@@ -144,6 +153,31 @@ int main() {
     SystemServiceEvent event;
     event.event_type = 7;
     Require(sceSystemServiceReceiveEvent(&event) == SYSTEM_SERVICE_ERROR_NO_EVENT);
+
+    Require(sceSystemServiceShowEyeToEyeDistanceSetting() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceEnablePersonalEyeToEyeDistanceSetting() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceDisablePersonalEyeToEyeDistanceSetting() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceDisablePersonalEyeToEyeDistanceSetting() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceEnableSuspendConfirmationDialog() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceDisableSuspendConfirmationDialog() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceDisableSuspendConfirmationDialog() == SYSTEM_SERVICE_OK);
+    Require(sceSystemServiceEnableSuspendConfirmationDialog() == SYSTEM_SERVICE_OK);
+    char eventId[] = "event-1";
+    Require(sceSystemServiceLaunchEventDetails(USER_SERVICE_INITIAL_USER_ID, eventId) == SYSTEM_SERVICE_OK);
+    Require(std::strcmp(eventId, "event-1") == 0);
+    Require(sceSystemServiceLaunchEventDetails(USER_SERVICE_USER_ID_INVALID, nullptr) == SYSTEM_SERVICE_OK);
+    char teamId[] = "team-1";
+    char teamPlatform[] = "PS5";
+    Require(sceSystemServiceLaunchTournamentsTeamProfile(USER_SERVICE_INITIAL_USER_ID, teamId, eventId, teamPlatform) == SYSTEM_SERVICE_OK);
+    Require(std::strcmp(teamId, "team-1") == 0 && std::strcmp(eventId, "event-1") == 0 && std::strcmp(teamPlatform, "PS5") == 0);
+    Require(sceSystemServiceLaunchTournamentsTeamProfile(USER_SERVICE_USER_ID_INVALID, nullptr, nullptr, nullptr) == SYSTEM_SERVICE_OK);
+
+    Require(sceSystemServiceIsEyeToEyeDistanceAdjusted(USER_SERVICE_INITIAL_USER_ID, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    bool adjusted = true;
+    Require(sceSystemServiceIsEyeToEyeDistanceAdjusted(USER_SERVICE_INITIAL_USER_ID, &adjusted) == SYSTEM_SERVICE_OK && !adjusted);
+    adjusted = true;
+    Require(Throws([&] { return sceSystemServiceIsEyeToEyeDistanceAdjusted(USER_SERVICE_INITIAL_USER_ID + 1, &adjusted); }) && adjusted);
+    Require(Throws([&] { return sceSystemServiceIsEyeToEyeDistanceAdjusted(USER_SERVICE_USER_ID_INVALID, &adjusted); }) && adjusted);
 
     Require(sceSystemServiceGetAppId(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
     Require(sceSystemServiceGetAppTitleId(SYSTEM_SERVICE_RUNNING_APP_ID, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
