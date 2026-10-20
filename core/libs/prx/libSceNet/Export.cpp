@@ -2377,8 +2377,9 @@ int APS5_VABI sceNetShowRoute(void) {
     return 0;
 }
 
-int APS5_VABI sceNetShowRouteWithMemory(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceNetShowRouteWithMemory(int memid) {
+    std::lock_guard lk(g_mutex);
+    if (g_pools.find(memid) == g_pools.end()) return fail(NET_EBADF);
     return 0;
 }
 
