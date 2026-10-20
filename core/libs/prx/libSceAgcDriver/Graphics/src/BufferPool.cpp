@@ -42,8 +42,6 @@ BufferPool::BufferPool(const Context& context) : maxSlots(std::max<std::size_t>(
     smallTier.budget = smallBudget;
     largeTier.budget = budget;
     deviceTier.budget = deviceBudget(context);
-    physical = context.physical;
-    memoryProperties2 = context.memoryProperties2;
     for (std::uint32_t heap = 0; heap < context.memory.memoryHeapCount && heap < VK_MAX_MEMORY_HEAPS; ++heap) {
         if ((context.memory.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 && (!deviceHeap || context.memory.memoryHeaps[heap].size > context.memory.memoryHeaps[*deviceHeap].size)) deviceHeap = heap;
     }

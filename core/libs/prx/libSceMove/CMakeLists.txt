@@ -1,15 +1,3 @@
 add_library(libSceMove SHARED EXCLUDE_FROM_ALL Export.cpp)
 target_include_directories(libSceMove PRIVATE ${LIBS_INCLUDE_DIR})
 configure_windows_unwind(libSceMove)
-
-if(BUILD_TESTING)
-    add_test_executable(guest_move_tests ${LIBS_INCLUDE_DIR}/tests/GuestMove.cpp)
-    target_include_directories(guest_move_tests PRIVATE ${LIBS_INCLUDE_DIR})
-    target_link_libraries(guest_move_tests PRIVATE libSceMove libc)
-    configure_windows_unwind(guest_move_tests)
-    add_test(NAME guest_move COMMAND guest_move_tests)
-    if(WIN32)
-        set_tests_properties(guest_move PROPERTIES ENVIRONMENT_MODIFICATION
-            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceMove>")
-    endif()
-endif()

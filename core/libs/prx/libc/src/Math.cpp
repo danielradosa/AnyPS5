@@ -191,7 +191,6 @@ float GuestBesselSecondKindZero() {
 }
 
 extern "C" {
-float APS5_VABI tgammaf_nid_postfix(float x) { return std::tgamma(x); }
 
 std::lldiv_t APS5_VABI lldiv_nid_postfix(long long numerator, long long denominator) {
     return std::lldiv(numerator, denominator);

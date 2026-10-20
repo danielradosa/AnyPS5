@@ -164,8 +164,6 @@ private:
     Tier largeTier;
     Tier deviceTier;
     std::uint64_t clock = 0;
-    VkPhysicalDevice physical = VK_NULL_HANDLE;
-    PFN_vkGetPhysicalDeviceMemoryProperties2 memoryProperties2 = nullptr;
     std::optional<std::uint32_t> deviceHeap;
     std::chrono::steady_clock::time_point allowanceChecked{};
     VkDeviceSize deviceAllowance = std::numeric_limits<VkDeviceSize>::max();
