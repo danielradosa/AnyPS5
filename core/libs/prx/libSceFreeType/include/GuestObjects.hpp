@@ -14,6 +14,8 @@ struct GuestLibrary {
     FT_Library host = nullptr;
 };
 
+void UnregisterBitmap_nid_no_patch(const GuestBitmap* bitmap);
+
 struct GuestFace {
     GuestFaceRec rec{};
     GuestGlyphSlotRec slot{};
@@ -25,7 +27,11 @@ struct GuestFace {
     std::vector<GuestCharMapRec> charmaps;
     std::vector<GuestCharMapRec*> charmapPointers;
     std::vector<GuestVector> outlinePoints;
+
+    ~GuestFace() { UnregisterBitmap_nid_no_patch(&slot.bitmap); }
 };
+
+void RegisterBitmap_nid_no_patch(GuestFace& face);
 
 GuestFace* FaceOf(const GuestFaceRec* face);
 GuestFace* FaceOf(const GuestGlyphSlotRec* slot);

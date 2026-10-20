@@ -1,5 +1,9 @@
 # libSceFreeType technical debt
 
+### Bitmap handling
+
+- [FT_Bitmap_New, FT_Bitmap_Copy, FT_Bitmap_Convert, FT_Bitmap_Done](../../../core/libs/prx/libSceFreeType/src/Bitmap.cpp) (libSceFreeType) - bitmap initialization, copying, conversion, allocation and cleanup follow the bundled FreeType 2.13.3. Changes to mirrored glyph-slot bitmaps are written back to their native records; standalone buffers use the native FreeType allocator and must be released through FT_Bitmap_Done, as in FreeType. The PS5 3.20 libSceFreeTypeOt inventory lists these exports; console behavior and errors have not been measured. Convert rejects identical source and target objects, and Copy and Convert reject shared non-null buffer pointers, which the native API forbids; other overlapping storage remains a caller contract as in FreeType
+
 ### Unknown function info
 
 - [FT_Select_Charmap, FT_Set_Charmap, FT_Get_First_Char and FT_Get_Next_Char](../../../core/libs/prx/libSceFreeType/Export.cpp) (libSceFreeType) - console signatures and errors are unverified; the LP64 guest adapter follows the bundled [FreeType 2.13.3](https://github.com/freetype/freetype/blob/42608f77f20749dd6ddc9e0536788eaad70ea4b5/src/base/ftobjs.c). Character iteration uses the low 32 bits of the input code, as that version does internally, and updates the guest's selected charmap pointer without refreshing unrelated glyph or outline data. Guest charmap fields are treated as read-only copies of the native records.
