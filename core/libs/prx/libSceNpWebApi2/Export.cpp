@@ -25,6 +25,26 @@ struct NpWebApi2MemoryPoolStats {
     int32_t reserved;
 };
 
+struct NpWebApi2IntInitializeArgs {
+    int32_t lib_http_ctx_id;
+    int32_t reserved;
+    uint64_t pool_size;
+    const char* name;
+    uint64_t struct_size;
+};
+static_assert(sizeof(NpWebApi2IntInitializeArgs) == 32 && offsetof(NpWebApi2IntInitializeArgs, struct_size) == 24);
+
+struct NpWebApi2IntInitialize2Args {
+    int32_t lib_http_ctx_id;
+    int32_t reserved;
+    uint64_t pool_size;
+    const char* name;
+    uint32_t push_config_group;
+    int32_t reserved2;
+    uint64_t struct_size;
+};
+static_assert(sizeof(NpWebApi2IntInitialize2Args) == 40 && offsetof(NpWebApi2IntInitialize2Args, struct_size) == 32);
+
 struct NpWebApi2PushEventHandle {
     int libCtxId;
     bool aborted;
@@ -252,13 +272,12 @@ int APS5_VABI sceNpWebApi2AddMultipartPart() {
 }
 
 int APS5_VABI sceNpWebApi2CreateMultipartRequest(int user_ctx_id, const char* api_group, const char* path, const char* method, int64_t* request_id) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (!api_group || !path || !method) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+    return sceNpWebApi2CreateRequest(user_ctx_id, api_group, path, method, nullptr, request_id);
 }
 
 int APS5_VABI sceNpWebApi2InitializeForPresence(int lib_http_ctx_id, uint64_t pool_size) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return sceNpWebApi2Initialize(lib_http_ctx_id, pool_size);
 }
 
 int APS5_VABI sceNpWebApi2IntCreateRequest() {
@@ -266,14 +285,14 @@ int APS5_VABI sceNpWebApi2IntCreateRequest() {
     return 0;
 }
 
-int APS5_VABI sceNpWebApi2IntInitialize(const void* args) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpWebApi2IntInitialize(const NpWebApi2IntInitializeArgs* args) {
+    if (!args || args->struct_size != sizeof(NpWebApi2IntInitializeArgs)) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+    return sceNpWebApi2Initialize(args->lib_http_ctx_id, args->pool_size);
 }
 
-int APS5_VABI sceNpWebApi2IntInitialize2(const void* args) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpWebApi2IntInitialize2(const NpWebApi2IntInitialize2Args* args) {
+    if (!args || args->struct_size != sizeof(NpWebApi2IntInitialize2Args)) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+    return sceNpWebApi2Initialize(args->lib_http_ctx_id, args->pool_size);
 }
 
 int APS5_VABI sceNpWebApi2IntPushEventCreateCtxIndFilter() {
@@ -286,9 +305,9 @@ int APS5_VABI sceNpWebApi2IntPushEventCreateDestPs4CtxIndFilter() {
     return 0;
 }
 
-int APS5_VABI sceNpWebApi2SendMultipartRequest(int64_t request_id, int part_index, void* data, uint64_t data_size, void* resp_info_option) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpWebApi2SendMultipartRequest(int64_t request_id, int part_index, void* data, uint64_t data_size, NpWebApi2ResponseInformationOption* resp_info_option) {
+    if (part_index <= 0 || !data || data_size == 0) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+    return sceNpWebApi2SendRequest(request_id, data, data_size, resp_info_option);
 }
 
 int APS5_VABI sceNpWebApi2SetMultipartContentType() {

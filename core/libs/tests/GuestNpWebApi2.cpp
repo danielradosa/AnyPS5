@@ -11,8 +11,31 @@ struct NpWebApi2MemoryPoolStats {
     std::int32_t reserved;
 };
 
+struct NpWebApi2IntInitializeArgs {
+    std::int32_t lib_http_ctx_id;
+    std::int32_t reserved;
+    std::uint64_t pool_size;
+    const char* name;
+    std::uint64_t struct_size;
+};
+
+struct NpWebApi2IntInitialize2Args {
+    std::int32_t lib_http_ctx_id;
+    std::int32_t reserved;
+    std::uint64_t pool_size;
+    const char* name;
+    std::uint32_t push_config_group;
+    std::int32_t reserved2;
+    std::uint64_t struct_size;
+};
+
 extern "C" {
 int APS5_VABI sceNpWebApi2Initialize(int, std::size_t);
+int APS5_VABI sceNpWebApi2InitializeForPresence(int, std::uint64_t);
+int APS5_VABI sceNpWebApi2IntInitialize(const NpWebApi2IntInitializeArgs*);
+int APS5_VABI sceNpWebApi2IntInitialize2(const NpWebApi2IntInitialize2Args*);
+int APS5_VABI sceNpWebApi2CreateMultipartRequest(int, const char*, const char*, const char*, std::int64_t*);
+int APS5_VABI sceNpWebApi2SendMultipartRequest(std::int64_t, int, void*, std::uint64_t, NpWebApi2ResponseInformationOption*);
 int APS5_VABI sceNpWebApi2Terminate(int);
 int APS5_VABI sceNpWebApi2GetMemoryPoolStats(int, NpWebApi2MemoryPoolStats*);
 int APS5_VABI sceNpWebApi2PushEventCreateHandle(int);
@@ -67,8 +90,70 @@ static void TestPushEventAbortHandle() {
     Require(sceNpWebApi2Terminate(other) == 0);
 }
 
+static void TestInitializeVariants() {
+    constexpr int invalidArgument = static_cast<int>(0x80553402);
+    NpWebApi2MemoryPoolStats stats{};
+    const int presence = sceNpWebApi2InitializeForPresence(1, 0x4000);
+    Require(presence > 0);
+    Require(sceNpWebApi2GetMemoryPoolStats(presence, &stats) == 0 && stats.pool_size == 0x4000 && stats.current_inuse_size == 0);
+    Require(sceNpWebApi2PushEventCreateHandle(presence) > 0);
+
+    Require(sceNpWebApi2IntInitialize(nullptr) == invalidArgument);
+    NpWebApi2IntInitializeArgs args{1, 0, 0x6000, "internal", sizeof(NpWebApi2IntInitializeArgs) + 8};
+    Require(sceNpWebApi2IntInitialize(&args) == invalidArgument);
+    args.struct_size = sizeof(NpWebApi2IntInitializeArgs);
+    const int internal = sceNpWebApi2IntInitialize(&args);
+    Require(internal > 0 && internal != presence);
+    Require(sceNpWebApi2GetMemoryPoolStats(internal, &stats) == 0 && stats.pool_size == 0x6000);
+    args.name = nullptr;
+    const int unnamed = sceNpWebApi2IntInitialize(&args);
+    Require(unnamed > 0 && unnamed != internal);
+
+    Require(sceNpWebApi2IntInitialize2(nullptr) == invalidArgument);
+    NpWebApi2IntInitialize2Args args2{1, 0, 0x7000, "internal2", 3, 0, sizeof(NpWebApi2IntInitializeArgs)};
+    Require(sceNpWebApi2IntInitialize2(&args2) == invalidArgument);
+    args2.struct_size = sizeof(NpWebApi2IntInitialize2Args);
+    const int internal2 = sceNpWebApi2IntInitialize2(&args2);
+    Require(internal2 > 0 && internal2 != unnamed);
+    Require(sceNpWebApi2GetMemoryPoolStats(internal2, &stats) == 0 && stats.pool_size == 0x7000);
+
+    for (const int context : {presence, internal, unnamed, internal2}) {
+        Require(sceNpWebApi2Terminate(context) == 0);
+        Require(Throws([&] { sceNpWebApi2GetMemoryPoolStats(context, &stats); }));
+    }
+}
+
+static void TestMultipartRequest() {
+    constexpr int invalidArgument = static_cast<int>(0x80553402);
+    constexpr int unavailable = static_cast<int>(0x80553406);
+    const int context = sceNpWebApi2Initialize(1, 0x8000);
+    const int user = sceNpWebApi2CreateUserContext(context, 1);
+    std::int64_t request = 0;
+    Require(sceNpWebApi2CreateMultipartRequest(user, nullptr, "/v1/x", "POST", &request) == invalidArgument);
+    Require(sceNpWebApi2CreateMultipartRequest(user, "ugc", nullptr, "POST", &request) == invalidArgument);
+    Require(sceNpWebApi2CreateMultipartRequest(user, "ugc", "/v1/x", nullptr, &request) == invalidArgument);
+    Require(sceNpWebApi2CreateMultipartRequest(user, "ugc", "/v1/x", "POST", nullptr) == invalidArgument);
+    Require(request == 0);
+    Require(sceNpWebApi2CreateMultipartRequest(user, "ugc", "/v1/x", "POST", &request) == 0 && request > 0);
+    Require(sceNpWebApi2AddWebTraceTag(request, "multipart") == 0);
+
+    char part[4] = {'d', 'a', 't', 'a'};
+    NpWebApi2ResponseInformationOption response{};
+    Require(sceNpWebApi2SendMultipartRequest(request, 0, part, sizeof(part), &response) == invalidArgument);
+    Require(sceNpWebApi2SendMultipartRequest(request, -1, part, sizeof(part), &response) == invalidArgument);
+    Require(sceNpWebApi2SendMultipartRequest(request, 1, nullptr, sizeof(part), &response) == invalidArgument);
+    Require(sceNpWebApi2SendMultipartRequest(request, 1, part, 0, &response) == invalidArgument);
+    Require(sceNpWebApi2SendMultipartRequest(request, 1, part, sizeof(part), &response) == unavailable);
+    Require(sceNpWebApi2SendMultipartRequest(request, 2, part, sizeof(part), nullptr) == unavailable);
+    Require(sceNpWebApi2DeleteRequest(request) == 0);
+    Require(sceNpWebApi2AddWebTraceTag(request, "multipart") == unavailable);
+    Require(sceNpWebApi2Terminate(context) == 0);
+}
+
 int main() {
     TestPushEventAbortHandle();
+    TestInitializeVariants();
+    TestMultipartRequest();
     const int context = sceNpWebApi2Initialize(1, 0x20000);
     const int other = sceNpWebApi2Initialize(1, 0x8000);
     Require(context > 0 && other > 0 && context != other);
