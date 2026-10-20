@@ -108,6 +108,10 @@ if(BUILD_TESTING)
     add_test(NAME agc_marker_span COMMAND agc_marker_span_tests)
     if(WIN32)
         set_tests_properties(agc_marker_span PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
 add_test_executable(agc_static_buffer_tests EXCLUDE_FROM_ALL tests/StaticBuffer.cpp)
 target_include_directories(agc_static_buffer_tests PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(agc_static_buffer_tests PRIVATE libSceAgc libSceAgcDriver libc)
