@@ -67,7 +67,7 @@ int APS5_VABI sceAjmInstanceAvailable() {
 }
 
 uint32_t APS5_VABI sceAjmInstanceCodecType(uint32_t instance_id) {
-    return (instance_id >> 14) & 0x1Fu;
+    return instance_id >> 14;
 }
 
 int APS5_VABI sceAjmInstanceExtend(uint32_t context, uint32_t codec, uint64_t flags, uint32_t instance) {

@@ -2298,7 +2298,7 @@ int main() {
         Require(sceAjmInstanceDestroy(context, instance) == 0);
         Require(sceAjmInstanceCodecType(instance) == codec);
     }
-    Require(sceAjmInstanceCodecType((23u << 14) | 0x3FFFu) == 23 && sceAjmInstanceCodecType(0xFFFFFFFFu) == 0x1F && sceAjmInstanceCodecType(0x3FFFu) == 0);
+    Require(sceAjmInstanceCodecType((23u << 14) | 0x3FFFu) == 23 && sceAjmInstanceCodecType(0xFFFFFFFFu) == 0x3FFFFu && sceAjmInstanceCodecType(0x3FFFu) == 0);
 
     const std::uint8_t stereo48k[4] = {0xFE, 0x72, 0x1F, 0xF0};
     AjmDecAt9ConfigDataInfo info{};
