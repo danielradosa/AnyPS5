@@ -34,6 +34,7 @@ struct FontState {
     float scaleH = 16.0f;
     std::map<int, int> scriptLanguages;
     std::map<int, int> typographicFeatures;
+    int attribute = 0;
 
     FontState() = default;
     FontState(const FontState&) = delete;
@@ -66,6 +67,7 @@ struct GeneratedGlyph {
     bool hasUnsupportedEffects = false;
     bool metricsInitialized = false;
     bool outlineInitialized = false;
+    int attribute = 0;
 };
 
 struct SystemFontFile {

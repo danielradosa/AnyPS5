@@ -15,8 +15,8 @@ extern "C" std::uint64_t APS5_VABI sceAgcDcbEventWriteGetSize(std::uint8_t event
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbResetQueue(CommandBuffer* buf, std::uint32_t op, std::uint32_t state);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbClearState(CommandBuffer* buf, std::uint32_t command);
 extern "C" std::uint32_t* APS5_VABI sceAgcDcbSetFlip(CommandBuffer* buf, std::uint32_t handle, std::int32_t index, std::uint32_t mode, std::int64_t argument);
-extern "C" std::uint32_t* APS5_VABI sceAgcAcbSetFlip(CommandBuffer* buf, std::uint32_t handle, std::int32_t index, std::uint32_t mode, std::int64_t argument);
 extern "C" std::uint32_t* APS5_VABI sceAgcAcbWaitUntilSafeForRendering(CommandBuffer* buf, std::uint32_t handle, std::uint32_t index);
+extern "C" std::uint32_t* APS5_VABI sceAgcAcbSetFlip(CommandBuffer* buf, std::uint32_t handle, std::int32_t index, std::uint32_t mode, std::int64_t argument);
 extern "C" int APS5_VABI sceAgcSuspendPoint();
 extern "C" int APS5_VABI sceAgcSetSubmitMode(std::uint32_t mode);
 extern "C" int APS5_VABI sceAgcInit(std::uint32_t version);
@@ -385,10 +385,16 @@ void testFlip() {
     full.buffer.cursor_down = full.words.data() + 3;
     expectFailure([&] { sceAgcAcbWaitUntilSafeForRendering(&full.buffer, 1, 0); });
     check(full.buffer.cursor_up == full.words.data(), "failed compute rendering wait advanced cursor");
-    Storage compute;
-    auto* computeWait = sceAgcAcbWaitUntilSafeForRendering(&compute.buffer, 0xfedcba98u, 3);
-    auto* computeFlip = sceAgcAcbSetFlip(&compute.buffer, 0xfedcba98u, -2, 0x12345678u, -0x123456789abcdefLL);
-    check(computeFlip == computeWait + 4 && std::equal(expected.begin(), expected.end(), computeFlip), "ACB flip packet differs from the DCB flip");
+    Storage acbFlip;
+    acbFlip.words.fill(0xdeadbeefu);
+    auto* computeFlip = sceAgcAcbSetFlip(&acbFlip.buffer, 0xfedcba98u, -2, 0x12345678u, -0x123456789abcdefLL);
+    check(computeFlip == acbFlip.words.data() && std::equal(expected.begin(), expected.end(), computeFlip), "compute flip packet mismatch");
+    check(acbFlip.buffer.cursor_up == computeFlip + 6 && computeFlip[6] == 0xdeadbeefu, "compute flip overran allocation");
+    expectFailure([] { sceAgcAcbSetFlip(nullptr, 1, 0, 1, 0); });
+    Storage fullFlip;
+    fullFlip.buffer.cursor_down = fullFlip.words.data() + 5;
+    expectFailure([&] { sceAgcAcbSetFlip(&fullFlip.buffer, 1, 0, 1, 0); });
+    check(fullFlip.buffer.cursor_up == fullFlip.words.data(), "failed compute flip advanced cursor");
     check(sceAgcSuspendPoint() == 0, "empty suspend failed");
     check(sceAgcSetSubmitMode(0) == 0, "submit mode 0 failed");
     expectFailure([] { sceAgcSetSubmitMode(1); });
@@ -428,8 +434,14 @@ void testRegisterRange() {
     check(packet == storage.words.data() + 6 && storage.buffer.cursor_up == storage.words.data() + 12, "incorrect populated register range allocation");
     check(storage.words == expected, "register values were not copied correctly");
     const auto* misaligned = reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const unsigned char*>(values.data()) + 1);
-    expectFailure([&] { sceAgcCbSetShRegisterRangeDirect(&storage.buffer, 0x8c, misaligned, 4); });
-    check(storage.words == expected && storage.buffer.cursor_up == storage.words.data() + 12, "misaligned register values modified command buffer");
+    packet = sceAgcCbSetShRegisterRangeDirect(&storage.buffer, 0x8c, misaligned, 3);
+    expected[12] = 0xc0037600u;
+    expected[13] = 0x8c;
+    expected[14] = 0x02000000u;
+    expected[15] = 0x03000000u;
+    expected[16] = 0x04000000u;
+    check(packet == storage.words.data() + 12 && storage.buffer.cursor_up == storage.words.data() + 17, "incorrect misaligned register range allocation");
+    check(storage.words == expected, "misaligned register values were not read byte for byte");
 }
 
 void testPacketPayloadAddress() {

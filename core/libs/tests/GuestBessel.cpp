@@ -132,16 +132,43 @@ static bool Near(double actual, double expected, double tolerance) {
     return std::fabs(actual - expected) <= std::fabs(expected) * tolerance;
 }
 
+struct ReferenceCase { int order; double x; double value; };
+
 static void CheckValues() {
-    for (const double x : {0.3, 1.7, 2.5, 7.25, 25.0, 123.5}) {
-        Require(Near(j0_nid_postfix(x), std::cyl_bessel_j(0.0, x), 1e-12) && Near(j1_nid_postfix(x), std::cyl_bessel_j(1.0, x), 1e-12));
-        Require(Near(y0_nid_postfix(x), std::cyl_neumann(0.0, x), 1e-12) && Near(y1_nid_postfix(x), std::cyl_neumann(1.0, x), 1e-12));
-        for (const int order : {2, 3, 7}) {
-            Require(Near(jn_nid_postfix(order, x), std::cyl_bessel_j(order, x), 1e-11));
-            Require(Near(yn_nid_postfix(order, x), std::cyl_neumann(order, x), 1e-11));
+    const ReferenceCase first[] = {
+        {0, 0.3, 0.97762624653829609}, {0, 1.7, 0.39798485944610949}, {0, 2.5, -0.048383776468197996}, {0, 7.25, 0.29199692419177900},
+        {0, 25.0, 0.096266783275958116}, {0, 123.5, -0.070484621663252289}, {1, 0.3, 0.14831881627310401}, {1, 1.7, 0.57776523152902322},
+        {1, 2.5, 0.49709410246427404}, {1, 7.25, 0.068581700653131745}, {1, 25.0, -0.12535024958028990}, {1, 123.5, -0.013948992295178035},
+        {2, 0.3, 0.011165861949063964}, {2, 1.7, 0.28173894235274136}, {2, 2.5, 0.44605905843961723}, {2, 7.25, -0.27307783435643231},
+        {2, 25.0, -0.10629480324238131}, {2, 123.5, 0.070258727051184628}, {3, 0.3, 0.00055934304774884612}, {3, 1.7, 0.085149926948015264},
+        {3, 2.5, 0.21660039103911352}, {3, 7.25, -0.21924533340150819}, {3, 25.0, 0.10834308106150890}, {3, 123.5, 0.016224578596430978},
+        {7, 0.3, 3.3805443102187481e-10}, {7, 1.7, 5.8087210824311728e-5}, {7, 2.5, 0.00077655318753348495}, {7, 7.25, 0.25934915542688296},
+        {7, 25.0, -0.010168168212703074}, {7, 123.5, 0.027311804641119322},
+    };
+    const ReferenceCase second[] = {
+        {0, 0.3, -0.80727357780451947}, {0, 1.7, 0.45202700018163463}, {0, 2.5, 0.49807035961523189}, {0, 7.25, 0.048422529865202829},
+        {0, 25.0, -0.12724943226800614}, {0, 123.5, -0.013663522162735081}, {1, 0.3, -2.2931051383885290}, {1, 1.7, -0.28472624506406838},
+        {1, 2.5, 0.14591813796678580}, {1, 7.25, -0.28934799419758705}, {1, 25.0, -0.098829964783237410}, {1, 123.5, 0.070429882264699084},
+        {2, 0.3, -14.480094011452341}, {2, 1.7, -0.78699905319818566}, {2, 2.5, -0.38133584924180325}, {2, 7.25, -0.12824266619557167},
+        {2, 25.0, 0.11934303508534715}, {2, 123.5, 0.014804087057709964}, {3, 0.3, -190.77481501430935}, {3, 1.7, -1.5670362330493096},
+        {3, 2.5, -0.75605549675367100}, {3, 7.25, 0.21859341974485785}, {3, 25.0, 0.11792485039689295}, {3, 123.5, -0.069950397663639652},
+        {7, 0.3, -1.3463966616414596e+8}, {7, 1.7, -807.61347285004828}, {7, 2.5, -62.829855967240050}, {7, 7.25, -0.35448064613382143},
+        {7, 25.0, 0.16252257251113247}, {7, 123.5, -0.066461555200665692},
+    };
+    for (const auto& test : first) {
+        const double result = test.order == 0 ? j0_nid_postfix(test.x) : test.order == 1 ? j1_nid_postfix(test.x) : jn_nid_postfix(test.order, test.x);
+        if (!Near(result, test.value, 1e-12) || !Near(jn_nid_postfix(test.order, -test.x), test.order % 2 != 0 ? -test.value : test.value, 1e-12)) {
+            std::fprintf(stderr, "Guest J%d(%g) = %.17g, expected %.17g\n", test.order, test.x, result, test.value);
+            std::abort();
         }
     }
-    Require(Near(j0_nid_postfix(-2.5), std::cyl_bessel_j(0.0, 2.5), 1e-12) && Near(j1_nid_postfix(-2.5), -std::cyl_bessel_j(1.0, 2.5), 1e-12));
+    for (const auto& test : second) {
+        const double result = test.order == 0 ? y0_nid_postfix(test.x) : test.order == 1 ? y1_nid_postfix(test.x) : yn_nid_postfix(test.order, test.x);
+        if (!Near(result, test.value, 1e-12) || !Near(yn_nid_postfix(test.order, test.x), test.value, 1e-12)) {
+            std::fprintf(stderr, "Guest Y%d(%g) = %.17g, expected %.17g\n", test.order, test.x, result, test.value);
+            std::abort();
+        }
+    }
     *__error_nid_postfix() = 12345;
     for (const double x : {0x1p-30, 0.5, 3.0, 1.0e10, 0x1p310, std::numeric_limits<double>::max()}) {
         Require(std::isfinite(j0_nid_postfix(x)) && std::isfinite(j1_nid_postfix(x)) && std::isfinite(y0_nid_postfix(x)) && std::isfinite(y1_nid_postfix(x)));

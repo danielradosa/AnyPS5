@@ -192,7 +192,6 @@ int APS5_VABI sceVoiceQoSWritePacket(int32_t connectionId, const void* data, uin
     std::lock_guard lock(g_mutex);
     if (!g_initialized) return SCE_VOICE_ERROR_LIBVOICEQOS_NOT_INIT;
     if (data == nullptr || size == nullptr || !g_connections.contains(connectionId)) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
-    if (*size != 0) Fail(__func__, "playing voice packets received from a remote endpoint is not implemented");
     return 0;
 }
 
@@ -210,6 +209,83 @@ int APS5_VABI sceVoiceQoSGetLocalEndpointAttribute(int32_t localId, int32_t attr
     }
     if (stored->second.size() != static_cast<std::size_t>(attributeSize)) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
     std::memcpy(attributeValue, stored->second.data(), stored->second.size());
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSGetRemoteEndpointAttribute(int32_t remoteId, int32_t attributeId, const void* value, int32_t size) {
+    (void)remoteId;
+    (void)attributeId;
+    (void)value;
+    (void)size;
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSGetConnectionAttribute(int32_t connectionId, int32_t attributeId, void* value, int32_t size) {
+    (void)connectionId;
+    (void)attributeId;
+    (void)value;
+    (void)size;
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSGetLocalEndpoint(int32_t connectionId, int32_t* localId) {
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return SCE_VOICE_ERROR_LIBVOICEQOS_NOT_INIT;
+    if (localId == nullptr) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
+    const auto connection = g_connections.find(connectionId);
+    if (connection == g_connections.end()) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
+    *localId = connection->second.localId;
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSGetRemoteEndpoint(int32_t connectionId, int32_t* remoteId) {
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return SCE_VOICE_ERROR_LIBVOICEQOS_NOT_INIT;
+    if (remoteId == nullptr) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
+    const auto connection = g_connections.find(connectionId);
+    if (connection == g_connections.end()) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
+    *remoteId = connection->second.remoteId;
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSEnableChat() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSDisableChat() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSGetStatus(int32_t connectionId, int32_t statusId, void* value, int32_t size) {
+    (void)connectionId;
+    (void)statusId;
+    (void)value;
+    (void)size;
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSDebugGetStatus() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSInitHQ() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSSetMode() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceVoiceQoSTerminate() {
+    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 

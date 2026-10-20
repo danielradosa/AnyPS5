@@ -100,4 +100,14 @@ int APS5_VABI sceErrorDialogParamInitialize(void* param) {
  return kErrOk;
 }
 
+int APS5_VABI sceErrorDialogOpenDetail() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceErrorDialogOpenWithReport() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
 }

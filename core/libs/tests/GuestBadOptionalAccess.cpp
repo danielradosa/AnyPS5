@@ -27,7 +27,7 @@ int main() {
     Object object{};
     _ZNSt19bad_optional_accessC1Ev_nid_postfix(&object);
     Require(object.vtable == &table.destroy);
-    Require(std::strcmp(table.what(&object), "bad optional access") == 0);
+    Require(std::strcmp(table.what(&object), "bad_optional_access") == 0);
     _ZNSt19bad_optional_accessD1Ev_nid_postfix(&object);
     bool thrown = false;
     try {

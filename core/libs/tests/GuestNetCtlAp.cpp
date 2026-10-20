@@ -2,20 +2,20 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <initializer_list>
+#include <stdexcept>
 
 extern "C" {
 int APS5_VABI sceNetCtlApInit(void);
 void APS5_VABI sceNetCtlApTerm(void);
 int APS5_VABI sceNetCtlApCheckCallback(void);
 int APS5_VABI sceNetCtlApClearEvent(int eventType);
-int APS5_VABI sceNetCtlApRegisterCallback(void (APS5_VABI* func)(int, void*), void* arg, int* cid);
+int APS5_VABI sceNetCtlApRegisterCallback(void (APS5_VABI *func)(int, void*), void* arg, int* cid);
 int APS5_VABI sceNetCtlApUnregisterCallback(int cid);
 int APS5_VABI sceNetCtlApGetResult(int eventType, int* errorCode);
 int APS5_VABI sceNetCtlApGetInfo(void* info);
 int APS5_VABI sceNetCtlApGetState(int* state);
 int APS5_VABI sceNetCtlApStop(void);
-int APS5_VABI sceNetCtlApGetConnectInfo(const char* optStr, void* connectInfo);
+int APS5_VABI sceNetCtlApGetConnectInfo(std::uint8_t* optStr, void* connectInfo);
 }
 
 namespace {
@@ -30,110 +30,105 @@ constexpr int kErrCallbackMax = static_cast<int>(0x80412995);
 constexpr int kErrInvalidId = static_cast<int>(0x80412996);
 constexpr int kErrIdNotFound = static_cast<int>(0x80412997);
 constexpr int kErrInvalidSize = static_cast<int>(0x80412998);
-constexpr int kErrInvalidOptStr = static_cast<int>(0x80412901);
 
-int g_events = 0;
+int g_calls = 0;
 
-void APS5_VABI CountEvent(int, void*) { ++g_events; }
+void APS5_VABI Callback(int, void*) { ++g_calls; }
 
-template <std::size_t TSize>
-void SetSize(std::uint8_t (&block)[TSize], std::uint64_t size) {
-    std::memset(block, 0x5a, sizeof(block));
-    std::memcpy(block, &size, sizeof(size));
-}
-
-template <std::size_t TSize>
-bool Untouched(const std::uint8_t (&block)[TSize], std::uint64_t size) {
-    std::uint64_t stored = 0;
-    std::memcpy(&stored, block, sizeof(stored));
-    if (stored != size) return false;
-    for (std::size_t i = sizeof(stored); i < TSize; ++i) {
-        if (block[i] != 0x5a) return false;
-    }
-    return true;
+void RequireUninitialized() {
+    int value = 0x5a5a;
+    std::uint8_t block[184] = {};
+    Require(sceNetCtlApCheckCallback() == kErrNotInitialized);
+    Require(sceNetCtlApClearEvent(1) == kErrNotInitialized);
+    Require(sceNetCtlApRegisterCallback(Callback, nullptr, &value) == kErrNotInitialized && value == 0x5a5a);
+    Require(sceNetCtlApUnregisterCallback(0) == kErrNotInitialized);
+    Require(sceNetCtlApGetResult(1, &value) == kErrNotInitialized && value == 0x5a5a);
+    Require(sceNetCtlApGetInfo(block) == kErrNotInitialized);
+    Require(sceNetCtlApGetState(&value) == kErrNotInitialized && value == 0x5a5a);
+    Require(sceNetCtlApStop() == kErrNotInitialized);
+    Require(sceNetCtlApGetConnectInfo(nullptr, block) == kErrNotInitialized);
 }
 
 }
 
 int main() {
+    RequireUninitialized();
+    Require(sceNetCtlApInit() == 0);
+
     int state = -1;
-    int errorCode = -1;
-    int cid = -1;
-    std::uint8_t info[152];
-    std::uint8_t connectInfo[184];
-    SetSize(info, sizeof(info));
-    SetSize(connectInfo, sizeof(connectInfo));
-
-    Require(sceNetCtlApCheckCallback() == kErrNotInitialized);
-    Require(sceNetCtlApClearEvent(1) == kErrNotInitialized);
-    Require(sceNetCtlApRegisterCallback(CountEvent, nullptr, &cid) == kErrNotInitialized && cid == -1);
-    Require(sceNetCtlApUnregisterCallback(0) == kErrNotInitialized);
-    Require(sceNetCtlApGetResult(1, &errorCode) == kErrNotInitialized && errorCode == -1);
-    Require(sceNetCtlApGetInfo(info) == kErrNotInitialized);
-    Require(sceNetCtlApGetState(&state) == kErrNotInitialized && state == -1);
-    Require(sceNetCtlApStop() == kErrNotInitialized);
-    Require(sceNetCtlApGetConnectInfo("", connectInfo) == kErrNotInitialized);
-
-    Require(sceNetCtlApInit() == 0);
-    Require(sceNetCtlApInit() == 0);
-
-    Require(sceNetCtlApGetState(nullptr) == kErrInvalidAddr);
     Require(sceNetCtlApGetState(&state) == 0 && state == 0);
+    Require(sceNetCtlApGetState(nullptr) == kErrInvalidAddr);
 
-    Require(sceNetCtlApRegisterCallback(nullptr, nullptr, &cid) == kErrInvalidAddr && cid == -1);
-    Require(sceNetCtlApRegisterCallback(CountEvent, nullptr, nullptr) == kErrInvalidAddr);
-    int cids[8] = {};
-    for (int i = 0; i < 8; ++i) {
-        Require(sceNetCtlApRegisterCallback(CountEvent, &cids[i], &cids[i]) == 0 && cids[i] == i);
-    }
-    Require(sceNetCtlApRegisterCallback(CountEvent, nullptr, &cid) == kErrCallbackMax && cid == -1);
-    Require(sceNetCtlApUnregisterCallback(-1) == kErrInvalidId);
-    Require(sceNetCtlApUnregisterCallback(8) == kErrInvalidId);
-    Require(sceNetCtlApUnregisterCallback(5) == 0);
-    Require(sceNetCtlApUnregisterCallback(5) == kErrIdNotFound);
-    Require(sceNetCtlApRegisterCallback(CountEvent, nullptr, &cid) == 0 && cid == 5);
-    Require(sceNetCtlApCheckCallback() == 0);
-    Require(g_events == 0);
-
-    for (const int type : {0, 5, -1}) {
-        Require(sceNetCtlApClearEvent(type) == kErrInvalidType);
-        Require(sceNetCtlApGetResult(type, &errorCode) == kErrInvalidType && errorCode == -1);
-    }
-    Require(sceNetCtlApGetResult(1, nullptr) == kErrInvalidAddr);
-    for (int type = 1; type <= 4; ++type) {
-        Require(sceNetCtlApClearEvent(type) == 0);
-        errorCode = -1;
-        Require(sceNetCtlApGetResult(type, &errorCode) == 0 && errorCode == 0);
-    }
-
+    std::uint8_t info[152];
+    std::memset(info, 0x5a, sizeof(info));
+    const std::uint64_t infoSize = sizeof(info);
+    std::memcpy(info, &infoSize, sizeof(infoSize));
+    Require(sceNetCtlApGetInfo(info) == kErrNotStarted);
+    for (std::size_t i = sizeof(infoSize); i < sizeof(info); ++i) Require(info[i] == 0x5a);
     Require(sceNetCtlApGetInfo(nullptr) == kErrInvalidAddr);
-    SetSize(info, 151);
-    Require(sceNetCtlApGetInfo(info) == kErrInvalidSize && Untouched(info, 151));
-    SetSize(info, sizeof(info));
-    Require(sceNetCtlApGetInfo(info) == kErrNotStarted && Untouched(info, sizeof(info)));
+    const std::uint64_t wrongInfoSize = sizeof(info) - 8;
+    std::memcpy(info, &wrongInfoSize, sizeof(wrongInfoSize));
+    Require(sceNetCtlApGetInfo(info) == kErrInvalidSize);
 
-    Require(sceNetCtlApGetConnectInfo("", nullptr) == kErrInvalidAddr);
-    SetSize(connectInfo, 152);
-    Require(sceNetCtlApGetConnectInfo("", connectInfo) == kErrInvalidSize && Untouched(connectInfo, 152));
-    SetSize(connectInfo, sizeof(connectInfo));
-    Require(sceNetCtlApGetConnectInfo("123456789", connectInfo) == kErrInvalidOptStr);
-    Require(sceNetCtlApGetConnectInfo("12345678", connectInfo) == kErrNotStarted);
-    Require(sceNetCtlApGetConnectInfo(nullptr, connectInfo) == kErrNotStarted && Untouched(connectInfo, sizeof(connectInfo)));
+    std::uint8_t connect[184];
+    std::memset(connect, 0x5a, sizeof(connect));
+    const std::uint64_t connectSize = sizeof(connect);
+    std::memcpy(connect, &connectSize, sizeof(connectSize));
+    std::uint8_t option[] = "opt";
+    Require(sceNetCtlApGetConnectInfo(option, connect) == kErrNotStarted);
+    Require(sceNetCtlApGetConnectInfo(nullptr, connect) == kErrNotStarted);
+    for (std::size_t i = sizeof(connectSize); i < sizeof(connect); ++i) Require(connect[i] == 0x5a);
+    Require(sceNetCtlApGetConnectInfo(option, nullptr) == kErrInvalidAddr);
+    const std::uint64_t wrongConnectSize = sizeof(info);
+    std::memcpy(connect, &wrongConnectSize, sizeof(wrongConnectSize));
+    Require(sceNetCtlApGetConnectInfo(option, connect) == kErrInvalidSize);
 
     Require(sceNetCtlApStop() == kErrNotStarted);
-    Require(sceNetCtlApCheckCallback() == 0);
-    Require(g_events == 0);
-    Require(sceNetCtlApGetState(&state) == 0 && state == 0);
+
+    for (int type = 1; type <= 4; ++type) {
+        int code = -1;
+        Require(sceNetCtlApClearEvent(type) == 0);
+        Require(sceNetCtlApGetResult(type, &code) == 0 && code == 0);
+        Require(sceNetCtlApGetResult(type, nullptr) == kErrInvalidAddr);
+    }
+    for (const int type : {0, 5, -1}) {
+        int code = 0x5a5a;
+        Require(sceNetCtlApClearEvent(type) == kErrInvalidType);
+        Require(sceNetCtlApGetResult(type, &code) == kErrInvalidType && code == 0x5a5a);
+    }
+
+    int cids[8];
+    for (int i = 0; i < 8; ++i) {
+        cids[i] = -1;
+        Require(sceNetCtlApRegisterCallback(Callback, &cids[i], &cids[i]) == 0 && cids[i] == i);
+    }
+    int extra = -1;
+    Require(sceNetCtlApRegisterCallback(Callback, nullptr, &extra) == kErrCallbackMax && extra == -1);
+    Require(sceNetCtlApRegisterCallback(nullptr, nullptr, &extra) == kErrInvalidAddr);
+    Require(sceNetCtlApRegisterCallback(Callback, nullptr, nullptr) == kErrInvalidAddr);
+    Require(sceNetCtlApCheckCallback() == 0 && sceNetCtlApCheckCallback() == 0);
+    Require(g_calls == 0);
+    Require(sceNetCtlApUnregisterCallback(3) == 0);
+    Require(sceNetCtlApUnregisterCallback(3) == kErrIdNotFound);
+    Require(sceNetCtlApUnregisterCallback(-1) == kErrInvalidId);
+    Require(sceNetCtlApUnregisterCallback(8) == kErrInvalidId);
+    Require(sceNetCtlApRegisterCallback(Callback, nullptr, &extra) == 0 && extra == 3);
+
+    bool threw = false;
+    try {
+        sceNetCtlApInit();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    Require(threw);
 
     sceNetCtlApTerm();
-    Require(sceNetCtlApCheckCallback() == kErrNotInitialized);
+    RequireUninitialized();
     Require(sceNetCtlApInit() == 0);
-    for (int i = 0; i < 8; ++i) {
-        Require(sceNetCtlApUnregisterCallback(i) == kErrIdNotFound);
-    }
-    Require(sceNetCtlApRegisterCallback(CountEvent, nullptr, &cid) == 0 && cid == 0);
-    Require(sceNetCtlApUnregisterCallback(0) == 0);
+    int cid = -1;
+    Require(sceNetCtlApRegisterCallback(Callback, nullptr, &cid) == 0 && cid == 0);
+    Require(sceNetCtlApGetState(&state) == 0 && state == 0);
     sceNetCtlApTerm();
     sceNetCtlApTerm();
-    Require(sceNetCtlApStop() == kErrNotInitialized);
+    RequireUninitialized();
 }

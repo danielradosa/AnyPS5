@@ -7,22 +7,19 @@
 #include <limits>
 #include <random>
 
-#ifdef _WIN32
-#include <stdlib.h>
-#endif
-
 struct Xtime {
     std::int64_t sec;
     std::int64_t nsec;
 };
 
 extern "C" {
-int APS5_VABI setenv_nid_postfix(const char*, const char*, int);
 GuestTm* APS5_VABI gmtime_s_nid_postfix(const std::int64_t*, GuestTm*);
 GuestTm* APS5_VABI localtime_s_nid_postfix(const std::int64_t*, GuestTm*);
 GuestTm* APS5_VABI gmtime_r_nid_postfix(const std::int64_t*, GuestTm*);
 GuestTm* APS5_VABI localtime_r_nid_postfix(const std::int64_t*, GuestTm*);
 std::int64_t APS5_VABI timegm_nid_postfix(GuestTm*);
+void APS5_VABI tzset_nid_postfix();
+int APS5_VABI setenv_nid_postfix(const char*, const char*, int);
 int APS5_VABI xtime_get_nid_postfix(Xtime*, int);
 Xtime APS5_VABI _Xtime_to_ts_nid_postfix(const Xtime*);
 Xtime APS5_VABI _Xtime_diff_to_ts_nid_postfix(const Xtime*);
@@ -157,7 +154,8 @@ static void CheckXtime() {
 }
 
 int main() {
-    Require(setenv_nid_postfix("TZ", "UTC-2", 1) == 0, "Could not set the guest time zone");
+    Require(setenv_nid_postfix("TZ", "UTC-2", 1) == 0, "Could not set the time zone");
+    tzset_nid_postfix();
     CheckReentrantConversions();
     CheckTimegmCases();
     CheckXtime();

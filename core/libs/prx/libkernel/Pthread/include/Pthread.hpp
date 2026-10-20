@@ -173,6 +173,7 @@ KernelCpumask GuestProcessAffinity();
 void SetLiveGuestThreadsAffinity(KernelCpumask mask);
 KernelCpumask LiveGuestThreadsAffinity();
 bool GuestThreadIsLive(const PthreadPrivate* thread);
+std::unique_lock<std::mutex> LockLiveGuestThread(const PthreadPrivate* thread);
 bool LiveGuestThreadExists(std::int64_t tid);
 bool SetGuestThreadAffinityIfLive(PthreadPrivate* thread, KernelCpumask mask);
 bool SetGuestThreadAffinityByTid(std::int64_t tid, KernelCpumask mask);

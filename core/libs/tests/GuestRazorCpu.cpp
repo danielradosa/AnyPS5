@@ -77,6 +77,8 @@ int main() {
     for (unsigned char byte : storage) Require(byte == 0);
     Require(sceRazorCpuShutdownDataTags() == 0);
     Require(sceRazorCpuShutdownDataTags() == 0);
+    Require(sceRazorCpuTagBuffer("untracked", 3, storage, sizeof(storage)) == 0);
+    Require(sceRazorCpuUnTagBuffer(3, storage) == 0);
     Require(sceRazorCpuBeginLogicalFileAccess("/app0/data.bin", 0x1122334455667788ull, 4096, 0) == 0);
     Require(sceRazorCpuEndLogicalFileAccess() == 0);
     Require(sceRazorCpuBeginLogicalFileAccess("/data/save.bin", 0, 512, 1) == 0);

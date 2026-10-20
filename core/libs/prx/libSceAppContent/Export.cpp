@@ -2,6 +2,7 @@
 #include <cstddef>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/RemoveTree.hpp"
 #include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
 #include <algorithm>
 #include <cstring>
@@ -61,7 +62,7 @@ bool IsTemporaryMountPoint(const AppContentMountPoint* mountPoint) {
 }
 
 static void ClearDirectory(const std::filesystem::path& directory) {
-    for (const auto& entry : std::filesystem::directory_iterator(directory)) std::filesystem::remove_all(entry.path());
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) RemoveTree(entry.path());
     RecordWrittenPath_nid_no_patch(directory);
 }
 
@@ -107,7 +108,7 @@ int APS5_VABI sceAppContentAppParamGetInt(uint32_t param_id, int32_t* value) {
 
 int APS5_VABI sceAppContentDownloadDataFormat(const AppContentMountPoint* mount_point) {
     if (!mount_point) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    if (std::strncmp(mount_point->data, DOWNLOAD_MOUNT_POINT, sizeof(mount_point->data)) != 0) APS5_INVALID_ARG_EX;
+    if (std::strncmp(mount_point->data, DOWNLOAD_MOUNT_POINT, sizeof(mount_point->data)) != 0) return SCE_APP_CONTENT_ERROR_NOT_MOUNTED;
     const auto directory = ResolvePath_nid_no_patch(DOWNLOAD_MOUNT_POINT);
     if (std::filesystem::create_directories(directory)) RecordWrittenPath_nid_no_patch(directory);
     ClearDirectory(directory);
@@ -115,8 +116,8 @@ int APS5_VABI sceAppContentDownloadDataFormat(const AppContentMountPoint* mount_
 }
 
 int APS5_VABI sceAppContentDownloadDataGetAvailableSpaceKb(const AppContentMountPoint* mount_point, size_t* available_space_kb) {
-    if (!available_space_kb) return SCE_APP_CONTENT_ERROR_PARAMETER;
-    if (!mount_point || std::strncmp(mount_point->data, DOWNLOAD_MOUNT_POINT, sizeof(mount_point->data)) != 0) APS5_INVALID_ARG_EX;
+    if (!mount_point || !available_space_kb) return SCE_APP_CONTENT_ERROR_PARAMETER;
+    if (std::strncmp(mount_point->data, DOWNLOAD_MOUNT_POINT, sizeof(mount_point->data)) != 0) return SCE_APP_CONTENT_ERROR_NOT_MOUNTED;
     const std::uint64_t quotaKb = GetAppDownloadDataSizeMiB_nid_postfix() * 1024u;
     if (quotaKb == 0) {
         *available_space_kb = 0;

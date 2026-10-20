@@ -90,7 +90,8 @@ void Validate(std::span<const std::uint32_t> packet, std::uint32_t queue);
 void Execute(std::span<const std::uint32_t> packet, QueueState& queue);
 inline bool IndirectRegisterOpcode(std::uint32_t opcode) { return opcode == 0x63 || opcode == 0x64 || opcode == 0x9f; }
 std::vector<std::uint32_t> ReadIndirectRegisters(std::span<const std::uint32_t> packet);
-void ExecuteIndirectRegisters(std::span<const std::uint32_t> packet, std::span<const std::uint32_t> pairs, QueueState& queue);
+bool IndirectRegistersValid(std::span<const std::uint32_t> pairs);
+void ExecuteIndirectRegisters(std::span<const std::uint32_t> packet, std::span<const std::uint32_t> pairs, QueueState& queue, bool skipInvalid = false);
 bool AccessesMemory(std::uint32_t header);
 std::uint64_t AtomicMemAddress(std::span<const std::uint32_t> packet);
 std::size_t AtomicMemBytes(std::span<const std::uint32_t> packet);

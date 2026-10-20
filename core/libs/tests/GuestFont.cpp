@@ -48,7 +48,6 @@ int APS5_VABI sceFontGetFontResolution(FontHandle, std::uint32_t*, float*);
 int APS5_VABI sceFontGetRenderScaledKerning(FontHandle, std::uint32_t, std::uint32_t, FontKerning*);
 int APS5_VABI sceFontGenerateCharGlyph(FontHandle, std::uint32_t, const FontGenerateGlyphDetail*, FontGlyph*);
 int APS5_VABI sceFontGlyphDefineAttribute(FontGlyph, int, int*);
-int APS5_VABI sceFontCharacterGetSyllableStringState(const FontTextCharacter*, int*);
 int APS5_VABI sceFontDeleteGlyph(const FontMemory*, FontGlyph*);
 int APS5_VABI sceFontTextSourceInit(FontTextSource*, const void*, std::uint32_t, FontTextParseFunction, void*);
 int APS5_VABI sceFontCreateString(const FontMemory*, FontTextSource*, const FontCreateStringDetail*, FontString*);

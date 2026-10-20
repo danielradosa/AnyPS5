@@ -56,6 +56,7 @@ struct KernelFilter {
     EqueueDeleteFunc deleteEventFunc = nullptr;
     EqueuePollFunc pollFunc = nullptr;
     bool sliced = false;
+    int waitDescriptor = -1;
 };
 
 struct KernelEqueueEvent {

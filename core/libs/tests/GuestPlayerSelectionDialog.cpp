@@ -9,9 +9,9 @@ int APS5_VABI scePlayerSelectionDialogOpen(const void* param);
 int APS5_VABI scePlayerSelectionDialogUpdateStatus(void);
 int APS5_VABI scePlayerSelectionDialogGetStatus(void);
 int APS5_VABI scePlayerSelectionDialogGetResult(void* result);
+int APS5_VABI scePlayerSelectionDialogParamInitialize(void* param);
 int APS5_VABI scePlayerSelectionDialogClose(void);
 int APS5_VABI scePlayerSelectionDialogTerminate(void);
-int APS5_VABI scePlayerSelectionDialogParamInitialize(void* param);
 }
 
 namespace {

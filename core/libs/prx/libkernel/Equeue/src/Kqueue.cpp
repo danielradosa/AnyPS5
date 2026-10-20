@@ -1,4 +1,5 @@
 #include "prx/libkernel/Equeue/Equeue.hpp"
+#include "prx/libkernel/Equeue/include/EdgeWatch.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
@@ -63,6 +64,7 @@ constexpr std::uint32_t NOTE_USECONDS = 0x0004;
 constexpr std::uint32_t NOTE_NSECONDS = 0x0008;
 constexpr std::uint32_t NOTE_TIMER_PRECMASK = NOTE_SECONDS | NOTE_MSECONDS | NOTE_USECONDS | NOTE_NSECONDS;
 constexpr std::uint16_t KNOTE_CLEARED_FLAGS = EV_ADD | EV_DELETE | EV_ENABLE | EV_DISABLE | EV_FORCEONESHOT;
+constexpr std::uint32_t NOTE_LOWAT = 0x0001;
 
 std::mutex g_kqueueMutex;
 std::unordered_map<int, KernelEqueueRef> g_kqueues;
@@ -151,12 +153,73 @@ int DescriptorFilterError(int kqueueDescriptor, std::uintptr_t ident) {
     return descriptor == kqueueDescriptor ? GUEST_EINVAL : 0;
 }
 
+struct EdgeKnote {
+    std::shared_ptr<EdgeWatch::Watch> watch;
+    std::int64_t lowWater = 0;
+};
+
+std::int64_t EdgeLowWater(const KernelEvent& change) {
+    return (change.fflags & NOTE_LOWAT) != 0 && GuestSockets::IsOpen(static_cast<int>(change.ident)) ? change.data : 0;
+}
+
+bool PollEdge(KernelEqueueEvent* e) {
+    auto& edge = *static_cast<EdgeKnote*>(e->filter.data);
+    auto& watch = *edge.watch;
+    if (watch.TakeEdge()) {
+        watch.armed = true;
+    }
+    if (!watch.armed) {
+        return false;
+    }
+    std::int64_t data = 0;
+    bool eof = false;
+    if (!GuestSockets::Ready(static_cast<int>(e->event.ident), e->event.filter == EVFILT_WRITE, &data, &eof)) {
+        watch.armed = false;
+        return false;
+    }
+    if (!eof && data < edge.lowWater && !GuestSockets::Listening(static_cast<int>(e->event.ident))) {
+        watch.armed = false;
+        return false;
+    }
+    e->event.data = static_cast<intptr_t>(data);
+    e->event.flags = static_cast<std::uint16_t>(eof ? (e->event.flags | EV_EOF) : (e->event.flags & ~EV_EOF));
+    return true;
+}
+
+void ResetEdge(KernelEqueueEvent* e) {
+    static_cast<EdgeKnote*>(e->filter.data)->watch->armed = false;
+    e->triggered = false;
+}
+
+#ifdef __linux__
+void WatchEdges(KernelEqueueEvent& event, const KernelEvent& change) {
+    const int descriptor = static_cast<int>(event.event.ident);
+    if (!GuestSockets::IsOpen(descriptor)) {
+        return;
+    }
+    auto edge = std::make_shared<EdgeKnote>();
+    edge->watch = EdgeWatch::Watch::Open(GuestSockets::NativeDescriptor(descriptor), change.filter == EVFILT_WRITE);
+    edge->lowWater = EdgeLowWater(change);
+    event.filter.data = edge.get();
+    event.filter.waitDescriptor = edge->watch->Descriptor();
+    event.filter.owner = std::move(edge);
+    event.filter.pollFunc = PollEdge;
+    event.filter.resetFunc = ResetEdge;
+    event.filter.sliced = false;
+}
+#endif
+
 int AddDescriptorKnote(const KernelEqueueRef& queue, KernelEvent& change, std::uint16_t flags, bool disabled) {
     KernelEqueueEvent event{};
     if (const int error = MakeDescriptorEvent(static_cast<int>(change.ident), change.filter, flags, change.fflags, change.data, change.udata, event)) {
         return error;
     }
     event.disabled = disabled;
+#ifdef __linux__
+    if ((flags & EV_CLEAR) != 0) {
+        WatchEdges(event, change);
+    }
+#endif
     change.fflags = 0;
     change.data = 0;
     return GuestErrno(queue->AddEvent(event));
@@ -281,12 +344,19 @@ int ModifyKnote(const KernelEqueueRef& queue, KernelEvent& change) {
         } else if (change.filter == EVFILT_TIMER) {
             RetuneTimer(event, change);
         } else if (change.filter == EVFILT_READ || change.filter == EVFILT_WRITE) {
-            SetDescriptorWatch(event, change.fflags, change.data);
+            if (event.filter.pollFunc == PollEdge) {
+                static_cast<EdgeKnote*>(event.filter.data)->lowWater = EdgeLowWater(change);
+            } else {
+                SetDescriptorWatch(event, change.fflags, change.data);
+            }
         }
         if ((change.flags & EV_ENABLE) != 0) {
             event.disabled = false;
         } else if ((change.flags & EV_DISABLE) != 0) {
             event.disabled = true;
+        }
+        if (!event.disabled && event.filter.pollFunc == PollEdge) {
+            static_cast<EdgeKnote*>(event.filter.data)->watch->armed = true;
         }
     }));
 }

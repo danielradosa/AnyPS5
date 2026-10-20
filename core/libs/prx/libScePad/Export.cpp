@@ -184,7 +184,7 @@ int APS5_VABI scePadOutputReport(int handle, int type, const void* report, int l
 
 int APS5_VABI scePadRead_nid_postfix(int handle, PadData* data, int num) {
  if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
- if (data == nullptr || num <= 0) APS5_INVALID_ARG_EX;
+ if (data == nullptr || num <= 0) return PAD_ERROR_INVALID_ARG;
  return Pad::Read(data, num);
 }
 
@@ -194,7 +194,7 @@ int APS5_VABI scePadReadExt(int handle, PadData* data, int num) {
 
 int APS5_VABI scePadReadState(int handle, PadData* data) {
  if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
- if (data == nullptr) APS5_INVALID_ARG_EX;
+ if (data == nullptr) return PAD_ERROR_INVALID_ARG;
 
  *data = Pad::ReadState();
 

@@ -34,9 +34,11 @@ namespace {
 std::mutex g_localeInitMutex;
 bool g_localeInitialized = false;
 std::vector<GuestLocale::Facet*> g_registeredFacets;
-std::array<signed char, GuestLocale::StandardStreamCount + 2> g_standardStreamOpens{};
+
+constexpr std::int64_t StandardStreamSlots = 8;
 std::mutex g_standardStreamMutex;
-GuestLocale::IosBase* g_standardStreams[GuestLocale::StandardStreamCount + 1] = {};
+GuestLocale::IosBase* g_standardStreams[StandardStreamSlots + 1] = {};
+int g_standardStreamOpens[StandardStreamSlots + 1] = {};
 
 void APS5_VABI DestroyClassicLocale(GuestLocale::Facet*) {
     throw std::runtime_error("Cannot destroy the classic locale");
@@ -305,18 +307,14 @@ GuestLocale::Implementation* _ZSt21_sceLibcClassicLocale_nid_postfix = &g_classi
 
 void APS5_VABI _ZNSt8ios_baseD2Ev_nid_postfix(GuestLocale::IosBase* self) {
     if (self == nullptr) throw std::invalid_argument("ios_base destructor: null object");
-    if (self->standardStream != 0) {
-        if (static_cast<std::uint64_t>(self->standardStream) >= g_standardStreamOpens.size()) throw std::out_of_range("ios_base destructor: standard stream index out of range");
-        if (--std::atomic_ref<signed char>(g_standardStreamOpens[self->standardStream]) > 0) return;
+    std::lock_guard lock(g_standardStreamMutex);
+    if (self->standardStream > 0) {
+        if (self->standardStream > StandardStreamSlots) throw std::runtime_error("ios_base destructor: unknown standard stream slot");
+        if (0 < --g_standardStreamOpens[self->standardStream]) return;
     }
     if (self->storage != nullptr || self->callbacks != nullptr) throw std::runtime_error("ios_base destructor: unsupported stream storage or callbacks");
     if (self->locale != &_ZSt21_sceLibcClassicLocale_nid_postfix) throw std::runtime_error("ios_base destructor: unsupported locale ownership");
     self->locale = nullptr;
-}
-
-void StandardStreamOpened_nid_no_patch(std::int64_t index) {
-    if (index <= 0 || static_cast<std::uint64_t>(index) >= g_standardStreamOpens.size()) throw std::out_of_range("ios_base::_Addstd: standard stream index out of range");
-    ++std::atomic_ref<signed char>(g_standardStreamOpens[index]);
 }
 
 GuestLocale::IosBase* APS5_VABI SetStreamWidth(GuestLocale::IosBase* stream, std::int32_t width) {
@@ -339,11 +337,11 @@ StreamManipulator APS5_VABI _ZSt4setwi_nid_postfix(std::int32_t width) {
 void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* self) {
     if (self == nullptr) throw std::invalid_argument("ios_base _Addstd: null stream");
     std::lock_guard lock(g_standardStreamMutex);
-    for (self->standardStream = 0; ++self->standardStream < static_cast<std::int64_t>(GuestLocale::StandardStreamCount); ) {
+    for (self->standardStream = 0; ++self->standardStream < StandardStreamSlots; ) {
         if (g_standardStreams[self->standardStream] == nullptr || g_standardStreams[self->standardStream] == self) break;
     }
     g_standardStreams[self->standardStream] = self;
-    StandardStreamOpened_nid_no_patch(self->standardStream);
+    ++g_standardStreamOpens[self->standardStream];
 }
 
 // Dinkumware's static locale::_Init(bool) returns the global _Locimp, which the caller copies.

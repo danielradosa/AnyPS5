@@ -45,6 +45,7 @@ static constexpr int VIDEO_OUT_ERROR_UNSUPPORTED_OPERATION = -2144796644;
 static constexpr int VIDEO_OUT_BUS_TYPE_MAIN = 0;
 static constexpr int VIDEO_OUT_BUS_TYPE_OVERLAY = 1;
 static constexpr int VIDEO_OUT_BUS_TYPE_SUB = 2;
+static constexpr int VIDEO_OUT_BUS_TYPE_HMD2_MAIN = 0x20;
 
 static constexpr uint32_t VIDEO_OUT_DEFAULT_WIDTH = 1920;
 static constexpr uint32_t VIDEO_OUT_DEFAULT_HEIGHT = 1080;
