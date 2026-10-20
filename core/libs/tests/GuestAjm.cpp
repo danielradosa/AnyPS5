@@ -23,6 +23,7 @@ int APS5_VABI sceAjmDecAt9ParseConfigData(const void*, AjmDecAt9ConfigDataInfo*)
 int APS5_VABI sceAjmDecMp3ParseFrame(const std::uint8_t*, std::uint32_t, int, AjmDecMp3ParseFrame*);
 int APS5_VABI sceAjmInstanceCreate(std::uint32_t, std::uint32_t, std::uint64_t, std::uint32_t*);
 int APS5_VABI sceAjmInstanceDestroy(std::uint32_t, std::uint32_t);
+std::uint32_t APS5_VABI sceAjmInstanceCodecType(std::uint32_t);
 int APS5_VABI sceAjmBatchInitialize(void*, std::size_t, AjmBatchInfo*);
 int APS5_VABI sceAjmBatchJobInitialize(AjmBatchInfo*, std::uint32_t, const void*, std::size_t, void*);
 int APS5_VABI sceAjmBatchJobDecode(AjmBatchInfo*, std::uint32_t, const void*, std::size_t, void*, std::size_t, void*);
@@ -2290,6 +2291,14 @@ int main() {
     std::uint32_t context = 0;
     Require(sceAjmInitialize(0, nullptr) == invalidParameter);
     Require(sceAjmInitialize(0, &context) == 0 && context != 0);
+    for (const std::uint32_t codec : {0u, 1u, 2u, 24u}) {
+        std::uint32_t instance = 0;
+        Require(sceAjmInstanceCreate(context, codec, 0, &instance) == 0);
+        Require(sceAjmInstanceCodecType(instance) == codec);
+        Require(sceAjmInstanceDestroy(context, instance) == 0);
+        Require(sceAjmInstanceCodecType(instance) == codec);
+    }
+    Require(sceAjmInstanceCodecType((23u << 14) | 0x3FFFu) == 23 && sceAjmInstanceCodecType(0xFFFFFFFFu) == 0x1F && sceAjmInstanceCodecType(0x3FFFu) == 0);
 
     const std::uint8_t stereo48k[4] = {0xFE, 0x72, 0x1F, 0xF0};
     AjmDecAt9ConfigDataInfo info{};
