@@ -44,6 +44,7 @@ int APS5_VABI scePadGetBluetoothAddress(int, std::uint64_t*);
 int APS5_VABI scePadReadStateExt(int, PadData*);
 int APS5_VABI scePadSetLightBarForTracker(int, const PadLightBarParam*);
 int APS5_VABI scePadResetLightBar(int);
+int APS5_VABI scePadGetControllerType(int, std::int32_t*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -454,6 +455,15 @@ static void CheckAccessibilityControllerState(int handle) {
     Require(state == 0);
 }
 
+static void CheckControllerType(int handle) {
+    std::int32_t type = -1;
+    Require(scePadGetControllerType(handle + 1, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadGetControllerType(handle + 1, &type) == PAD_ERROR_INVALID_HANDLE);
+    Require(type == -1);
+    Require(scePadGetControllerType(handle, &type) == PAD_OK);
+    Require(type == PAD_DEVICE_TYPE_DUAL_SENSE);
+}
+
 static void CheckInjectedState(const std::filesystem::path& path) {
     PadInputState physical;
     physical.buttons = 0x2000;
@@ -518,6 +528,10 @@ int main() {
     Require(scePadGetAccessibilityControllerState(PAD_HANDLE, nullptr) == PAD_ERROR_NOT_INITIALIZED);
     Require(scePadGetAccessibilityControllerState(PAD_HANDLE, &accessibilityState) == PAD_ERROR_NOT_INITIALIZED);
     Require(accessibilityState == 7);
+    std::int32_t controllerType = -1;
+    Require(scePadGetControllerType(PAD_HANDLE, nullptr) == PAD_ERROR_NOT_INITIALIZED);
+    Require(scePadGetControllerType(PAD_HANDLE, &controllerType) == PAD_ERROR_NOT_INITIALIZED);
+    Require(controllerType == -1);
     Require(scePadUnknown_n3kSX62fgNo() == static_cast<int>(0x80920005));
     const auto path = std::filesystem::temp_directory_path() / ("anyps5-pad-state-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     struct Cleanup {
@@ -595,6 +609,7 @@ int main() {
     CheckVrControllerReadState(user, handle);
     CheckVrControllerCalls(handle);
     CheckAccessibilityControllerState(handle);
+    CheckControllerType(handle);
     CheckInjectedState(commandPath);
     Require(scePadSetVibrationMode(handle, 1) == 0);
     Require(scePadSetVibrationMode(handle, 2) == 0);
