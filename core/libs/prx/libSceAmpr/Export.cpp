@@ -8,7 +8,6 @@
 #include "prx/libkernel/Apr/include/AprCommandBuffer.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cstring>
 #include <limits>
@@ -245,7 +244,7 @@ static constexpr std::uint32_t AmmRingIdleFlags = 0x7;
 extern "C" {
 void APS5_VABI sceKernelDebugRaiseException(int code, int argument);
 int APS5_VABI _Cnd_init_nid_postfix(void** handle);
-int APS5_VABI wcsrtombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t** source, std::size_t limit, void* state);
+int APS5_VABI wcstombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t* source, std::size_t limit);
 }
 
 static constexpr int DefaultUnexpectedException = static_cast<int>(0xA0020009);
@@ -904,11 +903,6 @@ void APS5_VABI _Lock_shared_ptr_spin_lock_nid_postfix(void) {
     while (sharedPtrSpinLock.test_and_set(std::memory_order_acquire)) std::this_thread::yield();
 }
 
-int APS5_VABI wcstombs_s_nid_postfix(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t* source, std::size_t limit) {
-    std::array<std::uint64_t, 16> state{};
-    return wcsrtombs_s_nid_postfix(result, destination, capacity, &source, limit, state.data());
-}
-
 [[noreturn]] void APS5_VABI __cxa_call_unexpected_nid_postfix(void* exception) {
     __cxa_begin_catch_nid_postfix(exception);
     auto* unwind = static_cast<_Unwind_Exception*>(exception);
@@ -962,6 +956,11 @@ int APS5_VABI sceAmprFltrounds(void) {
 APS5_EXPORT("ODGONXcSmz4", sceAmprIgnoreHandlerS);
 void APS5_VABI sceAmprIgnoreHandlerS(const char* message, void* pointer, int error) {
     SonyIgnoreHandlerS(message, pointer, error);
+}
+
+APS5_EXPORT("sZLrjx-yEx4", sceAmprWcstombsS);
+int APS5_VABI sceAmprWcstombsS(std::size_t* result, char* destination, std::size_t capacity, const std::uint16_t* source, std::size_t limit) {
+    return wcstombs_s_nid_postfix(result, destination, capacity, source, limit);
 }
 
 APS5_EXPORT("VUzjXknPPBs", sceAmprMbstowcs);
