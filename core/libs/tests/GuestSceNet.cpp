@@ -42,6 +42,7 @@ int APS5_VABI sceNetListen(int, int);
 int APS5_VABI sceNetGetsockname(int, void*, std::uint32_t*);
 int APS5_VABI sceNetGetpeername(int, void*, std::uint32_t*);
 int APS5_VABI sceNetGetSockInfo(int, void*, int, int);
+int APS5_VABI sceNetGetSockInfo6(int, void*, int, int);
 int APS5_VABI sceNetConnect(int, const void*, std::uint32_t);
 int APS5_VABI sceNetAccept(int, void*, std::uint32_t*);
 std::int64_t APS5_VABI sceNetSend(int, const void*, std::size_t, int);
@@ -1586,7 +1587,55 @@ static std::array<std::uint8_t, 0xa0> RequireSockInfo(int socket, int type, int 
     }
     Require(std::equal(expected.begin(), expected.end(), records.begin()));
     Require(std::all_of(records.begin() + 0xa0, records.end(), [](auto byte) { return byte == 0xa5; }));
+    records.fill(0xa5);
+    Require(sceNetGetSockInfo6(socket, records.data(), 2, 0) == 1);
+    Require(std::equal(expected.begin(), expected.end(), records.begin()));
+    Require(std::all_of(records.begin() + 0xa0, records.end(), [](auto byte) { return byte == 0xa5; }));
     return expected;
+}
+
+static void RequireSockInfo6(int socket, const std::array<std::uint8_t, 28>& local) {
+    std::array<std::uint8_t, 0x140> records;
+    records.fill(0xa5);
+    Require(sceNetGetSockInfo6(socket, records.data(), 2, 0) == 1);
+    std::array<std::uint8_t, 0xa0> expected{};
+    std::memcpy(expected.data() + 0x24, &socket, sizeof(socket));
+    expected[0x28] = 2;
+    std::memcpy(expected.data() + 0x3c, local.data() + 2, 2);
+    expected[0x48] = 1;
+    for (const auto [offset, option] : {std::array{0x64, 0x1002}, std::array{0x68, 0x1001}}) {
+        int size = 0;
+        std::uint32_t length = sizeof(size);
+        Require(sceNetGetsockopt(socket, 0xffff, option, &size, &length) == 0 && size > 0);
+        std::memcpy(expected.data() + offset, &size, sizeof(size));
+    }
+    std::memcpy(expected.data() + 0x6c, local.data() + 8, 16);
+    Require(std::equal(expected.begin(), expected.end(), records.begin()));
+    Require(std::all_of(records.begin() + 0xa0, records.end(), [](auto byte) { return byte == 0xa5; }));
+}
+
+static void CheckSockInfo6(int inet6) {
+    const std::array<std::uint8_t, 28> unnamed{};
+    RequireSockInfo6(inet6, unnamed);
+    const int count4 = sceNetGetSockInfo(-1, nullptr, 0, 0);
+    const int count6 = sceNetGetSockInfo6(-1, nullptr, 0, 0);
+    Require(count6 >= count4 + 1 && sceNetGetSockInfo6(-1, nullptr, 0, 0x40) == count6);
+    std::vector<std::uint8_t> listed(static_cast<std::size_t>(count6) * 0xa0);
+    Require(sceNetGetSockInfo6(-1, listed.data(), count6, 0) == count6);
+    bool found = false;
+    for (int index = 0; index < count6; ++index) {
+        int socket = 0;
+        std::memcpy(&socket, listed.data() + index * 0xa0 + 0x24, sizeof(socket));
+        found = found || socket == inet6;
+    }
+    Require(found);
+    std::array<std::uint8_t, 28> loopback{28, 28};
+    loopback[23] = 1;
+    if (sceNetBind_nid_postfix(inet6, loopback.data(), loopback.size()) != 0) return;
+    std::array<std::uint8_t, 28> name{};
+    std::uint32_t size = name.size();
+    Require(sceNetGetsockname(inet6, name.data(), &size) == 0 && size == 28 && name[23] == 1);
+    RequireSockInfo6(inet6, name);
 }
 
 static std::vector<int> RequireSockInfoList(int flags) {
@@ -1660,6 +1709,13 @@ static void CheckSockInfo() {
     const int inet6 = sceNetSocket("sockinfo-inet6", 28, 2, 17);
     Require(inet6 >= 0 ? Failed(sceNetGetSockInfo(inet6, record.data(), 1, 0), 47) : *sceNetErrnoLoc() == 47);
     Require(std::all_of(record.begin(), record.end(), [](auto byte) { return byte == 0xa5; }));
+    if (inet6 >= 0) CheckSockInfo6(inet6);
+    for (const int flags : {1, 0x41, 0x1000}) {
+        Require(Failed(sceNetGetSockInfo6(datagram, record.data(), 1, flags), 22));
+        Require(Failed(sceNetGetSockInfo6(-1, nullptr, 0, flags), 22));
+    }
+    Require(Failed(sceNetGetSockInfo6(datagram, nullptr, 1, 0), 22));
+    Require(Failed(sceNetGetSockInfo6(-1, record.data(), 0, 0), 22));
     std::vector<int> expected = earlier;
     expected.insert(expected.end(), {datagram, listener, client, accepted});
     std::sort(expected.begin(), expected.end());
@@ -1668,6 +1724,7 @@ static void CheckSockInfo() {
     if (inet6 >= 0) Require(sceNetSocketClose(inet6) == 0);
     for (const int descriptor : {accepted, client, listener, datagram}) Require(sceNetSocketClose(descriptor) == 0);
     Require(Failed(sceNetGetSockInfo(datagram, record.data(), 1, 0), 9));
+    Require(Failed(sceNetGetSockInfo6(datagram, record.data(), 1, 0), 9));
     Require(RequireSockInfoList(0) == earlier);
 }
 

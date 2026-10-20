@@ -42,6 +42,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
@@ -1725,6 +1726,42 @@ struct NetSockInfo {
 static_assert(sizeof(NetSockInfo) == 0xA0 && offsetof(NetSockInfo, s) == 0x24 && offsetof(NetSockInfo, local_adr) == 0x34 &&
     offsetof(NetSockInfo, local_port) == 0x3C && offsetof(NetSockInfo, recv_buffer_size) == 0x64);
 
+struct NetSockInfo6 {
+    char name[32];
+    std::int32_t pid;
+    std::int32_t s;
+    std::int8_t socket_type;
+    std::int8_t policy;
+    std::int8_t priority;
+    std::int8_t reserved8;
+    std::int32_t recv_queue_length;
+    std::int32_t send_queue_length;
+    std::uint32_t local_adr;
+    std::uint32_t remote_adr;
+    std::uint16_t local_port;
+    std::uint16_t remote_port;
+    std::uint16_t local_vport;
+    std::uint16_t remote_vport;
+    std::int32_t state;
+    std::int32_t flags;
+    std::int32_t tx_bps;
+    std::int32_t rx_bps;
+    std::int32_t max_tx_bps;
+    std::int32_t max_rx_bps;
+    std::int32_t tx_vbps;
+    std::int32_t rx_vbps;
+    std::int32_t recv_buffer_size;
+    std::int32_t send_buffer_size;
+    std::uint8_t local_adr6[16];
+    std::uint8_t remote_adr6[16];
+    std::int32_t tx_drops;
+    std::int32_t rx_drops;
+    std::int32_t tx_wait;
+    std::int32_t reserved[2];
+};
+static_assert(sizeof(NetSockInfo6) == 0xA0 && offsetof(NetSockInfo6, local_adr6) == 0x6C && offsetof(NetSockInfo6, remote_adr6) == 0x7C &&
+    offsetof(NetSockInfo6, tx_drops) == 0x8C);
+
 static int sock_buffer_size(const Sock& socket, bool send, std::int32_t& value) {
     value = send ? socket.snd_buffer : socket.rcv_buffer;
     if (value != 0) return 0;
@@ -1732,7 +1769,15 @@ static int sock_buffer_size(const Sock& socket, bool send, std::int32_t& value) 
     return ::getsockopt(socket.native->value, SOL_SOCKET, send ? SO_SNDBUF : SO_RCVBUF, reinterpret_cast<char*>(&value), &size) == 0 ? 0 : native_error();
 }
 
-static int fill_sock_info(int s, NetSockInfo& record) {
+extern "C++" {
+
+template <typename Record>
+static bool sock_info_family(int family) {
+    return family == NET_AF_INET || (std::is_same_v<Record, NetSockInfo6> && family == NET_AF_INET6);
+}
+
+template <typename Record>
+static int fill_sock_info(int s, Record& record) {
     Sock socket;
     {
         std::lock_guard lk(g_mutex);
@@ -1740,8 +1785,8 @@ static int fill_sock_info(int s, NetSockInfo& record) {
         if (it == g_socks.end()) return NET_EBADF;
         socket = it->second;
     }
-    if (socket.family != NET_AF_INET) return NET_EAFNOSUPPORT;
-    sockaddr_in local{};
+    if (!sock_info_family<Record>(socket.family)) return NET_EAFNOSUPPORT;
+    sockaddr_storage local{};
     NativeLength length = sizeof(local);
     if (::getsockname(socket.native->value, reinterpret_cast<sockaddr*>(&local), &length) != 0) {
 #ifdef _WIN32
@@ -1750,7 +1795,7 @@ static int fill_sock_info(int s, NetSockInfo& record) {
         return native_error();
 #endif
     }
-    sockaddr_in remote{};
+    sockaddr_storage remote{};
     length = sizeof(remote);
     if (::getpeername(socket.native->value, reinterpret_cast<sockaddr*>(&remote), &length) != 0) {
         const int error = native_error();
@@ -1761,26 +1806,38 @@ static int fill_sock_info(int s, NetSockInfo& record) {
     if (const int error = sock_buffer_size(socket, true, record.send_buffer_size)) return error;
     record.s = s;
     record.socket_type = static_cast<std::int8_t>(socket.type);
-    record.local_adr = local.sin_addr.s_addr;
-    record.remote_adr = remote.sin_addr.s_addr;
-    record.local_port = local.sin_port;
-    record.remote_port = remote.sin_port;
+    if (socket.family == NET_AF_INET) {
+        const auto* local4 = reinterpret_cast<const sockaddr_in*>(&local);
+        const auto* remote4 = reinterpret_cast<const sockaddr_in*>(&remote);
+        record.local_adr = local4->sin_addr.s_addr;
+        record.remote_adr = remote4->sin_addr.s_addr;
+        record.local_port = local4->sin_port;
+        record.remote_port = remote4->sin_port;
+    } else if constexpr (std::is_same_v<Record, NetSockInfo6>) {
+        const auto* local6 = reinterpret_cast<const sockaddr_in6*>(&local);
+        const auto* remote6 = reinterpret_cast<const sockaddr_in6*>(&remote);
+        std::memcpy(record.local_adr6, &local6->sin6_addr, sizeof(record.local_adr6));
+        std::memcpy(record.remote_adr6, &remote6->sin6_addr, sizeof(record.remote_adr6));
+        record.local_port = local6->sin6_port;
+        record.remote_port = remote6->sin6_port;
+    }
     record.flags = NET_SOCKINFO_F_SELF | (socket.nonblock ? NET_SOCKINFO_F_NONBLOCK : 0);
     return 0;
 }
 
-int APS5_VABI sceNetGetSockInfo(int s, void* info, int n, int flags) {
+template <typename Record>
+static int get_sock_info(int s, void* info, int n, int flags) {
     if ((flags & ~NET_SOCKINFO_TIME_WAIT) != 0) return fail(NET_EINVAL);
     std::vector<int> listed;
     if (s < 0) {
         std::lock_guard lk(g_mutex);
         for (const auto& [descriptor, socket] : g_socks) {
-            if (socket.family == NET_AF_INET) listed.push_back(descriptor);
+            if (sock_info_family<Record>(socket.family)) listed.push_back(descriptor);
         }
     }
     if (!info) return s < 0 ? static_cast<int>(listed.size()) : fail(NET_EINVAL);
     if (n < 1) return fail(NET_EINVAL);
-    NetSockInfo record;
+    Record record;
     if (s >= 0) {
         if (const int error = fill_sock_info(s, record)) return fail(error);
         std::memcpy(info, &record, sizeof(record));
@@ -1796,6 +1853,12 @@ int APS5_VABI sceNetGetSockInfo(int s, void* info, int n, int flags) {
         ++written;
     }
     return written;
+}
+
+}
+
+int APS5_VABI sceNetGetSockInfo(int s, void* info, int n, int flags) {
+    return get_sock_info<NetSockInfo>(s, info, n, flags);
 }
 
 int APS5_VABI sceNetEpollCreate(const char* name, int flags) {
@@ -2340,9 +2403,8 @@ int APS5_VABI sceNetResolverConnectDestroy(void) {
     return 0;
 }
 
-int APS5_VABI sceNetGetSockInfo6(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNetGetSockInfo6(int s, void* info, int n, int flags) {
+    return get_sock_info<NetSockInfo6>(s, info, n, flags);
 }
 
 int APS5_VABI sceNetSetDns6Info(void) {
