@@ -1,5 +1,12 @@
 #include "prx/libc/include/General.hpp"
 
+namespace {
+
+constexpr int SystemServiceUnavailable = static_cast<int>(0x80A10002);
+constexpr int SystemServiceRejected = static_cast<int>(0x80A10005);
+
+}
+
 extern "C" {
 
 int APS5_VABI sceAppMessagingClearEventFlag() {
@@ -478,7 +485,6 @@ int APS5_VABI sceShellCoreUtilAcquireSharePlayCpuBudget() {
 }
 
 int APS5_VABI sceShellCoreUtilActivateAbort() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
@@ -498,22 +504,18 @@ int APS5_VABI sceShellCoreUtilActivateIsActivated() {
 }
 
 int APS5_VABI sceShellCoreUtilActivateRecordActivation() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceShellCoreUtilActivateStart() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceShellCoreUtilActivateStartAsync() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceShellCoreUtilActivateTerm() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
@@ -1518,8 +1520,7 @@ int APS5_VABI sceSystemServiceAcquireBgmCpuBudget() {
 }
 
 int APS5_VABI sceSystemServiceAcquireFb0() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceUnavailable;
 }
 
 int APS5_VABI sceSystemServiceActivateHevc() {
@@ -1643,7 +1644,6 @@ int APS5_VABI sceSystemServiceAppGetAppInstallStatus() {
 }
 
 int APS5_VABI sceSystemServiceChangeAcpClock() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
@@ -1653,7 +1653,6 @@ int APS5_VABI sceSystemServiceChangeClock() {
 }
 
 int APS5_VABI sceSystemServiceChangeCpuClock() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
@@ -1663,7 +1662,6 @@ int APS5_VABI sceSystemServiceChangeCpuPstate() {
 }
 
 int APS5_VABI sceSystemServiceChangeGpuClock() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
@@ -1673,42 +1671,34 @@ int APS5_VABI sceSystemServiceChangeMemPstate() {
 }
 
 int APS5_VABI sceSystemServiceChangeMemoryClock() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceChangeMemoryClockToBaseMode() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceChangeMemoryClockToDefault() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceChangeMemoryClockToMultiMediaMode() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceChangeNumberOfGpuCu() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceChangeSamuClock() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceChangeUvdClock() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceSystemServiceChangeVceClock() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
@@ -1718,8 +1708,7 @@ int APS5_VABI sceSystemServiceDeclareReadyForSuspend() {
 }
 
 int APS5_VABI sceSystemServiceDisablePartyVoice() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceUnavailable;
 }
 
 int APS5_VABI sceSystemServiceDisableSuspendNotification() {
@@ -1728,8 +1717,7 @@ int APS5_VABI sceSystemServiceDisableSuspendNotification() {
 }
 
 int APS5_VABI sceSystemServiceDisableVoiceRecognition() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceUnavailable;
 }
 
 int APS5_VABI sceSystemServiceEnableSuspendNotification() {
@@ -1933,8 +1921,7 @@ int APS5_VABI sceSystemServiceLaunchTournamentList() {
 }
 
 int APS5_VABI sceSystemServiceLaunchUdsApp() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceRejected;
 }
 
 int APS5_VABI sceSystemServiceLaunchWebApp() {
@@ -1943,8 +1930,7 @@ int APS5_VABI sceSystemServiceLaunchWebApp() {
 }
 
 int APS5_VABI sceSystemServiceLoadExecVideoServiceWebApp() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceUnavailable;
 }
 
 int APS5_VABI sceSystemServiceNavigateToAnotherApp() {
@@ -1978,13 +1964,11 @@ int APS5_VABI sceSystemServiceRaiseExceptionLocalProcess() {
 }
 
 int APS5_VABI sceSystemServiceReenablePartyVoice() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceUnavailable;
 }
 
 int APS5_VABI sceSystemServiceReenableVoiceRecognition() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceUnavailable;
 }
 
 int APS5_VABI sceSystemServiceRegisterDaemon() {
@@ -1998,8 +1982,7 @@ int APS5_VABI sceSystemServiceReleaseBgmCpuBudget() {
 }
 
 int APS5_VABI sceSystemServiceReleaseFb0() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceUnavailable;
 }
 
 int APS5_VABI sceSystemServiceRequestCameraCalibration() {
@@ -2018,8 +2001,7 @@ int APS5_VABI sceSystemServiceRequestReboot() {
 }
 
 int APS5_VABI sceSystemServiceRequestToChangeRenderingMode() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return SystemServiceRejected;
 }
 
 int APS5_VABI sceSystemServiceResumeLocalProcess() {
@@ -2048,7 +2030,6 @@ int APS5_VABI sceSystemServiceSetOutOfVrPlayAreaFlag() {
 }
 
 int APS5_VABI sceSystemServiceSetOutOfVrPlayZoneWarning() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
