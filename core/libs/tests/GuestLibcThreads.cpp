@@ -17,6 +17,7 @@ void APS5_VABI _Cnd_destroy_nid_postfix(void** handle);
 int APS5_VABI _Cnd_wait_nid_postfix(void** condition, void** mutex);
 int APS5_VABI _Cnd_broadcast_nid_postfix(void** handle);
 int APS5_VABI _Cnd_signal_nid_postfix(void** handle);
+int APS5_VABI _Thrd_yield_nid_postfix();
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -202,10 +203,19 @@ static void ConditionSignal() {
     _Mtx_destroy_nid_postfix(&mutex);
 }
 
+static void ThreadHelpers() {
+    Require(_Thrd_yield_nid_postfix() == success);
+    std::thread other([&] {
+        Require(_Thrd_yield_nid_postfix() == success);
+    });
+    other.join();
+}
+
 int main() {
     MutexBasics();
     RecursiveMutex();
     MutualExclusion();
     ConditionBroadcast();
     ConditionSignal();
+    ThreadHelpers();
 }
