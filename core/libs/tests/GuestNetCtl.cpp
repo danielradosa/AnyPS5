@@ -38,6 +38,10 @@ int APS5_VABI sceNetCtlGetNatInfo(NetCtlNatInfo*);
 int APS5_VABI sceNetCtlGetState(int*);
 int APS5_VABI sceNetCtlGetStateV6(int*);
 int APS5_VABI sceNetCtlGetResult(int, int*);
+int APS5_VABI sceNetCtlGetResultV6(int, int*);
+int APS5_VABI sceNetCtlGetInfoV6(int, NetCtlInfo*);
+int APS5_VABI sceNetCtlRegisterCallbackForNpToolkit(NetCtlCallback, void*, int*);
+int APS5_VABI sceNetCtlCheckCallbackForNpToolkit(void);
 #ifdef __APPLE__
 std::size_t NetCtlDefaultRoutes_nid_no_patch(const char*, std::size_t, NetCtlDefaultRoute*, std::size_t);
 #endif
@@ -70,6 +74,7 @@ struct Delivery {
 Delivery g_first;
 Delivery g_second;
 Delivery g_v6;
+Delivery g_toolkit;
 Delivery g_self;
 int g_selfUnregister = -1;
 
@@ -89,6 +94,12 @@ void APS5_VABI RecordV6(int event, void* arg) {
     ++g_v6.calls;
     g_v6.event = event;
     g_v6.arg = arg;
+}
+
+void APS5_VABI RecordToolkit(int event, void* arg) {
+    ++g_toolkit.calls;
+    g_toolkit.event = event;
+    g_toolkit.arg = arg;
 }
 
 void APS5_VABI UnregisterSelf(int event, void* arg) {
@@ -198,6 +209,84 @@ bool Binds(in_addr address) {
     return bound;
 }
 
+void CheckNpToolkitCallbacks() {
+    int state = -1;
+    Require(sceNetCtlGetState(&state) == 0);
+    const int event = state == kStateIpObtained ? kEventIpObtained : kEventDisconnected;
+    int probe = 0;
+    int cid = -1;
+    Require(sceNetCtlRegisterCallbackForNpToolkit(nullptr, &probe, &cid) == kErrInvalidAddr);
+    Require(sceNetCtlRegisterCallbackForNpToolkit(RecordToolkit, &probe, nullptr) == kErrInvalidAddr);
+    Require(sceNetCtlCheckCallbackForNpToolkit() == 0);
+    Require(sceNetCtlRegisterCallbackForNpToolkit(RecordToolkit, &probe, &cid) == 0 && cid == 0);
+    int ipv4 = -1;
+    Require(sceNetCtlRegisterCallback(RecordFirst, &probe, &ipv4) == 0 && ipv4 == 0);
+    const int firstCalls = g_first.calls;
+    Require(sceNetCtlCheckCallbackForNpToolkit() == 0);
+    Require(g_toolkit.calls == 1 && g_toolkit.event == event && g_toolkit.arg == &probe);
+    Require(g_first.calls == firstCalls);
+    Require(sceNetCtlCheckCallbackForNpToolkit() == 0);
+    Require(g_toolkit.calls == 1);
+    Require(sceNetCtlCheckCallback() == 0);
+    Require(g_first.calls == firstCalls + 1 && g_toolkit.calls == 1);
+    for (int slot = 1; slot < 8; ++slot) {
+        int next = -1;
+        Require(sceNetCtlRegisterCallbackForNpToolkit(RecordToolkit, &probe, &next) == 0 && next == slot);
+    }
+    int full = -1;
+    Require(sceNetCtlRegisterCallbackForNpToolkit(RecordToolkit, &probe, &full) == static_cast<int>(0x80412103));
+    sceNetCtlTerm();
+    Require(sceNetCtlCheckCallbackForNpToolkit() == 0);
+    Require(g_toolkit.calls == 1);
+    Require(sceNetCtlRegisterCallbackForNpToolkit(RecordToolkit, &probe, &cid) == 0 && cid == 0);
+    Require(sceNetCtlCheckCallbackForNpToolkit() == 0);
+    Require(g_toolkit.calls == 2 && g_toolkit.event == event);
+    sceNetCtlTerm();
+}
+
+void CheckInfoV6() {
+    Require(sceNetCtlGetResultV6(0, nullptr) == kErrInvalidAddr);
+    int errorCode = -1;
+    Require(sceNetCtlGetResultV6(3, &errorCode) == 0 && errorCode == 0);
+
+    NetCtlInfo info{};
+    Require(sceNetCtlGetInfoV6(1, nullptr) == kErrInvalidAddr);
+    Require(sceNetCtlGetInfoV6(0, &info) == kErrInvalidCode);
+    Require(sceNetCtlGetInfoV6(6, &info) == kErrInvalidCode);
+    int state = -1;
+    Require(sceNetCtlGetStateV6(&state) == 0);
+    std::memset(&info, kFill, sizeof(info));
+    const int result = sceNetCtlGetInfoV6(1, &info);
+    if (result == kErrNotConnected) {
+        Require(state == 0);
+        Require(sceNetCtlGetInfoV6(2, &info) == kErrNotConnected);
+        return;
+    }
+    Require(result == 0 && state == kStateIpObtained);
+    for (const int code : {1, 2}) {
+        std::memset(&info, kFill, sizeof(info));
+        if (code == 2) {
+            try {
+                Require(sceNetCtlGetInfoV6(code, &info) == 0);
+            } catch (const std::runtime_error&) {
+                std::puts("the host IPv6 interface has no link-local address");
+                continue;
+            }
+        } else {
+            Require(sceNetCtlGetInfoV6(code, &info) == 0);
+        }
+        char text[46];
+        std::memcpy(text, info.opaque, sizeof(text));
+        Require(std::memchr(text, '\0', sizeof(text)) != nullptr);
+        in6_addr address{};
+        Require(inet_pton(AF_INET6, text, &address) == 1);
+        const bool linkLocal = address.s6_addr[0] == 0xfe && (address.s6_addr[1] & 0xc0) == 0x80;
+        Require(linkLocal == (code == 2));
+        Require(info.opaque[46] >= 1 && info.opaque[46] <= 128);
+        RequireUntouchedFrom(info, 47);
+    }
+}
+
 }
 
 #ifdef __APPLE__
@@ -262,6 +351,8 @@ int main() {
     CheckDefaultRoutes();
 #endif
     CheckCallbacks();
+    CheckNpToolkitCallbacks();
+    CheckInfoV6();
 
     Require(sceNetCtlGetStateV6(nullptr) == kErrInvalidAddr);
     int stateV6 = -1;

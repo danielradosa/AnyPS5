@@ -70,6 +70,10 @@ static constexpr std::uint32_t NET_CTL_IP_DHCP = 0;
 static constexpr std::uint32_t NET_CTL_HTTP_PROXY_OFF = 0;
 static constexpr std::uint8_t NET_CTL_ETHER_ADDR[6] = {0x02, 0x50, 0x53, 0x35, 0x00, 0x01};
 static constexpr std::size_t NET_CTL_IPV4_ADDR_STR_LEN = 16;
+static constexpr int NET_CTL_INFO_V6_IP_ADDRESS = 1;
+static constexpr int NET_CTL_INFO_V6_LINK_LOCAL_ADDRESS = 2;
+static constexpr int NET_CTL_INFO_V6_SECONDARY_DNS = 5;
+static constexpr std::size_t NET_CTL_IPV6_ADDR_STR_LEN = 46;
 static constexpr int MAX_CALLBACKS = 8;
 
 struct CallbackSlot {
@@ -81,6 +85,7 @@ struct CallbackSlot {
 static std::mutex g_callbackLock;
 static CallbackSlot g_callbacks[MAX_CALLBACKS] = {};
 static CallbackSlot g_callbacksV6[MAX_CALLBACKS] = {};
+static CallbackSlot g_callbacksNpToolkit[MAX_CALLBACKS] = {};
 
 static int RegisterCallback(CallbackSlot (&callbacks)[MAX_CALLBACKS], NetCtlCallback func, void* arg, int* cid) {
     if (!func || !cid) return SCE_NET_CTL_ERROR_INVALID_ADDR;
@@ -102,9 +107,9 @@ static int UnregisterCallback(CallbackSlot (&callbacks)[MAX_CALLBACKS], int cid)
     return 0;
 }
 
-static bool HasIpv4Callback() {
+static bool HasCallback(const CallbackSlot (&callbacks)[MAX_CALLBACKS]) {
     std::lock_guard lock(g_callbackLock);
-    for (const auto& slot : g_callbacks) {
+    for (const auto& slot : callbacks) {
         if (slot.func) return true;
     }
     return false;
@@ -133,7 +138,7 @@ static bool HostHasAddress(int family) {
                 if (host != 0 && (host >> 24) != 127) return true;
             } else if (address->Address.lpSockaddr->sa_family == AF_INET6) {
                 const auto* v6 = reinterpret_cast<const sockaddr_in6*>(address->Address.lpSockaddr);
-                if (!IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr) && !IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr)) return true;
+                if (!IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr) && !IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr) && !IN6_IS_ADDR_LINKLOCAL(&v6->sin6_addr)) return true;
             }
         }
     }
@@ -151,7 +156,7 @@ static bool HostHasAddress(int family) {
             found = host != 0 && (host >> 24) != 127;
         } else if ((family == AF_UNSPEC || family == address_family) && address_family == AF_INET6) {
             const auto* v6 = reinterpret_cast<const sockaddr_in6*>(item->ifa_addr);
-            found = !IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr) && !IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr);
+            found = !IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr) && !IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr) && !IN6_IS_ADDR_LINKLOCAL(&v6->sin6_addr);
         }
     }
     freeifaddrs(interfaces);
@@ -350,6 +355,96 @@ static bool FindHostIpv4Interface(HostIpv4Interface& found) {
 #endif
 }
 
+struct HostIpv6Address {
+    in6_addr address{};
+    unsigned prefix = 0;
+};
+
+struct HostIpv6Interface {
+    HostIpv6Address global;
+    HostIpv6Address linkLocal;
+    bool hasLinkLocal = false;
+};
+
+static bool UsableIpv6(const in6_addr& address) {
+    return !IN6_IS_ADDR_UNSPECIFIED(&address) && !IN6_IS_ADDR_LOOPBACK(&address);
+}
+
+static bool FindHostIpv6Interface(HostIpv6Interface& found) {
+#ifdef _WIN32
+    ULONG size = 0;
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    if (GetAdaptersAddresses(AF_INET6, flags, nullptr, nullptr, &size) != ERROR_BUFFER_OVERFLOW) return false;
+    std::vector<std::uint8_t> storage(size);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+    if (GetAdaptersAddresses(AF_INET6, flags, nullptr, adapters, &size) != NO_ERROR) return false;
+    for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
+        if (adapter->OperStatus != IfOperStatusUp || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        HostIpv6Interface candidate;
+        bool hasGlobal = false;
+        for (auto* unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next) {
+            const auto* socketAddress = unicast->Address.lpSockaddr;
+            if (!socketAddress || socketAddress->sa_family != AF_INET6) continue;
+            const auto& address = reinterpret_cast<const sockaddr_in6*>(socketAddress)->sin6_addr;
+            if (!UsableIpv6(address)) continue;
+            if (IN6_IS_ADDR_LINKLOCAL(&address)) {
+                if (candidate.hasLinkLocal) continue;
+                candidate.linkLocal = {address, unicast->OnLinkPrefixLength};
+                candidate.hasLinkLocal = true;
+            } else if (!hasGlobal) {
+                candidate.global = {address, unicast->OnLinkPrefixLength};
+                hasGlobal = true;
+            }
+        }
+        if (!hasGlobal) continue;
+        found = candidate;
+        return true;
+    }
+    return false;
+#else
+    ifaddrs* list = nullptr;
+    if (getifaddrs(&list) != 0) return false;
+    const std::unique_ptr<ifaddrs, void (*)(ifaddrs*)> interfaces(list, freeifaddrs);
+    const auto prefixOf = [](const ifaddrs* item) {
+        unsigned prefix = 0;
+        if (!item->ifa_netmask) return prefix;
+        const auto& mask = reinterpret_cast<const sockaddr_in6*>(item->ifa_netmask)->sin6_addr;
+        for (const std::uint8_t byte : mask.s6_addr) {
+            for (unsigned bit = 0x80; bit != 0 && (byte & bit); bit >>= 1) ++prefix;
+        }
+        return prefix;
+    };
+    const auto usable = [](const ifaddrs* item) {
+        return item->ifa_addr && item->ifa_addr->sa_family == AF_INET6 && (item->ifa_flags & IFF_UP) && !(item->ifa_flags & IFF_LOOPBACK) &&
+            UsableIpv6(reinterpret_cast<const sockaddr_in6*>(item->ifa_addr)->sin6_addr);
+    };
+    for (auto* item = list; item; item = item->ifa_next) {
+        if (!usable(item)) continue;
+        const auto& address = reinterpret_cast<const sockaddr_in6*>(item->ifa_addr)->sin6_addr;
+        if (IN6_IS_ADDR_LINKLOCAL(&address)) continue;
+        found = {};
+        found.global = {address, prefixOf(item)};
+        for (auto* other = list; other; other = other->ifa_next) {
+            if (!usable(other) || std::strcmp(other->ifa_name, item->ifa_name) != 0) continue;
+            const auto& linkLocal = reinterpret_cast<const sockaddr_in6*>(other->ifa_addr)->sin6_addr;
+            if (!IN6_IS_ADDR_LINKLOCAL(&linkLocal)) continue;
+            found.linkLocal = {linkLocal, prefixOf(other)};
+            found.hasLinkLocal = true;
+            break;
+        }
+        return true;
+    }
+    return false;
+#endif
+}
+
+static void WriteInfoIpv6Address(NetCtlInfo* info, const HostIpv6Address& address) {
+    char text[NET_CTL_IPV6_ADDR_STR_LEN] = {};
+    if (!inet_ntop(AF_INET6, &address.address, text, sizeof(text))) throw std::runtime_error("sceNetCtlGetInfoV6: the host IPv6 address cannot be formatted");
+    std::memcpy(info->opaque, text, sizeof(text));
+    info->opaque[NET_CTL_IPV6_ADDR_STR_LEN] = static_cast<std::uint8_t>(address.prefix);
+}
+
 static void WriteInfoWord(NetCtlInfo* info, std::uint32_t value) {
     std::memcpy(info->opaque, &value, sizeof(value));
 }
@@ -399,14 +494,14 @@ static void HostTraffic(std::uint64_t& sent, std::uint64_t& received) {
 
 extern "C" {
 
-int APS5_VABI sceNetCtlCheckCallback(void) {
-    if (!HasIpv4Callback()) return 0;
+static int CheckCallbacks(CallbackSlot (&callbacks)[MAX_CALLBACKS]) {
+    if (!HasCallback(callbacks)) return 0;
     const int event = HostHasAddress(AF_UNSPEC) ? NET_CTL_EVENT_IPOBTAINED : NET_CTL_EVENT_DISCONNECTED;
     CallbackSlot due[MAX_CALLBACKS];
     int count = 0;
     {
         std::lock_guard lock(g_callbackLock);
-        for (auto& slot : g_callbacks) {
+        for (auto& slot : callbacks) {
             if (!slot.func || slot.lastEvent == event) continue;
             slot.lastEvent = event;
             due[count++] = slot;
@@ -414,6 +509,10 @@ int APS5_VABI sceNetCtlCheckCallback(void) {
     }
     for (int index = 0; index < count; ++index) due[index].func(event, due[index].arg);
     return 0;
+}
+
+int APS5_VABI sceNetCtlCheckCallback(void) {
+    return CheckCallbacks(g_callbacks);
 }
 
 int APS5_VABI sceNetCtlGetIfStat(NetCtlIfStat* stat) {
@@ -456,8 +555,19 @@ int APS5_VABI sceNetCtlGetInfo(int code, NetCtlInfo* info) {
     return 0;
 }
 
-int APS5_VABI sceNetCtlGetInfoV6() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceNetCtlGetInfoV6(int code, NetCtlInfo* info) {
+    if (!info) return SCE_NET_CTL_ERROR_INVALID_ADDR;
+    if (code < NET_CTL_INFO_V6_IP_ADDRESS || code > NET_CTL_INFO_V6_SECONDARY_DNS) return SCE_NET_CTL_ERROR_INVALID_CODE;
+    HostIpv6Interface host;
+    if (!FindHostIpv6Interface(host)) return SCE_NET_CTL_ERROR_NOT_CONNECTED;
+    switch (code) {
+        case NET_CTL_INFO_V6_IP_ADDRESS: WriteInfoIpv6Address(info, host.global); break;
+        case NET_CTL_INFO_V6_LINK_LOCAL_ADDRESS:
+            if (!host.hasLinkLocal) throw std::runtime_error("sceNetCtlGetInfoV6: the host interface has no link-local address");
+            WriteInfoIpv6Address(info, host.linkLocal);
+            break;
+        default: throw std::runtime_error("sceNetCtlGetInfoV6: info code " + std::to_string(code) + " is not implemented");
+    }
     return 0;
 }
 
@@ -471,6 +581,10 @@ int APS5_VABI sceNetCtlGetResult(int event_type, int* error_code) {
     if (!error_code) return SCE_NET_CTL_ERROR_INVALID_ADDR;
     *error_code = 0;
     return 0;
+}
+
+int APS5_VABI sceNetCtlGetResultV6(int event_type, int* error_code) {
+    return sceNetCtlGetResult(event_type, error_code);
 }
 
 int APS5_VABI sceNetCtlGetState(int* state) {
@@ -501,6 +615,7 @@ void APS5_VABI sceNetCtlTerm(void) {
     std::lock_guard lock(g_callbackLock);
     for (auto& slot : g_callbacks) slot = {};
     for (auto& slot : g_callbacksV6) slot = {};
+    for (auto& slot : g_callbacksNpToolkit) slot = {};
 }
 
 int APS5_VABI sceNetCtlUnregisterCallback(int cid) {
@@ -511,9 +626,8 @@ int APS5_VABI sceNetCtlUnregisterCallbackV6(int cid) {
     return UnregisterCallback(g_callbacksV6, cid);
 }
 
-int APS5_VABI sceNetCtlRegisterCallbackForNpToolkit(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNetCtlRegisterCallbackForNpToolkit(NetCtlCallback func, void* arg, int* cid) {
+    return RegisterCallback(g_callbacksNpToolkit, func, arg, cid);
 }
 
 int APS5_VABI sceNetCtlRegisterCallbackIpcInt(void) {
@@ -542,8 +656,7 @@ int APS5_VABI sceNetCtlUnregisterCallbackForLibIpcInt(void) {
 }
 
 int APS5_VABI sceNetCtlCheckCallbackForNpToolkit(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return CheckCallbacks(g_callbacksNpToolkit);
 }
 
 int APS5_VABI sceNetCtlCheckCallbackForLibIpcInt(void) {
@@ -657,11 +770,6 @@ int APS5_VABI sceNetCtlRegisterCallbackV6IpcInt(void) {
 }
 
 int APS5_VABI sceNetCtlUnregisterCallbackV6IpcInt(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNetCtlGetResultV6(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
