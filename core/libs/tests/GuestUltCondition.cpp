@@ -19,6 +19,10 @@ int APS5_VABI _sceUltConditionVariableCreate(void*, const char*, void*, const vo
 int APS5_VABI sceUltConditionVariableWait(void*);
 int APS5_VABI sceUltConditionVariableSignal(void*);
 int APS5_VABI sceUltConditionVariableDestroy(void*);
+int APS5_VABI sceUltConditionVariableSignalAll(void*);
+int APS5_VABI sceUltConditionVariableCreate(void*, const char*, void*, const void*, std::uint32_t);
+int APS5_VABI sceUltConditionVariableOptParamInitialize(void*, std::uint32_t);
+int APS5_VABI sceUltMutexTryLock(void*);
 }
 
 constexpr int Null = -2139029503;
@@ -223,6 +227,76 @@ static void Finalize(bool signaled) {
     CHECK(sceUltMutexDestroy(&mutex) == 0);
 }
 
+static void SignalAll() {
+    Object mutex, condition, unused;
+    CHECK(sceUltConditionVariableSignalAll(nullptr) == Null);
+    CHECK(sceUltConditionVariableSignalAll(&unused) == State);
+    std::array<std::uint8_t, 128> optParam;
+    optParam.fill(0xAB);
+    CHECK(sceUltConditionVariableOptParamInitialize(nullptr, 0x12000000) == Null);
+    CHECK(sceUltConditionVariableOptParamInitialize(optParam.data(), 0x12000000) == 0);
+    CHECK(optParam[0] == 0xAB && optParam[127] == 0xAB);
+    CHECK(sceUltMutexCreate(&mutex, "mutex", nullptr, nullptr, 0x12000000) == 0);
+    CHECK(sceUltConditionVariableCreate(nullptr, "condition", &mutex, nullptr, 0x12000000) == Null);
+    CHECK(sceUltConditionVariableCreate(&condition, "condition", &unused, nullptr, 0x12000000) == Invalid);
+    CHECK(sceUltConditionVariableCreate(&condition, "condition", &mutex, nullptr, 0x12000000) == 0);
+    CHECK(sceUltConditionVariableCreate(&condition, "condition", &mutex, nullptr, 0x12000000) == State);
+    CHECK(sceUltConditionVariableSignalAll(&condition) == 0);
+    std::atomic<int> entered = 0, finished = 0;
+    std::array<std::future<void>, 3> waiters;
+    for (auto& waiter : waiters) waiter = std::async(std::launch::async, [&] {
+        CHECK(sceUltMutexLock(&mutex) == 0);
+        ++entered;
+        CHECK(sceUltConditionVariableWait(&condition) == 0);
+        ++finished;
+        CHECK(sceUltMutexUnlock(&mutex) == 0);
+    });
+    Await(entered, 3);
+    CHECK(sceUltMutexLock(&mutex) == 0);
+    CHECK(sceUltConditionVariableSignalAll(&condition) == 0);
+    CHECK(sceUltMutexUnlock(&mutex) == 0);
+    for (auto& waiter : waiters) {
+        CHECK(waiter.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+        waiter.get();
+    }
+    CHECK(finished == 3);
+    CHECK(sceUltConditionVariableDestroy(&condition) == 0);
+    CHECK(sceUltConditionVariableSignalAll(&condition) == State);
+    CHECK(sceUltMutexDestroy(&mutex) == 0);
+}
+
+static void TryLock() {
+    Object mutex, unused;
+    CHECK(sceUltMutexTryLock(nullptr) == Null);
+    CHECK(sceUltMutexTryLock(&unused) == State);
+    CHECK(sceUltMutexCreate(&mutex, "mutex", nullptr, nullptr, 0x12000000) == 0);
+    CHECK(sceUltMutexTryLock(&mutex) == 0);
+    CHECK(sceUltMutexTryLock(&mutex) == 0);
+    CHECK(std::async(std::launch::async, [&] { return sceUltMutexTryLock(&mutex); }).get() == Busy);
+    CHECK(sceUltMutexUnlock(&mutex) == 0);
+    CHECK(std::async(std::launch::async, [&] { return sceUltMutexTryLock(&mutex); }).get() == Busy);
+    CHECK(sceUltMutexUnlock(&mutex) == 0);
+    CHECK(sceUltMutexUnlock(&mutex) == State);
+    std::atomic<int> locked = 0;
+    std::atomic<bool> release = false;
+    auto holder = std::async(std::launch::async, [&] {
+        CHECK(sceUltMutexTryLock(&mutex) == 0);
+        locked = 1;
+        while (!release) std::this_thread::yield();
+        CHECK(sceUltMutexUnlock(&mutex) == 0);
+    });
+    Await(locked, 1);
+    CHECK(sceUltMutexTryLock(&mutex) == Busy);
+    CHECK(sceUltMutexDestroy(&mutex) == Busy);
+    release = true;
+    CHECK(holder.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+    holder.get();
+    CHECK(sceUltMutexTryLock(&mutex) == 0);
+    CHECK(sceUltMutexUnlock(&mutex) == 0);
+    CHECK(sceUltMutexDestroy(&mutex) == 0);
+    CHECK(sceUltMutexTryLock(&mutex) == State);
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) return 1;
     const std::string test = argv[1];
@@ -232,6 +306,8 @@ int main(int argc, char** argv) {
     else if (test == "stress") Stress();
     else if (test == "finalize-queued") Finalize(false);
     else if (test == "finalize-reacquire") Finalize(true);
+    else if (test == "signal-all") SignalAll();
+    else if (test == "trylock") TryLock();
     else return 1;
     CHECK(sceUltFinalize() == 0);
     std::puts("ULT condition tests passed");

@@ -40,10 +40,15 @@ int APS5_VABI sceUltQueueDataResourcePoolDestroy(void*);
 int APS5_VABI sceUltConditionVariableDestroy(void*);
 int APS5_VABI sceUltReaderWriterLockDestroy();
 int APS5_VABI sceUltGetConditionVariableInfo();
+int APS5_VABI sceUltUlthreadGetSelf(void**);
+int APS5_VABI sceUltUlthreadYield();
+int APS5_VABI sceUltUlthreadExit(std::int32_t);
+int APS5_VABI sceUltUlthreadOptParamInitialize(void*, std::uint32_t);
 }
 
 static constexpr int Ok = 0;
 static constexpr int Null = -2139029503;
+static constexpr int Permission = -2139029499;
 static constexpr int State = -2139029498;
 static constexpr int Busy = -2139029497;
 
@@ -67,6 +72,22 @@ static std::int32_t APS5_VABI Parked(std::uint64_t arg) {
 
 static std::int32_t APS5_VABI Immediate(std::uint64_t arg) {
     return static_cast<std::int32_t>(arg);
+}
+
+static std::atomic<int> gSelfResult{0};
+static std::atomic<void*> gSelf{nullptr};
+static std::atomic<int> gYieldResult{-1};
+static std::atomic<bool> gPastExit{false};
+
+static std::int32_t APS5_VABI ExitsEarly(std::uint64_t arg) {
+    void* self = nullptr;
+    CHECK(sceUltUlthreadGetSelf(nullptr) == Null);
+    gSelfResult.store(sceUltUlthreadGetSelf(&self), std::memory_order_release);
+    gSelf.store(self, std::memory_order_release);
+    gYieldResult.store(sceUltUlthreadYield(), std::memory_order_release);
+    sceUltUlthreadExit(static_cast<std::int32_t>(arg));
+    gPastExit.store(true, std::memory_order_release);
+    return -1;
 }
 
 struct alignas(8) Runtime { std::uint8_t bytes[4096]{}; };
@@ -232,6 +253,35 @@ static void UnderscoredCreate() {
     CHECK(sceUltQueueDataResourcePoolDestroy(dataPool) == Ok);
 }
 
+static void Self() {
+    Runtime runtime;
+    Thread thread;
+    void* self = &runtime;
+    CHECK(sceUltUlthreadGetSelf(nullptr) == Null);
+    CHECK(sceUltUlthreadGetSelf(&self) == Permission && self == &runtime);
+    CHECK(sceUltUlthreadExit(0) == Permission);
+    CHECK(sceUltUlthreadYield() == Ok);
+    std::uint8_t optParam[128];
+    std::memset(optParam, 0xff, sizeof(optParam));
+    CHECK(sceUltUlthreadOptParamInitialize(nullptr, 0) == Null);
+    CHECK(sceUltUlthreadOptParamInitialize(optParam, 0) == Ok);
+    CHECK(optParam[0] == 0 && optParam[127] == 0);
+    CHECK(sceUltUlthreadRuntimeCreate(&runtime, "runtime", 1, 1, nullptr, nullptr, 0) == Ok);
+    CHECK(sceUltUlthreadCreate(&thread, "early", ExitsEarly, 0x6E, nullptr, 0, &runtime, optParam, 0) == Ok);
+    std::int32_t status = 0;
+    int joined;
+    while ((joined = sceUltUlthreadTryJoin(&thread, &status)) == Busy) std::this_thread::yield();
+    CHECK(joined == Ok && status == 0x6E);
+    CHECK(gSelfResult.load(std::memory_order_acquire) == Ok);
+    CHECK(gSelf.load(std::memory_order_acquire) == &thread);
+    CHECK(gYieldResult.load(std::memory_order_acquire) == Ok);
+    CHECK(!gPastExit.load(std::memory_order_acquire));
+    CHECK(sceUltUlthreadCreate(&thread, "early", ExitsEarly, 0x21, nullptr, 0, &runtime, nullptr, 0) == Ok);
+    CHECK(sceUltUlthreadJoin(&thread, &status) == Ok && status == 0x21);
+    CHECK(!gPastExit.load(std::memory_order_acquire));
+    CHECK(sceUltUlthreadRuntimeDestroy(&runtime) == Ok);
+}
+
 int main(int argc, char** argv) {
     CHECK(argc == 2);
     CHECK(sceUltInitialize() == Ok);
@@ -240,5 +290,6 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[1], "tryjoin") == 0) TryJoin();
     else if (std::strcmp(argv[1], "destroy") == 0) Destroy();
     else if (std::strcmp(argv[1], "underscoredcreate") == 0) UnderscoredCreate();
+    else if (std::strcmp(argv[1], "self") == 0) Self();
     else CHECK(false);
 }

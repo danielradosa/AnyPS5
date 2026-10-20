@@ -25,6 +25,10 @@ int APS5_VABI sceUltQueueTryPop(void*, void*);
 int APS5_VABI sceUltWaitingQueueResourcePoolCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*, std::uint32_t);
 int APS5_VABI _sceUltQueueDataResourcePoolCreate(void*, const char*, std::uint32_t, std::uint64_t, std::uint32_t, void*, void*, const void*, std::uint32_t);
 int APS5_VABI _sceUltQueueCreate(void*, const char*, std::uint64_t, void*, void*, const void*, std::uint32_t);
+int APS5_VABI sceUltWaitingQueueResourcePoolDestroy(void*);
+int APS5_VABI sceUltWaitingQueueResourcePoolOptParamInitialize(void*, std::uint32_t);
+int APS5_VABI sceUltQueueDataResourcePoolOptParamInitialize(void*, std::uint32_t);
+int APS5_VABI sceUltQueueOptParamInitialize(void*, std::uint32_t);
 }
 
 static constexpr int Null = -2139029503;
@@ -282,6 +286,30 @@ static void Versioned() {
     CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == Invalid);
 }
 
+static void OptParams() {
+    std::array<std::uint8_t, 128> waitingParam, poolParam, queueParam;
+    waitingParam.fill(0xAB);
+    poolParam.fill(0xAB);
+    queueParam.fill(0xAB);
+    CHECK(sceUltWaitingQueueResourcePoolOptParamInitialize(nullptr, BuildVersion) == Null);
+    CHECK(sceUltQueueDataResourcePoolOptParamInitialize(nullptr, BuildVersion) == Null);
+    CHECK(sceUltQueueOptParamInitialize(nullptr, BuildVersion) == Null);
+    CHECK(sceUltWaitingQueueResourcePoolOptParamInitialize(waitingParam.data(), BuildVersion) == 0);
+    CHECK(sceUltQueueDataResourcePoolOptParamInitialize(poolParam.data(), BuildVersion) == 0);
+    CHECK(sceUltQueueOptParamInitialize(queueParam.data(), BuildVersion) == 0);
+    CHECK(waitingParam[0] == 0xAB && poolParam[0] == 0xAB && queueParam[127] == 0xAB);
+    Object waiting, pool, queue;
+    CHECK(sceUltWaitingQueueResourcePoolCreate(&waiting, "waiting", 1, 1, nullptr, waitingParam.data(), BuildVersion) == 0);
+    CHECK(sceUltQueueDataResourcePoolCreate(&pool, "pool", 1, 8, 1, &waiting, nullptr, poolParam.data(), BuildVersion) == 0);
+    CHECK(sceUltQueueCreate(&queue, "queue", 8, &waiting, &pool, queueParam.data(), BuildVersion) == 0);
+    std::uint64_t value = 0x0123456789ABCDEFull, output = 0;
+    CHECK(sceUltQueuePush(&queue, &value) == 0);
+    CHECK(sceUltQueuePop(&queue, &output) == 0 && output == value);
+    CHECK(sceUltQueueDestroy(&queue) == 0);
+    CHECK(sceUltQueueDataResourcePoolDestroy(&pool) == 0);
+    CHECK(sceUltWaitingQueueResourcePoolDestroy(&waiting) == 0);
+}
+
 int main(int argc, char** argv) {
     CHECK(argc == 2);
     CHECK(sceUltInitialize() == 0);
@@ -292,6 +320,7 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[1], "finalize") == 0) Finalize();
     else if (std::strcmp(argv[1], "stress") == 0) Stress();
     else if (std::strcmp(argv[1], "versioned") == 0) Versioned();
+    else if (std::strcmp(argv[1], "optparams") == 0) OptParams();
     else CHECK(false);
     CHECK(sceUltFinalize() == 0);
 }

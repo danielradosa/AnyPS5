@@ -16,6 +16,7 @@ constexpr int ULT_ERROR_NULL = -2139029503;
 constexpr int ULT_ERROR_ALIGNMENT = -2139029502;
 constexpr int ULT_ERROR_RANGE = -2139029501;
 constexpr int ULT_ERROR_INVALID = -2139029500;
+constexpr int ULT_ERROR_PERMISSION = -2139029499;
 constexpr int ULT_ERROR_STATE = -2139029498;
 constexpr int ULT_ERROR_BUSY = -2139029497;
 constexpr int ULT_ERROR_AGAIN = -2139029496;
@@ -95,7 +96,10 @@ struct UltUlthreadState {
     std::uint64_t _arg = 0;
     Pthread _thread = nullptr;
     void* _runtime = nullptr;
+    void* _object = nullptr;
     std::atomic<bool> _exited{false};
 };
+
+struct UltUlthreadOptParam { std::uint8_t bytes[128]; };
 
 #endif
