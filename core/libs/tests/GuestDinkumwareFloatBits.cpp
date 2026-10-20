@@ -10,9 +10,9 @@ extern "C" {
 short APS5_VABI _Dint_nid_postfix(double*, short);
 short APS5_VABI _FDint_nid_postfix(float*, short);
 short APS5_VABI _LDint_nid_postfix(long double*, short);
-short APS5_VABI _Dscale_nid_postfix(double*, long);
-short APS5_VABI _FDscale_nid_postfix(float*, long);
-short APS5_VABI _LDscale_nid_postfix(long double*, long);
+short APS5_VABI _Dscale_nid_postfix(double*, std::int64_t);
+short APS5_VABI _FDscale_nid_postfix(float*, std::int64_t);
+short APS5_VABI _LDscale_nid_postfix(long double*, std::int64_t);
 short APS5_VABI _Dunscale_nid_postfix(short*, double*);
 short APS5_VABI _FDunscale_nid_postfix(short*, float*);
 short APS5_VABI _LDunscale_nid_postfix(short*, long double*);
@@ -57,7 +57,7 @@ static void CheckInt(short (APS5_VABI *function)(T*, short), T input, short scal
 }
 
 template <typename T>
-static void CheckScale(short (APS5_VABI *function)(T*, long), T input, long exponent, short code, T expected) {
+static void CheckScale(short (APS5_VABI *function)(T*, std::int64_t), T input, std::int64_t exponent, short code, T expected) {
     T value = input;
     Require(function(&value, exponent) == code && SameBits(value, expected));
 }

@@ -41,7 +41,7 @@ bool Hexadecimal(const char* text) {
 }
 
 template<typename TFloat>
-TFloat ScaledFloat(const char* text, char** end, long pten, int* error, TFloat (APS5_VABI *parse)(const char*, char**), const char* function) {
+TFloat ScaledFloat(const char* text, char** end, std::int64_t pten, int* error, TFloat (APS5_VABI *parse)(const char*, char**), const char* function) {
     int& guestErrno = *__error_nid_postfix();
     const int saved = guestErrno;
     if (error != nullptr) *error = 0;
@@ -96,27 +96,27 @@ TInteger ParsedInteger(const char* text, char** end, int base, int* error, TInte
 
 extern "C" {
 
-double APS5_VABI _Stodx_nid_postfix(const char* text, char** end, long pten, int* error) {
+double APS5_VABI _Stodx_nid_postfix(const char* text, char** end, std::int64_t pten, int* error) {
     return ScaledFloat<double>(text, end, pten, error, strtod_nid_postfix, "_Stodx (hexadecimal text with a power-of-ten scale)");
 }
 
-float APS5_VABI _Stofx_nid_postfix(const char* text, char** end, long pten, int* error) {
+float APS5_VABI _Stofx_nid_postfix(const char* text, char** end, std::int64_t pten, int* error) {
     return ScaledFloat<float>(text, end, pten, error, strtof_nid_postfix, "_Stofx (hexadecimal text with a power-of-ten scale)");
 }
 
-long double APS5_VABI _Stoldx_nid_postfix(const char* text, char** end, long pten, int* error) {
+long double APS5_VABI _Stoldx_nid_postfix(const char* text, char** end, std::int64_t pten, int* error) {
     return ScaledFloat<long double>(text, end, pten, error, strtold_nid_postfix, "_Stoldx (hexadecimal text with a power-of-ten scale)");
 }
 
-double APS5_VABI _Stod_nid_postfix(const char* text, char** end, long pten) {
+double APS5_VABI _Stod_nid_postfix(const char* text, char** end, std::int64_t pten) {
     return _Stodx_nid_postfix(text, end, pten, nullptr);
 }
 
-float APS5_VABI _Stof_nid_postfix(const char* text, char** end, long pten) {
+float APS5_VABI _Stof_nid_postfix(const char* text, char** end, std::int64_t pten) {
     return _Stofx_nid_postfix(text, end, pten, nullptr);
 }
 
-long double APS5_VABI _Stold_nid_postfix(const char* text, char** end, long pten) {
+long double APS5_VABI _Stold_nid_postfix(const char* text, char** end, std::int64_t pten) {
     return _Stoldx_nid_postfix(text, end, pten, nullptr);
 }
 
@@ -128,11 +128,11 @@ unsigned long long APS5_VABI _Stoullx_nid_postfix(const char* text, char** end, 
     return ParsedInteger<unsigned long long>(text, end, base, error, strtoull_nid_postfix);
 }
 
-unsigned long APS5_VABI _Stoulx_nid_postfix(const char* text, char** end, int base, int* error) {
+std::uint64_t APS5_VABI _Stoulx_nid_postfix(const char* text, char** end, int base, int* error) {
     return _Stoullx_nid_postfix(text, end, base, error);
 }
 
-long APS5_VABI _Stolx_nid_postfix(const char* text, char** end, int base, int* error) {
+std::int64_t APS5_VABI _Stolx_nid_postfix(const char* text, char** end, int base, int* error) {
     if (error != nullptr) *error = 0;
     if (InvalidBase(text, end, base, error)) return 0;
     int& guestErrno = *__error_nid_postfix();

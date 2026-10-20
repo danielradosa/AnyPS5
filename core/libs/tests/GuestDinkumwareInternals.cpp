@@ -1,5 +1,6 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -7,16 +8,16 @@
 
 extern "C" {
 int* APS5_VABI __error_nid_postfix();
-double APS5_VABI _Stod_nid_postfix(const char* text, char** end, long pten);
+double APS5_VABI _Stod_nid_postfix(const char* text, char** end, std::int64_t pten);
 long long APS5_VABI _Stoll_nid_postfix(const char* text, char** end, int base);
-double APS5_VABI _Stodx_nid_postfix(const char* text, char** end, long pten, int* error);
-float APS5_VABI _Stofx_nid_postfix(const char* text, char** end, long pten, int* error);
-long double APS5_VABI _Stoldx_nid_postfix(const char* text, char** end, long pten, int* error);
-float APS5_VABI _Stof_nid_postfix(const char* text, char** end, long pten);
-long double APS5_VABI _Stold_nid_postfix(const char* text, char** end, long pten);
+double APS5_VABI _Stodx_nid_postfix(const char* text, char** end, std::int64_t pten, int* error);
+float APS5_VABI _Stofx_nid_postfix(const char* text, char** end, std::int64_t pten, int* error);
+long double APS5_VABI _Stoldx_nid_postfix(const char* text, char** end, std::int64_t pten, int* error);
+float APS5_VABI _Stof_nid_postfix(const char* text, char** end, std::int64_t pten);
+long double APS5_VABI _Stold_nid_postfix(const char* text, char** end, std::int64_t pten);
 long long APS5_VABI _Stollx_nid_postfix(const char* text, char** end, int base, int* error);
-long APS5_VABI _Stolx_nid_postfix(const char* text, char** end, int base, int* error);
-unsigned long APS5_VABI _Stoulx_nid_postfix(const char* text, char** end, int base, int* error);
+std::int64_t APS5_VABI _Stolx_nid_postfix(const char* text, char** end, int base, int* error);
+std::uint64_t APS5_VABI _Stoulx_nid_postfix(const char* text, char** end, int base, int* error);
 unsigned long long APS5_VABI _Stoullx_nid_postfix(const char* text, char** end, int base, int* error);
 double APS5_VABI _Sin_nid_postfix(double x, unsigned int quadrant);
 float APS5_VABI _FSin_nid_postfix(float x, unsigned int quadrant);
@@ -37,7 +38,7 @@ void Require(bool condition, const char* message) {
     }
 }
 
-void CheckStod(const char* text, long pten, double expected, long consumed, int error, const char* message) {
+void CheckStod(const char* text, std::int64_t pten, double expected, long consumed, int error, const char* message) {
     *__error_nid_postfix() = 0;
     char* end = nullptr;
     const double value = _Stod_nid_postfix(text, &end, pten);
