@@ -8,6 +8,8 @@ add_library(libSceAudioOut SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioOut2SpeakerArray.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioOut2User.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioOut2Mastering.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioOut2Lo.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioOutMastering.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/AudioOut2System.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Unimplemented.cpp
 )
@@ -226,6 +228,27 @@ if(BUILD_TESTING)
     set_tests_properties(audio_out2_shutdown audio_out2_waiting_push_shutdown audio_out2_advance_shutdown audio_out_shutdown PROPERTIES TIMEOUT 10)
     if(WIN32)
         set_tests_properties(audio_out2_shutdown audio_out2_waiting_push_shutdown audio_out2_advance_shutdown audio_out_shutdown PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioOut>")
+    endif()
+
+    add_test_executable(audio_out_mastering_tests tests/AudioOutMastering.cpp)
+    target_include_directories(audio_out_mastering_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(audio_out_mastering_tests PRIVATE libSceAudioOut libc)
+    configure_windows_unwind(audio_out_mastering_tests)
+    add_test(NAME audio_out_mastering COMMAND audio_out_mastering_tests)
+    if(WIN32)
+        set_tests_properties(audio_out_mastering PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioOut>")
+    endif()
+
+    add_test_executable(audio_out2_lo_tests tests/AudioOut2Lo.cpp)
+    target_include_directories(audio_out2_lo_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(audio_out2_lo_tests PRIVATE libSceAudioOut libc)
+    configure_windows_unwind(audio_out2_lo_tests)
+    add_test(NAME audio_out2_lo COMMAND audio_out2_lo_tests)
+    set_tests_properties(audio_out2_lo PROPERTIES TIMEOUT 10 ENVIRONMENT "SDL_AUDIODRIVER=dummy")
+    if(WIN32)
+        set_tests_properties(audio_out2_lo PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioOut>")
     endif()
 

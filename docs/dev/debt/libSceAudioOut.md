@@ -30,15 +30,8 @@
 - [sceAudioOutDeviceIdOpen](../../../core/libs/prx/libSceAudioOut/src/AudioOut.cpp) (libSceAudioOut) - imported by PPSA01317, which fails to load without it; declared without parameters, signature unknown. It opens a port on a given audio device; which device ids exist and how they map to host outputs is unknown, so it throws
 - [sceAudioOut2PortGetState](../../../core/libs/prx/libSceAudioOut/src/AudioOut2Port.cpp) and [sceAudioOut2GetSpeakerInfo](../../../core/libs/prx/libSceAudioOut/src/AudioOut2SpeakerArray.cpp) (libSceAudioOut) - the port state reports the channel count of the port's data format, output main, volume 127 and a zero reroute counter and flags. Taking the channel count from the data format follows [SharpEmu](https://github.com/sharpemu/sharpemu/blob/main/src/SharpEmu.Libs/Audio/AudioOut2Exports.cs), another emulator. A payload process on a PS5 (firmware 13.60), which is not the foreground application, read output 0, volume -1 and reroute counter 5 for its main ports, and 6 channels for an 8-channel port on a 5.1 system, so a title's values are unverified, including the output of a pad port, the volume after `sceAudioOut2PortSetAttributes` and the reroute counter on a device change. The speaker info reports type 0 with available bits `0x3`, the front left speaker at +30 degrees and the front right one at -30, and -360 for the azimuth and elevation of every other slot. On that console the type followed the HDMI device type and the available bits its channels: type 0 with the device set to TV, 1 to AV amplifier and 2 to sound bar, which [SharpProspero](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Audio/AudioOut2.cs) names television, AV receiver and sound bar (3 is headphones there), and available bits `0x3` for 2 channels and `0x3F` for 5.1 (centre at 0, surround pair at +110 and -110, -360 for the LFE). The front pair and the empty slots read the same in every setting; 7.1 on the AV amplifier reported 2 channels on that console's HDMI chain. The host output is always reported as a stereo television here. The console also returns `0x80268006` before `sceAudioOut2Initialize`, `0x80268001` for flags above 1 and `0x8026800C` for a null pointer, which are not modelled. ASTRO BOT and ASTRO's PLAYROOM reportedly stop on an assertion that depends on these values (#4317), but which field matters has not been isolated
 - [sceAudioOut2UserCreateEx](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoPortDestroy](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoContextDestroy](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutOpenEx](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoPortSetAttributes](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoContextAdvance](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoContextPush](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoContextGetQueueLevel](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSetSystemDebugState](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoPortGetState](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutGetHandleStatusInfo](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutGetSimulatedHandleStatusInfo2](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutChangeAppModuleState](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
@@ -55,10 +48,7 @@
 - [sceAudioOutExGetLastOutputTime](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutGetInfoOpenNum](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutGetInfo](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOutMasteringInit](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOutMasteringSetParam](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutMasteringGetState](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOutMasteringTerm](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSetPadSpkVolume](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSetPadJackVolume](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSetUsbVolume](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
@@ -91,9 +81,6 @@
 - [sceAudioOutSysHdmiMonitorInfoIsSupportedAudioOutMode](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSysGetSystemInfo](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSysGetOutputInfo](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoContextQueryMemory](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoContextCreate](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoContextSetAttributes](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2MbusInit](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2MbusSetPortConnections](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2MbusSetConnections](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
@@ -105,7 +92,6 @@
 - [sceAudioOut2MbusSetCaesarParam](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2MbusSetSparkParam](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2AllAudioMainToHeadphoneForDiag](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoPortCreate](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2LoPortGetStateEx](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2ReportRegisterHandler](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2ReportUnregisterHandler](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
@@ -115,8 +101,6 @@
 - [sceAudioOut2MasteringInitEx](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2SetDebugHeadphoneMode](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2DebugStateCtrl](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoInit](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOut2LoTerminate](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2ContextBedWrite](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2PortCreateEx](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2InitializeEx](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
@@ -125,6 +109,8 @@
 - [sceAudioOut2PortUnregister](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2GetAmbisonicsEncodeCoefficients](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOut2GetHrtfIdForCronos](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
+- [sceAudioOut2LoInit, sceAudioOut2LoTerminate, sceAudioOut2LoContext* and sceAudioOut2LoPort*](../../../core/libs/prx/libSceAudioOut/src/AudioOut2Lo.cpp) (libSceAudioOut) - signatures from [SharpProspero](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Audio/AudioOut2.cs), which calls the family a low-latency mirror of the context and port calls with the same handles and parameter blocks. Each call runs its counterpart, so a low-latency context plays through the same SDL output and timing as any context; no lower latency is modelled beyond the grain and queue depth asked for. A low-latency call on a context or port not made by `sceAudioOut2LoContextCreate` throws (console answer unknown); the regular calls still accept low-latency handles. LoInit returns 0 as `sceAudioOut2Initialize` does; LoTerminate returns 0 without live low-latency contexts and throws with them
+- [sceAudioOutMasteringInit, sceAudioOutMasteringTerm, sceAudioOutMasteringSetParam](../../../core/libs/prx/libSceAudioOut/src/AudioOutMastering.cpp) (libSceAudioOut) - prototypes from Orbital and [SharpProspero](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Audio/AudioOut.cs), codes `0x80260201` and `0x80260203` from shadPS4's `audioout_error.h`. Init refuses nonzero flags with `0x80260201` as shadPS4 (PS4) does, but flag 1 alone, which SharpProspero names compressor-before-equaliser, throws. SetParam answers `0x80260203` before Init and `0x80260201` for null parameters, throws for nonzero flags and does not check the parameter id. The calls count apart from the AudioOut2 mastering and have no effect (no mastering stage). GetState still throws: the PS4 states layout is unknown
 
 ### Functional
 

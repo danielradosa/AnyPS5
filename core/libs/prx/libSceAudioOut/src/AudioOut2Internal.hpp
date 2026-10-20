@@ -124,5 +124,6 @@ AudioOut2Grain AudioOut2CaptureGrain(const AudioOut2Context& context, bool snaps
 bool AudioOut2HasPadPorts(const AudioOut2Context& context);
 // Forgets the ports of a context being destroyed.
 void AudioOut2ReleasePorts(const AudioOut2Context& context);
+AudioOut2Context* AudioOut2PortContext(AudioOut2PortHandle handle);
 
 #endif
