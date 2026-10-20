@@ -164,6 +164,8 @@ struct Ngs2Rack {
     std::vector<Ngs2CustomUserFx2ModuleOption> userFx;
     std::vector<std::vector<std::uint8_t>> userFxCommon;
     std::vector<std::uint32_t> customModuleIds;
+    std::vector<Ngs2CustomRackModuleInfo> customModules;
+    std::uintptr_t userData = 0;
 };
 
 struct Ngs2System {

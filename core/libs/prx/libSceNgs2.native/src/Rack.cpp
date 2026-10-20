@@ -251,6 +251,38 @@ int APS5_VABI sceNgs2RackUnlock(uintptr_t rack_handle) {
     return SCE_NGS2_OK;
 }
 
+int APS5_VABI sceNgs2RackSetUserData(uintptr_t rack_handle, uintptr_t user_data) {
+    std::lock_guard lock(Ngs2Mutex());
+    auto* rack = Ngs2FindRack(rack_handle);
+    if (rack == nullptr) return SCE_NGS2_ERROR_INVALID_RACK_HANDLE;
+    rack->userData = user_data;
+    return SCE_NGS2_OK;
+}
+
+int APS5_VABI sceNgs2RackGetUserData(uintptr_t rack_handle, uintptr_t* user_data) {
+    std::lock_guard lock(Ngs2Mutex());
+    const auto* rack = Ngs2FindRack(rack_handle);
+    if (rack == nullptr) return SCE_NGS2_ERROR_INVALID_RACK_HANDLE;
+    if (user_data == nullptr) APS5_INVALID_ARG_EX;
+    *user_data = rack->userData;
+    return SCE_NGS2_OK;
+}
+
+int APS5_VABI sceNgs2CustomRackGetModuleInfo(uintptr_t rack_handle, uint32_t module_index, Ngs2CustomModuleInfo* info, size_t info_size) {
+    if (info == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    if (info_size != sizeof(Ngs2CustomModuleInfo)) return SCE_NGS2_ERROR_INVALID_OUT_SIZE;
+    std::lock_guard lock(Ngs2Mutex());
+    const auto* rack = Ngs2FindRack(rack_handle);
+    if (rack == nullptr) return SCE_NGS2_ERROR_INVALID_RACK_HANDLE;
+    if (rack->rackId != SCE_NGS2_RACK_ID_CUSTOM_SAMPLER && rack->rackId != SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER) {
+        throw std::runtime_error(std::string(__func__) + ": rack " + Ngs2Hex(rack->rackId) + " is not a custom rack");
+    }
+    if (module_index >= rack->customModules.size()) throw std::invalid_argument(std::string(__func__) + ": module " + std::to_string(module_index) + " is out of range");
+    const auto& module = rack->customModules[module_index];
+    *info = {module.module_id, module.source_buffer_id, module.extra_buffer_id, module.dest_buffer_id, module.state_offset, module.state_size, 0, 0};
+    return SCE_NGS2_OK;
+}
+
 }
 
 #pragma GCC visibility pop

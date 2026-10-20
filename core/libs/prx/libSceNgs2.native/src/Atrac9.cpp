@@ -404,6 +404,42 @@ int APS5_VABI sceNgs2ParseWaveformFile(const char* path, uint32_t offset, Ngs2Wa
     return SCE_NGS2_OK;
 }
 
+int APS5_VABI sceNgs2ParseWaveformUser(Ngs2ParseReadHandler handler, uintptr_t user_data, Ngs2WaveformInfo* info) {
+    if (info == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    *info = {};
+    if (handler == nullptr) return SCE_NGS2_ERROR_INVALID_WAVEFORM_DATA;
+    std::vector<std::vector<std::uint8_t>> pieces;
+    const auto readBytes = [&](std::size_t at, std::size_t count) {
+        if (at > std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error("sceNgs2ParseWaveformUser: reading past offset 0xffffffff is not implemented");
+        auto& piece = pieces.emplace_back(std::max<std::size_t>(count, 1));
+        const std::int32_t result = handler(user_data, static_cast<std::uint32_t>(at), piece.data(), count);
+        if (result != 0 && (result < 0 || static_cast<std::size_t>(result) != count)) {
+            throw std::runtime_error("sceNgs2ParseWaveformUser: the read handler returned " + Ngs2Hex(static_cast<std::uint32_t>(result)) + " for " + std::to_string(count) + " bytes at offset " + std::to_string(at));
+        }
+        return static_cast<const std::uint8_t*>(piece.data());
+    };
+    const auto* header = readBytes(0, 12);
+    const std::size_t size = std::memcmp(header, "RIFF", 4) == 0 ? 8 + static_cast<std::size_t>(ReadLe32(header + 4)) : 12;
+    RiffChunks chunks;
+    const int result = ReadChunks(size, readBytes, chunks);
+    if (result != SCE_NGS2_OK) return result;
+    return ParseWaveform(chunks, size, *info);
+}
+
+int APS5_VABI sceNgs2GetWaveformFrameInfo(const Ngs2WaveformFormat* format, uint32_t* frame_size, uint32_t* num_frame_samples, uint32_t* units_per_frame, uint32_t* num_delay_samples) {
+    if (frame_size == nullptr || num_frame_samples == nullptr || units_per_frame == nullptr || num_delay_samples == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
+    if (format == nullptr || format->num_channels == 0 || format->num_channels > NGS2_MAX_CHANNELS || format->sample_rate == 0 || format->sample_rate > MAX_SAMPLE_RATE) {
+        return SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+    }
+    if (format->waveform_type != SCE_NGS2_WAVEFORM_TYPE_PCM_I16L) throw std::runtime_error("NGS2: frame info of waveform type " + Ngs2Hex(format->waveform_type) + " is not implemented");
+    if (format->frame_offset != 0 || format->frame_margin != 0) throw std::runtime_error("NGS2: frame info with a waveform frame offset or margin is not implemented");
+    *frame_size = format->num_channels * static_cast<std::uint32_t>(sizeof(std::int16_t));
+    *num_frame_samples = 1;
+    *units_per_frame = 1;
+    *num_delay_samples = 0;
+    return SCE_NGS2_OK;
+}
+
 int APS5_VABI sceNgs2CalcWaveformBlock(const Ngs2WaveformFormat* format, uint32_t sample_pos, uint32_t num_samples, Ngs2WaveformBlock* block) {
     if (block == nullptr) return SCE_NGS2_ERROR_INVALID_OUT_ADDRESS;
     *block = {};

@@ -271,6 +271,18 @@ struct Ngs2CustomRackModuleInfo {
 };
 static_assert(sizeof(Ngs2CustomRackModuleInfo) == 40);
 
+struct Ngs2CustomModuleInfo {
+    std::uint32_t module_id;
+    std::uint32_t source_buffer_id;
+    std::uint32_t extra_buffer_id;
+    std::uint32_t dest_buffer_id;
+    std::uint32_t state_offset;
+    std::uint32_t state_size;
+    std::uint32_t reserved;
+    std::uint32_t reserved2;
+};
+static_assert(sizeof(Ngs2CustomModuleInfo) == 32);
+
 struct Ngs2CustomRackPortInfo {
     std::uint32_t source_buffer_id;
     std::uint32_t reserved;
@@ -607,6 +619,12 @@ struct Ngs2VoicePortInfo {
 };
 static_assert(sizeof(Ngs2VoicePortInfo) == 24);
 
+struct Ngs2VoiceMatrixInfo {
+    std::uint32_t num_levels;
+    float levels[64];
+};
+static_assert(sizeof(Ngs2VoiceMatrixInfo) == 260);
+
 struct Ngs2VoiceState {
     std::uint32_t state_flags;
     std::int32_t error_code;
@@ -659,6 +677,8 @@ struct Ngs2WaveformInfo {
     Ngs2WaveformBlock block[4];
 };
 static_assert(sizeof(Ngs2WaveformInfo) == 232);
+
+using Ngs2ParseReadHandler = std::int32_t (APS5_VABI *)(std::uintptr_t, std::uint32_t, void*, std::size_t);
 
 struct Ngs2PanParam {
     float angle;
