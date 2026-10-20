@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -11,6 +12,8 @@ constexpr int NpGameIntentErrorInvalidArgument = -2141898748;
 constexpr int NpGameIntentErrorIntentNotFound = -2141898746;
 constexpr int NpGameIntentErrorValueNotFound = -2141898745;
 constexpr int NpGameIntentUserIdInvalid = -1;
+
+std::atomic<bool> g_appLauncherReady{false};
 
 }
 
@@ -73,8 +76,11 @@ int APS5_VABI sceNpGameIntentVshTerminate(void) {
     return 0;
 }
 
-int APS5_VABI sceNpAppLauncherInitialize() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceNpAppLauncherInitialize(const void* initParam) {
+    if (initParam != nullptr && *static_cast<const std::uint64_t*>(initParam) != 0x28) {
+        APS5_INVALID_ARG_EX;
+    }
+    g_appLauncherReady.store(true, std::memory_order_release);
     return 0;
 }
 
@@ -84,7 +90,7 @@ int APS5_VABI sceNpAppLauncherLaunchApp() {
 }
 
 int APS5_VABI sceNpAppLauncherTerminate() {
-    NotImplemented_nid_no_patch(__func__);
+    g_appLauncherReady.store(false, std::memory_order_release);
     return 0;
 }
 
