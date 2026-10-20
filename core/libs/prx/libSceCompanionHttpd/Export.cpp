@@ -1,8 +1,7 @@
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <mutex>
-#include <stdexcept>
-#include <string>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -13,7 +12,17 @@ constexpr int COMPANION_HTTPD_ERROR_ALREADY_INITIALIZED = static_cast<int>(0x80E
 constexpr int COMPANION_HTTPD_ERROR_NO_EVENT = static_cast<int>(0x80E40008u);
 constexpr int COMPANION_HTTPD_ERROR_ALREADY_STARTED = static_cast<int>(0x80E4000Au);
 constexpr int COMPANION_HTTPD_ERROR_NOT_STARTED = static_cast<int>(0x80E4000Bu);
+constexpr int COMPANION_HTTPD_ERROR_ALREADY_REGISTERED = static_cast<int>(0x80E4000Cu);
 constexpr int COMPANION_HTTPD_ERROR_USER_NOT_FOUND = static_cast<int>(0x80E4000Eu);
+
+struct CompanionHttpdOptParam {
+    std::uint64_t reserved;
+    void* workMemory;
+    std::uint64_t workMemorySize;
+    std::uint8_t settings[0x40];
+    const void* temporaryMountPoint;
+};
+static_assert(sizeof(CompanionHttpdOptParam) == 0x60);
 
 struct CompanionHttpdHeader {
     char* key;
@@ -53,11 +62,11 @@ Registration<CompanionHttpdRequestCallback> g_request;
 Registration<CompanionHttpdRequestBodyReceptionCallback> g_bodyReception;
 
 template <typename Function>
-int Register(Registration<Function>& slot, Function function, void* param, const char* name) {
+int Register(Registration<Function>& slot, Function function, void* param) {
     std::lock_guard lock(g_mutex);
     if (!g_initialized) return COMPANION_HTTPD_ERROR_NOT_INITIALIZED;
     if (!function) return COMPANION_HTTPD_ERROR_INVALID_PARAM;
-    if (slot.function) throw std::logic_error(std::string(name) + ": a callback is already registered");
+    if (slot.function) return COMPANION_HTTPD_ERROR_ALREADY_REGISTERED;
     slot = {function, param};
     return 0;
 }
@@ -73,12 +82,12 @@ int Unregister(Registration<Function>& slot) {
 
 extern "C" {
 
-int APS5_VABI sceCompanionHttpdAddHeader() {
+int APS5_VABI sceCompanionHttpdAddHeader(const char* key, const char* value, void* response) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI sceCompanionHttpdGet2ndScreenStatus() {
+int APS5_VABI sceCompanionHttpdGet2ndScreenStatus(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -98,8 +107,11 @@ int APS5_VABI sceCompanionHttpdGetUserId(std::uint32_t addr, std::int32_t* userI
     return COMPANION_HTTPD_ERROR_USER_NOT_FOUND;
 }
 
-int APS5_VABI sceCompanionHttpdInitialize() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceCompanionHttpdInitialize(const CompanionHttpdOptParam* param) {
+    if (param == nullptr) return COMPANION_HTTPD_ERROR_INVALID_PARAM;
+    std::lock_guard lock(g_mutex);
+    if (g_initialized) return COMPANION_HTTPD_ERROR_ALREADY_INITIALIZED;
+    g_initialized = true;
     return 0;
 }
 
@@ -111,24 +123,25 @@ int APS5_VABI sceCompanionHttpdInitialize2(const void* option) {
     return 0;
 }
 
-int APS5_VABI sceCompanionHttpdOptParamInitialize() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceCompanionHttpdOptParamInitialize(CompanionHttpdOptParam* param) {
+    if (param == nullptr) return COMPANION_HTTPD_ERROR_INVALID_PARAM;
+    std::memset(param, 0, sizeof(*param));
     return 0;
 }
 
 int APS5_VABI sceCompanionHttpdRegisterRequestBodyReceptionCallback(CompanionHttpdRequestBodyReceptionCallback function, void* param) {
-    return Register(g_bodyReception, function, param, __func__);
+    return Register(g_bodyReception, function, param);
 }
 
 int APS5_VABI sceCompanionHttpdRegisterRequestCallback(CompanionHttpdRequestCallback function, void* param) {
-    return Register(g_request, function, param, __func__);
+    return Register(g_request, function, param);
 }
 
 int APS5_VABI sceCompanionHttpdRegisterRequestCallback2(CompanionHttpdRequestCallback function, void* param) {
-    return Register(g_request, function, param, __func__);
+    return Register(g_request, function, param);
 }
 
-int APS5_VABI sceCompanionHttpdSetBody() {
+int APS5_VABI sceCompanionHttpdSetBody(const char* body, std::uint64_t size, void* response) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

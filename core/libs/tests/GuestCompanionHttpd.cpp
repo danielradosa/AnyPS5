@@ -39,12 +39,17 @@ using BodyReceptionCallback = std::int32_t(APS5_VABI*)(std::int32_t, std::int32_
 }
 
 extern "C" {
+int APS5_VABI sceCompanionHttpdAddHeader(const char*, const char*, Response*);
+int APS5_VABI sceCompanionHttpdGet2ndScreenStatus();
 int APS5_VABI sceCompanionHttpdGetEvent(Event*);
 int APS5_VABI sceCompanionHttpdGetUserId(std::uint32_t, std::int32_t*);
+int APS5_VABI sceCompanionHttpdInitialize(const void*);
 int APS5_VABI sceCompanionHttpdInitialize2(const void*);
+int APS5_VABI sceCompanionHttpdOptParamInitialize(void*);
 int APS5_VABI sceCompanionHttpdRegisterRequestBodyReceptionCallback(BodyReceptionCallback, void*);
 int APS5_VABI sceCompanionHttpdRegisterRequestCallback(RequestCallback, void*);
 int APS5_VABI sceCompanionHttpdRegisterRequestCallback2(RequestCallback, void*);
+int APS5_VABI sceCompanionHttpdSetBody(const char*, std::uint64_t, Response*);
 int APS5_VABI sceCompanionHttpdSetStatus(std::int32_t, Response*);
 int APS5_VABI sceCompanionHttpdStart();
 int APS5_VABI sceCompanionHttpdStop();
@@ -61,6 +66,7 @@ constexpr int AlreadyInitialized = static_cast<int>(0x80E40007u);
 constexpr int NoEvent = static_cast<int>(0x80E40008u);
 constexpr int AlreadyStarted = static_cast<int>(0x80E4000Au);
 constexpr int NotStarted = static_cast<int>(0x80E4000Bu);
+constexpr int AlreadyRegistered = static_cast<int>(0x80E4000Cu);
 constexpr int UserNotFound = static_cast<int>(0x80E4000Eu);
 
 void Require(bool value) {
@@ -102,8 +108,19 @@ int main() {
     Require(sceCompanionHttpdUnregisterRequestCallback() == NotInitialized);
     Require(sceCompanionHttpdUnregisterRequestBodyReceptionCallback() == NotInitialized);
 
+    std::uint8_t block[0x70];
+    std::memset(block, 0x5a, sizeof(block));
+    Require(sceCompanionHttpdOptParamInitialize(nullptr) == InvalidParam);
+    Require(sceCompanionHttpdOptParamInitialize(block) == 0);
+    for (std::size_t index = 0; index < sizeof(block); ++index) Require(block[index] == (index < 0x60 ? 0u : 0x5au));
+    Require(sceCompanionHttpdInitialize(nullptr) == InvalidParam);
+    Require(sceCompanionHttpdInitialize(block) == 0);
+    Require(sceCompanionHttpdInitialize(block) == AlreadyInitialized);
+    Require(sceCompanionHttpdTerminate() == 0);
+
     const std::uint8_t option[64] = {};
     Require(sceCompanionHttpdInitialize2(option) == 0);
+    Require(sceCompanionHttpdInitialize(block) == AlreadyInitialized);
     Require(sceCompanionHttpdInitialize2(option) == AlreadyInitialized);
 
     Require(sceCompanionHttpdGetEvent(nullptr) == InvalidParam);
@@ -114,17 +131,17 @@ int main() {
 
     Require(sceCompanionHttpdRegisterRequestCallback(nullptr, &param) == InvalidParam);
     Require(sceCompanionHttpdRegisterRequestCallback(OnRequest, &param) == 0);
-    Require(Throws([&] { sceCompanionHttpdRegisterRequestCallback(OnRequest, &param); }));
-    Require(Throws([&] { sceCompanionHttpdRegisterRequestCallback2(OnRequest, &param); }));
+    Require(sceCompanionHttpdRegisterRequestCallback(OnRequest, &param) == AlreadyRegistered);
+    Require(sceCompanionHttpdRegisterRequestCallback2(OnRequest, &param) == AlreadyRegistered);
     Require(sceCompanionHttpdUnregisterRequestCallback() == 0);
     Require(sceCompanionHttpdUnregisterRequestCallback() == 0);
     Require(sceCompanionHttpdRegisterRequestCallback2(nullptr, &param) == InvalidParam);
     Require(sceCompanionHttpdRegisterRequestCallback2(OnRequest, &param) == 0);
-    Require(Throws([&] { sceCompanionHttpdRegisterRequestCallback(OnRequest, &param); }));
+    Require(sceCompanionHttpdRegisterRequestCallback(OnRequest, &param) == AlreadyRegistered);
 
     Require(sceCompanionHttpdRegisterRequestBodyReceptionCallback(nullptr, &param) == InvalidParam);
     Require(sceCompanionHttpdRegisterRequestBodyReceptionCallback(OnBody, &param) == 0);
-    Require(Throws([&] { sceCompanionHttpdRegisterRequestBodyReceptionCallback(OnBody, &param); }));
+    Require(sceCompanionHttpdRegisterRequestBodyReceptionCallback(OnBody, &param) == AlreadyRegistered);
     Require(sceCompanionHttpdUnregisterRequestBodyReceptionCallback() == 0);
     Require(sceCompanionHttpdRegisterRequestBodyReceptionCallback(OnBody, nullptr) == 0);
 
@@ -141,6 +158,9 @@ int main() {
     Require(sceCompanionHttpdSetStatus(200, nullptr) == InvalidParam);
     Require(sceCompanionHttpdSetStatus(404, &response) == 0);
     Require(response.status == 404 && response.header == reinterpret_cast<Header*>(&param) && response.body == nullptr);
+    Require(Throws([&] { sceCompanionHttpdAddHeader("key", "value", &response); }));
+    Require(Throws([&] { sceCompanionHttpdSetBody("body", 4, &response); }));
+    Require(Throws([] { sceCompanionHttpdGet2ndScreenStatus(); }));
 
     Require(sceCompanionHttpdTerminate() == 0);
     Require(sceCompanionHttpdTerminate() == NotInitialized);
