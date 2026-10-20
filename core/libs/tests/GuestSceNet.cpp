@@ -1102,14 +1102,20 @@ static void CheckNetThreads() {
     TestNetThreadParam exiting{ExitNetThread, &runs, 0, 0};
     Require(sceNetThreadCreate(&thread, &exiting, nullptr) == 0);
     Require(sceNetThreadJoin(thread) == 0 && runs == 3);
-    Require(Failed(sceNetThreadCreate(&thread, nullptr, "guest-net-thread-none"), 22));
+    TestNetThreadParam unjoined{CountNetThread, &runs, 0, 0};
+    Require(sceNetThreadCreate(nullptr, &unjoined, "guest-net-thread-unjoined") == 0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (runs != 4 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    Require(runs == 4);
+    Pthread untouched = reinterpret_cast<Pthread>(&runs);
+    Require(Failed(sceNetThreadCreate(&untouched, nullptr, "guest-net-thread-none"), 22) && untouched == reinterpret_cast<Pthread>(&runs));
     *sceNetErrnoLoc() = 0;
     Require(sceNetThreadJoin(nullptr) == static_cast<int>(0x80020016) && *sceNetErrnoLoc() == 205);
     param.flags = 2;
     Require(ThrowsRuntime([&] { sceNetThreadCreate(&thread, &param, nullptr); }));
     TestNetThreadParam empty{nullptr, nullptr, 0, 0};
     Require(ThrowsRuntime([&] { sceNetThreadCreate(&thread, &empty, nullptr); }));
-    Require(runs == 3);
+    Require(runs == 4);
 }
 
 static void CheckIoctl() {
