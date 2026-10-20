@@ -2,7 +2,7 @@
 
 ### Silent stubs
 
-- [sceNetShowRoute, sceNetShowPolicy](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - return success without printing anything: the `()` signatures and the success return follow [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/network/net.cpp), which stubs them the same way. A route report would follow FreeBSD `netstat -rn` as `sceNetShowIfconfig` follows `ifconfig`, but libSceNet does not read the host routing table, and nothing here models a network policy. What the console prints and where is unverified
+- [sceNetShowRoute, sceNetShowRoute6, sceNetShowPolicy](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - return success without printing anything: the `()` signatures and the success return follow [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/network/net.cpp), which stubs them the same way. A route report would follow FreeBSD `netstat -rn` as `sceNetShowIfconfig` follows `ifconfig`, but libSceNet does not read the host routing table, and nothing here models a network policy. What the console prints and where is unverified
 
 ### Unknown function info
 
@@ -19,7 +19,6 @@
 - [sceNetResolverConnectDestroy](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetGetSockInfo6](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - the `(int s, SceNetSockInfo6* info, int n, int flags)` signature and the 0xA0-byte record follow [SharpProspero](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Net/Socket.cs): the `SceNetSockInfo` fields up to the buffer sizes, then the local and remote IPv6 addresses at 0x6C and 0x7C where `SceNetSockInfo` has 32 reserved bytes, then the drops and waits. It answers as `sceNetGetSockInfo` (same flags, counting, listing order, errors and zero fields) but also lists IPv6 sockets: an IPv4 socket gets the record `sceNetGetSockInfo` gives it, with zero IPv6 addresses, and an IPv6 socket its IPv6 addresses and ports with zero IPv4 addresses, as SharpProspero fills the IPv4 fields only for IPv4 sockets. Whether the console reports an IPv4 socket's addresses as IPv4-mapped IPv6 addresses as well is unverified
 - [sceNetSetDns6Info](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
-- [sceNetShowRoute6](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetShowRoute6WithMemory](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetAllocateAllRouteInfo](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetAllocateAllRouteInfo6](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature

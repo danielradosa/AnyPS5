@@ -38,6 +38,7 @@ int APS5_VABI sceNetShowNetstat(void);
 int APS5_VABI sceNetShowIfconfig(void);
 int APS5_VABI sceNetShowRoute(void);
 int APS5_VABI sceNetShowPolicy(void);
+int APS5_VABI sceNetShowRoute6(void);
 int APS5_VABI sceNetSocket(const char*, int, int, int);
 int APS5_VABI sceNetBind_nid_postfix(int, const void*, std::uint32_t);
 int APS5_VABI sceNetListen(int, int);
@@ -315,6 +316,7 @@ static void CheckNetstat() {
     Require(sceNetShowIfconfig() == 0);
     Require(sceNetShowRoute() == 0);
     Require(sceNetShowPolicy() == 0);
+    Require(sceNetShowRoute6() == 0);
     Require(Failed(sceNetShowNetstatWithMemory(-1), 9));
     const int pool = sceNetPoolCreate("netstat", 4096, 0);
     Require(pool > 0);
