@@ -41,6 +41,7 @@ int APS5_VABI sceNetCtlGetResult(int, int*);
 int APS5_VABI sceNetCtlGetResultV6(int, int*);
 int APS5_VABI sceNetCtlGetInfoV6(int, NetCtlInfo*);
 int APS5_VABI sceNetCtlRegisterCallbackForNpToolkit(NetCtlCallback, void*, int*);
+int APS5_VABI sceNetCtlUnregisterCallbackForNpToolkit(int);
 int APS5_VABI sceNetCtlCheckCallbackForNpToolkit(void);
 #ifdef __APPLE__
 std::size_t NetCtlDefaultRoutes_nid_no_patch(const char*, std::size_t, NetCtlDefaultRoute*, std::size_t);
@@ -235,6 +236,10 @@ void CheckNpToolkitCallbacks() {
     }
     int full = -1;
     Require(sceNetCtlRegisterCallbackForNpToolkit(RecordToolkit, &probe, &full) == static_cast<int>(0x80412103));
+    Require(sceNetCtlUnregisterCallbackForNpToolkit(-1) == static_cast<int>(0x80412105));
+    Require(sceNetCtlUnregisterCallbackForNpToolkit(8) == static_cast<int>(0x80412105));
+    Require(sceNetCtlUnregisterCallbackForNpToolkit(3) == 0);
+    Require(sceNetCtlRegisterCallbackForNpToolkit(RecordToolkit, &probe, &full) == 0 && full == 3);
     sceNetCtlTerm();
     Require(sceNetCtlCheckCallbackForNpToolkit() == 0);
     Require(g_toolkit.calls == 1);

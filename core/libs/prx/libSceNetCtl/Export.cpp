@@ -499,8 +499,6 @@ static void HostTraffic(std::uint64_t& sent, std::uint64_t& received) {
 #endif
 }
 
-extern "C" {
-
 static int CheckCallbacks(CallbackSlot (&callbacks)[MAX_CALLBACKS]) {
     if (!HasCallback(callbacks)) return 0;
     const int event = HostHasAddress(AF_UNSPEC) ? NET_CTL_EVENT_IPOBTAINED : NET_CTL_EVENT_DISCONNECTED;
@@ -517,6 +515,8 @@ static int CheckCallbacks(CallbackSlot (&callbacks)[MAX_CALLBACKS]) {
     for (int index = 0; index < count; ++index) due[index].func(event, due[index].arg);
     return 0;
 }
+
+extern "C" {
 
 int APS5_VABI sceNetCtlCheckCallback(void) {
     return CheckCallbacks(g_callbacks);
@@ -647,9 +647,8 @@ int APS5_VABI sceNetCtlRegisterCallbackForLibIpcInt(void) {
     return 0;
 }
 
-int APS5_VABI sceNetCtlUnregisterCallbackForNpToolkit(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNetCtlUnregisterCallbackForNpToolkit(int cid) {
+    return UnregisterCallback(g_callbacksNpToolkit, cid);
 }
 
 int APS5_VABI sceNetCtlUnregisterCallbackIpcInt(void) {
