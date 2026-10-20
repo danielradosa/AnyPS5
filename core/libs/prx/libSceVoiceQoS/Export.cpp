@@ -73,6 +73,19 @@ int SetAttribute(Attributes& attributes, std::int32_t attribute, const void* val
     return 0;
 }
 
+int GetAttribute(const Attributes& attributes, std::int32_t attribute, void* value, std::int32_t size, const char* function) {
+    if (const int result = CheckAttribute(attribute, value, size, function); result != 0) return result;
+    const auto stored = attributes.find(attribute);
+    if (stored == attributes.end()) {
+        if (!IsFlag(attribute)) Fail(function, "attribute " + std::to_string(attribute) + " was not set and its default is unknown");
+        *static_cast<std::uint8_t*>(value) = 0;
+        return 0;
+    }
+    if (stored->second.size() != static_cast<std::size_t>(size)) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
+    std::memcpy(value, stored->second.data(), stored->second.size());
+    return 0;
+}
+
 bool EndpointInUse(std::int32_t Connection::* side, std::int32_t id) {
     return std::any_of(g_connections.begin(), g_connections.end(), [side, id](const auto& entry) { return entry.second.*side == id; });
 }
@@ -200,34 +213,23 @@ int APS5_VABI sceVoiceQoSGetLocalEndpointAttribute(int32_t localId, int32_t attr
     if (!g_initialized) return SCE_VOICE_ERROR_LIBVOICEQOS_NOT_INIT;
     const auto endpoint = g_localEndpoints.find(localId);
     if (endpoint == g_localEndpoints.end()) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
-    if (const int result = CheckAttribute(attributeId, attributeValue, attributeSize, __func__); result != 0) return result;
-    const auto stored = endpoint->second.find(attributeId);
-    if (stored == endpoint->second.end()) {
-        if (!IsFlag(attributeId)) Fail(__func__, "attribute " + std::to_string(attributeId) + " was not set and its default is unknown");
-        *static_cast<std::uint8_t*>(attributeValue) = 0;
-        return 0;
-    }
-    if (stored->second.size() != static_cast<std::size_t>(attributeSize)) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
-    std::memcpy(attributeValue, stored->second.data(), stored->second.size());
-    return 0;
+    return GetAttribute(endpoint->second, attributeId, attributeValue, attributeSize, __func__);
 }
 
-int APS5_VABI sceVoiceQoSGetRemoteEndpointAttribute(int32_t remoteId, int32_t attributeId, const void* value, int32_t size) {
-    (void)remoteId;
-    (void)attributeId;
-    (void)value;
-    (void)size;
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceVoiceQoSGetRemoteEndpointAttribute(int32_t remoteId, int32_t attributeId, void* attributeValue, int32_t attributeSize) {
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return SCE_VOICE_ERROR_LIBVOICEQOS_NOT_INIT;
+    const auto endpoint = g_remoteEndpoints.find(remoteId);
+    if (endpoint == g_remoteEndpoints.end()) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
+    return GetAttribute(endpoint->second, attributeId, attributeValue, attributeSize, __func__);
 }
 
-int APS5_VABI sceVoiceQoSGetConnectionAttribute(int32_t connectionId, int32_t attributeId, void* value, int32_t size) {
-    (void)connectionId;
-    (void)attributeId;
-    (void)value;
-    (void)size;
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceVoiceQoSGetConnectionAttribute(int32_t connectionId, int32_t attributeId, void* attributeValue, int32_t attributeSize) {
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return SCE_VOICE_ERROR_LIBVOICEQOS_NOT_INIT;
+    const auto connection = g_connections.find(connectionId);
+    if (connection == g_connections.end()) return SCE_VOICE_ERROR_LIBVOICEQOS_ARGUMENT_INVALID;
+    return GetAttribute(connection->second.attributes, attributeId, attributeValue, attributeSize, __func__);
 }
 
 int APS5_VABI sceVoiceQoSGetLocalEndpoint(int32_t connectionId, int32_t* localId) {
