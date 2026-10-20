@@ -51,26 +51,26 @@ static const float kFPoly[] = {0.1f, 0.7f, 1.3f, -2.9f};
 static const long double kLPoly[] = {0.1L, 0.7L, 1.3L, -2.9L};
 
 template <typename T>
-static void CheckInt(short (*function)(T*, short), T input, short scale, short code, T expected) {
+static void CheckInt(short (APS5_VABI *function)(T*, short), T input, short scale, short code, T expected) {
     T value = input;
     Require(function(&value, scale) == code && SameBits(value, expected));
 }
 
 template <typename T>
-static void CheckScale(short (*function)(T*, long), T input, long exponent, short code, T expected) {
+static void CheckScale(short (APS5_VABI *function)(T*, long), T input, long exponent, short code, T expected) {
     T value = input;
     Require(function(&value, exponent) == code && SameBits(value, expected));
 }
 
 template <typename T>
-static void CheckUnscale(short (*function)(short*, T*), T input, short code, short exponent, T expected) {
+static void CheckUnscale(short (APS5_VABI *function)(short*, T*), T input, short code, short exponent, T expected) {
     T value = input;
     short result = 77;
     Require(function(&result, &value) == code && result == exponent && SameBits(value, expected));
 }
 
 template <typename T>
-static void CheckNorm(short (*function)(std::uint16_t*), T input, short code, T expected) {
+static void CheckNorm(short (APS5_VABI *function)(std::uint16_t*), T input, short code, T expected) {
     T value = input;
     Require(function(reinterpret_cast<std::uint16_t*>(&value)) == code && SameBits(value, expected));
 }
