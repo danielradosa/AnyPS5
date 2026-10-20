@@ -236,25 +236,4 @@ int APS5_VABI sceUsbStorageSetFakeMapLockForDebug(uint32_t device_id, uint32_t l
     return 0;
 }
 
-int APS5_VABI sceUsbStorageClearFakeWriteProtection() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUsbStorageRequestMapWSB(uint32_t device_id, const char* subpath, int32_t flags,
-                                        int32_t unknown, char* out_mount_path, int32_t* out_status) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUsbStorageSetFakeMapLockForDebug() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUsbStorageSetFakeWriteProtection() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 }
