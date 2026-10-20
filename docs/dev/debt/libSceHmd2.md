@@ -25,8 +25,7 @@
 - [sceHmd2InternalSetCameraSeeThroughMode](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - unknown signature
 - [sceHmd2InternalSetFakeLensSeparationDistance](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - unknown signature
 - [sceHmd2InternalDfuSend](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - unknown signature
-- [sceHmd2InternalLedDetectorOpenBySlot](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - unknown signature
-- [sceHmd2InternalImageOpenBySlot](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - unknown signature
+- [sceHmd2InternalImageOpenBySlot and sceHmd2InternalLedDetectorOpenBySlot](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - [PS5VR](https://github.com/theghostonline/PS5VR/blob/0e408909ce7a39891a2e06eee3438d07a09e11e3/app/src/app_vr.c#L52-L53) declares both as `int (int slot)` and opens image slot 2 and LED detector slot 1 as libSceVrHand does, but only logs the results; no source gives the answer without a headset or before `sceHmd2Initialize`, so they are declared without parameters and throw
 - [sceHmd2InternalLedDetectorStopBySlot](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - unknown signature
 - [sceHmd2InternalSetDeviceConnection](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - unknown signature
 - [sceHmd2InternalLedDetectorCloseBySlot](../../../core/libs/prx/libSceHmd2/Export.cpp) (libSceHmd2) - unknown signature
