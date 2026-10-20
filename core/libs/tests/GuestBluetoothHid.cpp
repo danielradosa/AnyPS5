@@ -94,7 +94,7 @@ int main() {
     RequireRuntimeError([&] { sceBluetoothHidGetReportDescriptor(1, buffer, sizeof(buffer)); }, "a report descriptor without a device did not throw");
     RequireRuntimeError([&] { sceBluetoothHidInterruptOutput(1, 1, buffer, sizeof(buffer)); }, "an interrupt output without a device did not throw");
     for (const std::uint8_t byte : buffer) Require(byte == 0, "a call without a device wrote the caller's buffer");
-    RequireRuntimeError([] { sceBluetoothHidDebugGetVersion(); }, "debug get version did not throw");
+    Require(sceBluetoothHidDebugGetVersion() == 0x1e, "debug get version is not the firmware's 0x1e");
     RequireRuntimeError([] { sceBluetoothHidThreadParamInitialize(); }, "thread param initialization did not throw");
     Require(sceBluetoothHidUnregisterDevice(0x44f, 0x1000) == 0, "device unregistration failed");
     Require(sceBluetoothHidUnregisterCallback() == 0, "callback unregistration failed");

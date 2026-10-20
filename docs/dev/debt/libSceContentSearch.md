@@ -2,7 +2,7 @@
 
 ### Unknown function info
 
-- [sceContentBinderEnd, sceContentBinderGetNumOfDifference, sceContentBinderInitialize, sceContentBinderIsUpdated, sceContentBinderReset, sceContentBinderSearchDifference, sceContentBinderStart, sceContentBinderTerminate, sceContentSearchGetApplicationLastUpdateId, sceContentSearchGetMyApplicationIndex, sceContentSearchGetNumOfApplication and sceContentSearchSearchApplication](../../../core/libs/prx/libSceContentSearch/Export.cpp) (libSceContentSearch) - names and NIDs are present in the [PS5 3.20 export inventory](https://github.com/DNNDHH/PS5-3.20_Libs/blob/b2a77c09cd71c01f34c790cfbe98c751a13262ad/libSceContentSearch.c), but no credible prototypes were found in the cited sources. They are declared without parameters solely to resolve known imports and make no ABI claim.
+- [sceContentBinderEnd, sceContentBinderGetNumOfDifference, sceContentBinderInitialize, sceContentBinderIsUpdated, sceContentBinderReset, sceContentBinderSearchDifference, sceContentBinderStart, sceContentBinderTerminate, sceContentSearchGetApplicationLastUpdateId, sceContentSearchGetMyApplicationIndex, sceContentSearchGetNumOfApplication and sceContentSearchSearchApplication](../../../core/libs/prx/libSceContentSearch/Export.cpp) (libSceContentSearch) - names and NIDs are present in the [PS5 3.20 export inventory](https://github.com/DNNDHH/PS5-3.20_Libs/blob/b2a77c09cd71c01f34c790cfbe98c751a13262ad/libSceContentSearch.c), but no credible prototypes were found in the cited sources. They are declared without parameters solely to resolve known imports and make no ABI claim. The eight `sceContentBinder` calls return 0x809D000F, the firmware module's constant.
 
 ### Functional
 

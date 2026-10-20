@@ -57,8 +57,7 @@ std::int32_t APS5_VABI sceBluetoothHidSetOutputReport(std::uint64_t handle, std:
 }
 
 int APS5_VABI sceBluetoothHidDebugGetVersion() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return 0x1e;
 }
 
 std::int32_t APS5_VABI sceBluetoothHidDisconnectDevice(std::uint32_t deviceId) {
