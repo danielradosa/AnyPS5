@@ -13,6 +13,7 @@
 #include <vector>
 
 extern "C" int APS5_VABI sceAgcSetAmmSemaphoreMemory(void* memory, std::uint64_t sizeInBytes);
+extern "C" int APS5_VABI sceAgcSetSemaphoreMemory(void* memory, std::uint64_t sizeInBytes);
 extern "C" int APS5_VABI sceAgcGetSemaphoreLabel(std::uint32_t index, void** label);
 extern "C" std::uint32_t* APS5_VABI sceAgcCbMemSemaphore(CommandBuffer* buf, const volatile void* address, std::uint32_t operation, std::uint32_t modifier, std::uint32_t value);
 
@@ -20,12 +21,15 @@ namespace {
 
 constexpr std::uint64_t blockBytes = 0x4000u;
 constexpr std::uint64_t labelBytes = 32u;
-constexpr std::uint64_t counterBytes = 8u;
 constexpr std::uint64_t memoryBytes = 2u * blockBytes;
 constexpr std::uint64_t storageBytes = 4u * blockBytes;
 constexpr std::uint32_t labelCount = static_cast<std::uint32_t>(memoryBytes / labelBytes);
 constexpr std::uint8_t guardByte = 0xa5u;
-constexpr std::uint8_t counterByte = 0x5au;
+constexpr std::uint8_t labelByte = 0x5au;
+constexpr int InvalidAlignment = static_cast<int>(0x8a6c0002u);
+constexpr int OutOfRange = static_cast<int>(0x8a6c000bu);
+constexpr int AlreadyRegistered = static_cast<int>(0x8a6c0048u);
+constexpr int NotRegistered = static_cast<int>(0x8a6c0049u);
 
 struct AlignedRelease {
     void operator()(std::uint8_t* memory) const { ::operator delete(memory, std::align_val_t{blockBytes}); }
@@ -62,51 +66,35 @@ void checkUnchanged(const std::vector<std::uint8_t>& before, const char* message
 
 void fillStorage() {
     std::fill(storage.get(), storage.get() + storageBytes, guardByte);
-    for (std::uint64_t label = 0; label < memoryBytes; label += labelBytes) {
-        std::fill(memory() + label, memory() + label + counterBytes, counterByte);
-        std::fill(memory() + label + counterBytes, memory() + label + labelBytes, std::uint8_t{0});
-    }
+    std::fill(memory(), memory() + memoryBytes, labelByte);
 }
 
 void testUnregistered() {
     std::array<void*, 3> labels{storage.get(), storage.get(), storage.get()};
-    expectFailure([&] { sceAgcGetSemaphoreLabel(0, &labels[1]); });
-    expectFailure([] { sceAgcGetSemaphoreLabel(0, nullptr); });
+    check(sceAgcGetSemaphoreLabel(0, &labels[1]) == NotRegistered, "a lookup before registration was not rejected as unregistered");
+    check(sceAgcGetSemaphoreLabel(0, nullptr) == NotRegistered, "a null lookup before registration was not rejected as unregistered");
     check(labels[0] == storage.get() && labels[1] == storage.get() && labels[2] == storage.get(), "a rejected semaphore label changed the output");
 }
 
 void testRegistrationRejections() {
     const auto before = snapshot();
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(nullptr, memoryBytes); });
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(nullptr, 0); });
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(memory(), 0); });
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(memory() + 1, memoryBytes); });
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(memory() + labelBytes, blockBytes); });
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(memory(), blockBytes - 1u); });
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(memory(), blockBytes + labelBytes); });
-    expectFailure([] {
-        const auto top = std::numeric_limits<std::uintptr_t>::max() & ~static_cast<std::uintptr_t>(blockBytes - 1u);
-        sceAgcSetAmmSemaphoreMemory(reinterpret_cast<void*>(top), memoryBytes);
-    });
+    check(sceAgcSetAmmSemaphoreMemory(memory() + 1, memoryBytes) == InvalidAlignment, "unaligned memory was not rejected");
+    check(sceAgcSetAmmSemaphoreMemory(memory() + labelBytes, blockBytes) == InvalidAlignment, "memory aligned only to a label was not rejected");
+    check(sceAgcSetAmmSemaphoreMemory(memory(), blockBytes - 1u) == InvalidAlignment, "an unaligned size was not rejected");
+    check(sceAgcSetAmmSemaphoreMemory(memory(), blockBytes + labelBytes) == InvalidAlignment, "a size aligned only to a label was not rejected");
+    check(sceAgcSetSemaphoreMemory(memory() + 1, blockBytes) == InvalidAlignment, "unaligned memory was not rejected by the non-AMM call");
+    check(sceAgcSetSemaphoreMemory(memory(), 0x40000000u + blockBytes) == OutOfRange, "a size above 1 GiB was not rejected by the non-AMM call");
+    check(sceAgcSetSemaphoreMemory(memory() + 1, 0x40000000u + blockBytes) == OutOfRange, "the size limit was not checked before the memory alignment");
+    check(sceAgcSetSemaphoreMemory(memory(), blockBytes - 1u) == InvalidAlignment, "the size alignment was not checked first");
+    check(sceAgcSetAmmSemaphoreMemory(nullptr, 0) == 0, "an empty registration was rejected");
     checkUnchanged(before, "a rejected registration changed memory");
     testUnregistered();
-}
-
-void testUnsettledClearing() {
-    for (const std::uint64_t offset : {5u * labelBytes + counterBytes, memoryBytes - 1u}) {
-        memory()[offset] = 0x77u;
-        const auto before = snapshot();
-        expectFailure([] { sceAgcSetAmmSemaphoreMemory(memory(), memoryBytes); });
-        checkUnchanged(before, "a registration with unsettled clearing changed memory");
-        testUnregistered();
-        memory()[offset] = 0;
-    }
 }
 
 void testRegistration() {
     const auto before = snapshot();
     check(sceAgcSetAmmSemaphoreMemory(memory(), memoryBytes) == 0, "registering the AMM semaphore memory failed");
-    check(std::all_of(memory(), memory() + memoryBytes, [](std::uint8_t byte) { return byte == 0; }), "registration did not clear the semaphore counters");
+    check(std::all_of(memory(), memory() + memoryBytes, [](std::uint8_t byte) { return byte == 0; }), "registration did not clear the whole semaphore memory");
     check(std::equal(before.begin(), before.begin() + blockBytes, storage.get()), "registration wrote before the semaphore memory");
     check(std::equal(before.begin() + blockBytes + memoryBytes, before.end(), memory() + memoryBytes), "registration wrote past the semaphore memory");
 }
@@ -123,18 +111,17 @@ void testLabels() {
 void testLabelRejections() {
     for (const std::uint32_t index : {labelCount, labelCount + 1u, std::numeric_limits<std::uint32_t>::max()}) {
         void* label = storage.get();
-        expectFailure([&] { sceAgcGetSemaphoreLabel(index, &label); });
+        check(sceAgcGetSemaphoreLabel(index, &label) == OutOfRange, "a label past the semaphore memory was not rejected");
         check(label == storage.get(), "a rejected semaphore label changed the output");
     }
-    expectFailure([] { sceAgcGetSemaphoreLabel(0, nullptr); });
 }
 
 void testRepeatedRegistration() {
     std::fill(memory(), memory() + memoryBytes, std::uint8_t{0x3c});
     const auto before = snapshot();
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(memory(), memoryBytes); });
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(storage.get(), blockBytes); });
-    expectFailure([] { sceAgcSetAmmSemaphoreMemory(nullptr, 0); });
+    check(sceAgcSetAmmSemaphoreMemory(memory(), memoryBytes) == AlreadyRegistered, "a repeated registration was not rejected");
+    check(sceAgcSetAmmSemaphoreMemory(storage.get() + 1, blockBytes) == AlreadyRegistered, "registration was not checked before alignment");
+    check(sceAgcSetSemaphoreMemory(storage.get(), blockBytes) == AlreadyRegistered, "the non-AMM call did not share the registration");
     checkUnchanged(before, "a repeated registration changed memory");
     void* label = nullptr;
     check(sceAgcGetSemaphoreLabel(labelCount - 1u, &label) == 0 && label == memory() + memoryBytes - labelBytes, "a repeated registration replaced the semaphore memory");
@@ -198,7 +185,6 @@ int main() {
         fillStorage();
         testUnregistered();
         testRegistrationRejections();
-        testUnsettledClearing();
         testRegistration();
         testLabels();
         testMemSemaphore();
