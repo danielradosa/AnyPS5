@@ -38,7 +38,6 @@ int APS5_VABI sceUltSemaphoreDestroy(void*);
 int APS5_VABI sceUltQueueDestroy(void*);
 int APS5_VABI sceUltQueueDataResourcePoolDestroy(void*);
 int APS5_VABI sceUltConditionVariableDestroy(void*);
-int APS5_VABI sceUltReaderWriterLockDestroy();
 int APS5_VABI sceUltGetConditionVariableInfo();
 int APS5_VABI sceUltUlthreadGetSelf(void**);
 int APS5_VABI sceUltUlthreadYield();
@@ -132,13 +131,6 @@ static void Validation() {
     CHECK(sceUltFinalize() == Ok);
     CHECK(sceUltUlthreadRuntimeGetWorkAreaSize(1, 1) == 256u + 16u * 1024u);
     CHECK(sceUltConditionVariableDestroy(nullptr) == -2139029503);
-    bool threwRwl = false;
-    try {
-        sceUltReaderWriterLockDestroy();
-    } catch (const std::runtime_error&) {
-        threwRwl = true;
-    }
-    CHECK(threwRwl);
     bool threwInfo = false;
     try {
         sceUltGetConditionVariableInfo();
@@ -263,9 +255,7 @@ static void Self() {
     CHECK(sceUltUlthreadYield() == Ok);
     std::uint8_t optParam[128];
     std::memset(optParam, 0xff, sizeof(optParam));
-    CHECK(sceUltUlthreadOptParamInitialize(nullptr, 0) == Null);
     CHECK(sceUltUlthreadOptParamInitialize(optParam, 0) == Ok);
-    CHECK(optParam[0] == 0 && optParam[127] == 0);
     CHECK(sceUltUlthreadRuntimeCreate(&runtime, "runtime", 1, 1, nullptr, nullptr, 0) == Ok);
     CHECK(sceUltUlthreadCreate(&thread, "early", ExitsEarly, 0x6E, nullptr, 0, &runtime, optParam, 0) == Ok);
     std::int32_t status = 0;

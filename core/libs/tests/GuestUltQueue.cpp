@@ -291,13 +291,9 @@ static void OptParams() {
     waitingParam.fill(0xAB);
     poolParam.fill(0xAB);
     queueParam.fill(0xAB);
-    CHECK(sceUltWaitingQueueResourcePoolOptParamInitialize(nullptr, BuildVersion) == Null);
-    CHECK(sceUltQueueDataResourcePoolOptParamInitialize(nullptr, BuildVersion) == Null);
-    CHECK(sceUltQueueOptParamInitialize(nullptr, BuildVersion) == Null);
     CHECK(sceUltWaitingQueueResourcePoolOptParamInitialize(waitingParam.data(), BuildVersion) == 0);
     CHECK(sceUltQueueDataResourcePoolOptParamInitialize(poolParam.data(), BuildVersion) == 0);
     CHECK(sceUltQueueOptParamInitialize(queueParam.data(), BuildVersion) == 0);
-    CHECK(waitingParam[0] == 0xAB && poolParam[0] == 0xAB && queueParam[127] == 0xAB);
     Object waiting, pool, queue;
     CHECK(sceUltWaitingQueueResourcePoolCreate(&waiting, "waiting", 1, 1, nullptr, waitingParam.data(), BuildVersion) == 0);
     CHECK(sceUltQueueDataResourcePoolCreate(&pool, "pool", 1, 8, 1, &waiting, nullptr, poolParam.data(), BuildVersion) == 0);

@@ -14,6 +14,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "SceUltTypes.hpp"
+#include "prx/libSceUlt/src/ReaderWriterLock.hpp"
 
 extern "C" int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg, const char* name);
 extern "C" int APS5_VABI scePthreadJoin(Pthread thread, void** retval);
@@ -120,6 +121,11 @@ void* APS5_VABI ulthreadRunner(void* arg) {
 
 }
 
+bool UltWaitingPoolExists(void* pool) {
+    std::lock_guard<std::mutex> lock(gMutex);
+    return gResourcePools.contains(pool);
+}
+
 extern "C" {
 
 int APS5_VABI sceUltInitialize() {
@@ -157,6 +163,7 @@ int APS5_VABI sceUltFinalize() {
         }
         gConditions.clear();
         gMutexes.clear();
+        UltFinalizeReaderWriterLocks();
         gResourcePools.clear();
         for (auto& entry : gQueues) {
             auto& state = *entry.second;
@@ -185,6 +192,31 @@ int APS5_VABI sceUltMutexOptParamInitialize(UltMutexOptParam* optParam, std::uin
     }
     std::memset(optParam, 0, sizeof(*optParam));
     return ULT_OK;
+}
+
+int APS5_VABI sceUltSemaphoreOptParamInitialize(UltOptParam* optParam, std::uint32_t buildVersion) {
+    (void)buildVersion;
+    return InitializeOptParam(optParam);
+}
+
+int APS5_VABI sceUltQueueOptParamInitialize(UltOptParam* optParam, std::uint32_t buildVersion) {
+    (void)buildVersion;
+    return InitializeOptParam(optParam);
+}
+
+int APS5_VABI sceUltQueueDataResourcePoolOptParamInitialize(UltOptParam* optParam, std::uint32_t buildVersion) {
+    (void)buildVersion;
+    return InitializeOptParam(optParam);
+}
+
+int APS5_VABI sceUltWaitingQueueResourcePoolOptParamInitialize(UltOptParam* optParam, std::uint32_t buildVersion) {
+    (void)buildVersion;
+    return InitializeOptParam(optParam);
+}
+
+int APS5_VABI sceUltUlthreadOptParamInitialize(UltOptParam* optParam, std::uint32_t buildVersion) {
+    (void)buildVersion;
+    return InitializeOptParam(optParam);
 }
 
 int APS5_VABI sceUltMutexCreate(void* mutex, const char* name, void* waitingQueueResourcePool, const UltMutexOptParam* optParam, std::uint32_t buildVersion) {
@@ -258,6 +290,33 @@ int APS5_VABI sceUltMutexLock(void* mutex) {
     --state->_waiters;
     if (!state->_alive) {
         return ULT_ERROR_STATE;
+    }
+    state->_owner = self;
+    state->_lockCount = 1;
+    return ULT_OK;
+}
+
+int APS5_VABI sceUltMutexTryLock(void* mutex) {
+    std::shared_ptr<UltMutexState> state;
+    {
+        std::lock_guard<std::mutex> lock(gMutex);
+        auto it = gMutexes.find(mutex);
+        if (it == gMutexes.end()) {
+            return mutex == nullptr ? ULT_ERROR_NULL : ULT_ERROR_STATE;
+        }
+        state = it->second;
+    }
+    const auto self = std::this_thread::get_id();
+    std::lock_guard<std::mutex> lock(state->_mutex);
+    if (!state->_alive) {
+        return ULT_ERROR_STATE;
+    }
+    if (state->_owner == self) {
+        ++state->_lockCount;
+        return ULT_OK;
+    }
+    if (state->_lockCount != 0) {
+        return ULT_ERROR_BUSY;
     }
     state->_owner = self;
     state->_lockCount = 1;
@@ -431,6 +490,9 @@ int APS5_VABI sceUltWaitingQueueResourcePoolDestroy(void* pool) {
                 return ULT_ERROR_BUSY;
             }
         }
+    }
+    if (UltReaderWriterLocksWaitOn(pool)) {
+        return ULT_ERROR_BUSY;
     }
     gResourcePools.erase(it);
     return ULT_OK;
@@ -702,8 +764,8 @@ int APS5_VABI sceUltUlthreadCreate(void* ulthread, const char* name, UltUlthread
     auto state = std::make_shared<UltUlthreadState>();
     state->_entry = entry;
     state->_arg = arg;
-    state->_runtime = runtime;
     state->_object = ulthread;
+    state->_runtime = runtime;
     {
         std::lock_guard<std::mutex> lock(gMutex);
         if (gRuntimes.find(runtime) == gRuntimes.end()) {
@@ -764,6 +826,31 @@ int APS5_VABI sceUltUlthreadTryJoin(void* ulthread, std::int32_t* status) {
         }
     }
     return sceUltUlthreadJoin(ulthread, status);
+}
+
+int APS5_VABI sceUltUlthreadGetSelf(void** ulthread) {
+    if (ulthread == nullptr) {
+        return ULT_ERROR_NULL;
+    }
+    if (gCurrentUlthread == nullptr) {
+        return ULT_ERROR_PERMISSION;
+    }
+    *ulthread = gCurrentUlthread->_object;
+    return ULT_OK;
+}
+
+int APS5_VABI sceUltUlthreadYield() {
+    std::this_thread::yield();
+    return ULT_OK;
+}
+
+int APS5_VABI sceUltUlthreadExit(std::int32_t status) {
+    if (gCurrentUlthread == nullptr) {
+        return ULT_ERROR_PERMISSION;
+    }
+    gCurrentUlthread->_exited.store(true, std::memory_order_release);
+    scePthreadExit(reinterpret_cast<void*>(static_cast<std::intptr_t>(status)));
+    return ULT_OK;
 }
 
 int APS5_VABI sceUltUlthreadRuntimeDestroy(void* runtime) {
@@ -883,94 +970,6 @@ int APS5_VABI sceUltGetWaitingQueueResourcePoolInfo() {
     return 0;
 }
 
-int APS5_VABI sceUltMutexTryLock(void* mutex) {
-    std::shared_ptr<UltMutexState> state;
-    {
-        std::lock_guard<std::mutex> lock(gMutex);
-        auto it = gMutexes.find(mutex);
-        if (it == gMutexes.end()) {
-            return mutex == nullptr ? ULT_ERROR_NULL : ULT_ERROR_STATE;
-        }
-        state = it->second;
-    }
-    const auto self = std::this_thread::get_id();
-    std::lock_guard<std::mutex> lock(state->_mutex);
-    if (!state->_alive) {
-        return ULT_ERROR_STATE;
-    }
-    if (state->_owner == self) {
-        ++state->_lockCount;
-        return ULT_OK;
-    }
-    if (state->_lockCount != 0) {
-        return ULT_ERROR_BUSY;
-    }
-    state->_owner = self;
-    state->_lockCount = 1;
-    return ULT_OK;
-}
-
-int APS5_VABI sceUltReaderWriterLockDestroy() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltReaderWriterLockLockRead() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltReaderWriterLockLockWrite() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltReaderWriterLockTryLockRead() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltReaderWriterLockTryLockWrite() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltReaderWriterLockUnlockRead() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltReaderWriterLockUnlockWrite() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltUlthreadExit(std::int32_t status) {
-    auto* state = gCurrentUlthread;
-    if (state == nullptr) {
-        return ULT_ERROR_PERMISSION;
-    }
-    state->_exited.store(true, std::memory_order_release);
-    scePthreadExit(reinterpret_cast<void*>(static_cast<std::intptr_t>(status)));
-    return ULT_OK;
-}
-
-int APS5_VABI sceUltUlthreadGetSelf(void** ulthread) {
-    if (ulthread == nullptr) {
-        return ULT_ERROR_NULL;
-    }
-    if (gCurrentUlthread == nullptr) {
-        return ULT_ERROR_PERMISSION;
-    }
-    *ulthread = gCurrentUlthread->_object;
-    return ULT_OK;
-}
-
-int APS5_VABI sceUltUlthreadYield() {
-    std::this_thread::yield();
-    return ULT_OK;
-}
-
 int APS5_VABI sceUltAbstractThreadFactoryCreateThread() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -1036,45 +1035,6 @@ int APS5_VABI sceUltConditionVariableCreate(void* condition, const char* name, v
 }
 
 int APS5_VABI sceUltConditionVariableOptParamInitialize(void* optParam, std::uint32_t buildVersion) {
-    (void)buildVersion;
-    return optParam == nullptr ? ULT_ERROR_NULL : ULT_OK;
-}
-
-int APS5_VABI sceUltQueueDataResourcePoolOptParamInitialize(void* optParam, std::uint32_t buildVersion) {
-    (void)buildVersion;
-    return optParam == nullptr ? ULT_ERROR_NULL : ULT_OK;
-}
-
-int APS5_VABI sceUltQueueOptParamInitialize(void* optParam, std::uint32_t buildVersion) {
-    (void)buildVersion;
-    return optParam == nullptr ? ULT_ERROR_NULL : ULT_OK;
-}
-
-int APS5_VABI sceUltReaderWriterLockCreate() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltReaderWriterLockOptParamInitialize() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltSemaphoreOptParamInitialize() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceUltUlthreadOptParamInitialize(UltUlthreadOptParam* optParam, std::uint32_t buildVersion) {
-    (void)buildVersion;
-    if (optParam == nullptr) {
-        return ULT_ERROR_NULL;
-    }
-    std::memset(optParam, 0, sizeof(*optParam));
-    return ULT_OK;
-}
-
-int APS5_VABI sceUltWaitingQueueResourcePoolOptParamInitialize(void* optParam, std::uint32_t buildVersion) {
     (void)buildVersion;
     return optParam == nullptr ? ULT_ERROR_NULL : ULT_OK;
 }
