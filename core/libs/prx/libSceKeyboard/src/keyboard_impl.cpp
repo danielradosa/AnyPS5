@@ -8,17 +8,29 @@
 #include <mutex>
 
 namespace {
+struct Port {
+    std::array<KeyboardData, KEYBOARD_MAX_DATA_NUM> history{};
+    int head = 0;
+    int count = 0;
+    bool initialized = false;
+    bool opened = false;
+};
+
 std::mutex keyboardMutex;
-std::array<KeyboardData, KEYBOARD_MAX_DATA_NUM> history{};
-int head = 0;
-int count = 0;
-bool initialized = false;
-bool opened = false;
+std::array<Port, 2> ports{};
 bool connected = true;
 std::uint32_t led = 0;
 std::uint32_t modifiers = 0;
 std::array<std::uint16_t, KEYBOARD_MAX_KEYCODES> keys{};
 int keyCount = 0;
+
+Port& port(Keyboard::Client client) {
+    return ports[static_cast<std::size_t>(client)];
+}
+
+bool anyOpened() {
+    return std::any_of(ports.begin(), ports.end(), [](const Port& p) { return p.opened; });
+}
 
 KeyboardData snapshot() {
     KeyboardData data{};
@@ -31,13 +43,13 @@ KeyboardData snapshot() {
     return data;
 }
 
-void enqueue(const KeyboardData& data) {
-    if (count == KEYBOARD_MAX_DATA_NUM) {
-        head = (head + 1) % KEYBOARD_MAX_DATA_NUM;
-        --count;
+void enqueue(Port& p, const KeyboardData& data) {
+    if (p.count == KEYBOARD_MAX_DATA_NUM) {
+        p.head = (p.head + 1) % KEYBOARD_MAX_DATA_NUM;
+        --p.count;
     }
-    history[(head + count) % KEYBOARD_MAX_DATA_NUM] = data;
-    ++count;
+    p.history[(p.head + p.count) % KEYBOARD_MAX_DATA_NUM] = data;
+    ++p.count;
 }
 
 void clearKeys() {
@@ -70,64 +82,69 @@ bool updateKey(std::uint16_t keyCode, bool pressed) {
 
 namespace Keyboard {
 
-int Initialize() {
+int Initialize(Client client) {
     std::lock_guard lock(keyboardMutex);
-    initialized = true;
+    port(client).initialized = true;
     return KEYBOARD_OK;
 }
 
-int Open(int userId, std::int32_t type, std::int32_t index) {
+int Open(Client client, int userId, std::int32_t type, std::int32_t index) {
     std::lock_guard lock(keyboardMutex);
-    if (!initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
+    Port& p = port(client);
+    if (!p.initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
     if (userId < 0 || type != 0 || index != 0) return KEYBOARD_ERROR_INVALID_ARG;
-    if (opened) return KEYBOARD_ERROR_ALREADY_OPENED;
-    opened = true;
-    clearKeys();
-    head = 0;
-    count = 0;
-    enqueue(snapshot());
+    if (p.opened) return KEYBOARD_ERROR_ALREADY_OPENED;
+    if (!anyOpened()) clearKeys();
+    p.opened = true;
+    p.head = 0;
+    p.count = 0;
+    enqueue(p, snapshot());
     return KEYBOARD_HANDLE;
 }
 
-int Close(std::int32_t handle) {
+int Close(Client client, std::int32_t handle) {
     std::lock_guard lock(keyboardMutex);
-    if (!initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
-    if (handle != KEYBOARD_HANDLE || !opened) return KEYBOARD_ERROR_INVALID_HANDLE;
-    opened = false;
-    clearKeys();
-    head = 0;
-    count = 0;
+    Port& p = port(client);
+    if (!p.initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
+    if (handle != KEYBOARD_HANDLE || !p.opened) return KEYBOARD_ERROR_INVALID_HANDLE;
+    p.opened = false;
+    if (!anyOpened()) clearKeys();
+    p.head = 0;
+    p.count = 0;
     return KEYBOARD_OK;
 }
 
-int Read(std::int32_t handle, KeyboardData* data, std::int32_t num) {
+int Read(Client client, std::int32_t handle, KeyboardData* data, std::int32_t num) {
     std::lock_guard lock(keyboardMutex);
-    if (!initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
-    if (handle != KEYBOARD_HANDLE || !opened) return KEYBOARD_ERROR_INVALID_HANDLE;
+    Port& p = port(client);
+    if (!p.initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
+    if (handle != KEYBOARD_HANDLE || !p.opened) return KEYBOARD_ERROR_INVALID_HANDLE;
     if (data == nullptr || num <= 0 || num > KEYBOARD_MAX_DATA_NUM) return KEYBOARD_ERROR_INVALID_ARG;
-    const int available = std::min(count, num);
+    const int available = std::min(p.count, num);
     for (int i = 0; i < available; ++i) {
-        data[i] = history[head];
-        head = (head + 1) % KEYBOARD_MAX_DATA_NUM;
+        data[i] = p.history[p.head];
+        p.head = (p.head + 1) % KEYBOARD_MAX_DATA_NUM;
     }
-    count -= available;
+    p.count -= available;
     return available;
 }
 
-int ReadState(std::int32_t handle, KeyboardData* data) {
+int ReadState(Client client, std::int32_t handle, KeyboardData* data) {
     std::lock_guard lock(keyboardMutex);
-    if (!initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
-    if (handle != KEYBOARD_HANDLE || !opened) return KEYBOARD_ERROR_INVALID_HANDLE;
+    const Port& p = port(client);
+    if (!p.initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
+    if (handle != KEYBOARD_HANDLE || !p.opened) return KEYBOARD_ERROR_INVALID_HANDLE;
     if (data == nullptr) return KEYBOARD_ERROR_INVALID_ARG;
     *data = snapshot();
     return KEYBOARD_OK;
 }
 
-int GetKey2Char(std::int32_t handle, std::int32_t arrange, std::uint32_t ledState, std::uint32_t modifierKey, std::uint16_t keyCode, KeyboardCharData* charData) {
+int GetKey2Char(Client client, std::int32_t handle, std::int32_t arrange, std::uint32_t ledState, std::uint32_t modifierKey, std::uint16_t keyCode, KeyboardCharData* charData) {
     {
         std::lock_guard lock(keyboardMutex);
-        if (!initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
-        if (handle != KEYBOARD_HANDLE || !opened) return KEYBOARD_ERROR_INVALID_HANDLE;
+        const Port& p = port(client);
+        if (!p.initialized) return KEYBOARD_ERROR_NOT_INITIALIZED;
+        if (handle != KEYBOARD_HANDLE || !p.opened) return KEYBOARD_ERROR_INVALID_HANDLE;
     }
     if (charData == nullptr) return KEYBOARD_ERROR_INVALID_ARG;
     if (arrange != KEYBOARD_ARRANGEMENT_101 && arrange != KEYBOARD_ARRANGEMENT_106) return KEYBOARD_ERROR_INVALID_ARG;
@@ -151,14 +168,17 @@ void Publish(const KeyboardInputEvent& event) {
     } else if (!connected) {
         return;
     }
-    if (!opened) return;
+    if (!anyOpened()) return;
     if (event.resetKeys) clearKeys();
     if (event.keyCode != 0) {
         const bool ledChanged = led != event.led;
         led = event.led;
         if (!updateKey(event.keyCode, event.pressed) && !ledChanged) return;
     }
-    enqueue(snapshot());
+    const KeyboardData data = snapshot();
+    for (Port& p : ports) {
+        if (p.opened) enqueue(p, data);
+    }
 }
 
 }

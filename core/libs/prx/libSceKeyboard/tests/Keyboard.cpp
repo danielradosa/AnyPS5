@@ -16,6 +16,12 @@ int APS5_VABI sceKeyboardReadState(std::int32_t, KeyboardData*);
 int APS5_VABI sceKeyboardGetKey2Char(std::int32_t, std::int32_t, std::uint32_t, std::uint32_t, std::uint16_t, KeyboardCharData*);
 int APS5_VABI sceKeyboardConnectPort(void);
 int APS5_VABI sceKeyboardDisconnectAll(void);
+int APS5_VABI sceDbgKeyboardInit(void);
+int APS5_VABI sceDbgKeyboardOpen(int, std::int32_t, std::int32_t, const void*);
+int APS5_VABI sceDbgKeyboardClose(std::int32_t);
+int APS5_VABI sceDbgKeyboardRead(std::int32_t, KeyboardData*, std::int32_t);
+int APS5_VABI sceDbgKeyboardReadState(std::int32_t, KeyboardData*);
+int APS5_VABI sceDbgKeyboardGetKey2Char(std::int32_t, std::int32_t, std::uint32_t, std::uint32_t, std::uint16_t, KeyboardCharData*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -147,6 +153,57 @@ int main() {
     Require(sceKeyboardOpen(1, 0, 0, nullptr) == KEYBOARD_HANDLE);
     Require(sceKeyboardRead(KEYBOARD_HANDLE, data, 1) == 1 && data[0].length == 1 && data[0].key_code[0] == 0);
     Require(sceKeyboardClose(KEYBOARD_HANDLE) == KEYBOARD_OK);
+
+    Require(sceDbgKeyboardOpen(1, 0, 0, nullptr) == KEYBOARD_ERROR_NOT_INITIALIZED);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, data, 1) == KEYBOARD_ERROR_NOT_INITIALIZED);
+    Require(sceDbgKeyboardInit() == KEYBOARD_OK);
+    Require(sceDbgKeyboardOpen(1, 0, 1, nullptr) == KEYBOARD_ERROR_INVALID_ARG);
+    Require(sceDbgKeyboardOpen(-1, 0, 0, nullptr) == KEYBOARD_ERROR_INVALID_ARG);
+    Require(sceDbgKeyboardReadState(KEYBOARD_HANDLE, data) == KEYBOARD_ERROR_INVALID_HANDLE);
+    Require(sceDbgKeyboardOpen(1, 0, 0, nullptr) == KEYBOARD_HANDLE);
+    Require(sceDbgKeyboardOpen(1, 0, 0, nullptr) == KEYBOARD_ERROR_ALREADY_OPENED);
+    Require(sceKeyboardRead(KEYBOARD_HANDLE, data, 1) == KEYBOARD_ERROR_INVALID_HANDLE);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, nullptr, 1) == KEYBOARD_ERROR_INVALID_ARG);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, data, 17) == KEYBOARD_ERROR_INVALID_ARG);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, data, 16) == 1 && data[0].connected && data[0].length == 1 && data[0].key_code[0] == 0);
+
+    KeyboardInputEvent pressA{};
+    pressA.keyCode = 0x04;
+    pressA.pressed = true;
+    KeyboardPublishInput_nid_postfix(pressA);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, data, 16) == 1 && data[0].length == 1 && data[0].key_code[0] == 0x04);
+    Require(sceKeyboardOpen(1, 0, 0, nullptr) == KEYBOARD_HANDLE);
+    Require(sceKeyboardRead(KEYBOARD_HANDLE, data, 16) == 1 && data[0].length == 1 && data[0].key_code[0] == 0x04);
+    KeyboardInputEvent pressShift{};
+    pressShift.keyCode = 0xe1;
+    pressShift.pressed = true;
+    KeyboardPublishInput_nid_postfix(pressShift);
+    Require(sceKeyboardRead(KEYBOARD_HANDLE, data, 16) == 1 && data[0].modifier_key == KEYBOARD_MOD_LEFT_SHIFT && data[0].key_code[0] == 0x04);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, data, 16) == 1 && data[0].modifier_key == KEYBOARD_MOD_LEFT_SHIFT && data[0].key_code[0] == 0x04);
+    Require(sceDbgKeyboardReadState(KEYBOARD_HANDLE, nullptr) == KEYBOARD_ERROR_INVALID_ARG);
+    Require(sceDbgKeyboardReadState(KEYBOARD_HANDLE, data) == KEYBOARD_OK);
+    Require(data[0].connected && data[0].length == 1 && data[0].key_code[0] == 0x04 && data[0].modifier_key == KEYBOARD_MOD_LEFT_SHIFT);
+
+    Require(sceDbgKeyboardGetKey2Char(KEYBOARD_HANDLE, KEYBOARD_ARRANGEMENT_101, 0, KEYBOARD_MOD_LEFT_SHIFT, 0x04, &charData) == KEYBOARD_OK);
+    Require(charData.char_code == 'A' && charData.processed && charData.length == 1);
+    Require(sceDbgKeyboardGetKey2Char(KEYBOARD_HANDLE, KEYBOARD_ARRANGEMENT_106, 0, 0, 0x89, &charData) == KEYBOARD_OK && charData.char_code == '\\');
+    Require(sceDbgKeyboardGetKey2Char(KEYBOARD_HANDLE, KEYBOARD_ARRANGEMENT_101, 0, 0, 0x29, &charData) == KEYBOARD_OK && charData.char_code == 0 && !charData.processed && charData.length == 0);
+    Require(sceDbgKeyboardGetKey2Char(42, KEYBOARD_ARRANGEMENT_101, 0, 0, 0x04, &charData) == KEYBOARD_ERROR_INVALID_HANDLE);
+    Require(sceDbgKeyboardGetKey2Char(KEYBOARD_HANDLE, 2, 0, 0, 0x04, &charData) == KEYBOARD_ERROR_INVALID_ARG);
+    Require(sceDbgKeyboardGetKey2Char(KEYBOARD_HANDLE, KEYBOARD_ARRANGEMENT_101, 0, 0, 0x04, nullptr) == KEYBOARD_ERROR_INVALID_ARG);
+
+    Require(sceKeyboardClose(KEYBOARD_HANDLE) == KEYBOARD_OK);
+    KeyboardInputEvent releaseA = pressA;
+    releaseA.pressed = false;
+    KeyboardPublishInput_nid_postfix(releaseA);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, data, 16) == 1 && data[0].length == 1 && data[0].key_code[0] == 0 && data[0].modifier_key == KEYBOARD_MOD_LEFT_SHIFT);
+    Require(sceDbgKeyboardClose(42) == KEYBOARD_ERROR_INVALID_HANDLE);
+    Require(sceDbgKeyboardClose(KEYBOARD_HANDLE) == KEYBOARD_OK);
+    Require(sceDbgKeyboardClose(KEYBOARD_HANDLE) == KEYBOARD_ERROR_INVALID_HANDLE);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, data, 1) == KEYBOARD_ERROR_INVALID_HANDLE);
+    Require(sceDbgKeyboardOpen(1, 0, 0, nullptr) == KEYBOARD_HANDLE);
+    Require(sceDbgKeyboardRead(KEYBOARD_HANDLE, data, 16) == 1 && data[0].length == 1 && data[0].key_code[0] == 0 && data[0].modifier_key == 0);
+    Require(sceDbgKeyboardClose(KEYBOARD_HANDLE) == KEYBOARD_OK);
 
     bool threwConnect = false;
     try {
