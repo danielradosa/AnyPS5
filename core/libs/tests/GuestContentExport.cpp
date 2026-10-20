@@ -18,7 +18,7 @@ extern "C" int APS5_VABI sceContentExportFrom(void);
 extern "C" int APS5_VABI sceContentExportFromFileForSf(void);
 extern "C" int APS5_VABI sceContentExportFromFileWithContentIdList(void);
 extern "C" int APS5_VABI sceContentExportFromFileWithTitleIdList(void);
-extern "C" int APS5_VABI sceContentExportInit(void);
+extern "C" int APS5_VABI sceContentExportInit(const ContentExportInitParam2* init_param);
 extern "C" int APS5_VABI sceContentExportMalloc(void);
 extern "C" int APS5_VABI sceContentExportRemoveFromFavorites(void);
 extern "C" int APS5_VABI sceContentExportRenameContent(void);
@@ -257,6 +257,20 @@ int main() {
     Require(sceContentExportTerm() == 0);
     Require(Throws([] { sceContentExportTerm(); }));
 
+    Require(Throws<std::invalid_argument>([] { sceContentExportInit(nullptr); }));
+    Require(Throws<std::invalid_argument>([&] { sceContentExportInit(&missing); }));
+    Require(Throws([] { sceContentExportStart(); }));
+    Require(sceContentExportInit(&reserved) == 0);
+    Require(Throws([&] { sceContentExportInit(&param); }));
+    Require(Throws([&] { sceContentExportInit2(&param); }));
+    int initSession = sceContentExportStart();
+    Require(initSession > 0);
+    Require(sceContentExportFinish(initSession) == 0);
+    Require(sceContentExportTerm() == 0);
+    Require(sceContentExportInit(&param) == 0);
+    Require(sceContentExportTerm() == 0);
+    Require(Throws([] { sceContentExportTerm(); }));
+
     Require(sceContentExportInit2(&param) == 0);
 
     std::set<int> sessions;
@@ -296,7 +310,6 @@ int main() {
     Require(Throws<std::runtime_error>([] { sceContentExportFromFileForSf(); }));
     Require(Throws<std::runtime_error>([] { sceContentExportFromFileWithContentIdList(); }));
     Require(Throws<std::runtime_error>([] { sceContentExportFromFileWithTitleIdList(); }));
-    Require(Throws<std::runtime_error>([] { sceContentExportInit(); }));
     Require(Throws<std::runtime_error>([] { sceContentExportMalloc(); }));
     Require(Throws<std::runtime_error>([] { sceContentExportRemoveFromFavorites(); }));
     Require(Throws<std::runtime_error>([] { sceContentExportRenameContent(); }));
