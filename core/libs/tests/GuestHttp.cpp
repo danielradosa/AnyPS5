@@ -45,6 +45,55 @@ int APS5_VABI sceHttpSetRedirectCallback(int, HttpRedirectCallback, void*);
 int APS5_VABI sceHttpSetCookieRecvCallback(int, HttpCookieRecvCallback, void*);
 int APS5_VABI sceHttpSetAuthInfoCallback(int, HttpAuthInfoCallback, void*);
 int APS5_VABI sceHttpParseStatusLine(const char*, std::size_t, std::int32_t*, std::int32_t*, std::int32_t*, const char**, std::size_t*);
+struct HttpMemoryPoolStats {
+    std::uint64_t poolSize;
+    std::uint64_t maxInuseSize;
+    std::uint64_t currentInuseSize;
+    std::int32_t reserved;
+};
+struct HttpCookieStats {
+    std::uint64_t currentInuseSize;
+    std::uint32_t currentInuseNum;
+    std::uint64_t maxInuseSize;
+    std::uint32_t maxInuseNum;
+    std::uint32_t removedNum;
+    std::int32_t reserved;
+};
+int APS5_VABI sceHttpCreateTemplate(int, const char*, int, int);
+int APS5_VABI sceHttpCreateConnectionWithURL(int, const char*, int);
+int APS5_VABI sceHttpCreateConnection(int, const char*, const char*, std::uint16_t, int);
+int APS5_VABI sceHttpCreateRequestWithURL(int, int, const char*, std::uint64_t);
+int APS5_VABI sceHttpDeleteTemplate(int);
+int APS5_VABI sceHttpDeleteConnection(int);
+int APS5_VABI sceHttpDeleteRequest(int);
+int APS5_VABI sceHttpSetAutoRedirect(int, int);
+int APS5_VABI sceHttpGetAutoRedirect(int, int*);
+int APS5_VABI sceHttpSetNonblock(int, int);
+int APS5_VABI sceHttpGetNonblock(int, int*);
+int APS5_VABI sceHttpTrySetNonblock(int, int);
+int APS5_VABI sceHttpTryGetNonblock(int, int*);
+int APS5_VABI sceHttpSetAcceptEncodingGZIPEnabled(int, int);
+int APS5_VABI sceHttpGetAcceptEncodingGZIPEnabled(int, int*);
+int APS5_VABI sceHttpSetDefaultAcceptEncodingGZIPEnabled(int, int);
+int APS5_VABI sceHttpSetEpoll(int, HttpEpollHandle, void*);
+int APS5_VABI sceHttpUnsetEpoll(int);
+int APS5_VABI sceHttpGetEpoll(int, HttpEpollHandle*, void**);
+int APS5_VABI sceHttpGetMemoryPoolStats(int, HttpMemoryPoolStats*);
+int APS5_VABI sceHttpGetCookieStats(int, HttpCookieStats*);
+int APS5_VABI sceHttpSetCookieMaxNum(int, std::uint32_t);
+int APS5_VABI sceHttpSetCookieMaxNumPerDomain(int, std::uint32_t);
+int APS5_VABI sceHttpSetCookieMaxSize(int, std::uint32_t);
+int APS5_VABI sceHttpSetCookieTotalMaxSize(int, std::uint32_t);
+int APS5_VABI sceHttpSetCookieSendCallback(int, int (*)(int, const char*, const char*, void*), void*);
+int APS5_VABI sceHttpSetHttp09Enabled(int, int);
+int APS5_VABI sceHttpSetDelayBuildRequestEnabled(int, int);
+int APS5_VABI sceHttpCacheRedirectedConnectionEnabled(int, int);
+int APS5_VABI sceHttpsEnableOptionPrivate(int, std::uint32_t);
+int APS5_VABI sceHttpsDisableOptionPrivate(int, std::uint32_t);
+int APS5_VABI sceHttpSetProxy(int, int, int, const char*, std::uint16_t);
+int APS5_VABI sceHttpAbortRequestForce(int);
+int APS5_VABI sceHttpAddRequestHeader(int, const char*, const char*, std::uint32_t);
+int APS5_VABI sceHttpRemoveRequestHeader(int, const char*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -99,7 +148,164 @@ static void APS5_VABI RequestStatusCallback(int, int, void* argument) {
     ++*static_cast<int*>(argument);
 }
 
+static int CookieSend(int, const char*, const char*, void*) { std::abort(); }
+
+static int Flag(int (APS5_VABI *get)(int, int*), int id) {
+    int value = -1;
+    Require(get(id, &value) == 0 && (value == 0 || value == 1));
+    return value;
+}
+
+static void CheckSettings() {
+    constexpr int beforeInit = static_cast<int>(0x80431001);
+    constexpr int invalidId = static_cast<int>(0x80431100);
+    constexpr int invalidValue = static_cast<int>(0x804311FE);
+    int value = -1;
+    HttpEpollHandle eh = nullptr;
+    void* argument = nullptr;
+    HttpMemoryPoolStats pool{};
+    HttpCookieStats cookies{};
+
+    const int early = sceHttpCreateTemplate(1, "agent", 2, 1);
+    Require(early > 0);
+    Require(sceHttpGetAutoRedirect(early, &value) == beforeInit);
+    Require(sceHttpGetNonblock(early, &value) == beforeInit);
+    Require(sceHttpTryGetNonblock(early, &value) == beforeInit);
+    Require(sceHttpGetAcceptEncodingGZIPEnabled(early, &value) == beforeInit);
+    Require(sceHttpGetEpoll(early, &eh, &argument) == beforeInit);
+    Require(sceHttpGetMemoryPoolStats(1, &pool) == beforeInit);
+    Require(sceHttpGetCookieStats(1, &cookies) == beforeInit);
+    Require(sceHttpSetDefaultAcceptEncodingGZIPEnabled(1, 1) == beforeInit);
+    Require(sceHttpSetCookieMaxNum(1, 300) == beforeInit);
+    Require(sceHttpSetCookieMaxNumPerDomain(1, 50) == beforeInit);
+    Require(sceHttpSetCookieMaxSize(1, 4096) == beforeInit);
+    Require(sceHttpSetCookieTotalMaxSize(1, 0x10000) == beforeInit);
+    Require(sceHttpSetAutoRedirect(early, 0) == 0);
+    Require(sceHttpAddRequestHeader(early, "X-Early", "1", 1) == 0);
+    Require(sceHttpRemoveRequestHeader(early, "X-Early") == beforeInit);
+
+    const int context = sceHttpInit_nid_postfix(0, 0, 0x24000);
+    Require(context > 0);
+    Require(sceHttpGetMemoryPoolStats(-1, &pool) == invalidId);
+    Require(sceHttpGetMemoryPoolStats(early, &pool) == invalidId);
+    Require(sceHttpGetMemoryPoolStats(context, nullptr) == invalidValue);
+    std::memset(&pool, 0x5a, sizeof(pool));
+    Require(sceHttpGetMemoryPoolStats(context, &pool) == 0);
+    Require(pool.poolSize == 0x24000 && pool.maxInuseSize == 0 && pool.currentInuseSize == 0 && pool.reserved == 0);
+    Require(sceHttpGetCookieStats(-1, &cookies) == invalidId);
+    Require(sceHttpGetCookieStats(context, nullptr) == invalidValue);
+    std::memset(&cookies, 0x5a, sizeof(cookies));
+    Require(sceHttpGetCookieStats(context, &cookies) == 0);
+    const auto* cookieBytes = reinterpret_cast<const unsigned char*>(&cookies);
+    for (std::size_t index = 0; index < sizeof(cookies); ++index) Require(cookieBytes[index] == 0);
+    for (const int id : {context, -1}) {
+        const int expected = id == context ? 0 : invalidId;
+        Require(sceHttpSetCookieMaxNum(id, 300) == expected);
+        Require(sceHttpSetCookieMaxNumPerDomain(id, 50) == expected);
+        Require(sceHttpSetCookieMaxSize(id, 4096) == expected);
+        Require(sceHttpSetCookieTotalMaxSize(id, 0x10000) == expected);
+    }
+
+    Require(Flag(sceHttpGetAutoRedirect, early) == 0);
+    const int tmpl = sceHttpCreateTemplate(context, "agent", 2, 1);
+    Require(sceHttpGetAutoRedirect(tmpl, nullptr) == invalidValue);
+    Require(sceHttpGetNonblock(tmpl, nullptr) == invalidValue);
+    Require(sceHttpGetAcceptEncodingGZIPEnabled(tmpl, nullptr) == invalidValue);
+    Require(sceHttpGetAutoRedirect(-1, &value) == invalidId);
+    Require(sceHttpGetAutoRedirect(context, &value) == invalidId);
+    Require(sceHttpGetNonblock(context, &value) == invalidId);
+    Require(Flag(sceHttpGetAutoRedirect, tmpl) == 1);
+    Require(Flag(sceHttpGetNonblock, tmpl) == 0 && Flag(sceHttpTryGetNonblock, tmpl) == 0);
+    Require(Flag(sceHttpGetAcceptEncodingGZIPEnabled, tmpl) == 0);
+    Require(sceHttpGetEpoll(tmpl, nullptr, &argument) == invalidValue);
+    Require(sceHttpGetEpoll(-1, &eh, &argument) == invalidId);
+    eh = reinterpret_cast<HttpEpollHandle>(&value);
+    argument = &value;
+    Require(sceHttpGetEpoll(tmpl, &eh, &argument) == 0 && eh == nullptr && argument == nullptr);
+
+    constexpr int notFound = static_cast<int>(0x80431025);
+    Require(sceHttpRemoveRequestHeader(early, "x-early") == 0);
+    Require(sceHttpRemoveRequestHeader(early, "X-Early") == notFound);
+    Require(sceHttpAddRequestHeader(tmpl, "X-Test", "1", 1) == 0);
+    Require(sceHttpAddRequestHeader(tmpl, "x-TEST", "2", 1) == 0);
+    Require(sceHttpAddRequestHeader(tmpl, "X-Mode", "1", 0) == 0);
+    Require(sceHttpAddRequestHeader(tmpl, "X-Mode", "2", 0) == 0);
+    Require(sceHttpAddRequestHeader(tmpl, "X-Bad", "1", 2) == 0);
+    Require(sceHttpAddRequestHeader(tmpl, nullptr, "1", 1) == 0);
+    Require(sceHttpRemoveRequestHeader(tmpl, nullptr) == notFound);
+    Require(sceHttpRemoveRequestHeader(-1, "X-Test") == invalidId);
+    Require(sceHttpRemoveRequestHeader(context, "X-Test") == invalidId);
+    Require(sceHttpRemoveRequestHeader(tmpl, "X-Bad") == notFound);
+    Require(sceHttpRemoveRequestHeader(tmpl, "X-Tes") == notFound);
+    Require(sceHttpRemoveRequestHeader(tmpl, "x-test") == 0);
+    Require(sceHttpRemoveRequestHeader(tmpl, "X-Test") == notFound);
+    Require(sceHttpRemoveRequestHeader(tmpl, "X-MODE") == 0);
+    Require(sceHttpRemoveRequestHeader(tmpl, "X-Mode") == notFound);
+    Require(sceHttpAddRequestHeader(tmpl, "X-Template", "1", 1) == 0);
+
+    HttpEpollHandle epoll = nullptr;
+    Require(sceHttpCreateEpoll(context, &epoll) == 0);
+    int marker = 0;
+    Require(sceHttpSetAutoRedirect(tmpl, 0) == 0);
+    Require(sceHttpTrySetNonblock(tmpl, 1) == 0);
+    Require(sceHttpSetAcceptEncodingGZIPEnabled(tmpl, 2) == 0);
+    Require(sceHttpSetEpoll(tmpl, epoll, &marker) == 0);
+    Require(Flag(sceHttpGetAutoRedirect, tmpl) == 0 && Flag(sceHttpGetNonblock, tmpl) == 1);
+    Require(Flag(sceHttpGetAcceptEncodingGZIPEnabled, tmpl) == 1);
+    Require(sceHttpGetEpoll(tmpl, &eh, nullptr) == 0 && eh == epoll);
+    Require(sceHttpGetEpoll(tmpl, &eh, &argument) == 0 && eh == epoll && argument == &marker);
+
+    const int connection = sceHttpCreateConnectionWithURL(tmpl, "http://example.com/", 1);
+    Require(sceHttpRemoveRequestHeader(connection, "X-Template") == notFound);
+    Require(sceHttpRemoveRequestHeader(tmpl, "X-Template") == 0);
+    Require(Flag(sceHttpGetAutoRedirect, connection) == 0 && Flag(sceHttpTryGetNonblock, connection) == 1);
+    Require(Flag(sceHttpGetAcceptEncodingGZIPEnabled, connection) == 1);
+    Require(sceHttpGetEpoll(connection, &eh, &argument) == 0 && eh == epoll && argument == &marker);
+    Require(sceHttpSetNonblock(connection, 0) == 0 && sceHttpSetAutoRedirect(connection, 1) == 0);
+    Require(Flag(sceHttpGetNonblock, connection) == 0 && Flag(sceHttpGetNonblock, tmpl) == 1);
+    Require(Flag(sceHttpGetAutoRedirect, connection) == 1 && Flag(sceHttpGetAutoRedirect, tmpl) == 0);
+    const int request = sceHttpCreateRequestWithURL(connection, 0, "http://example.com/a", 0);
+    Require(Flag(sceHttpGetNonblock, request) == 0 && Flag(sceHttpGetAutoRedirect, request) == 1);
+    Require(sceHttpUnsetEpoll(request) == 0);
+    Require(sceHttpGetEpoll(request, &eh, &argument) == 0 && eh == nullptr && argument == nullptr);
+    Require(sceHttpGetEpoll(connection, &eh, &argument) == 0 && eh == epoll);
+    Require(sceHttpAbortRequestForce(request) == 0);
+    Require(sceHttpDeleteRequest(request) == 0);
+    Require(sceHttpGetAutoRedirect(request, &value) == invalidId);
+    Require(sceHttpGetEpoll(request, &eh, &argument) == invalidId);
+    const int plain = sceHttpCreateConnection(tmpl, "example.com", "http", 80, 1);
+    Require(Flag(sceHttpGetNonblock, plain) == 1);
+    Require(sceHttpDeleteConnection(plain) == 0 && sceHttpDeleteConnection(connection) == 0);
+    Require(sceHttpGetNonblock(connection, &value) == invalidId);
+    Require(sceHttpDeleteTemplate(tmpl) == 0);
+    Require(sceHttpGetAcceptEncodingGZIPEnabled(tmpl, &value) == invalidId);
+
+    Require(sceHttpSetDefaultAcceptEncodingGZIPEnabled(-1, 1) == invalidId);
+    Require(sceHttpSetDefaultAcceptEncodingGZIPEnabled(context, 1) == 0);
+    const int compressed = sceHttpCreateTemplate(context, "agent", 2, 1);
+    Require(Flag(sceHttpGetAcceptEncodingGZIPEnabled, compressed) == 1);
+    Require(Flag(sceHttpGetAcceptEncodingGZIPEnabled, early) == 0);
+    Require(sceHttpSetDefaultAcceptEncodingGZIPEnabled(context, 0) == 0);
+    Require(Flag(sceHttpGetAcceptEncodingGZIPEnabled, compressed) == 1);
+    Require(Flag(sceHttpGetAcceptEncodingGZIPEnabled, sceHttpCreateTemplate(context, "agent", 2, 1)) == 0);
+
+    Require(sceHttpSetHttp09Enabled(compressed, 1) == 0);
+    Require(sceHttpSetDelayBuildRequestEnabled(compressed, 1) == 0);
+    Require(sceHttpCacheRedirectedConnectionEnabled(compressed, 0) == 0);
+    Require(sceHttpSetCookieSendCallback(compressed, CookieSend, &marker) == 0);
+    Require(sceHttpsEnableOptionPrivate(compressed, 0x400) == 0);
+    Require(sceHttpsDisableOptionPrivate(compressed, 0x400) == 0);
+    Require(sceHttpSetProxy(compressed, 1, 1, nullptr, 8080) == invalidValue);
+    Require(sceHttpSetProxy(compressed, 1, 1, "proxy.example", 8080) == 0);
+
+    Require(sceHttpDestroyEpoll(context, epoll) == 0);
+    Require(sceHttpTerm_nid_postfix(context) == 0);
+    Require(sceHttpGetAutoRedirect(compressed, &value) == beforeInit);
+    Require(sceHttpGetMemoryPoolStats(context, &pool) == beforeInit);
+}
+
 int main() {
+    CheckSettings();
     int callbackCount = 0;
     const auto request = sceHttpCreateRequest2(1, "GET", "/", 0);
     Require(sceHttpSetRequestStatusCallback(request, RequestStatusCallback, &callbackCount) == 0);
