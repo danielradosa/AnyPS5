@@ -1341,7 +1341,9 @@ std::uint64_t SampledTextureBudget(const VkPhysicalDeviceMemoryProperties& memor
     if (reported == nullptr || !heap || reported->heapBudget[*heap] == 0) return TextureCacheBudget(memory);
     const auto budget = reported->heapBudget[*heap];
     const auto usage = reported->heapUsage[*heap];
-    const auto reserved = usage - std::min<std::uint64_t>(usage, textureBytes) + TextureCacheBudget(memory) + budget / 8u;
+    static const bool fullStorageReserve = std::getenv("APS5_SAMPLED_FULL_STORAGE_RESERVE") != nullptr;
+    const auto storageReserve = fullStorageReserve ? TextureCacheBudget(memory) : std::min(TextureCacheBudget(memory), TextureCacheShare(budget));
+    const auto reserved = usage - std::min<std::uint64_t>(usage, textureBytes) + storageReserve + budget / 8u;
     return std::max<std::uint64_t>(std::min<std::uint64_t>(2048ull << 20u, TextureCacheShare(budget)), budget > reserved ? budget - reserved : 0u);
 }
 
