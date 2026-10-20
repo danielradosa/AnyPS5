@@ -1,7 +1,75 @@
 #include <cstdint>
 #include <cstddef>
+#include <mutex>
+#include <stdexcept>
+#include <string>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+
+namespace {
+constexpr int COMPANION_HTTPD_ERROR_INVALID_PARAM = static_cast<int>(0x80E40004u);
+constexpr int COMPANION_HTTPD_ERROR_NOT_INITIALIZED = static_cast<int>(0x80E40006u);
+constexpr int COMPANION_HTTPD_ERROR_ALREADY_INITIALIZED = static_cast<int>(0x80E40007u);
+constexpr int COMPANION_HTTPD_ERROR_NO_EVENT = static_cast<int>(0x80E40008u);
+constexpr int COMPANION_HTTPD_ERROR_ALREADY_STARTED = static_cast<int>(0x80E4000Au);
+constexpr int COMPANION_HTTPD_ERROR_NOT_STARTED = static_cast<int>(0x80E4000Bu);
+constexpr int COMPANION_HTTPD_ERROR_USER_NOT_FOUND = static_cast<int>(0x80E4000Eu);
+
+struct CompanionHttpdHeader {
+    char* key;
+    char* value;
+    CompanionHttpdHeader* header;
+};
+
+struct CompanionHttpdRequest {
+    std::int32_t method;
+    char* url;
+    CompanionHttpdHeader* header;
+    char* body;
+    std::uint64_t bodySize;
+};
+
+struct CompanionHttpdResponse {
+    std::int32_t status;
+    CompanionHttpdHeader* header;
+    char* body;
+    std::uint64_t bodySize;
+};
+static_assert(sizeof(CompanionHttpdResponse) == 32);
+
+using CompanionHttpdRequestCallback = std::int32_t(APS5_VABI*)(std::int32_t, const CompanionHttpdRequest*, CompanionHttpdResponse*, void*);
+using CompanionHttpdRequestBodyReceptionCallback = std::int32_t(APS5_VABI*)(std::int32_t, std::int32_t, const CompanionHttpdRequest*, void*);
+
+template <typename Function>
+struct Registration {
+    Function function = nullptr;
+    void* param = nullptr;
+};
+
+std::mutex g_mutex;
+bool g_initialized = false;
+bool g_started = false;
+Registration<CompanionHttpdRequestCallback> g_request;
+Registration<CompanionHttpdRequestBodyReceptionCallback> g_bodyReception;
+
+template <typename Function>
+int Register(Registration<Function>& slot, Function function, void* param, const char* name) {
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return COMPANION_HTTPD_ERROR_NOT_INITIALIZED;
+    if (!function) return COMPANION_HTTPD_ERROR_INVALID_PARAM;
+    if (slot.function) throw std::logic_error(std::string(name) + ": a callback is already registered");
+    slot = {function, param};
+    return 0;
+}
+
+template <typename Function>
+int Unregister(Registration<Function>& slot) {
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return COMPANION_HTTPD_ERROR_NOT_INITIALIZED;
+    slot = {};
+    return 0;
+}
+}
 
 extern "C" {
 
@@ -15,14 +83,19 @@ int APS5_VABI sceCompanionHttpdGet2ndScreenStatus() {
     return 0;
 }
 
-int APS5_VABI sceCompanionHttpdGetEvent() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceCompanionHttpdGetEvent(void* pEvent) {
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return COMPANION_HTTPD_ERROR_NOT_INITIALIZED;
+    if (!pEvent) return COMPANION_HTTPD_ERROR_INVALID_PARAM;
+    return COMPANION_HTTPD_ERROR_NO_EVENT;
 }
 
-int APS5_VABI sceCompanionHttpdGetUserId() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceCompanionHttpdGetUserId(std::uint32_t addr, std::int32_t* userId) {
+    (void)addr;
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return COMPANION_HTTPD_ERROR_NOT_INITIALIZED;
+    if (!userId) return COMPANION_HTTPD_ERROR_INVALID_PARAM;
+    return COMPANION_HTTPD_ERROR_USER_NOT_FOUND;
 }
 
 int APS5_VABI sceCompanionHttpdInitialize() {
@@ -30,8 +103,11 @@ int APS5_VABI sceCompanionHttpdInitialize() {
     return 0;
 }
 
-int APS5_VABI sceCompanionHttpdInitialize2() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceCompanionHttpdInitialize2(const void* option) {
+    (void)option;
+    std::lock_guard lock(g_mutex);
+    if (g_initialized) return COMPANION_HTTPD_ERROR_ALREADY_INITIALIZED;
+    g_initialized = true;
     return 0;
 }
 
@@ -40,19 +116,16 @@ int APS5_VABI sceCompanionHttpdOptParamInitialize() {
     return 0;
 }
 
-int APS5_VABI sceCompanionHttpdRegisterRequestBodyReceptionCallback() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceCompanionHttpdRegisterRequestBodyReceptionCallback(CompanionHttpdRequestBodyReceptionCallback function, void* param) {
+    return Register(g_bodyReception, function, param, __func__);
 }
 
-int APS5_VABI sceCompanionHttpdRegisterRequestCallback() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceCompanionHttpdRegisterRequestCallback(CompanionHttpdRequestCallback function, void* param) {
+    return Register(g_request, function, param, __func__);
 }
 
-int APS5_VABI sceCompanionHttpdRegisterRequestCallback2() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceCompanionHttpdRegisterRequestCallback2(CompanionHttpdRequestCallback function, void* param) {
+    return Register(g_request, function, param, __func__);
 }
 
 int APS5_VABI sceCompanionHttpdSetBody() {
@@ -60,34 +133,44 @@ int APS5_VABI sceCompanionHttpdSetBody() {
     return 0;
 }
 
-int APS5_VABI sceCompanionHttpdSetStatus() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceCompanionHttpdSetStatus(std::int32_t status, CompanionHttpdResponse* response) {
+    if (!response) return COMPANION_HTTPD_ERROR_INVALID_PARAM;
+    response->status = status;
     return 0;
 }
 
 int APS5_VABI sceCompanionHttpdStart() {
-    NotImplemented_nid_no_patch(__func__);
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return COMPANION_HTTPD_ERROR_NOT_INITIALIZED;
+    if (g_started) return COMPANION_HTTPD_ERROR_ALREADY_STARTED;
+    g_started = true;
     return 0;
 }
 
 int APS5_VABI sceCompanionHttpdStop() {
-    NotImplemented_nid_no_patch(__func__);
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return COMPANION_HTTPD_ERROR_NOT_INITIALIZED;
+    if (!g_started) return COMPANION_HTTPD_ERROR_NOT_STARTED;
+    g_started = false;
     return 0;
 }
 
 int APS5_VABI sceCompanionHttpdTerminate() {
-    NotImplemented_nid_no_patch(__func__);
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return COMPANION_HTTPD_ERROR_NOT_INITIALIZED;
+    g_initialized = false;
+    g_started = false;
+    g_request = {};
+    g_bodyReception = {};
     return 0;
 }
 
 int APS5_VABI sceCompanionHttpdUnregisterRequestBodyReceptionCallback() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return Unregister(g_bodyReception);
 }
 
 int APS5_VABI sceCompanionHttpdUnregisterRequestCallback() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return Unregister(g_request);
 }
 
 }

@@ -1,0 +1,15 @@
+add_library(libSceCompanionHttpd SHARED EXCLUDE_FROM_ALL Export.cpp)
+target_include_directories(libSceCompanionHttpd PRIVATE ${LIBS_INCLUDE_DIR})
+configure_windows_unwind(libSceCompanionHttpd)
+
+if(BUILD_TESTING)
+    add_test_executable(guest_companion_httpd_tests ${LIBS_INCLUDE_DIR}/tests/GuestCompanionHttpd.cpp)
+    target_include_directories(guest_companion_httpd_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_companion_httpd_tests PRIVATE libSceCompanionHttpd)
+    configure_windows_unwind(guest_companion_httpd_tests)
+    add_test(NAME guest_companion_httpd COMMAND guest_companion_httpd_tests)
+    if(WIN32)
+        set_tests_properties(guest_companion_httpd PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceCompanionHttpd>")
+    endif()
+endif()
