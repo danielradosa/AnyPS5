@@ -164,24 +164,6 @@ int APS5_VABI scePthreadCondattrGetclock(const PthreadCondattr* attr, KernelCloc
     return 0;
 }
 
-int APS5_VABI scePthreadCondattrSetpshared(PthreadCondattr* attr, int pshared) {
-    if (!attr || !*attr)
-        throw std::invalid_argument("Condition attributes are not initialized");
-    if (pshared != 0 && pshared != 1)
-        return SCE_KERNEL_ERROR_EINVAL;
-    (*attr)->_pshared = pshared;
-    return 0;
-}
-
-int APS5_VABI scePthreadCondattrGetpshared(const PthreadCondattr* attr, int* pshared) {
-    if (!attr || !*attr)
-        throw std::invalid_argument("Condition attributes are not initialized");
-    if (!pshared)
-        throw std::invalid_argument("Condition attribute pshared pointer is null");
-    *pshared = (*attr)->_pshared;
-    return 0;
-}
-
 int APS5_VABI scePthreadCondInit(PthreadCond* cond, const PthreadCondattr* attr, const char*) {
     if (!cond)
         throw std::invalid_argument("Condition variable pointer is null");
