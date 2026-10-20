@@ -16,6 +16,11 @@ int APS5_VABI sceNpSessionSignalingGetMemoryInfo(void* memInfo);
 int APS5_VABI sceNpSessionSignalingGetConnectionStatistics(void* stats);
 int APS5_VABI sceNpSessionSignalingTerminate(void);
 int APS5_VABI sceNpSessionSignalingGetGroupFromSessionId(std::uint32_t contextId, const char* sessionId, std::uint32_t* groupId);
+std::int32_t APS5_VABI sceNpSessionSignalingGetGroupInfo(std::int32_t contextId, std::int32_t groupId, void* info);
+std::int32_t APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress(std::int32_t contextId, std::uint32_t address, std::uint16_t port, std::int32_t* connectionId);
+std::int32_t APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress2(std::int32_t contextId, std::int32_t groupId, std::uint32_t address, std::uint16_t port, std::int32_t* connectionId);
+std::int32_t APS5_VABI sceNpSessionSignalingGetConnectionFromPeerAddress(std::int32_t contextId, const void* peerAddress, std::int32_t* connectionId);
+std::int32_t APS5_VABI sceNpSessionSignalingGetConnectionFromPeerAddress2(std::int32_t contextId, std::int32_t groupId, const void* peerAddress, std::int32_t* connectionId);
 }
 
 namespace {
@@ -67,6 +72,7 @@ int main() {
     std::uint32_t groupId = 0xa5a5a5a5u;
     Require(sceNpSessionSignalingGetGroupFromSessionId(1, "00000000-0000-0000-0000-000000000000", &groupId) == NotInitialized,
         "group lookup before initialize");
+    Require(sceNpSessionSignalingGetGroupInfo(1, 1, nullptr) == NotInitialized, "group info before initialize");
 
     Require(sceNpSessionSignalingInitialize(nullptr) == InvalidArgument, "null initialize param");
     const std::size_t poolSize = 256 * 1024;
@@ -130,6 +136,24 @@ int main() {
     Require(sceNpSessionSignalingGetGroupFromSessionId(contextId + 1, sessionId, &groupId) == ContextNotFound, "group lookup in unknown context");
     Require(sceNpSessionSignalingGetGroupFromSessionId(contextId, sessionId, &groupId) == GroupNotFound, "group lookup without an activated session");
     Require(groupId == 0xa5a5a5a5u, "failed group lookup wrote a group id");
+
+    Require(sceNpSessionSignalingGetGroupInfo(netContextId, 1, nullptr) == InvalidArgument, "null group info");
+    Require(sceNpSessionSignalingGetGroupInfo(netContextId, 1, info) == GroupNotFound, "group info without a session");
+    Require(std::memcmp(info, untouched, sizeof(info)) == 0, "failed group query modified the info");
+    const unsigned char peer[40] = {};
+    std::int32_t found = 0x5a5a5a5a;
+    Require(sceNpSessionSignalingGetConnectionFromNetAddress(netContextId, 0x0100007fu, 3658, nullptr) == InvalidArgument, "null connection id from net address");
+    Require(sceNpSessionSignalingGetConnectionFromNetAddress(netContextId, 0x0100007fu, 3658, &found) == ConnectionNotFound, "connection from net address without a session");
+    Require(sceNpSessionSignalingGetConnectionFromNetAddress2(netContextId, 1, 0x0100007fu, 3658, nullptr) == InvalidArgument, "null connection id from group net address");
+    Require(sceNpSessionSignalingGetConnectionFromNetAddress2(netContextId, 1, 0x0100007fu, 3658, &found) == GroupNotFound, "connection from group net address without a session");
+    Require(sceNpSessionSignalingGetConnectionFromPeerAddress(netContextId, nullptr, &found) == InvalidArgument, "null peer address");
+    Require(sceNpSessionSignalingGetConnectionFromPeerAddress(netContextId, peer, nullptr) == InvalidArgument, "null connection id from peer address");
+    Require(sceNpSessionSignalingGetConnectionFromPeerAddress(netContextId, peer, &found) == ConnectionNotFound, "connection from peer address without a session");
+    Require(sceNpSessionSignalingGetConnectionFromPeerAddress2(netContextId, 1, nullptr, &found) == InvalidArgument, "null group peer address");
+    Require(sceNpSessionSignalingGetConnectionFromPeerAddress2(netContextId, 1, peer, nullptr) == InvalidArgument, "null connection id from group peer address");
+    Require(sceNpSessionSignalingGetConnectionFromPeerAddress2(netContextId, 1, peer, &found) == GroupNotFound, "connection from group peer address without a session");
+    Require(sceNpSessionSignalingGetConnectionFromPeerAddress2(netContextId + 1, 1, peer, nullptr) == ContextNotFound, "a peer lookup in an unknown context");
+    Require(found == 0x5a5a5a5a, "a failed lookup wrote an id");
     Require(sceNpSessionSignalingDestroyContext(contextId) == 0, "context destruction failed");
     Require(sceNpSessionSignalingGetGroupFromSessionId(contextId, sessionId, &groupId) == ContextNotFound, "group lookup in destroyed context");
     Require(sceNpSessionSignalingGetConnectionStatus(contextId, 1, &status, nullptr, nullptr) == ContextNotFound, "status of destroyed context");

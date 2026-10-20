@@ -45,6 +45,13 @@ struct NpSessionSignalingConnectionStatistics {
 };
 static_assert(sizeof(NpSessionSignalingConnectionStatistics) == 0x10);
 
+static int CheckLookup(int32_t contextId, bool argumentsValid) {
+    if (!g_initialized) return SCE_NP_SESSION_SIGNALING_ERROR_NOT_INITIALIZED;
+    if (!g_contexts.contains(static_cast<uint32_t>(contextId))) return SCE_NP_SESSION_SIGNALING_ERROR_CTX_NOT_FOUND;
+    if (!argumentsValid) return SCE_NP_SESSION_SIGNALING_ERROR_INVALID_ARGUMENT;
+    return 0;
+}
+
 extern "C" {
 
 int APS5_VABI sceNpSessionSignalingInitialize(const NpSessionSignalingInitParam* param) {
@@ -92,8 +99,11 @@ int APS5_VABI sceNpSessionSignalingActivateUser(void) {
     return SCE_NP_SESSION_SIGNALING_ERROR_UNAVAILABLE;
 }
 
-int APS5_VABI sceNpSessionSignalingGetConnectionFromPeerAddress2(void) {
-    return SCE_NP_SESSION_SIGNALING_ERROR_UNAVAILABLE;
+int APS5_VABI sceNpSessionSignalingGetConnectionFromPeerAddress2(int32_t context_id, int32_t group_id, const void* peer_address, int32_t* connection_id) {
+    (void)group_id;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (const int rc = CheckLookup(context_id, peer_address && connection_id); rc != 0) return rc;
+    return SCE_NP_SESSION_SIGNALING_ERROR_GRP_NOT_FOUND;
 }
 
 int APS5_VABI sceNpSessionSignalingTerminate(void) {
@@ -145,9 +155,10 @@ int APS5_VABI sceNpSessionSignalingGetConnectionStatistics(NpSessionSignalingCon
     return 0;
 }
 
-int APS5_VABI sceNpSessionSignalingGetConnectionFromPeerAddress(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpSessionSignalingGetConnectionFromPeerAddress(int32_t context_id, const void* peer_address, int32_t* connection_id) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (const int rc = CheckLookup(context_id, peer_address && connection_id); rc != 0) return rc;
+    return SCE_NP_SESSION_SIGNALING_ERROR_CONN_NOT_FOUND;
 }
 
 int APS5_VABI sceNpSessionSignalingGetGroupFromSessionId(uint32_t contextId, const char* sessionId, uint32_t* groupId) {
@@ -158,14 +169,20 @@ int APS5_VABI sceNpSessionSignalingGetGroupFromSessionId(uint32_t contextId, con
     return SCE_NP_SESSION_SIGNALING_ERROR_GRP_NOT_FOUND;
 }
 
-int APS5_VABI sceNpSessionSignalingGetGroupInfo() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpSessionSignalingGetGroupInfo(int32_t context_id, int32_t group_id, void* info) {
+    (void)group_id;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (const int rc = CheckLookup(context_id, info != nullptr); rc != 0) return rc;
+    return SCE_NP_SESSION_SIGNALING_ERROR_GRP_NOT_FOUND;
 }
 
-int APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress2() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress2(int32_t context_id, int32_t group_id, uint32_t address, uint16_t port, int32_t* connection_id) {
+    (void)group_id;
+    (void)address;
+    (void)port;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (const int rc = CheckLookup(context_id, connection_id != nullptr); rc != 0) return rc;
+    return SCE_NP_SESSION_SIGNALING_ERROR_GRP_NOT_FOUND;
 }
 
 int APS5_VABI sceNpSessionSignalingCreateJoinActivate() {
@@ -173,9 +190,12 @@ int APS5_VABI sceNpSessionSignalingCreateJoinActivate() {
     return 0;
 }
 
-int APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress(int32_t context_id, uint32_t address, uint16_t port, int32_t* connection_id) {
+    (void)address;
+    (void)port;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (const int rc = CheckLookup(context_id, connection_id != nullptr); rc != 0) return rc;
+    return SCE_NP_SESSION_SIGNALING_ERROR_CONN_NOT_FOUND;
 }
 
 int APS5_VABI sceNpSessionSignalingGetCustomProperty() {
