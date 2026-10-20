@@ -8,6 +8,7 @@
 extern "C" {
 int APS5_VABI sceAppInstUtilInitialize(void);
 int APS5_VABI sceAppInstUtilTerminate(void);
+int APS5_VABI sceAppInstUtilAppIsInInstalling(std::int32_t* installing);
 int APS5_VABI sceAppInstUtilAppExists(const char* titleId, std::int32_t* exists);
 }
 
@@ -47,6 +48,9 @@ int main() {
     std::int32_t exists = 0;
     Require(RejectsArgument([&] { sceAppInstUtilAppExists(nullptr, &exists); }), "a null title id was accepted");
     Require(RejectsArgument([] { sceAppInstUtilAppExists("PPSA00000", nullptr); }), "a null output was accepted");
+    std::int32_t installing = 7;
+    Require(sceAppInstUtilAppIsInInstalling(&installing) == 0 && installing == 0, "an install pass was reported");
+    Require(RejectsArgument([] { sceAppInstUtilAppIsInInstalling(nullptr); }), "a null install state was accepted");
     Require(sceAppInstUtilTerminate() == 0, "termination failed");
     Require(Exists("PPSA00000") == 1, "the running title is not installed after termination");
     std::puts("libSceAppInstUtil tests passed");
