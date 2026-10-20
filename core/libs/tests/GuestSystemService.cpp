@@ -1,12 +1,17 @@
 #include "SceTypes.hpp"
 #include "prx/libSceSystemService/SystemService.hpp"
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <stdexcept>
 
 extern "C" int APS5_VABI sceSystemServiceGetHdrToneMapLuminance(SystemServiceHdrToneMapLuminance* luminance);
+extern "C" int APS5_VABI sceSystemServiceGetAppId(const char* titleId);
+extern "C" int APS5_VABI sceSystemServiceGetAppTitleId(int appId, char* titleId);
+extern "C" int APS5_VABI sceSystemServiceGetMainAppTitleId(char* titleId);
+extern "C" int APS5_VABI sceLncUtilGetAppTitleId(std::uint32_t appId, char* titleId);
 extern "C" int APS5_VABI sceSystemServiceParamGetString(int paramId, char* buf, std::size_t bufSize);
 extern "C" int APS5_VABI sceSystemServiceLaunchApp(const char* titleId, const char* const* arguments, const void* param);
 extern "C" int APS5_VABI sceSystemServiceAddLocalProcessForPsmKit(const char* path, const char* const* arguments, const void* param);
@@ -139,4 +144,18 @@ int main() {
     SystemServiceEvent event;
     event.event_type = 7;
     Require(sceSystemServiceReceiveEvent(&event) == SYSTEM_SERVICE_ERROR_NO_EVENT);
+
+    Require(sceSystemServiceGetAppId(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    Require(sceSystemServiceGetAppTitleId(SYSTEM_SERVICE_RUNNING_APP_ID, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    Require(sceSystemServiceGetAppTitleId(SYSTEM_SERVICE_RUNNING_APP_ID + 1, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    Require(sceSystemServiceGetMainAppTitleId(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
+    char titleId[16];
+    std::memset(titleId, 'x', sizeof(titleId));
+    for (int appId : {SYSTEM_SERVICE_RUNNING_APP_ID + 1, 0, -1}) {
+        Require(sceSystemServiceGetAppTitleId(appId, titleId) == SYSTEM_SERVICE_ERROR_NO_APP_INFO);
+    }
+    Require(Throws([&] { return sceLncUtilGetAppTitleId(SYSTEM_SERVICE_RUNNING_APP_ID + 1, titleId); }));
+    Require(Throws([&] { return sceLncUtilGetAppTitleId(0xFFFFFFFFu, titleId); }));
+    Require(Throws([] { return sceLncUtilGetAppTitleId(SYSTEM_SERVICE_RUNNING_APP_ID, nullptr); }));
+    for (char byte : titleId) Require(byte == 'x');
 }

@@ -172,11 +172,6 @@ int APS5_VABI sceLncUtilGetAppStatusListForShellUIReboot() {
     return 0;
 }
 
-int APS5_VABI sceLncUtilGetAppTitleId() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceLncUtilGetAppType() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -293,11 +288,6 @@ int APS5_VABI sceLncUtilIsSpeculativeLaunch() {
 }
 
 int APS5_VABI sceLncUtilKickCoredumpOnlyProcMem() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceLncUtilKillApp() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -1777,11 +1767,6 @@ int APS5_VABI sceSystemServiceGetAppFocusedAppStatus() {
     return 0;
 }
 
-int APS5_VABI sceSystemServiceGetAppId() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceSystemServiceGetAppIdListOfBigApp() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -1793,11 +1778,6 @@ int APS5_VABI sceSystemServiceGetAppLaunchedUser() {
 }
 
 int APS5_VABI sceSystemServiceGetAppStatus() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSystemServiceGetAppTitleId() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -1823,11 +1803,6 @@ int APS5_VABI sceSystemServiceGetGpuLoadEmulationMode() {
 }
 
 int APS5_VABI sceSystemServiceGetLocalProcessStatusList() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSystemServiceGetMainAppTitleId() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

@@ -97,6 +97,16 @@ if(BUILD_TESTING)
         set_tests_properties(guest_system_service_launch_app PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    add_test_executable(guest_system_service_title_id_tests ${LIBS_INCLUDE_DIR}/tests/GuestSystemServiceTitleId.cpp)
+    target_include_directories(guest_system_service_title_id_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_system_service_title_id_tests PRIVATE libSceSystemService libc)
+    configure_windows_unwind(guest_system_service_title_id_tests)
+    add_test(NAME guest_system_service_title_id COMMAND guest_system_service_title_id_tests
+        WORKING_DIRECTORY ${systemServiceLaunchAppRun})
+    if(WIN32)
+        set_tests_properties(guest_system_service_title_id PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test_executable(guest_system_service_time_zone_tests ${LIBS_INCLUDE_DIR}/tests/GuestSystemServiceTimeZone.cpp)
     target_include_directories(guest_system_service_time_zone_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_system_service_time_zone_tests PRIVATE libSceSystemService libc)
@@ -113,10 +123,12 @@ if(BUILD_TESTING)
     add_test(NAME guest_system_kill_app_parameters COMMAND guest_system_kill_app_tests)
     add_test(NAME guest_system_kill_app COMMAND guest_system_kill_app_tests --kill)
     add_test(NAME guest_system_kill_app_status COMMAND guest_system_kill_app_tests --kill)
-    set_tests_properties(guest_system_kill_app PROPERTIES
+    add_test(NAME guest_lnc_util_kill_app COMMAND guest_system_kill_app_tests --lnc-kill)
+    add_test(NAME guest_lnc_util_kill_app_status COMMAND guest_system_kill_app_tests --lnc-kill)
+    set_tests_properties(guest_system_kill_app guest_lnc_util_kill_app PROPERTIES
         PASS_REGULAR_EXPRESSION "Guest shutdown and atexit completed")
     if(WIN32)
-        set_tests_properties(guest_system_kill_app guest_system_kill_app_status guest_system_kill_app_parameters PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(guest_system_kill_app guest_system_kill_app_status guest_system_kill_app_parameters guest_lnc_util_kill_app guest_lnc_util_kill_app_status PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 endif()

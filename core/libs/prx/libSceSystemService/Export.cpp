@@ -232,6 +232,18 @@ HostLaunch PrepareLaunch(const char*, const char* const*) {
 void StartHostExecutable(HostLaunch&) {}
 #endif
 
+constexpr std::size_t TitleIdFieldBytes = 10;
+
+std::string RunningTitleId() {
+    const auto running = GetAppTitleId_nid_postfix();
+    return std::string(running.value).substr(0, TitleIdFieldBytes - 1);
+}
+
+void WriteRunningTitleId(char* titleId) {
+    const auto running = RunningTitleId();
+    std::memcpy(titleId, running.c_str(), running.size() + 1);
+}
+
 }
 
 extern "C" {
@@ -426,6 +438,43 @@ int APS5_VABI sceSystemServiceKillApp(int appId, int how, int reason, int coreDu
  if (appId != SYSTEM_SERVICE_RUNNING_APP_ID) return SYSTEM_SERVICE_ERROR_NO_APP_INFO;
  if (how != -1 || reason != 0 || coreDump != 0) {
   throw std::runtime_error("sceSystemServiceKillApp: arguments other than -1, 0 and 0 for the running title");
+ }
+ LibcExit_nid_no_patch(0);
+}
+
+int APS5_VABI sceSystemServiceGetAppId(const char* titleId) {
+ if (titleId == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
+ if (titleId != RunningTitleId()) {
+  throw std::runtime_error(std::string("sceSystemServiceGetAppId: title ") + titleId + " is not the running title");
+ }
+ return SYSTEM_SERVICE_RUNNING_APP_ID;
+}
+
+int APS5_VABI sceSystemServiceGetAppTitleId(int appId, char* titleId) {
+ if (titleId == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
+ if (appId != SYSTEM_SERVICE_RUNNING_APP_ID) return SYSTEM_SERVICE_ERROR_NO_APP_INFO;
+ WriteRunningTitleId(titleId);
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceGetMainAppTitleId(char* titleId) {
+ if (titleId == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
+ WriteRunningTitleId(titleId);
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceLncUtilGetAppTitleId(std::uint32_t appId, char* titleId) {
+ if (appId != static_cast<std::uint32_t>(SYSTEM_SERVICE_RUNNING_APP_ID)) {
+  throw std::runtime_error("sceLncUtilGetAppTitleId: app ID " + std::to_string(appId) + " is not the running title's");
+ }
+ if (titleId == nullptr) throw std::runtime_error("sceLncUtilGetAppTitleId: null title ID buffer");
+ WriteRunningTitleId(titleId);
+ return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceLncUtilKillApp(std::uint32_t appId) {
+ if (appId != static_cast<std::uint32_t>(SYSTEM_SERVICE_RUNNING_APP_ID)) {
+  throw std::runtime_error("sceLncUtilKillApp: app ID " + std::to_string(appId) + " is not the running title's");
  }
  LibcExit_nid_no_patch(0);
 }
