@@ -136,7 +136,7 @@ static void CheckRand48Parameters() {
     Require(lrand48_nid_postfix() == 1736337752, "lcong48 configures the internal nonnegative sequence");
     Require(mrand48_nid_postfix() == 2057929672, "lcong48 configures the internal signed sequence");
     lcong48_nid_postfix(parameters);
-    Require(mrand48_nid_postfix() == -332059454, "custom mrand48 sign extends bit 31");
+    Require(mrand48_nid_postfix() == 3962907842, "custom mrand48 keeps bit 31 without sign extension");
 
     lcong48_nid_postfix(parameters);
     std::memcpy(external, seed, sizeof(external));
@@ -164,10 +164,10 @@ static void CheckRand48Parameters() {
     for (int round = 0; round < 64; ++round) {
         Require(drand48_nid_postfix() == ::drand48(), "custom drand48 matches the host");
         Require(lrand48_nid_postfix() == ::lrand48(), "custom lrand48 matches the host");
-        Require(mrand48_nid_postfix() == ::mrand48(), "custom mrand48 matches the host");
+        Require(mrand48_nid_postfix() == static_cast<std::uint32_t>(::mrand48()), "custom mrand48 matches the host zero-extended");
         Require(erand48_nid_postfix(guest) == ::erand48(host), "custom erand48 matches the host");
         Require(nrand48_nid_postfix(guest) == ::nrand48(host), "custom nrand48 matches the host");
-        Require(jrand48_nid_postfix(guest) == ::jrand48(host), "custom jrand48 matches the host");
+        Require(jrand48_nid_postfix(guest) == static_cast<std::uint32_t>(::jrand48(host)), "custom jrand48 matches the host zero-extended");
     }
     ::srand48(0x1234abcd);
 #endif

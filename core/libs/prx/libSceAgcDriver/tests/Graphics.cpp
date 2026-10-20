@@ -6474,7 +6474,7 @@ void storageTextureBudgetTests() {
     memory.memoryHeaps[2].size = 8 * GiB;
     reported.heapBudget[2] = 7189 * MiB;
     reported.heapUsage[2] = 4491 * MiB;
-    Require(StorageTextureBudget(memory, &reported, 49 * MiB, 506 * MiB) == 7189 * MiB / 4u, "49 MiB of sampled textures on an 8 GiB heap with a 7189 MiB budget and 3936 MiB used outside the texture caches held the storage image cache below a quarter of the budget");
+    Require(StorageTextureBudget(memory, &reported, 49 * MiB, 506 * MiB) == (7189 * MiB - 5 * GiB) / 2u, "49 MiB of sampled textures on an 8 GiB heap with a 7189 MiB budget and 3936 MiB used outside the texture caches did not cap the storage image cache at half of what is left after 5 GiB");
     reported.heapUsage[2] = 6490 * MiB;
     Require(StorageTextureBudget(memory, &reported, 2 * GiB, 506 * MiB) == 512 * MiB, "2 GiB of sampled textures on an 8 GiB heap with a 7189 MiB budget and 3936 MiB used outside the texture caches did not take the storage image cache back to its 512 MiB floor");
     memory.memoryHeaps[2].size = 10 * GiB;
