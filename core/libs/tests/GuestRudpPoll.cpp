@@ -1,6 +1,7 @@
 #include "SceTypes.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -22,6 +23,7 @@ int APS5_VABI sceRudpPollCreate(std::uint32_t);
 int APS5_VABI sceRudpPollControl(int, int, int, std::uint16_t);
 int APS5_VABI sceRudpPollWait(int, GuestRudpPollEvent*, std::uint32_t, std::uint64_t);
 int APS5_VABI sceRudpPollDestroy(int);
+int APS5_VABI sceRudpPollCancel(int);
 }
 
 static void Require(bool value) {
@@ -36,6 +38,7 @@ int main() {
     constexpr int invalidArgument = static_cast<int>(0x80770004u);
     constexpr int invalidPoll = static_cast<int>(0x8077001Fu);
     constexpr int tooManyContexts = static_cast<int>(0x80770020u);
+    constexpr int cancelled = static_cast<int>(0x80770014u);
     constexpr int add = 1;
     constexpr int modify = 2;
     constexpr int remove = 3;
@@ -50,6 +53,7 @@ int main() {
     Require(sceRudpPollControl(1, add, 0, read) == notInitialized);
     Require(sceRudpPollWait(1, events.data(), eventCount, 0) == notInitialized);
     Require(sceRudpPollDestroy(1) == notInitialized);
+    Require(sceRudpPollCancel(1) == notInitialized);
     Require(sceRudpInit_nid_postfix(pool.data(), static_cast<int>(pool.size())) == 0);
 
     Require(sceRudpPollCreate(0) == invalidArgument);
@@ -90,6 +94,25 @@ int main() {
     const auto start = std::chrono::steady_clock::now();
     Require(sceRudpPollWait(poll, events.data(), eventCount, 20000) == 0);
     Require(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(20));
+
+    Require(sceRudpPollCancel(-1) == invalidArgument);
+    Require(sceRudpPollCancel(12345) == invalidPoll);
+    Require(sceRudpPollCancel(poll) == 0);
+    Require(sceRudpPollWait(poll, events.data(), eventCount, 1000) == 0);
+    std::atomic<bool> cancelDone{false};
+    int cancelResult = 0;
+    std::thread cancelWaiter([&] {
+        cancelResult = sceRudpPollWait(poll, events.data(), eventCount, forever);
+        cancelDone = true;
+    });
+    while (!cancelDone) {
+        Require(sceRudpPollCancel(poll) == 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    cancelWaiter.join();
+    Require(cancelResult == cancelled);
+    Require(sceRudpPollWait(other, events.data(), eventCount, 1000) == 0);
+    Require(sceRudpPollWait(poll, events.data(), eventCount, 1000) == 0);
 
     Require(sceRudpTerminate(second) == 0);
     Require(sceRudpPollControl(poll, add, first, read) == 0);

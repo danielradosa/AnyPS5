@@ -25,6 +25,7 @@ constexpr int RUDP_ERROR_MEMORY = static_cast<int>(0x80770007u);
 constexpr int RUDP_ERROR_CONN_RESET = static_cast<int>(0x80770009u);
 constexpr int RUDP_ERROR_CONN_REFUSED = static_cast<int>(0x8077000Au);
 constexpr int RUDP_ERROR_NOT_ACCEPTABLE = static_cast<int>(0x80770011u);
+constexpr int RUDP_ERROR_CANCELLED = static_cast<int>(0x80770014u);
 constexpr int RUDP_ERROR_INVALID_SOCKET = static_cast<int>(0x80770019u);
 constexpr int RUDP_ERROR_INVALID_POLL_ID = static_cast<int>(0x8077001Fu);
 constexpr int RUDP_ERROR_TOO_MANY_CONTEXTS = static_cast<int>(0x80770020u);
@@ -64,10 +65,12 @@ GuestRudpEventHandler g_handler = nullptr;
 void* g_handler_arg = nullptr;
 std::uint64_t g_received_udp_bytes = 0;
 std::uint32_t g_received_udp_packets = 0;
+uint16_t g_max_segment_size = RUDP_MAX_SEGMENT_SIZE;
 
 struct RudpPoll {
     uint32_t capacity;
     std::map<int, uint16_t> entries;
+    std::uint64_t cancels = 0;
 };
 
 struct RudpPollEvent {
@@ -399,7 +402,7 @@ int APS5_VABI sceRudpGetMaxSegmentSize(uint16_t* size) {
     if (size == nullptr) {
         return RUDP_ERROR_INVALID_ARGUMENT;
     }
-    *size = RUDP_MAX_SEGMENT_SIZE;
+    *size = g_max_segment_size;
     return 0;
 }
 
@@ -468,13 +471,19 @@ int APS5_VABI sceRudpPollWait(int pollId, RudpPollEvent* events, uint32_t eventL
     if (g_polls.count(pollId) == 0) {
         return RUDP_ERROR_INVALID_POLL_ID;
     }
-    const auto closed = [pollId] { return !g_inited || g_polls.count(pollId) == 0; };
+    const std::uint64_t cancels = g_polls[pollId].cancels;
+    const auto woken = [pollId, cancels] {
+        if (!g_inited) return true;
+        const auto poll = g_polls.find(pollId);
+        return poll == g_polls.end() || poll->second.cancels != cancels;
+    };
     if (timeout > RUDP_POLL_WAIT_MAX_USEC) {
-        g_polls_changed.wait(lk, closed);
-    } else if (!g_polls_changed.wait_for(lk, std::chrono::microseconds(timeout), closed)) {
+        g_polls_changed.wait(lk, woken);
+    } else if (!g_polls_changed.wait_for(lk, std::chrono::microseconds(timeout), woken)) {
         return 0;
     }
-    return g_inited ? RUDP_ERROR_INVALID_POLL_ID : RUDP_ERROR_NOT_INITIALIZED;
+    if (!g_inited) return RUDP_ERROR_NOT_INITIALIZED;
+    return g_polls.count(pollId) == 0 ? RUDP_ERROR_INVALID_POLL_ID : RUDP_ERROR_CANCELLED;
 }
 
 int APS5_VABI sceRudpPollDestroy(int pollId) {
@@ -512,13 +521,32 @@ int APS5_VABI sceRudpListen() {
     return 0;
 }
 
-int APS5_VABI sceRudpPollCancel() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceRudpPollCancel(int pollId) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (pollId < 0) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    const auto poll = g_polls.find(pollId);
+    if (poll == g_polls.end()) {
+        return RUDP_ERROR_INVALID_POLL_ID;
+    }
+    ++poll->second.cancels;
+    g_polls_changed.notify_all();
     return 0;
 }
 
-int APS5_VABI sceRudpSetMaxSegmentSize() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceRudpSetMaxSegmentSize(uint16_t mss) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (!g_ctx.empty()) {
+        return RUDP_ERROR_NOT_ACCEPTABLE;
+    }
+    g_max_segment_size = mss;
     return 0;
 }
 
