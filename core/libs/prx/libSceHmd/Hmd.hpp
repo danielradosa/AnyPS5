@@ -42,12 +42,28 @@ struct DeviceInformation {
     std::uint8_t reserved1[7];
 };
 
+struct FieldOfView {
+    float tanOut;
+    float tanIn;
+    float tanTop;
+    float tanBottom;
+};
+
+struct EyeOffset {
+    float offsetX;
+    float offsetY;
+    float offsetZ;
+    std::uint8_t reserved[20];
+};
+
 static_assert(sizeof(InitializeParam) == 16);
 static_assert(sizeof(DeviceInformation) == 32);
 static_assert(offsetof(DeviceInformation, userId) == 4);
 static_assert(offsetof(DeviceInformation, panelWidth) == 12);
 static_assert(offsetof(DeviceInformation, latency90Hz) == 20);
 static_assert(offsetof(DeviceInformation, hmuMount) == 24);
+static_assert(sizeof(FieldOfView) == 16);
+static_assert(sizeof(EyeOffset) == 32);
 
 }
 
@@ -63,6 +79,20 @@ std::int32_t APS5_VABI sceHmdGetDeviceInformationByHandle(std::int32_t handle,
                                                         Hmd::DeviceInformation* info);
 std::int32_t APS5_VABI sceHmdInternalGetDeviceStatus(Hmd::DeviceStatus* status);
 std::int32_t APS5_VABI sceHmdInternalMmapIsConnect();
+std::int32_t APS5_VABI sceHmdGet2DEyeOffset(std::int32_t handle, Hmd::EyeOffset* leftOffset,
+                                          Hmd::EyeOffset* rightOffset);
+std::int32_t APS5_VABI sceHmdGetFieldOfView(std::int32_t handle, Hmd::FieldOfView* fieldOfView);
+std::int32_t APS5_VABI sceHmdGetInertialSensorData(std::int32_t handle, void* data, std::int32_t unknown);
+std::int32_t APS5_VABI sceHmdGetAssyError(void* data);
+std::uint32_t APS5_VABI sceHmdReprojectionQueryGarlicBuffAlign();
+std::size_t APS5_VABI sceHmdReprojectionQueryGarlicBuffSize();
+std::uint32_t APS5_VABI sceHmdReprojectionQueryOnionBuffAlign();
+std::size_t APS5_VABI sceHmdReprojectionQueryOnionBuffSize();
+std::int32_t APS5_VABI sceHmdDistortionGetWorkMemoryAlign();
+std::int32_t APS5_VABI sceHmdDistortionGetWorkMemorySize();
+std::int32_t APS5_VABI sceHmdGetDistortionWorkMemoryAlign();
+std::int32_t APS5_VABI sceHmdGetDistortionWorkMemorySize();
+std::int32_t APS5_VABI sceHmdDistortionGetCompoundEyeCorrectionCommand();
 }
 
 #endif
