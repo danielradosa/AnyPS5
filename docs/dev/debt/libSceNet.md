@@ -2,7 +2,7 @@
 
 ### Silent stubs
 
-- [sceNetShowRoute, sceNetShowRoute6, sceNetShowPolicy](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - return success without printing anything: the `()` signatures and the success return follow [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/network/net.cpp), which stubs them the same way. A route report would follow FreeBSD `netstat -rn` as `sceNetShowIfconfig` follows `ifconfig`, but libSceNet does not read the host routing table, and nothing here models a network policy. What the console prints and where is unverified
+- [sceNetShowRoute, sceNetShowRoute6, sceNetShowPolicy, sceNetShowNetstatEx](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - return success without printing anything: the `()` signatures and the success return follow [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/network/net.cpp), which stubs them the same way. A route report would follow FreeBSD `netstat -rn` as `sceNetShowIfconfig` follows `ifconfig`, but libSceNet does not read the host routing table, nothing here models a network policy, and `sceNetShowNetstatEx` does not print the `sceNetShowNetstat` report. What the console prints and where is unverified
 
 ### Unknown function info
 
@@ -60,7 +60,6 @@
 - [sceNetShowIfconfigForBuffer](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetShowRouteForBuffer](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetShowNetstatForBuffer](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
-- [sceNetShowNetstatEx](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetShowNetstatExForBuffer](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetInetNtopWithScopeId](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
 - [sceNetInetPtonWithScopeId](../../../core/libs/prx/libSceNet/Export.cpp) (libSceNet) - unknown signature
