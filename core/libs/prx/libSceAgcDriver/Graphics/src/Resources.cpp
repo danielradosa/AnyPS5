@@ -21,18 +21,7 @@ namespace AgcDriver::Graphics {
 namespace {
 
 VkDeviceMemory allocateMemory(const Context& context, BufferPool& pool, const VkMemoryAllocateInfo& allocation, const char* operation, std::optional<std::uint32_t> hostType = std::nullopt, std::uint32_t* allocatedType = nullptr) {
-    try {
-        return pool.AllocateMemory(allocation, operation, hostType, allocatedType);
-    } catch (const std::runtime_error& error) {
-        const auto heap = context.memory.memoryTypes[allocation.memoryTypeIndex].heapIndex;
-        VkPhysicalDeviceMemoryBudgetPropertiesEXT reported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-        VkPhysicalDeviceMemoryProperties2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
-        queried.pNext = &reported;
-        if (context.memoryProperties2 != nullptr && context.physical != VK_NULL_HANDLE) context.memoryProperties2(context.physical, &queried);
-        char what[160];
-        std::snprintf(what, sizeof(what), " (%llu KiB, type %u flags 0x%x, heap %u: %llu of %llu MiB used)", static_cast<unsigned long long>(allocation.allocationSize >> 10u), allocation.memoryTypeIndex, context.memory.memoryTypes[allocation.memoryTypeIndex].propertyFlags, heap, static_cast<unsigned long long>(reported.heapUsage[heap] >> 20u), static_cast<unsigned long long>(reported.heapBudget[heap] >> 20u));
-        throw std::runtime_error(error.what() + std::string(what));
-    }
+    return pool.AllocateMemory(allocation, operation, hostType, allocatedType);
 }
 
 // APS5_PROFILE_DRAW: live host-memory Buffers (taken and not yet released, pooled or not) by
