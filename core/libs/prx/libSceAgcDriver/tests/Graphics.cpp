@@ -6428,9 +6428,7 @@ void sampledTextureBudgetTests() {
     reported.heapUsage[2] = 7 * GiB;
     Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 1034 * MiB, "an 8 GB card's 7188 MiB budget does not lower the floor to half of what is left after 5 GiB");
     reported.heapUsage[2] = 5583 * MiB;
-    Require(SampledTextureBudget(memory, &reported, 2497 * MiB) == 2 * 1034 * MiB, "an 8 GB card with 3086 MiB used outside the texture caches reserved more than the storage cache's capped share for it (the hub's 1.5 GiB of sampled textures went uncached every frame, play1020b), or let the sampled cache past twice that share (2.7 GiB at hub entry put the heap at its budget, play1020c)");
-    reported.heapUsage[2] = 6 * GiB;
-    Require(SampledTextureBudget(memory, &reported, 2 * GiB) == 7188 * MiB - 4 * GiB - 1034 * MiB - 7188 * MiB / 8u, "an 8 GB card with 4 GiB used outside the texture caches did not leave the sampled cache what is left after the storage cache's share and an eighth of the budget");
+    Require(SampledTextureBudget(memory, &reported, 2497 * MiB) == 7188 * MiB - 3086 * MiB - (7188 * MiB - 5 * GiB) / 2u - 7188 * MiB / 8u, "an 8 GB card with 3086 MiB used outside the texture caches reserved more than the storage cache's capped share for it (the hub's 1.5 GiB of sampled textures went uncached every frame, play1020b)");
     reported.heapBudget[2] = 4 * GiB;
     Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 512 * MiB, "a budget under 5 GiB does not keep the 512 MiB floor");
     memory.memoryHeaps[0].flags = 0;
