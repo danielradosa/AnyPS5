@@ -1344,7 +1344,8 @@ std::uint64_t SampledTextureBudget(const VkPhysicalDeviceMemoryProperties& memor
     static const bool fullStorageReserve = std::getenv("APS5_SAMPLED_FULL_STORAGE_RESERVE") != nullptr;
     const auto storageReserve = fullStorageReserve ? TextureCacheBudget(memory) : std::min(TextureCacheBudget(memory), TextureCacheShare(budget));
     const auto reserved = usage - std::min<std::uint64_t>(usage, textureBytes) + storageReserve + budget / 8u;
-    return std::max<std::uint64_t>(std::min<std::uint64_t>(2048ull << 20u, TextureCacheShare(budget)), budget > reserved ? budget - reserved : 0u);
+    const auto room = budget > reserved ? budget - reserved : 0u;
+    return std::max<std::uint64_t>(std::min<std::uint64_t>(2048ull << 20u, TextureCacheShare(budget)), fullStorageReserve ? room : std::min<std::uint64_t>(room, 2u * TextureCacheShare(budget)));
 }
 
 bool SampledBudgetReportDue(std::uint64_t reported, std::uint64_t budget, std::chrono::steady_clock::duration sinceReport) {
