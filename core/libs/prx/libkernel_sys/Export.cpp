@@ -269,6 +269,29 @@ bool HasNonDirectoryPrefix(const std::filesystem::path& native) {
     return false;
 }
 
+bool IsNativeLink(const std::filesystem::path& native) {
+#ifdef _WIN32
+    const DWORD attributes = GetFileAttributesW(native.wstring().c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+    std::error_code error;
+    return std::filesystem::is_symlink(std::filesystem::symlink_status(native, error));
+#endif
+}
+
+#ifdef _WIN32
+bool NativeLinkResolves(const std::filesystem::path& native) {
+    const HANDLE handle = CreateFileW(native.wstring().c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(handle);
+        return true;
+    }
+    const DWORD code = GetLastError();
+    return code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND && code != ERROR_CANT_RESOLVE_FILENAME;
+}
+#endif
+
 std::int64_t ReadNativeLink(const std::filesystem::path& native, char* buffer, std::size_t size) {
 #ifdef _WIN32
     const DWORD attributes = GetFileAttributesW(native.wstring().c_str());
@@ -326,7 +349,7 @@ int ResolveAtPath(int fd, const char* path, std::filesystem::path& native) {
 
 int LinkPaths(const std::filesystem::path& source, const std::filesystem::path& destination, bool follow) {
     std::error_code error;
-    if (!follow && std::filesystem::is_symlink(std::filesystem::symlink_status(source, error)))
+    if (!follow && IsNativeLink(source))
         throw std::runtime_error("linkat: a hard link to the symbolic link " + source.string() + " itself is not supported");
     const auto status = std::filesystem::status(source, error);
     if (!std::filesystem::exists(status)) return GuestEnoent;
@@ -349,7 +372,14 @@ int ChangeOwnerAt(int fd, const char* path, std::uint32_t uid, std::uint32_t gid
     if (const int error = ResolveAtPath(fd, path, native)) return error;
     std::error_code error;
     const auto status = follow ? std::filesystem::status(native, error) : std::filesystem::symlink_status(native, error);
-    if (status.type() == std::filesystem::file_type::not_found) return HasNonDirectoryPrefix(native) ? GuestEnotdir : GuestEnoent;
+    bool present = status.type() != std::filesystem::file_type::not_found;
+#ifdef _WIN32
+    if (IsNativeLink(native)) {
+        present = !follow || NativeLinkResolves(native);
+        error.clear();
+    }
+#endif
+    if (!present) return HasNonDirectoryPrefix(native) ? GuestEnotdir : GuestEnoent;
     if (error) return GuestError(error);
     if ((uid != 0 && uid != GuestOwnerUnchanged) || (gid != 0 && gid != GuestOwnerUnchanged)) {
         throw std::runtime_error(std::string(function) + ": giving " + path + " owner " + std::to_string(uid) + " and group " + std::to_string(gid) +
