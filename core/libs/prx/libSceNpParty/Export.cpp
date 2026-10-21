@@ -6,6 +6,7 @@
 namespace {
 
 constexpr int NP_PARTY_ERROR_INVALID_ARGUMENT = static_cast<int>(0x80552504u);
+constexpr int NP_PARTY_ERROR_NOT_IN_PARTY = static_cast<int>(0x80552506u);
 constexpr std::uint16_t NP_PARTY_STATE_NOT_IN_PARTY = 2;
 
 }
@@ -42,9 +43,10 @@ int APS5_VABI sceNpPartyGetMemberInfo(void) {
     return 0;
 }
 
-int APS5_VABI sceNpPartyGetMemberInfoA(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpPartyGetMemberInfoA(std::uint16_t memberId, void* memberInfo) {
+    (void)memberId;
+    (void)memberInfo;
+    return NP_PARTY_ERROR_NOT_IN_PARTY;
 }
 
 int APS5_VABI sceNpPartyGetMemberSessionInfo(void) {
@@ -62,9 +64,9 @@ int APS5_VABI sceNpPartyGetMembers(void) {
     return 0;
 }
 
-int APS5_VABI sceNpPartyGetMembersA(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpPartyGetMembersA(void* memberList) {
+    (void)memberList;
+    return NP_PARTY_ERROR_NOT_IN_PARTY;
 }
 
 int APS5_VABI sceNpPartyGetStateAsUser(void) {
@@ -72,9 +74,9 @@ int APS5_VABI sceNpPartyGetStateAsUser(void) {
     return 0;
 }
 
-int APS5_VABI sceNpPartyGetStateAsUserA(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpPartyGetStateAsUserA(int asUserId, std::uint16_t* state) {
+    (void)asUserId;
+    return sceNpPartyGetState(state);
 }
 
 int APS5_VABI sceNpPartyGetVoiceChatPriority(void) {
