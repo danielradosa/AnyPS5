@@ -44,6 +44,15 @@ struct TestItimerspec {
     KernelTimespec value;
 };
 
+struct TestMqAttr {
+    std::int64_t flags;
+    std::int64_t maxmsg;
+    std::int64_t msgsize;
+    std::int64_t curmsgs;
+    std::int64_t reserved[4];
+};
+static_assert(sizeof(TestMqAttr) == 64);
+
 using SignalSet = std::array<std::uint32_t, 4>;
 using SignalHandler = void (APS5_VABI*)(int);
 
@@ -77,6 +86,12 @@ int APS5_VABI ksem_wait_nid_postfix(std::intptr_t);
 int APS5_VABI ksem_trywait_nid_postfix(std::intptr_t);
 int APS5_VABI ksem_timedwait_nid_postfix(std::intptr_t, const KernelTimespec*);
 int APS5_VABI ksem_getvalue_nid_postfix(std::intptr_t, int*);
+int APS5_VABI kmq_open_nid_postfix(const char*, int, std::uint16_t, const TestMqAttr*);
+int APS5_VABI kmq_unlink_nid_postfix(const char*);
+int APS5_VABI kmq_setattr_nid_postfix(int, const TestMqAttr*, TestMqAttr*);
+int APS5_VABI kmq_timedsend_nid_postfix(int, const char*, std::size_t, unsigned, const KernelTimespec*);
+std::int64_t APS5_VABI kmq_timedreceive_nid_postfix(int, char*, std::size_t, unsigned*, const KernelTimespec*);
+int APS5_VABI kmq_notify_nid_postfix(int, const TestSigevent*);
 [[gnu::returns_twice]] int APS5_VABI getcontext_nid_postfix(UserUcontext*);
 int APS5_VABI setcontext_nid_postfix(const UserUcontext*);
 [[gnu::returns_twice]] int APS5_VABI swapcontext_nid_postfix(UserUcontext*, const UserUcontext*);
@@ -301,9 +316,9 @@ void CheckSignalTimers() {
     Require(ktimer_getoverrun_nid_postfix(id) == info.reason[1]);
     Require(TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
     Require(ktimer_settime_nid_postfix(id, 0, &once, nullptr) == 0);
-    Pause(80);
     SignalSet pending{};
-    Require(sigpending_nid_postfix(pending.data()) == 0 && pending == Only(Sigusr1));
+    for (int attempt = 0; attempt < 200 && (sigpending_nid_postfix(pending.data()) != 0 || pending != Only(Sigusr1)); ++attempt) Pause(10);
+    Require(pending == Only(Sigusr1));
     Require(ktimer_delete_nid_postfix(id) == 0);
     Require(sigpending_nid_postfix(pending.data()) == 0 && pending == SignalSet{});
     Require(TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
@@ -319,7 +334,7 @@ void CheckSignalTimers() {
     const TestSigevent gone{4, Sigusr1, 6, 0x7ffffff0};
     Require(ktimer_create_nid_postfix(ClockMonotonic, &gone, &id) == 0);
     Require(ktimer_settime_nid_postfix(id, 0, &fast, nullptr) == 0);
-    Pause(60);
+    for (int attempt = 0; attempt < 200 && ktimer_gettime_nid_postfix(id, &spec) == 0 && !Zero(spec.value); ++attempt) Pause(10);
     Require(ktimer_gettime_nid_postfix(id, &spec) == 0 && Zero(spec.value) && Zero(spec.interval));
     Require(TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
     Require(ktimer_delete_nid_postfix(id) == 0);
@@ -377,7 +392,7 @@ void CheckAnonymousKernelSemaphores() {
     KernelSemaphoreWaiter waiter{id, -1};
     Pthread thread = nullptr;
     Require(pthread_create_nid_postfix(&thread, nullptr, WaitKernelSemaphore, &waiter) == 0);
-    Pause(50);
+    Pause(200);
     Require(ksem_destroy_nid_postfix(id) == -1 && Error() == 16);
     Require(ksem_post_nid_postfix(id) == 0);
     Require(pthread_join_nid_postfix(thread, nullptr) == 0);
@@ -437,6 +452,193 @@ void CheckNamedKernelSemaphores() {
     for (const std::intptr_t semaphore : held) Require(ksem_destroy_nid_postfix(semaphore) == 0);
 }
 
+constexpr int MqRead = SCE_KERNEL_O_RDONLY;
+constexpr int MqWrite = SCE_KERNEL_O_WRONLY;
+constexpr int MqReadWrite = SCE_KERNEL_O_RDWR;
+constexpr int MqCreate = SCE_KERNEL_O_CREAT;
+constexpr int MqNonblock = SCE_KERNEL_O_NONBLOCK;
+constexpr std::int32_t SiMesgq = 0x10005;
+
+bool Send(int queue, const std::string& text, unsigned priority) {
+    return kmq_timedsend_nid_postfix(queue, text.data(), text.size(), priority, nullptr) == 0;
+}
+
+bool Receives(int queue, const std::string& text, unsigned priority) {
+    char buffer[1024];
+    unsigned received = 99;
+    const auto length = kmq_timedreceive_nid_postfix(queue, buffer, sizeof(buffer), &received, nullptr);
+    return length == static_cast<std::int64_t>(text.size()) && std::memcmp(buffer, text.data(), text.size()) == 0 && received == priority;
+}
+
+std::int64_t CurrentMessages(int queue) {
+    TestMqAttr attr{};
+    Require(kmq_setattr_nid_postfix(queue, nullptr, &attr) == 0);
+    return attr.curmsgs;
+}
+
+KernelTimespec RealtimeIn(std::int64_t nanos) {
+    KernelTimespec time{};
+    Require(clock_gettime_nid_postfix(ClockRealtime, &time) == 0);
+    time.tv_nsec += nanos;
+    time.tv_sec += time.tv_nsec / 1000000000;
+    time.tv_nsec %= 1000000000;
+    return time;
+}
+
+struct QueueReceiver {
+    int queue;
+    std::int64_t length;
+    char buffer[1024];
+};
+
+void* APS5_VABI ReceiveMessage(void* argument) {
+    auto* receiver = static_cast<QueueReceiver*>(argument);
+    receiver->length = kmq_timedreceive_nid_postfix(receiver->queue, receiver->buffer, sizeof(receiver->buffer), nullptr, nullptr);
+    return nullptr;
+}
+
+void CheckMessageQueueArguments() {
+    const char* name = "/anyps5-mq";
+    TestMqAttr attr{};
+    for (const TestMqAttr& bad : {TestMqAttr{0, 0, 8}, TestMqAttr{0, 101, 8}, TestMqAttr{0, 4, 0}, TestMqAttr{0, 4, 16385}, TestMqAttr{0, -1, 8}})
+        Require(kmq_open_nid_postfix(name, MqCreate | MqReadWrite, 0600, &bad) == -1 && Error() == 22);
+    const TestMqAttr zero{};
+    Require(kmq_open_nid_postfix(name, MqReadWrite, 0, &zero) == -1 && Error() == 2);
+    Require(kmq_open_nid_postfix(name, MqCreate | 3, 0600, nullptr) == -1 && Error() == 22);
+    Require(kmq_open_nid_postfix(name, MqCreate | 0x00040000, 0600, nullptr) == -1 && Error() == 22);
+    Require(kmq_open_nid_postfix(nullptr, MqCreate | MqReadWrite, 0600, nullptr) == -1 && Error() == 14);
+    const std::string tooLong = "/" + std::string(255, 'q');
+    const std::string longest = "/" + std::string(254, 'q');
+    for (const char* bad : {"", "/", "anyps5-mq", "/anyps5/mq"}) {
+        Require(kmq_open_nid_postfix(bad, MqCreate | MqReadWrite, 0600, nullptr) == -1 && Error() == 22);
+        Require(kmq_unlink_nid_postfix(bad) == -1 && Error() == 22);
+    }
+    Require(kmq_open_nid_postfix(tooLong.c_str(), MqCreate | MqReadWrite, 0600, nullptr) == -1 && Error() == 63);
+    Require(kmq_unlink_nid_postfix(tooLong.c_str()) == -1 && Error() == 63 && kmq_unlink_nid_postfix(nullptr) == -1 && Error() == 14);
+    const int longQueue = kmq_open_nid_postfix(longest.c_str(), MqCreate | MqReadWrite, 0600, nullptr);
+    Require(longQueue >= 0 && close_nid_postfix(longQueue) == 0 && kmq_unlink_nid_postfix(longest.c_str()) == 0);
+    Require(kmq_unlink_nid_postfix(name) == -1 && Error() == 2);
+    const int queue = kmq_open_nid_postfix(name, MqCreate | MqReadWrite, 0600, nullptr);
+    Require(queue >= 0 && kmq_setattr_nid_postfix(queue, nullptr, &attr) == 0);
+    Require(attr.flags == 0 && attr.maxmsg == 10 && attr.msgsize == 1024 && attr.curmsgs == 0);
+    Require(kmq_open_nid_postfix(name, MqCreate | SCE_KERNEL_O_EXCL | MqReadWrite, 0600, nullptr) == -1 && Error() == 17);
+    const int reader = kmq_open_nid_postfix(name, MqRead, 0, nullptr);
+    const int writer = kmq_open_nid_postfix(name, MqCreate | MqWrite, 0600, nullptr);
+    Require(reader >= 0 && writer >= 0 && reader != writer);
+    char buffer[1024];
+    Require(kmq_timedsend_nid_postfix(reader, "x", 1, 0, nullptr) == -1 && Error() == 9);
+    Require(kmq_timedreceive_nid_postfix(writer, buffer, sizeof(buffer), nullptr, nullptr) == -1 && Error() == 9);
+    int streams[2];
+    Require(pipe_nid_postfix(streams) == 0);
+    Require(kmq_timedsend_nid_postfix(streams[1], "x", 1, 0, nullptr) == -1 && Error() == 9);
+    Require(kmq_notify_nid_postfix(streams[0], nullptr) == -1 && Error() == 9);
+    Require(kmq_setattr_nid_postfix(streams[0], nullptr, &attr) == -1 && Error() == 9);
+    Require(close_nid_postfix(streams[0]) == 0 && close_nid_postfix(streams[1]) == 0);
+    Require(kmq_timedsend_nid_postfix(writer, "x", 1, 64, nullptr) == -1 && Error() == 22);
+    const std::string large(1025, 'l');
+    Require(kmq_timedsend_nid_postfix(writer, large.data(), large.size(), 0, nullptr) == -1 && Error() == 40);
+    Require(kmq_timedsend_nid_postfix(writer, nullptr, 1, 0, nullptr) == -1 && Error() == 14);
+    Require(kmq_timedreceive_nid_postfix(reader, buffer, 1023, nullptr, nullptr) == -1 && Error() == 40);
+    const TestMqAttr badFlags{1};
+    Require(kmq_setattr_nid_postfix(reader, &badFlags, nullptr) == -1 && Error() == 22);
+    const TestMqAttr nonblocking{MqNonblock};
+    Require(kmq_setattr_nid_postfix(reader, &nonblocking, &attr) == 0 && attr.flags == 0);
+    Require(kmq_timedreceive_nid_postfix(reader, buffer, sizeof(buffer), nullptr, nullptr) == -1 && Error() == 35);
+    const TestMqAttr blocking{0};
+    Require(kmq_setattr_nid_postfix(reader, &blocking, &attr) == 0 && attr.flags == MqNonblock);
+    const KernelTimespec past{1, 0};
+    const KernelTimespec invalid{1, 1000000000};
+    Require(kmq_timedreceive_nid_postfix(reader, buffer, sizeof(buffer), nullptr, &past) == -1 && Error() == 60);
+    Require(kmq_timedreceive_nid_postfix(reader, buffer, sizeof(buffer), nullptr, &invalid) == -1 && Error() == 22);
+    const KernelTimespec soon = RealtimeIn(30000000);
+    Require(kmq_timedreceive_nid_postfix(reader, buffer, sizeof(buffer), nullptr, &soon) == -1 && Error() == 60);
+    Require(Send(writer, "a", 1) && Send(writer, "b", 5) && Send(writer, "c", 5) && Send(writer, "d", 0) && Send(writer, "", 3));
+    Require(CurrentMessages(queue) == 5);
+    Require(kmq_timedreceive_nid_postfix(reader, buffer, sizeof(buffer), nullptr, &invalid) == 1 && buffer[0] == 'b');
+    Require(Receives(reader, "c", 5) && Receives(queue, "", 3) && Receives(reader, "a", 1) && Receives(reader, "d", 0));
+    Require(CurrentMessages(reader) == 0);
+    const TestMqAttr small{0, 2, 16};
+    const int full = kmq_open_nid_postfix("/anyps5-mq-small", MqCreate | MqReadWrite | MqNonblock, 0600, &small);
+    const int fullBlocking = kmq_open_nid_postfix("/anyps5-mq-small", MqReadWrite, 0, nullptr);
+    Require(full >= 0 && fullBlocking >= 0 && kmq_setattr_nid_postfix(full, nullptr, &attr) == 0 && attr.flags == MqNonblock && attr.maxmsg == 2 && attr.msgsize == 16);
+    Require(Send(full, "1", 0) && Send(full, "2", 0));
+    Require(kmq_timedsend_nid_postfix(full, "3", 1, 0, nullptr) == -1 && Error() == 35);
+    Require(kmq_timedsend_nid_postfix(fullBlocking, "3", 1, 0, &past) == -1 && Error() == 60);
+    Require(kmq_timedsend_nid_postfix(fullBlocking, "3", 1, 0, &invalid) == -1 && Error() == 22);
+    const KernelTimespec later = RealtimeIn(30000000);
+    Require(kmq_timedsend_nid_postfix(fullBlocking, "3", 1, 0, &later) == -1 && Error() == 60);
+    char smallBuffer[16];
+    Require(kmq_timedreceive_nid_postfix(full, smallBuffer, 15, nullptr, nullptr) == -1 && Error() == 40);
+    Require(kmq_timedreceive_nid_postfix(full, smallBuffer, sizeof(smallBuffer), nullptr, nullptr) == 1 && smallBuffer[0] == '1');
+    Require(Send(full, "3", 0) && kmq_timedreceive_nid_postfix(full, nullptr, sizeof(smallBuffer), nullptr, nullptr) == -1 && Error() == 14);
+    Require(CurrentMessages(full) == 1);
+    Require(close_nid_postfix(full) == 0 && close_nid_postfix(fullBlocking) == 0 && kmq_unlink_nid_postfix("/anyps5-mq-small") == 0);
+    QueueReceiver receiver{reader, -1, {}};
+    Pthread thread = nullptr;
+    Require(pthread_create_nid_postfix(&thread, nullptr, ReceiveMessage, &receiver) == 0);
+    Pause(200);
+    Require(Send(writer, "late", 2));
+    Require(pthread_join_nid_postfix(thread, nullptr) == 0 && receiver.length == 4 && std::memcmp(receiver.buffer, "late", 4) == 0);
+    Require(kmq_unlink_nid_postfix(name) == 0 && kmq_unlink_nid_postfix(name) == -1 && Error() == 2);
+    Require(kmq_open_nid_postfix(name, MqReadWrite, 0, nullptr) == -1 && Error() == 2);
+    Require(Send(writer, "kept", 0) && Receives(reader, "kept", 0));
+    Require(close_nid_postfix(queue) == 0 && close_nid_postfix(reader) == 0 && close_nid_postfix(writer) == 0);
+    Require(kmq_timedsend_nid_postfix(writer, "x", 1, 0, nullptr) == -1 && Error() == 9);
+    std::vector<int> queues;
+    for (int index = 0; index < 120; ++index) {
+        const int opened = kmq_open_nid_postfix(("/anyps5-mq-" + std::to_string(index)).c_str(), MqCreate | MqReadWrite, 0600, nullptr);
+        if (opened < 0) break;
+        queues.push_back(opened);
+    }
+    Require(queues.size() == 100 && Error() == 23);
+    for (std::size_t index = 0; index < queues.size(); ++index)
+        Require(close_nid_postfix(queues[index]) == 0 && kmq_unlink_nid_postfix(("/anyps5-mq-" + std::to_string(index)).c_str()) == 0);
+}
+
+void CheckMessageQueueNotifications() {
+    const SignalSet previous = BlockOnly(Sigusr1);
+    const char* name = "/anyps5-mq-notify";
+    const int queue = kmq_open_nid_postfix(name, MqCreate | MqReadWrite, 0600, nullptr);
+    const int other = kmq_open_nid_postfix(name, MqReadWrite, 0, nullptr);
+    Require(queue >= 0 && other >= 0);
+    for (const TestSigevent& bad : {TestSigevent{2, Sigusr1}, TestSigevent{3, Sigusr1}, TestSigevent{1, 0}, TestSigevent{4, 200}})
+        Require(kmq_notify_nid_postfix(queue, &bad) == -1 && Error() == 22);
+    const TestSigevent event{1, Sigusr1, 0x77};
+    Require(kmq_notify_nid_postfix(queue, &event) == 0 && kmq_notify_nid_postfix(queue, &event) == -1 && Error() == 16);
+    Require(kmq_notify_nid_postfix(other, &event) == -1 && Error() == 16 && kmq_notify_nid_postfix(other, nullptr) == 0);
+    Require(Send(queue, "m", 0));
+    TestSiginfo info{};
+    Require(TakeSignal(Sigusr1, &info) == Sigusr1 && info.code == SiMesgq && info.value == 0x77 && info.reason[0] == queue && info.pid == 0);
+    Require(Send(queue, "n", 0) && TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
+    Require(kmq_notify_nid_postfix(queue, &event) == 0 && TakeSignal(Sigusr1, &info) == Sigusr1 && info.code == SiMesgq);
+    Require(kmq_notify_nid_postfix(other, &event) == 0 && kmq_notify_nid_postfix(other, nullptr) == 0);
+    Require(Receives(other, "m", 0) && Receives(other, "n", 0));
+    Require(kmq_notify_nid_postfix(queue, &event) == 0 && Send(other, "p", 0));
+    SignalSet pending{};
+    Require(sigpending_nid_postfix(pending.data()) == 0 && pending == Only(Sigusr1));
+    Require(kmq_notify_nid_postfix(queue, nullptr) == 0 && TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
+    Require(Receives(queue, "p", 0));
+    Require(kmq_notify_nid_postfix(queue, &event) == 0 && Send(other, "q", 0));
+    Require(close_nid_postfix(queue) == 0 && TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
+    Require(Receives(other, "q", 0));
+    const TestSigevent none{0, 999};
+    Require(kmq_notify_nid_postfix(other, &none) == 0 && Send(other, "r", 0) && TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
+    const TestSigevent gone{4, Sigusr1, 1, 0x7ffffff0};
+    Require(kmq_notify_nid_postfix(other, &gone) == 0 && TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
+    Require(Receives(other, "r", 0));
+    const TestSigevent self{4, Sigusr1, 2, pthread_getthreadid_np_nid_postfix()};
+    Require(kmq_notify_nid_postfix(other, &self) == 0);
+    QueueReceiver receiver{other, -1, {}};
+    Pthread thread = nullptr;
+    Require(pthread_create_nid_postfix(&thread, nullptr, ReceiveMessage, &receiver) == 0);
+    Pause(200);
+    Require(Send(other, "s", 0));
+    Require(pthread_join_nid_postfix(thread, nullptr) == 0 && receiver.length == 1 && TakeSignal(Sigusr1, nullptr) == -1 && Error() == 35);
+    Require(Send(other, "t", 0) && TakeSignal(Sigusr1, &info) == Sigusr1 && info.value == 2 && info.reason[0] == other);
+    Require(Receives(other, "t", 0) && close_nid_postfix(other) == 0 && kmq_unlink_nid_postfix(name) == 0);
+    RestoreMask(previous);
+}
+
 UserUcontext g_swapMain;
 UserUcontext g_swapOther;
 volatile int g_swapPhase = 0;
@@ -471,5 +673,7 @@ int main() {
     CheckSignalTimers();
     CheckAnonymousKernelSemaphores();
     CheckNamedKernelSemaphores();
+    CheckMessageQueueArguments();
+    CheckMessageQueueNotifications();
     return 0;
 }
