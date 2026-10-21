@@ -16,16 +16,6 @@ constexpr std::size_t DesScheduleBytes = 128;
 extern "C" {
 
 APS5_DUMMY_FUN
-int APS5_VABI ASN1_STRING_print_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI ASN1_TIME_print_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI BIO_f_ssl_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -47,11 +37,6 @@ int APS5_VABI CONF_modules_load_file_nid_postfix(void) {
 }
 
 int APS5_VABI CRYPTO_THREADID_set_callback_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI CRYPTO_THREADID_set_numeric_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -880,11 +865,6 @@ int APS5_VABI SSL_write_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI SSLeay_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI SSLv23_client_method_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -956,11 +936,6 @@ int APS5_VABI X509_LOOKUP_file_nid_postfix(void) {
 }
 
 int APS5_VABI X509_NAME_oneline_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI X509_NAME_print_ex_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

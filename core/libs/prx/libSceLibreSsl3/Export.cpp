@@ -141,11 +141,6 @@ int APS5_VABI OCSP_resp_find_status_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI OpenSSL_version_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI PKCS7_free_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
