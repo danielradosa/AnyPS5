@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
     const bool patched = std::strcmp(argv[2], "patched") == 0;
     auto* sys = LoadLibraryFile(directory / "libkernel_sys.prx");
     auto* kernel = LoadLibraryFile(directory / "libkernel.prx");
+    auto* libc = LoadLibraryFile(directory / "libc.prx");
     using Pwrite = std::int64_t (APS5_VABI*)(int, const void*, std::size_t, std::int64_t);
     const auto writeAt = LoadFunction<Pwrite>(sys, "pwrite", patched);
     const auto kernelWriteAt = LoadFunction<Pwrite>(kernel, "pwrite", patched, "pwrite_nid_disambig1_nid_postfix");
@@ -66,7 +67,7 @@ int main(int argc, char** argv) {
     const auto close = LoadFunction<int (APS5_VABI*)(int)>(kernel, "close", patched);
     const auto seek = LoadFunction<std::int64_t (APS5_VABI*)(int, std::int64_t, int)>(kernel, "lseek", patched);
     const auto readAt = LoadFunction<std::int64_t (APS5_VABI*)(int, void*, std::size_t, std::int64_t)>(kernel, "pread", patched);
-    const auto error = LoadFunction<int* (APS5_VABI*)()>(kernel, "__error", patched);
+    const auto error = LoadFunction<int* (APS5_VABI*)()>(libc, "__error", patched);
     const auto shmOpen = LoadFunction<int (APS5_VABI*)(const char*, int, int)>(kernel, "shm_open", patched);
     const auto truncate = LoadFunction<int (APS5_VABI*)(int, std::int64_t)>(kernel, "ftruncate", patched);
     const auto pipe = LoadFunction<int (APS5_VABI*)(int*)>(kernel, "pipe", patched);

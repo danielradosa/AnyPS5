@@ -65,7 +65,8 @@ int main(int argc, char** argv) {
     const std::string test = argv[3];
     auto* sys = LoadLibraryFile(directory / "libkernel_sys.prx");
     auto* kernel = LoadLibraryFile(directory / "libkernel.prx");
-    const auto error = LoadFunction<int* (APS5_VABI*)()>(kernel, "__error", patched);
+    auto* libc = LoadLibraryFile(directory / "libc.prx");
+    const auto error = LoadFunction<int* (APS5_VABI*)()>(libc, "__error", patched);
     const auto open = LoadFunction<int (APS5_VABI*)(const char*, int, int)>(kernel, "open", patched);
     const auto close = LoadFunction<int (APS5_VABI*)(int)>(kernel, "close", patched);
     const auto stat = LoadFunction<std::int64_t (APS5_VABI*)(const char*, FileStat*)>(kernel, "stat", patched);

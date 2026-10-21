@@ -62,7 +62,8 @@ int main(int argc, char** argv) {
     const std::string test = argv[3];
     auto* sys = LoadLibraryFile(directory / "libkernel_sys.prx");
     auto* kernel = LoadLibraryFile(directory / "libkernel.prx");
-    const auto error = LoadFunction<int* (APS5_VABI*)()>(kernel, "__error", patched);
+    auto* libc = LoadLibraryFile(directory / "libc.prx");
+    const auto error = LoadFunction<int* (APS5_VABI*)()>(libc, "__error", patched);
     using Attr = void*;
     const auto init = LoadFunction<int (APS5_VABI*)(Attr*)>(kernel, "pthread_attr_init", patched);
     const auto destroy = LoadFunction<int (APS5_VABI*)(Attr*)>(kernel, "pthread_attr_destroy", patched);
