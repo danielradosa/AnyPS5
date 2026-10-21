@@ -44,11 +44,6 @@ int APS5_VABI sceAppMessagingTryGetEventFlag() {
     return 0;
 }
 
-int APS5_VABI sceAppMessagingTryReceiveMsg() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceLncUtilAcquireCpuBudgetOfExtraAudioDevices() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -240,11 +235,6 @@ int APS5_VABI sceLncUtilGetResultLaunchAppByTitleId() {
 }
 
 int APS5_VABI sceLncUtilGetVideoFinalizeState() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceLncUtilInitialize() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
