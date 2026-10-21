@@ -1029,11 +1029,6 @@ int APS5_VABI sceShellCoreUtilIsBgmCpuBudgetAvailable() {
     return 0;
 }
 
-int APS5_VABI sceShellCoreUtilIsBgmPlaying() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceShellCoreUtilIsExternalStorageAppMoveInProgress() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -1866,11 +1861,6 @@ int APS5_VABI sceSystemServiceIsAppSuspended() {
 }
 
 int APS5_VABI sceSystemServiceIsBgmCpuBudgetAvailable() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceSystemServiceIsBgmPlaying() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
