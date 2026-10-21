@@ -6,7 +6,8 @@ add_library(libSceLibreSsl SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/E
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Library.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Bio.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Bn.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/X509.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/X509.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ui.cpp)
 target_include_directories(libSceLibreSsl PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(libSceLibreSsl PRIVATE mbedx509 mbedcrypto)
 set_target_properties(libSceLibreSsl PROPERTIES VISIBILITY_INLINES_HIDDEN ON)
@@ -107,6 +108,16 @@ if(BUILD_TESTING)
     set_tests_properties(guest_libressl_x509 PROPERTIES TIMEOUT 30)
     if(WIN32)
         set_tests_properties(guest_libressl_x509 PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
+    add_test_executable(guest_libressl_ui_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslUi.cpp)
+    target_include_directories(guest_libressl_ui_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_ui_tests PRIVATE libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl_ui_tests)
+    add_test(NAME guest_libressl_ui COMMAND guest_libressl_ui_tests)
+    set_tests_properties(guest_libressl_ui PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl_ui PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
     endif()
 endif()
