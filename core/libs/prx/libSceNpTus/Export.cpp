@@ -13,6 +13,7 @@ static constexpr int SCE_NP_COMMUNITY_ERROR_ABORTED = static_cast<int>(0x8055070
 static constexpr int SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT = static_cast<int>(0x8055070C);
 static constexpr int SCE_NP_COMMUNITY_ERROR_INVALID_ID = static_cast<int>(0x8055070E);
 static constexpr int SCE_NP_COMMUNITY_ERROR_INVALID_TYPE = static_cast<int>(0x80550711);
+static constexpr int SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT = static_cast<int>(0x80550714);
 static constexpr int SCE_NP_COMMUNITY_ERROR_TOO_MANY_SLOTID = static_cast<int>(0x80550718);
 static constexpr int SCE_NP_COMMUNITY_ERROR_TOO_MANY_NPID = static_cast<int>(0x80550719);
 static constexpr int POLL_FINISHED = 0;
@@ -24,6 +25,7 @@ static constexpr int MAX_USERS = 101;
 static constexpr int MAX_FRIENDS = 100;
 static constexpr std::int32_t TSS_MAX_SLOT_ID = 15;
 static constexpr std::uint64_t TSS_MAX_SIZE = 64 * 1024;
+static constexpr std::uint32_t INVALID_SERVICE_LABEL = 0xFFFFFFFF;
 static constexpr std::int32_t OPETYPE_EQUAL = 1;
 static constexpr std::int32_t OPETYPE_LESS_OR_EQUAL = 6;
 static constexpr std::int32_t DATASTATUS_SORTTYPE_DESCENDING_DATE = 1;
@@ -82,6 +84,39 @@ int WaitOffline(int reqId, int* result) {
     return 0;
 }
 
+struct FriendsOptParam {
+    std::uint64_t size;
+    std::uint32_t* startSerialRank;
+    std::uint32_t* hits;
+};
+
+struct TssGetDataOptParam {
+    std::uint64_t size;
+    std::uint64_t* offset;
+    std::uint64_t* lastByte;
+    void* ifParam;
+};
+
+int CreateTitleContext() {
+    std::lock_guard lock(tusMutex);
+    if (titleContexts.size() >= MAX_TITLE_CONTEXTS) return SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS;
+    const int contextId = nextTitleContext++;
+    titleContexts.insert(contextId);
+    return contextId;
+}
+
+int ValidateFriends(const void* array, std::int32_t slotId, std::int32_t sortType, int arrayLen, std::int32_t firstSortType, std::int32_t lastSortType, const void* option) {
+    if (!array) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
+    if (arrayLen < 1 || slotId < 0) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    if (arrayLen > MAX_FRIENDS) return SCE_NP_COMMUNITY_ERROR_TOO_MANY_NPID;
+    if (sortType < firstSortType || sortType > lastSortType) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    if (!option) return 0;
+    const auto* param = static_cast<const FriendsOptParam*>(option);
+    if (param->size != sizeof(FriendsOptParam)) return SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT;
+    if (param->startSerialRank && *param->startSerialRank == 0) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    return 0;
+}
+
 int Complete(int reqId, int asyncResult) {
     if (asyncResult < 0) return asyncResult;
     int result = 0;
@@ -95,11 +130,7 @@ extern "C" {
 int APS5_VABI sceNpTusCreateNpTitleCtxA(std::uint32_t serviceLabel, int userId) {
     (void)serviceLabel;
     (void)userId;
-    std::lock_guard lock(tusMutex);
-    if (titleContexts.size() >= MAX_TITLE_CONTEXTS) return SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS;
-    const int contextId = nextTitleContext++;
-    titleContexts.insert(contextId);
-    return contextId;
+    return CreateTitleContext();
 }
 
 int APS5_VABI sceNpTusCreateRequest(int titleCtxId) {
@@ -173,16 +204,6 @@ int APS5_VABI sceNpTusAddAndGetVariableAAsync(int reqId, std::uint64_t targetAcc
 }
 
 int APS5_VABI sceNpTusSetThreadParam(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTssCreateNpTitleCtx(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTssCreateNpTitleCtxA(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -305,82 +326,12 @@ int APS5_VABI sceNpTusDeleteMultiSlotVariableVUser(int reqId, const NpOnlineId* 
     return Complete(reqId, sceNpTusDeleteMultiSlotVariableVUserAsync(reqId, targetVirtualUserId, slotIds, arrayLen, option));
 }
 
-int APS5_VABI sceNpTusDeleteMultiSlotDataVUser(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusDeleteMultiSlotDataVUserAsync(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceNpTssGetStorage(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceNpTssGetStorageAsync(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTssGetDataAsync(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetDataForCrossSaveVUser(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetDataForCrossSaveVUserAsync(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetMultiUserVariableForCrossSave(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetFriendsVariableA(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetFriendsVariableAAsync(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetFriendsVariableForCrossSave(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetFriendsVariableForCrossSaveAsync(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetFriendsDataStatusA(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetFriendsDataStatusAAsync(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetFriendsDataStatusForCrossSave(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpTusGetFriendsDataStatusForCrossSaveAsync(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -988,6 +939,100 @@ int APS5_VABI sceNpTusTryAndSetVariableForCrossSaveVUser(int reqId, const NpOnli
 
 int APS5_VABI sceNpTusTryAndSetVariableVUser(int reqId, const NpOnlineId* targetVirtualUserId, std::int32_t slotId, std::int32_t opeType, std::int64_t variable, const std::int64_t* compareValue, const void* isLastChangedAuthor, const void* isLastChangedDate, void* resultVariable, std::uint64_t resultVariableSize, void* option) {
     return Complete(reqId, sceNpTusTryAndSetVariableVUserAsync(reqId, targetVirtualUserId, slotId, opeType, variable, compareValue, isLastChangedAuthor, isLastChangedDate, resultVariable, resultVariableSize, option));
+}
+
+int APS5_VABI sceNpTssCreateNpTitleCtx(std::uint32_t serviceLabel, const void* npId) {
+    if (!npId) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
+    if (serviceLabel == INVALID_SERVICE_LABEL) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    return CreateTitleContext();
+}
+
+int APS5_VABI sceNpTssCreateNpTitleCtxA(std::uint32_t serviceLabel, int userId) {
+    return sceNpTusCreateNpTitleCtxA(serviceLabel, userId);
+}
+
+int APS5_VABI sceNpTssGetDataAsync(int reqId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option) {
+    (void)dataStatusSize;
+    (void)data;
+    (void)recvSize;
+    if (!dataStatus) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
+    if (slotId < 0 || slotId > TSS_MAX_SLOT_ID) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    if (option && static_cast<const TssGetDataOptParam*>(option)->size != sizeof(TssGetDataOptParam)) return SCE_NP_COMMUNITY_ERROR_INVALID_ALIGNMENT;
+    return StartOffline(reqId);
+}
+
+int APS5_VABI sceNpTusDeleteMultiSlotDataVUserAsync(int reqId, const NpOnlineId* targetVirtualUserId, const std::int32_t* slotIds, int arrayLen, void* option) {
+    if (!targetVirtualUserId || !slotIds || arrayLen < 1) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
+    if (option) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    if (arrayLen > MAX_SLOTS) return SCE_NP_COMMUNITY_ERROR_TOO_MANY_SLOTID;
+    if (std::any_of(slotIds, slotIds + arrayLen, [](std::int32_t id) { return id < 0; })) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    if (IsEmpty(targetVirtualUserId)) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    return StartOffline(reqId);
+}
+
+int APS5_VABI sceNpTusDeleteMultiSlotDataVUser(int reqId, const NpOnlineId* targetVirtualUserId, const std::int32_t* slotIds, int arrayLen, void* option) {
+    return Complete(reqId, sceNpTusDeleteMultiSlotDataVUserAsync(reqId, targetVirtualUserId, slotIds, arrayLen, option));
+}
+
+int APS5_VABI sceNpTusGetDataForCrossSaveVUserAsync(int reqId, const NpOnlineId* targetVirtualUserId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option) {
+    (void)data;
+    (void)recvSize;
+    if (option || slotId < 0) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    if (!targetVirtualUserId || !dataStatus || dataStatusSize == 0) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
+    if (IsEmpty(targetVirtualUserId)) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    return StartOffline(reqId);
+}
+
+int APS5_VABI sceNpTusGetDataForCrossSaveVUser(int reqId, const NpOnlineId* targetVirtualUserId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option) {
+    return Complete(reqId, sceNpTusGetDataForCrossSaveVUserAsync(reqId, targetVirtualUserId, slotId, dataStatus, dataStatusSize, data, recvSize, option));
+}
+
+int APS5_VABI sceNpTusGetFriendsDataStatusAAsync(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* statusArray, std::uint64_t statusArraySize, int arrayLen, void* option) {
+    (void)includeSelf;
+    (void)statusArraySize;
+    if (const int error = ValidateFriends(statusArray, slotId, sortType, arrayLen, DATASTATUS_SORTTYPE_DESCENDING_DATE, DATASTATUS_SORTTYPE_ASCENDING_DATE, option)) return error;
+    return StartOffline(reqId);
+}
+
+int APS5_VABI sceNpTusGetFriendsDataStatusA(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* statusArray, std::uint64_t statusArraySize, int arrayLen, void* option) {
+    return Complete(reqId, sceNpTusGetFriendsDataStatusAAsync(reqId, slotId, includeSelf, sortType, statusArray, statusArraySize, arrayLen, option));
+}
+
+int APS5_VABI sceNpTusGetFriendsDataStatusForCrossSaveAsync(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* statusArray, std::uint64_t statusArraySize, int arrayLen, void* option) {
+    (void)includeSelf;
+    (void)statusArraySize;
+    if (const int error = ValidateFriends(statusArray, slotId, sortType, arrayLen, DATASTATUS_SORTTYPE_DESCENDING_DATE, DATASTATUS_SORTTYPE_ASCENDING_DATE, option)) return error;
+    return StartOffline(reqId);
+}
+
+int APS5_VABI sceNpTusGetFriendsDataStatusForCrossSave(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* statusArray, std::uint64_t statusArraySize, int arrayLen, void* option) {
+    return Complete(reqId, sceNpTusGetFriendsDataStatusForCrossSaveAsync(reqId, slotId, includeSelf, sortType, statusArray, statusArraySize, arrayLen, option));
+}
+
+int APS5_VABI sceNpTusGetFriendsVariableAAsync(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option) {
+    (void)includeSelf;
+    (void)variableArraySize;
+    if (const int error = ValidateFriends(variableArray, slotId, sortType, arrayLen, VARIABLE_SORTTYPE_DESCENDING_DATE, VARIABLE_SORTTYPE_ASCENDING_VALUE, option)) return error;
+    return StartOffline(reqId);
+}
+
+int APS5_VABI sceNpTusGetFriendsVariableA(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option) {
+    return Complete(reqId, sceNpTusGetFriendsVariableAAsync(reqId, slotId, includeSelf, sortType, variableArray, variableArraySize, arrayLen, option));
+}
+
+int APS5_VABI sceNpTusGetFriendsVariableForCrossSaveAsync(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option) {
+    (void)includeSelf;
+    (void)variableArraySize;
+    if (const int error = ValidateFriends(variableArray, slotId, sortType, arrayLen, VARIABLE_SORTTYPE_DESCENDING_DATE, VARIABLE_SORTTYPE_ASCENDING_VALUE, option)) return error;
+    return StartOffline(reqId);
+}
+
+int APS5_VABI sceNpTusGetFriendsVariableForCrossSave(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option) {
+    return Complete(reqId, sceNpTusGetFriendsVariableForCrossSaveAsync(reqId, slotId, includeSelf, sortType, variableArray, variableArraySize, arrayLen, option));
+}
+
+int APS5_VABI sceNpTusGetMultiUserVariableForCrossSave(int reqId, const std::uint64_t* targetAccountIdArray, std::int32_t slotId, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option) {
+    return Complete(reqId, sceNpTusGetMultiUserVariableForCrossSaveAsync(reqId, targetAccountIdArray, slotId, variableArray, variableArraySize, arrayLen, option));
 }
 
 }

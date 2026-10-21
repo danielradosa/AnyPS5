@@ -10,6 +10,23 @@ int APS5_VABI sceNpTusCreateNpTitleCtxA(std::uint32_t, int);
 int APS5_VABI sceNpTusCreateRequest(int);
 int APS5_VABI sceNpTusDeleteRequest(int);
 int APS5_VABI sceNpTusWaitAsync(int, int*);
+int APS5_VABI sceNpTssCreateNpTitleCtx(std::uint32_t serviceLabel, const void* npId);
+int APS5_VABI sceNpTssCreateNpTitleCtxA(std::uint32_t serviceLabel, int userId);
+int APS5_VABI sceNpTusDeleteNpTitleCtx(int titleCtxId);
+int APS5_VABI sceNpTssGetDataAsync(int reqId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option);
+int APS5_VABI sceNpTusDeleteMultiSlotDataVUser(int reqId, const NpOnlineId* targetVirtualUserId, const std::int32_t* slotIds, int arrayLen, void* option);
+int APS5_VABI sceNpTusDeleteMultiSlotDataVUserAsync(int reqId, const NpOnlineId* targetVirtualUserId, const std::int32_t* slotIds, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetDataForCrossSaveVUser(int reqId, const NpOnlineId* targetVirtualUserId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option);
+int APS5_VABI sceNpTusGetDataForCrossSaveVUserAsync(int reqId, const NpOnlineId* targetVirtualUserId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option);
+int APS5_VABI sceNpTusGetFriendsDataStatusA(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* statusArray, std::uint64_t statusArraySize, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetFriendsDataStatusAAsync(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* statusArray, std::uint64_t statusArraySize, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetFriendsDataStatusForCrossSave(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* statusArray, std::uint64_t statusArraySize, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetFriendsDataStatusForCrossSaveAsync(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* statusArray, std::uint64_t statusArraySize, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetFriendsVariableA(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetFriendsVariableAAsync(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetFriendsVariableForCrossSave(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetFriendsVariableForCrossSaveAsync(int reqId, std::int32_t slotId, std::int32_t includeSelf, std::int32_t sortType, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option);
+int APS5_VABI sceNpTusGetMultiUserVariableForCrossSave(int reqId, const std::uint64_t* targetAccountIdArray, std::int32_t slotId, void* variableArray, std::uint64_t variableArraySize, int arrayLen, void* option);
 int APS5_VABI sceNpTssGetSmallStorage(int reqId, void* data, std::uint64_t maxSize, std::uint64_t* contentLength, void* option);
 int APS5_VABI sceNpTssGetSmallStorageAsync(int reqId, void* data, std::uint64_t maxSize, std::uint64_t* contentLength, void* option);
 int APS5_VABI sceNpTusAddAndGetVariable(int reqId, const void* targetNpId, std::int32_t slotId, std::int64_t inVariable, const void* isLastChangedAuthor, const void* isLastChangedDate, void* outVariable, std::uint64_t outVariableSize, void* option);
@@ -100,6 +117,8 @@ constexpr int SignedOut = static_cast<int>(0x80550006u);
 constexpr int InvalidArgument = static_cast<int>(0x80550704u);
 constexpr int InvalidId = static_cast<int>(0x8055070Eu);
 constexpr int InvalidType = static_cast<int>(0x80550711u);
+constexpr int InvalidAlignment = static_cast<int>(0x80550714u);
+constexpr int InsufficientArgument = static_cast<int>(0x8055070Cu);
 constexpr int TooManySlotId = static_cast<int>(0x80550718u);
 constexpr int TooManyNpId = static_cast<int>(0x80550719u);
 
@@ -243,6 +262,79 @@ int main() {
     CheckSync("sceNpTusTryAndSetVariableForCrossSave", [&](int req) { return sceNpTusTryAndSetVariableForCrossSave(req, 1, 1, 1, 5, nullptr, nullptr, nullptr, buffer, sizeof(buffer), nullptr); });
     CheckSync("sceNpTusTryAndSetVariableForCrossSaveVUser", [&](int req) { return sceNpTusTryAndSetVariableForCrossSaveVUser(req, &virtualUser, 1, 1, 5, nullptr, nullptr, nullptr, buffer, sizeof(buffer), nullptr); });
     CheckSync("sceNpTusTryAndSetVariableVUser", [&](int req) { return sceNpTusTryAndSetVariableVUser(req, &virtualUser, 1, 1, 5, nullptr, nullptr, nullptr, buffer, sizeof(buffer), nullptr); });
+    CheckAsync("sceNpTssGetDataAsync", [&](int req) { return sceNpTssGetDataAsync(req, 15, buffer, 24, buffer, 16, nullptr); }, [&]() { return sceNpTssGetDataAsync(9999, 15, buffer, 24, buffer, 16, nullptr); }, nullptr);
+    CheckAsync("sceNpTusDeleteMultiSlotDataVUserAsync", [&](int req) { return sceNpTusDeleteMultiSlotDataVUserAsync(req, &virtualUser, slots, 2, nullptr); }, [&]() { return sceNpTusDeleteMultiSlotDataVUserAsync(9999, &virtualUser, slots, 2, nullptr); }, [&](int req) { return sceNpTusDeleteMultiSlotDataVUserAsync(req, &virtualUser, slots, 2, buffer); });
+    CheckAsync("sceNpTusGetDataForCrossSaveVUserAsync", [&](int req) { return sceNpTusGetDataForCrossSaveVUserAsync(req, &virtualUser, 1, buffer, sizeof(buffer), buffer, 16, nullptr); }, [&]() { return sceNpTusGetDataForCrossSaveVUserAsync(9999, &virtualUser, 1, buffer, sizeof(buffer), buffer, 16, nullptr); }, [&](int req) { return sceNpTusGetDataForCrossSaveVUserAsync(req, &virtualUser, 1, buffer, sizeof(buffer), buffer, 16, buffer); });
+    CheckAsync("sceNpTusGetFriendsDataStatusAAsync", [&](int req) { return sceNpTusGetFriendsDataStatusAAsync(req, 1, 0, 2, buffer, sizeof(buffer), 2, nullptr); }, [&]() { return sceNpTusGetFriendsDataStatusAAsync(9999, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); }, nullptr);
+    CheckAsync("sceNpTusGetFriendsDataStatusForCrossSaveAsync", [&](int req) { return sceNpTusGetFriendsDataStatusForCrossSaveAsync(req, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); }, [&]() { return sceNpTusGetFriendsDataStatusForCrossSaveAsync(9999, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); }, nullptr);
+    CheckAsync("sceNpTusGetFriendsVariableAAsync", [&](int req) { return sceNpTusGetFriendsVariableAAsync(req, 1, 0, 4, buffer, sizeof(buffer), 2, nullptr); }, [&]() { return sceNpTusGetFriendsVariableAAsync(9999, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); }, nullptr);
+    CheckAsync("sceNpTusGetFriendsVariableForCrossSaveAsync", [&](int req) { return sceNpTusGetFriendsVariableForCrossSaveAsync(req, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); }, [&]() { return sceNpTusGetFriendsVariableForCrossSaveAsync(9999, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); }, nullptr);
+    CheckSync("sceNpTusDeleteMultiSlotDataVUser", [&](int req) { return sceNpTusDeleteMultiSlotDataVUser(req, &virtualUser, slots, 2, nullptr); });
+    CheckSync("sceNpTusGetDataForCrossSaveVUser", [&](int req) { return sceNpTusGetDataForCrossSaveVUser(req, &virtualUser, 1, buffer, sizeof(buffer), buffer, 16, nullptr); });
+    CheckSync("sceNpTusGetFriendsDataStatusA", [&](int req) { return sceNpTusGetFriendsDataStatusA(req, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); });
+    CheckSync("sceNpTusGetFriendsDataStatusForCrossSave", [&](int req) { return sceNpTusGetFriendsDataStatusForCrossSave(req, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); });
+    CheckSync("sceNpTusGetFriendsVariableA", [&](int req) { return sceNpTusGetFriendsVariableA(req, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); });
+    CheckSync("sceNpTusGetFriendsVariableForCrossSave", [&](int req) { return sceNpTusGetFriendsVariableForCrossSave(req, 1, 0, 1, buffer, sizeof(buffer), 2, nullptr); });
+    CheckSync("sceNpTusGetMultiUserVariableForCrossSave", [&](int req) { return sceNpTusGetMultiUserVariableForCrossSave(req, accounts, 1, buffer, sizeof(buffer), 2, nullptr); });
+    {
+        const char* tss = "sceNpTssCreateNpTitleCtx";
+        Require(sceNpTssCreateNpTitleCtx(1, nullptr) == InsufficientArgument, tss, "a null NpId was taken");
+        Require(sceNpTssCreateNpTitleCtx(0xFFFFFFFF, npId) == InvalidArgument, tss, "the invalid service label was taken");
+        const int tssContext = sceNpTssCreateNpTitleCtx(1, npId);
+        Require(tssContext > 0 && tssContext != context, tss, "no new title context was created");
+        const int tssContextA = sceNpTssCreateNpTitleCtxA(1, 1);
+        Require(tssContextA > 0 && tssContextA != tssContext, "sceNpTssCreateNpTitleCtxA", "no new title context was created");
+        const int tssRequest = sceNpTusCreateRequest(tssContext);
+        Require(tssRequest > 0, tss, "the context does not take requests");
+        sceNpTusDeleteRequest(tssRequest);
+        Require(sceNpTusDeleteNpTitleCtx(tssContext) == 0 && sceNpTusDeleteNpTitleCtx(tssContextA) == 0, tss, "the contexts could not be deleted");
+
+        int req = NewRequest();
+        struct { std::uint64_t size; std::uint64_t* offset; std::uint64_t* lastByte; void* ifParam; } tssOption{32, nullptr, nullptr, nullptr};
+        Require(sceNpTssGetDataAsync(req, 0, nullptr, 24, buffer, 16, nullptr) == InsufficientArgument, "sceNpTssGetDataAsync", "a null status was taken");
+        Require(sceNpTssGetDataAsync(req, 16, buffer, 24, buffer, 16, nullptr) == InvalidArgument, "sceNpTssGetDataAsync", "slot 16 was taken");
+        Require(sceNpTssGetDataAsync(req, -1, buffer, 24, buffer, 16, nullptr) == InvalidArgument, "sceNpTssGetDataAsync", "slot -1 was taken");
+        tssOption.size = 16;
+        Require(sceNpTssGetDataAsync(req, 0, buffer, 24, buffer, 16, &tssOption) == InvalidAlignment, "sceNpTssGetDataAsync", "a short option was taken");
+        tssOption.size = 32;
+        Require(sceNpTssGetDataAsync(req, 0, buffer, 24, buffer, 16, &tssOption) == 0, "sceNpTssGetDataAsync", "a full option was refused");
+        Require(sceNpTusDeleteMultiSlotDataVUserAsync(req, nullptr, slots, 2, nullptr) == InsufficientArgument, "sceNpTusDeleteMultiSlotDataVUserAsync", "a null virtual user was taken");
+        Require(sceNpTusDeleteMultiSlotDataVUserAsync(req, &virtualUser, slots, 0, nullptr) == InsufficientArgument, "sceNpTusDeleteMultiSlotDataVUserAsync", "an empty slot array was taken");
+        Require(sceNpTusDeleteMultiSlotDataVUserAsync(req, &virtualUser, manySlots, 65, nullptr) == TooManySlotId, "sceNpTusDeleteMultiSlotDataVUserAsync", "65 slots were taken");
+        Require(sceNpTusDeleteMultiSlotDataVUserAsync(req, &emptyUser, slots, 2, nullptr) == InvalidArgument, "sceNpTusDeleteMultiSlotDataVUserAsync", "an empty virtual user was taken");
+        Require(sceNpTusGetDataForCrossSaveVUserAsync(req, nullptr, -1, buffer, sizeof(buffer), buffer, 16, nullptr) == InvalidArgument, "sceNpTusGetDataForCrossSaveVUserAsync", "slot -1 was not refused first");
+        Require(sceNpTusGetDataForCrossSaveVUserAsync(req, nullptr, 1, buffer, sizeof(buffer), buffer, 16, nullptr) == InsufficientArgument, "sceNpTusGetDataForCrossSaveVUserAsync", "a null virtual user was taken");
+        Require(sceNpTusGetDataForCrossSaveVUserAsync(req, &virtualUser, 1, buffer, 0, buffer, 16, nullptr) == InsufficientArgument, "sceNpTusGetDataForCrossSaveVUserAsync", "a zero status size was taken");
+        Require(sceNpTusGetDataForCrossSaveVUserAsync(req, &emptyUser, 1, buffer, sizeof(buffer), buffer, 16, nullptr) == InvalidArgument, "sceNpTusGetDataForCrossSaveVUserAsync", "an empty virtual user was taken");
+        std::uint32_t rank = 1;
+        std::uint32_t zero = 0;
+        std::uint32_t hits = 7;
+        struct { std::uint64_t size; std::uint32_t* startSerialRank; std::uint32_t* hits; } friendsOption{24, &rank, &hits};
+        using FriendsCall = int (APS5_VABI *)(int, std::int32_t, std::int32_t, std::int32_t, void*, std::uint64_t, int, void*);
+        const struct { const char* name; FriendsCall call; std::int32_t lastSort; } friendsCalls[] = {
+            {"sceNpTusGetFriendsDataStatusAAsync", sceNpTusGetFriendsDataStatusAAsync, 2},
+            {"sceNpTusGetFriendsDataStatusForCrossSaveAsync", sceNpTusGetFriendsDataStatusForCrossSaveAsync, 2},
+            {"sceNpTusGetFriendsVariableAAsync", sceNpTusGetFriendsVariableAAsync, 4},
+            {"sceNpTusGetFriendsVariableForCrossSaveAsync", sceNpTusGetFriendsVariableForCrossSaveAsync, 4},
+        };
+        for (const auto& entry : friendsCalls) {
+            Require(entry.call(req, 1, 0, 1, nullptr, sizeof(buffer), 2, nullptr) == InsufficientArgument, entry.name, "a null array was taken");
+            Require(entry.call(req, 1, 0, 1, buffer, sizeof(buffer), 0, nullptr) == InvalidArgument, entry.name, "an empty array was taken");
+            Require(entry.call(req, -1, 0, 1, buffer, sizeof(buffer), 2, nullptr) == InvalidArgument, entry.name, "slot -1 was taken");
+            Require(entry.call(req, 1, 0, 1, buffer, sizeof(buffer), 101, nullptr) == TooManyNpId, entry.name, "101 friends were taken");
+            Require(entry.call(req, 1, 0, 0, buffer, sizeof(buffer), 2, nullptr) == InvalidArgument, entry.name, "sort type 0 was taken");
+            Require(entry.call(req, 1, 0, entry.lastSort + 1, buffer, sizeof(buffer), 2, nullptr) == InvalidArgument, entry.name, "a sort type past the last was taken");
+            friendsOption.size = 16;
+            Require(entry.call(req, 1, 0, 1, buffer, sizeof(buffer), 2, &friendsOption) == InvalidAlignment, entry.name, "a short option was taken");
+            friendsOption.size = 24;
+            friendsOption.startSerialRank = &zero;
+            Require(entry.call(req, 1, 0, 1, buffer, sizeof(buffer), 2, &friendsOption) == InvalidArgument, entry.name, "start rank 0 was taken");
+            friendsOption.startSerialRank = &rank;
+            Require(entry.call(req, 1, 0, entry.lastSort, buffer, sizeof(buffer), 2, &friendsOption) == 0, entry.name, "a valid option was refused");
+        }
+        Require(hits == 7, "sceNpTusGetFriendsVariableAAsync", "the hit count was written");
+        sceNpTusDeleteRequest(req);
+    }
     {
         int req = NewRequest();
         Require(sceNpTusAddAndGetVariableVUserAsync(req, &emptyUser, 1, 5, nullptr, nullptr, buffer, sizeof(buffer), nullptr) == InvalidArgument, "sceNpTusAddAndGetVariableVUserAsync", "an empty virtual user was taken");
