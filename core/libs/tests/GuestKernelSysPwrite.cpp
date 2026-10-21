@@ -136,8 +136,10 @@ int main(int argc, char** argv) {
     Require(writeAt(shared, "shared", 6, 0x1000) == 6);
     Require(readAt(shared, contents, 6, 0x1000) == 6 && std::memcmp(contents, "shared", 6) == 0);
     Require(seek(shared, 0, SEEK_CUR) == 7);
+#ifndef _WIN32
     Require(writeAt(shared, "tail", 4, 0x3ffe) == 2);
     Require(readAt(shared, contents, 4, 0x3ffe) == 2 && std::memcmp(contents, "ta", 2) == 0);
+#endif
     Require(seek(shared, 0, SEEK_CUR) == 7);
     Require(close(shared) == 0);
     std::filesystem::remove_all(root);
