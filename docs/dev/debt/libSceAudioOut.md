@@ -1,5 +1,9 @@
 # libSceAudioOut technical debt
 
+### Silent stubs
+
+- [sceAudioOutSetMainOutput](../../../core/libs/prx/libSceAudioOut/src/AudioOut.cpp) (libSceAudioOut) - returns 0 and does nothing, as the console function does on firmware 12.70: [PS5-Audio-Passthrough-Research](https://github.com/sainsaji/PS5-Audio-Passthrough-Research/blob/cf3c921d79bf00db4847f31b68a7bd95a8037cd7/docs/FINDINGS.md#L25) reads that export as `xor eax,eax; ret`. The export reads no argument, so its parameters stay unknown; other firmware versions are unverified
+
 ### Unknown function info
 
 - [sceAudioOut2UserGetSupportedAttributes](../../../core/libs/prx/libSceAudioOut/src/AudioOut2User.cpp) (libSceAudioOut) - the user handle and two uint32 output pointers follow [SharpProspero](https://github.com/SvenGDK/SharpProspero/blob/5dfdb4b0b166e83dc9ae275001afb695f12c7174/src/SharpProspero/Interop/Audio/AudioOut2.cs) and [KytyPS5](https://github.com/KytyPS5/KytyPS5/blob/df5b9b92be7dfd463b47756b707d6d356a9f0550/src/libs/libAudio2.cpp), not a console measurement. The masks describe this runtime: no context attributes and port attributes PCM (bit 0) and gain (bit 1). Null outputs and unknown or destroyed user handles throw; console validation order and error values are unknown. Users are tracked for this query, but port ownership and busy-user destruction are not implemented. The other PPSA23566 imports remain declared without parameters, with unknown signatures: [sceConvertKeycodeGetCharacterFromKeyboardData](../../../core/libs/prx/libSceConvertKeycode/Export.cpp), [sceProprietaryVoiceChatHelper{Initialize,Terminate,SetVoiceChatState,GetVoiceChatUsageState}](../../../core/libs/prx/libSceProprietaryVoiceChatHelperPrx/Export.cpp), [sceVoice{EnableChat,DisableChat}](../../../core/libs/prx/libSceVoice/Export.cpp). Names from the shadPS4 aerolib NID list
@@ -55,7 +59,6 @@
 - [sceAudioOutSetCaesarVolume](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSetHeadphoneOutMode](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutGetFocusEnablePid](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
-- [sceAudioOutSetMainOutput](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSetVolumeDown](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSetChatBalance](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
 - [sceAudioOutSetRecMode](../../../core/libs/prx/libSceAudioOut/src/Unimplemented.cpp) (libSceAudioOut) - unknown signature
