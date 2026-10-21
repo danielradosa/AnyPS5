@@ -110,6 +110,11 @@ struct NumpunctVtable {
     String* (APS5_VABI *truename)(String* result, const NumpunctFacet* self);
 };
 
+struct UnsupportedMethodsVtable {
+    FacetVtable facet;
+    void (APS5_VABI *methods[8])();
+};
+
 struct IosBase {
     const void* vtable;
     std::int64_t standardStream;

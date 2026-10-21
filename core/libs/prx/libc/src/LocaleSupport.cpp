@@ -312,6 +312,19 @@ GuestLocale::String* APS5_VABI NumpunctTruename(GuestLocale::String* result, con
 const GuestLocale::NumpunctVtable g_numpunctVtable{{DestroyNumpunct, DeleteNumpunct, RetainFacet, ReleaseFacet},
     NumpunctDecimalPoint, NumpunctThousandsSep, NumpunctGrouping, NumpunctFalsename, NumpunctTruename};
 
+void APS5_VABI NumPutMethodUnsupported() {
+    NotImplemented_nid_no_patch("num_put<char>::do_put");
+}
+
+void APS5_VABI TimePutMethodUnsupported() {
+    NotImplemented_nid_no_patch("time_put<char>::do_put");
+}
+
+const GuestLocale::UnsupportedMethodsVtable g_numPutVtable{{DestroyCollate, DeleteCollate, RetainFacet, ReleaseFacet}, {NumPutMethodUnsupported, NumPutMethodUnsupported, NumPutMethodUnsupported, NumPutMethodUnsupported, NumPutMethodUnsupported, NumPutMethodUnsupported, NumPutMethodUnsupported, NumPutMethodUnsupported}};
+const GuestLocale::UnsupportedMethodsVtable g_timePutVtable{{DestroyCollate, DeleteCollate, RetainFacet, ReleaseFacet}, {TimePutMethodUnsupported, TimePutMethodUnsupported, TimePutMethodUnsupported, TimePutMethodUnsupported, TimePutMethodUnsupported, TimePutMethodUnsupported, TimePutMethodUnsupported, TimePutMethodUnsupported}};
+
+constexpr std::size_t GuestTimePutFacetSize = 0xb8;
+
 constexpr std::array<short, 257> MakeClassificationTable() {
     std::array<short, 257> table{};
     for (unsigned int value = 0; value < 256; ++value) {
@@ -511,12 +524,23 @@ std::size_t APS5_VABI _ZNSt8numpunctIcE7_GetcatEPPKNSt6locale5facetEPKS1__nid_po
     return 4;
 }
 
-std::size_t APS5_VABI _ZNSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(GuestLocale::Facet**, const GuestLocale::Implementation* const*) {
-    NotImplemented_nid_no_patch(__func__);
+std::size_t APS5_VABI _ZNSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(GuestLocale::Facet** facet, const GuestLocale::Implementation* const*) {
+    if (facet != nullptr && *facet == nullptr) {
+        auto* object = static_cast<GuestLocale::Facet*>(_Znwm_nid_postfix(sizeof(GuestLocale::Facet)));
+        *object = {&g_numPutVtable.facet, 0, 0};
+        *facet = object;
+    }
+    return 4;
 }
 
-std::size_t APS5_VABI _ZNSt8time_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(GuestLocale::Facet**, const GuestLocale::Implementation* const*) {
-    NotImplemented_nid_no_patch(__func__);
+std::size_t APS5_VABI _ZNSt8time_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(GuestLocale::Facet** facet, const GuestLocale::Implementation* const*) {
+    if (facet != nullptr && *facet == nullptr) {
+        auto* object = static_cast<GuestLocale::Facet*>(_Znwm_nid_postfix(GuestTimePutFacetSize));
+        std::memset(object, 0, GuestTimePutFacetSize);
+        object->vtable = &g_timePutVtable.facet;
+        *facet = object;
+    }
+    return 5;
 }
 
 void APS5_VABI _ZNSt8_LocinfoC1EPKc_nid_postfix(GuestLocale::LocinfoStorage* self, const char* localeName) {

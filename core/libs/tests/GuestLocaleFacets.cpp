@@ -143,10 +143,33 @@ void CheckNumpunctGetcat(const GuestLocale::Implementation* const* classic) {
     vtable.facet.deleteObject(facet);
 }
 
-void CheckThrowingGetcats(const GuestLocale::Implementation* const* classic) {
-    GuestLocale::Facet* absent = nullptr;
-    reject([&] { _ZNSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(&absent, classic); });
-    reject([&] { _ZNSt8time_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(&absent, classic); });
+void CheckPutFacet(GuestLocale::Facet* facet, std::size_t before, std::size_t size) {
+    require(facet != nullptr && allocations == before + 1 && lastSize == size && lastAllocation == facet && facet->references == 0);
+    const auto& vtable = *reinterpret_cast<const GuestLocale::UnsupportedMethodsVtable*>(facet->vtable);
+    reject([&] { vtable.methods[0](); });
+    reject([&] { vtable.methods[7](); });
+    vtable.facet.retain(facet);
+    vtable.facet.retain(facet);
+    require(facet->references == 2);
+    vtable.facet.deleteObject(facet);
+}
+
+void CheckPutGetcats(const GuestLocale::Implementation* const* classic) {
+    require(_ZNSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(nullptr, classic) == 4);
+    require(_ZNSt8time_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(nullptr, classic) == 5);
+    GuestLocale::Facet existing{};
+    GuestLocale::Facet* facet = &existing;
+    std::size_t before = allocations;
+    require(_ZNSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(&facet, classic) == 4 && facet == &existing);
+    require(_ZNSt8time_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(&facet, classic) == 5 && facet == &existing && allocations == before);
+
+    facet = nullptr;
+    require(_ZNSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(&facet, classic) == 4);
+    CheckPutFacet(facet, before, sizeof(GuestLocale::Facet));
+    facet = nullptr;
+    before = allocations;
+    require(_ZNSt8time_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE7_GetcatEPPKNSt6locale5facetEPKS5__nid_postfix(&facet, classic) == 5);
+    CheckPutFacet(facet, before, 0xb8);
 }
 
 }
@@ -158,6 +181,6 @@ int main() {
 
     CheckCodecvtGetcat(classic);
     CheckNumpunctGetcat(classic);
-    CheckThrowingGetcats(classic);
+    CheckPutGetcats(classic);
     return 0;
 }
