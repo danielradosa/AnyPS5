@@ -298,7 +298,6 @@ int APS5_VABI sceBgftServiceIntPlayGoResume(void) {
 }
 
 int APS5_VABI sceBgftServiceIntTerm(void) {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 

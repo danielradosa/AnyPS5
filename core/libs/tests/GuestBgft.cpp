@@ -17,6 +17,7 @@ extern "C" {
 int APS5_VABI sceBgftServiceInit(const BgftInitParams* params);
 int APS5_VABI sceBgftServiceIntInit(const BgftInitParams* params);
 int APS5_VABI sceBgftServiceTerm(void);
+int APS5_VABI sceBgftServiceIntTerm(void);
 int APS5_VABI sceBgftServiceDownloadPauseTaskAll(void);
 int APS5_VABI sceBgftServiceDownloadResumeTaskAll(void);
 int APS5_VABI sceBgftServiceDownloadStartTaskAll(void);
@@ -64,6 +65,7 @@ int main() {
     Require(sceBgftServiceDownloadResumeTaskAll() == 0, "resuming every task failed");
     Require(sceBgftServiceDownloadStopTaskAll() == 0, "stopping every task failed");
     Require(sceBgftServiceTerm() == 0, "termination failed");
+    Require(sceBgftServiceIntTerm() == 0, "internal termination failed");
     std::puts("libSceBgft tests passed");
     return 0;
 }
