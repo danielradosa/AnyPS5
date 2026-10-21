@@ -1190,7 +1190,6 @@ int APS5_VABI CRYPTO_initAsymmetricKey() {
 }
 
 int APS5_VABI CRYPTO_uninitAsymmetricKey() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
@@ -1200,7 +1199,6 @@ int APS5_VABI RSA_verifySignature() {
 }
 
 int APS5_VABI VLONG_freeVlongQueue() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
