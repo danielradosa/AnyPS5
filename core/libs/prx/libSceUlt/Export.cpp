@@ -1040,9 +1040,8 @@ int APS5_VABI sceUltConditionVariableOptParamInitialize(void* optParam, std::uin
     return optParam == nullptr ? ULT_ERROR_NULL : ULT_OK;
 }
 
-int APS5_VABI _sceUltConditionVariableOptParamInitialize() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI _sceUltConditionVariableOptParamInitialize(void* optParam, std::uint32_t buildVersion) {
+    return sceUltConditionVariableOptParamInitialize(optParam, buildVersion);
 }
 
 }

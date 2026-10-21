@@ -22,6 +22,7 @@ int APS5_VABI sceUltConditionVariableDestroy(void*);
 int APS5_VABI sceUltConditionVariableSignalAll(void*);
 int APS5_VABI sceUltConditionVariableCreate(void*, const char*, void*, const void*, std::uint32_t);
 int APS5_VABI sceUltConditionVariableOptParamInitialize(void*, std::uint32_t);
+int APS5_VABI _sceUltConditionVariableOptParamInitialize(void*, std::uint32_t);
 int APS5_VABI sceUltMutexTryLock(void*);
 }
 
@@ -235,6 +236,9 @@ static void SignalAll() {
     optParam.fill(0xAB);
     CHECK(sceUltConditionVariableOptParamInitialize(nullptr, 0x12000000) == Null);
     CHECK(sceUltConditionVariableOptParamInitialize(optParam.data(), 0x12000000) == 0);
+    CHECK(optParam[0] == 0xAB && optParam[127] == 0xAB);
+    CHECK(_sceUltConditionVariableOptParamInitialize(nullptr, 0x12000000) == Null);
+    CHECK(_sceUltConditionVariableOptParamInitialize(optParam.data(), 0x12000000) == 0);
     CHECK(optParam[0] == 0xAB && optParam[127] == 0xAB);
     CHECK(sceUltMutexCreate(&mutex, "mutex", nullptr, nullptr, 0x12000000) == 0);
     CHECK(sceUltConditionVariableCreate(nullptr, "condition", &mutex, nullptr, 0x12000000) == Null);
