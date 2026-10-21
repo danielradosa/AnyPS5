@@ -42,6 +42,7 @@ int APS5_VABI pthread_attr_get_np_nid_postfix(Pthread thread, PthreadAttr* attr)
     p->_affinity = thread->affinity.load(std::memory_order_relaxed);
     p->_scope = thread->scope;
     p->_affinityExplicit = true;
+    p->affinityTail.fill(0);
     p->_scope = thread->scope;
     return 0;
 }

@@ -33,6 +33,12 @@
 #include <unistd.h>
 #endif
 
+static const auto initialThreadId = std::this_thread::get_id();
+
+extern "C" bool IsInitialPthread_nid_no_patch() {
+    return std::this_thread::get_id() == initialThreadId;
+}
+
 static constexpr int SCE_OK = 0;
 
 static constexpr std::size_t DEFAULT_STACK_SIZE = 1u << 20;
