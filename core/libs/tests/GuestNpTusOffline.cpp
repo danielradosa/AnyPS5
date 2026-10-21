@@ -14,6 +14,7 @@ int APS5_VABI sceNpTssCreateNpTitleCtx(std::uint32_t serviceLabel, const void* n
 int APS5_VABI sceNpTssCreateNpTitleCtxA(std::uint32_t serviceLabel, int userId);
 int APS5_VABI sceNpTusDeleteNpTitleCtx(int titleCtxId);
 int APS5_VABI sceNpTssGetDataAsync(int reqId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option);
+int APS5_VABI sceNpTssGetStorageAsync(int reqId);
 int APS5_VABI sceNpTusDeleteMultiSlotDataVUser(int reqId, const NpOnlineId* targetVirtualUserId, const std::int32_t* slotIds, int arrayLen, void* option);
 int APS5_VABI sceNpTusDeleteMultiSlotDataVUserAsync(int reqId, const NpOnlineId* targetVirtualUserId, const std::int32_t* slotIds, int arrayLen, void* option);
 int APS5_VABI sceNpTusGetDataForCrossSaveVUser(int reqId, const NpOnlineId* targetVirtualUserId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option);
@@ -262,6 +263,7 @@ int main() {
     CheckSync("sceNpTusTryAndSetVariableForCrossSave", [&](int req) { return sceNpTusTryAndSetVariableForCrossSave(req, 1, 1, 1, 5, nullptr, nullptr, nullptr, buffer, sizeof(buffer), nullptr); });
     CheckSync("sceNpTusTryAndSetVariableForCrossSaveVUser", [&](int req) { return sceNpTusTryAndSetVariableForCrossSaveVUser(req, &virtualUser, 1, 1, 5, nullptr, nullptr, nullptr, buffer, sizeof(buffer), nullptr); });
     CheckSync("sceNpTusTryAndSetVariableVUser", [&](int req) { return sceNpTusTryAndSetVariableVUser(req, &virtualUser, 1, 1, 5, nullptr, nullptr, nullptr, buffer, sizeof(buffer), nullptr); });
+    CheckAsync("sceNpTssGetStorageAsync", [&](int req) { return sceNpTssGetStorageAsync(req); }, [&]() { return sceNpTssGetStorageAsync(9999); }, nullptr);
     CheckAsync("sceNpTssGetDataAsync", [&](int req) { return sceNpTssGetDataAsync(req, 15, buffer, 24, buffer, 16, nullptr); }, [&]() { return sceNpTssGetDataAsync(9999, 15, buffer, 24, buffer, 16, nullptr); }, nullptr);
     CheckAsync("sceNpTusDeleteMultiSlotDataVUserAsync", [&](int req) { return sceNpTusDeleteMultiSlotDataVUserAsync(req, &virtualUser, slots, 2, nullptr); }, [&]() { return sceNpTusDeleteMultiSlotDataVUserAsync(9999, &virtualUser, slots, 2, nullptr); }, [&](int req) { return sceNpTusDeleteMultiSlotDataVUserAsync(req, &virtualUser, slots, 2, buffer); });
     CheckAsync("sceNpTusGetDataForCrossSaveVUserAsync", [&](int req) { return sceNpTusGetDataForCrossSaveVUserAsync(req, &virtualUser, 1, buffer, sizeof(buffer), buffer, 16, nullptr); }, [&]() { return sceNpTusGetDataForCrossSaveVUserAsync(9999, &virtualUser, 1, buffer, sizeof(buffer), buffer, 16, nullptr); }, [&](int req) { return sceNpTusGetDataForCrossSaveVUserAsync(req, &virtualUser, 1, buffer, sizeof(buffer), buffer, 16, buffer); });

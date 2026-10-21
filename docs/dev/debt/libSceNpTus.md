@@ -11,7 +11,7 @@
 - [sceNpTusSetTimeout](../../../core/libs/prx/libSceNpTus/Export.cpp) (libSceNpTus) - unknown signature
 - [sceNpTusChangeModeForOtherSaveDataOwners](../../../core/libs/prx/libSceNpTus/Export.cpp) (libSceNpTus) - unknown signature
 - [sceNpTssGetStorage](../../../core/libs/prx/libSceNpTus/Export.cpp) (libSceNpTus) - unknown signature
-- [sceNpTssGetStorageAsync](../../../core/libs/prx/libSceNpTus/Export.cpp) (libSceNpTus) - unknown signature
+- [sceNpTssGetStorageAsync](../../../core/libs/prx/libSceNpTus/Export.cpp) (libSceNpTus) - only the leading request id is known; the call starts a request with no argument checks, which finishes with `SCE_NP_ERROR_SIGNED_OUT` like the calls above and writes nothing. Not measured on a console.
 - [sceNpTusDeleteNpTitleCtx](../../../core/libs/prx/libSceNpTus/Export.cpp) (libSceNpTus) - the PS5 signature, error codes and child-request lifetime have not been measured on a console. Deletion invalidates the context and all its requests, following [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/a808e7626e3c7de8d0f0fda6a91f620b42f6c762/src/core/libraries/np/np_tus/np_tus.cpp#L158-L180).
 
 ### Functional

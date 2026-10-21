@@ -331,9 +331,8 @@ int APS5_VABI sceNpTssGetStorage(void) {
     return 0;
 }
 
-int APS5_VABI sceNpTssGetStorageAsync(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNpTssGetStorageAsync(int reqId) {
+    return StartOffline(reqId);
 }
 
 int APS5_VABI sceNpTssGetSmallStorageAsync(int reqId, void* data, std::uint64_t maxSize, std::uint64_t* contentLength, void* option) {
