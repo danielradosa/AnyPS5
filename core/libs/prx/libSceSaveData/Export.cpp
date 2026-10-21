@@ -297,9 +297,10 @@ int APS5_VABI sceSaveDataGetUpdatedDataCount(void) {
     return 0;
 }
 
-int APS5_VABI sceSaveDataInitialize2() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceSaveDataInitialize2(const void* init) {
+    const int rc = savedata::initialize_internal(init);
+    SAVEDATA_TRACE("sceSaveDataInitialize2 -> 0x%08x", static_cast<unsigned>(rc));
+    return rc;
 }
 
 int APS5_VABI sceSaveDataInitializeForCdlg(void) {
