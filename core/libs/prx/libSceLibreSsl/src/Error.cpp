@@ -1,5 +1,6 @@
 #include "prx/libSceLibreSsl/include/Internal.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/HostThreadLocal.hpp"
 
 #include <deque>
 #include <stdexcept>
@@ -10,9 +11,10 @@ namespace {
 
 constexpr std::size_t QueueCapacity = 16;
 
+struct QueueTag;
+
 std::deque<std::uint64_t>& Queue() {
-    thread_local std::deque<std::uint64_t> queue;
-    return queue;
+    return HostThreadLocal<std::deque<std::uint64_t>, QueueTag>();
 }
 
 }
