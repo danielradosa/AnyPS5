@@ -9,24 +9,20 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <stdexcept>
 
 extern "C" {
 std::int32_t APS5_VABI sceHmd2GazeGetResult(const void* param, void* result);
 std::int32_t APS5_VABI sceHmd2GazeGetResultForFoveatedRendering();
 std::int32_t APS5_VABI sceHmd2ReprojectionTerminate();
-std::int32_t APS5_VABI sceHmd2ReprojectionDisableVrMode();
-std::int32_t APS5_VABI sceHmd2ReprojectionBeginFrame(std::uint64_t frame);
 std::int32_t APS5_VABI sceHmd2ReprojectionGetPredictedDisplayTime(std::uint64_t frame, std::uint64_t* time);
 std::int32_t APS5_VABI sceHmd2ReprojectionSetParam(std::uint32_t buffer, std::uint64_t frame, const void* param,
                                                    const void* trace);
 std::int32_t APS5_VABI sceHmd2ReprojectionSetParamWithBuffer();
 std::int32_t APS5_VABI sceHmd2ReprojectionSetRenderConfig(std::uint64_t halfRate, std::uint64_t reserved0,
                                                           std::uint64_t reserved1);
-std::int32_t APS5_VABI sceHmd2ReprojectionSetMirroringOption(const void* option);
 std::int32_t APS5_VABI sceHmd2ReprojectionEnableMirroring(const void* param);
-std::int32_t APS5_VABI sceHmd2ReprojectionDisableMirroring();
-int APS5_VABI sceHmd2ReprojectionGetStatus();
 std::int32_t APS5_VABI Hmd2WriteStateTwo(void* a0);
 std::int32_t APS5_VABI Hmd2WriteSize0x2000Align0x100(std::uint64_t* a0, std::uint64_t* a1);
 std::int32_t APS5_VABI Hmd2WriteFourConstants(void* a0);
@@ -95,16 +91,12 @@ void CheckUninitialized() {
     Require(sceHmd2GazeGetResult(param, output) == Hmd2::NotInitialized, "gaze result");
     Require(std::memcmp(output, untouched, sizeof(output)) == 0, "failed query wrote output");
     Require(sceHmd2GazeGetResultForFoveatedRendering() == Hmd2::NotInitialized, "foveated gaze result");
-    Require(sceHmd2ReprojectionBeginFrame(1) == Hmd2::NotInitialized, "begin frame");
     Require(sceHmd2ReprojectionGetPredictedDisplayTime(1, &time) == Hmd2::NotInitialized, "predicted display time");
     Require(time == 0x1234, "failed display time query wrote output");
     Require(sceHmd2ReprojectionSetParam(0, 1, param, nullptr) == Hmd2::NotInitialized, "set param");
     Require(sceHmd2ReprojectionSetParamWithBuffer() == Hmd2::NotInitialized, "set param with buffer");
     Require(sceHmd2ReprojectionSetRenderConfig(1, 0, 0) == Hmd2::NotInitialized, "render config");
-    Require(sceHmd2ReprojectionSetMirroringOption(param) == Hmd2::NotInitialized, "mirroring option");
     Require(sceHmd2ReprojectionEnableMirroring(param) == Hmd2::NotInitialized, "enable mirroring");
-    Require(sceHmd2ReprojectionDisableMirroring() == Hmd2::NotInitialized, "disable mirroring");
-    Require(sceHmd2ReprojectionDisableVrMode() == Hmd2::NotInitialized, "disable VR mode");
     Require(sceHmd2ReprojectionTerminate() == Hmd2::NotInitialized, "reprojection terminate");
 }
 void InstallProcessParameters() {
@@ -113,6 +105,21 @@ void InstallProcessParameters() {
     std::memcpy(process.data(), &size, sizeof(size));
     std::memcpy(process.data() + 8, &magic, sizeof(magic));
     Require(ProcessParametersFixture::Install(process.data(), process.size()), "process parameters were not installed");
+}
+
+void TestReprojectionWithoutSession() {
+    constexpr std::array<std::int64_t, 4> flipArgs{0, 1, -1, std::numeric_limits<std::int64_t>::max()};
+    for (const std::int64_t flipArg : flipArgs) {
+        Require(sceHmd2ReprojectionBeginFrame(flipArg) == Hmd2::ReprojectionNotInitialized, "begin frame without a reprojection session");
+    }
+    const std::uint8_t option[0x10]{};
+    for (int call = 0; call < 2; ++call) {
+        Require(sceHmd2ReprojectionDisableMirroring() == Hmd2::ReprojectionNotInitialized, "disable mirroring without a reprojection session");
+        Require(sceHmd2ReprojectionDisableVrMode() == Hmd2::ReprojectionNotInitialized, "disable VR mode without a reprojection session");
+        Require(sceHmd2ReprojectionGetStatus() == Hmd2::ReprojectionNotInitialized, "status without a reprojection session");
+        Require(sceHmd2ReprojectionSetMirroringOption(call == 0 ? nullptr : option) == Hmd2::ReprojectionNotInitialized,
+                "mirroring option without a reprojection session");
+    }
 }
 
 void TestBeforeInitialize() {
@@ -431,6 +438,11 @@ void RequireRuntimeError(F f, const char* message) {
 
 void UnmeasuredWithReprojectionSession() {
     RequireRuntimeError([] { Hmd2BeforeInitializeReprojectionNotInitialized(); }, "a reprojection answer with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionBeginFrame(1); }, "begin frame with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionDisableMirroring(); }, "disable mirroring with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionDisableVrMode(); }, "disable VR mode with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionGetStatus(); }, "reprojection status with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionSetMirroringOption(nullptr); }, "mirroring option with a session did not throw");
     Require(Hmd2BeforeInitializeZero() == 0, "an answer without a session check depends on the reprojection session");
 }
 
@@ -439,12 +451,13 @@ int main() {
     SizeQueriesReturnTheConsoleSizes();
     InstallProcessParameters();
     CheckUninitialized();
+    TestReprojectionWithoutSession();
     TestBeforeInitialize();
     TestWithoutHeadset();
     CheckUninitialized();
+    TestReprojectionWithoutSession();
     TestReprojection();
     UnmeasuredWithReprojectionSession();
-    RequireRuntimeError([] { sceHmd2ReprojectionGetStatus(); }, "reprojection status did not throw");
     std::puts("HMD2 tests passed");
     return 0;
 }

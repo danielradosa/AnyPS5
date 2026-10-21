@@ -67,9 +67,8 @@ std::int32_t GetDeviceInformation(Hmd2::DeviceInformation* info) {
 
 extern "C" {
 
-int APS5_VABI sceHmd2ReprojectionGetStatus() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceHmd2ReprojectionGetStatus() {
+    return BeforeReprojectionSession(__func__);
 }
 
 Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign() {
@@ -147,17 +146,17 @@ std::int32_t APS5_VABI sceHmd2Open(std::int32_t userId, std::int32_t type, std::
     return DeviceHandle;
 }
 
-std::int32_t APS5_VABI sceHmd2ReprojectionBeginFrame(std::uint64_t frame) {
-    (void)frame;
-    return SCE_HMD2_ERROR_NOT_INITIALIZED;
+std::int32_t APS5_VABI sceHmd2ReprojectionBeginFrame(std::int64_t flipArg) {
+    (void)flipArg;
+    return BeforeReprojectionSession(__func__);
 }
 
 std::int32_t APS5_VABI sceHmd2ReprojectionDisableMirroring() {
-    return SCE_HMD2_ERROR_NOT_INITIALIZED;
+    return BeforeReprojectionSession(__func__);
 }
 
 std::int32_t APS5_VABI sceHmd2ReprojectionDisableVrMode() {
-    return SCE_HMD2_ERROR_NOT_INITIALIZED;
+    return BeforeReprojectionSession(__func__);
 }
 
 std::int32_t APS5_VABI sceHmd2ReprojectionEnableMirroring(const void* param) {
@@ -232,7 +231,7 @@ std::int32_t APS5_VABI sceHmd2ReprojectionSetAllowPositionalReprojection(std::in
 
 std::int32_t APS5_VABI sceHmd2ReprojectionSetMirroringOption(const void* option) {
     (void)option;
-    return SCE_HMD2_ERROR_NOT_INITIALIZED;
+    return BeforeReprojectionSession(__func__);
 }
 
 std::int32_t APS5_VABI sceHmd2ReprojectionSetParam(std::uint32_t buffer, std::uint64_t frame, const void* param,
