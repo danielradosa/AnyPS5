@@ -47,6 +47,7 @@ int APS5_VABI sceKernelTitleWorkaroundIsEnabled(const void*, std::int32_t, std::
 int APS5_VABI sceKernelGetProcessType(int);
 int APS5_VABI sceKernelOpen(const char*, int, std::uint16_t);
 int APS5_VABI sceKernelClose(int);
+int APS5_VABI sceKernelFlock(int, int);
 int APS5_VABI sceKernelRename(const char*, const char*);
 int APS5_VABI sceKernelFstat(int, FileStat*);
 int APS5_VABI sceKernelGetdents(int, char*, int);
@@ -388,6 +389,21 @@ static void CheckProcessQueries() {
     Require(sceKernelGetProcessType(getpid_nid_postfix() + 1) == static_cast<int>(0x80020003));
 }
 
+static void SceKernelFlock() {
+    const auto path = (std::filesystem::temp_directory_path() / "anyps5-sce-flock.bin").string();
+    const int first = open_nid_postfix(path.c_str(), 0x602, 0644);
+    const int second = open_nid_postfix(path.c_str(), 2, 0);
+    Require(first >= 0 && second >= 0);
+    Require(sceKernelFlock(first, 2 | 4) == 0);
+    Require(sceKernelFlock(second, 2 | 4) == static_cast<int>(0x80020023u));
+    Require(sceKernelFlock(first, 8) == 0);
+    Require(sceKernelFlock(second, 2 | 4) == 0);
+    Require(sceKernelFlock(second, 8) == 0);
+    Require(sceKernelFlock(-1, 2) == static_cast<int>(0x80020009u));
+    Require(close_nid_postfix(second) == 0 && close_nid_postfix(first) == 0);
+    std::filesystem::remove(path);
+}
+
 int main() {
 #ifdef _WIN32
     auto hostDirectorySpelling = std::filesystem::current_path().native();
@@ -399,6 +415,7 @@ int main() {
     *__error_nid_postfix() = 0;
     Require(fork_nid_postfix() == -1 && Error() == 78);
     Require(fork_nid_postfix() == -1 && Error() == 78);
+    SceKernelFlock();
     Require(umask_nid_postfix(0) == 022);
     Require(umask_nid_postfix(07777) == 0);
     Require(umask_nid_postfix(022) == 07777);

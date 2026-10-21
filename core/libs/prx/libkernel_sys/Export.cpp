@@ -25,6 +25,7 @@
 #include "prx/libc/include/CreationMask.hpp"
 #include "prx/libkernel/File/include/FileFlags.hpp"
 #include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/KernelErrors.hpp"
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -379,6 +380,12 @@ std::uint16_t APS5_VABI umask_nid_postfix(std::uint16_t mask) {
 
 std::int64_t APS5_VABI pwrite_nid_postfix(int d, const void* buf, std::size_t nbytes, std::int64_t offset) {
     return PosixPwrite_nid_no_patch(d, buf, nbytes, offset);
+}
+
+int APS5_VABI flock_nid_postfix(int d, int operation);
+
+int APS5_VABI sceKernelFlock(int d, int operation) {
+    return flock_nid_postfix(d, operation) == 0 ? 0 : SceKernelError(*__error_nid_postfix());
 }
 
 int APS5_VABI _fstatfs_nid_postfix(int d, void* buf);
