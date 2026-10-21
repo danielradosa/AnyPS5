@@ -30,12 +30,15 @@ int APS5_VABI sceVoiceSetMuteFlagAll(bool);
 int APS5_VABI sceVoiceGetBitRate(std::uint32_t, std::uint32_t*);
 int APS5_VABI sceVoiceSetBitRate(std::uint32_t, std::uint32_t);
 int APS5_VABI sceVoiceUpdatePort(std::uint32_t, const VoicePortParam*);
+int APS5_VABI sceVoiceInitHQ(VoiceInitParam*, std::int32_t);
+int APS5_VABI sceVoiceVADSetVersion(std::int32_t);
 }
 
 namespace {
 
 constexpr int NotInitialized = static_cast<int>(0x804E0801u);
 constexpr int AlreadyInitialized = static_cast<int>(0x804E0802u);
+constexpr int ArgumentInvalid = static_cast<int>(0x804E0805u);
 
 void Require(bool value) { if (!value) std::abort(); }
 
@@ -192,5 +195,17 @@ int main() {
     Require(sceVoiceInit(&init, 0) == 0);
     const auto fresh = CreatePort(2, 1.0f);
     Require(sceVoiceGetMuteFlag(fresh, &muted) == 0 && !muted);
+    Require(sceVoiceEnd_nid_postfix() == 0);
+
+    Require(sceVoiceVADSetVersion(0) == 0 && sceVoiceVADSetVersion(1) == 0);
+    Require(sceVoiceVADSetVersion(2) == ArgumentInvalid && sceVoiceVADSetVersion(-1) == ArgumentInvalid);
+    RequireThrows([] { sceVoiceInitHQ(nullptr, 0); });
+    Require(sceVoiceInitHQ(&init, 0) == 0);
+    Require(sceVoiceInitHQ(&init, 0) == AlreadyInitialized);
+    Require(sceVoiceInit(&init, 0) == AlreadyInitialized);
+    Require(sceVoiceStart(&start) == 0);
+    Require(sceVoiceEnd_nid_postfix() == 0);
+    Require(sceVoiceInit(&init, 0) == 0);
+    Require(sceVoiceInitHQ(&init, 0) == AlreadyInitialized);
     Require(sceVoiceEnd_nid_postfix() == 0);
 }

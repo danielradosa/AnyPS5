@@ -23,6 +23,7 @@ constexpr std::uint32_t VoiceFrameMs = 20;
 constexpr std::int32_t PortAttrVoiceActivity = 1001;
 constexpr int VoiceErrorNotInitialized = static_cast<int>(0x804E0801u);
 constexpr int VoiceErrorAlreadyInitialized = static_cast<int>(0x804E0802u);
+constexpr int VoiceErrorArgumentInvalid = static_cast<int>(0x804E0805u);
 
 struct Port {
     std::int32_t type;
@@ -284,9 +285,8 @@ int APS5_VABI sceVoiceDisableChat(void) {
     return 0;
 }
 
-int APS5_VABI sceVoiceInitHQ(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceVoiceInitHQ(VoiceInitParam* param, int32_t version) {
+    return sceVoiceInit(param, version);
 }
 
 int APS5_VABI sceVoiceGetMemorySize(void) {
@@ -314,9 +314,8 @@ int APS5_VABI sceVoiceVADPVTAdjustment(void) {
     return 0;
 }
 
-int APS5_VABI sceVoiceVADSetVersion(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceVoiceVADSetVersion(int32_t version) {
+    return version == 0 || version == 1 ? 0 : VoiceErrorArgumentInvalid;
 }
 
 int APS5_VABI sceVoiceSetMuteFlagAll(bool muted) {
