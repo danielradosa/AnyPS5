@@ -73,10 +73,6 @@ bool ScansWideInProcess(const char* format) {
     return true;
 }
 
-void RejectGuestWideScan(const char* format) {
-    if (HasGuestWideScan(format)) NotImplemented_nid_no_patch("fscanf 16-bit wide conversion on Linux");
-}
-
 bool IsWideScan(const std::string& length, char conversion) {
     return conversion == 'S' || conversion == 'C' || (length == "l" && (conversion == 's' || conversion == 'c' || conversion == '['));
 }
@@ -819,10 +815,9 @@ int APS5_VABI vfscanf_nid_postfix(FileStream* stream, const char* format, VaList
 #ifdef _WIN32
     const int result = LibcDetail::ScanFileWindows_nid_no_patch(native, format, args);
 #else
-    RejectGuestWideScan(format);
     std::va_list copy;
     va_copy(copy, *reinterpret_cast<std::va_list*>(args));
-    const int result = HostVfscanf(native, format, copy);
+    const int result = HasGuestWideScan(format) ? ScanWideFile(native, format, copy) : HostVfscanf(native, format, copy);
     va_end(copy);
 #endif
     stream->SyncStatus();

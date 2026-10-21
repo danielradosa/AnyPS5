@@ -1,6 +1,8 @@
 #include "prx/libc/include/FileStream.hpp"
+#include "SceTypes.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cstdarg>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -34,7 +36,10 @@ static void Require(bool value, const char* what) {
 
 static int APS5_VABI ScanStream(FileStream* stream, const char* format, ...) {
     APS5_VA_BEGIN(format);
+    VaList original;
+    std::memcpy(&original, args, sizeof(original));
     const int result = vfscanf_nid_postfix(stream, format, args);
+    Require(std::memcmp(&original, args, sizeof(original)) == 0, "vfscanf preserves the caller argument cursor");
     APS5_VA_END();
     return result;
 }
@@ -97,6 +102,57 @@ int main() {
     Require(scanf_nid_postfix("%d", &second) == 1 && second == 12, "scanf reads the guest standard input");
     __stdinp_nid_postfix = standardInput;
     input.Close();
+
+    FileStream wideInput(std::tmpfile());
+    Require(std::fputs("skip alpha 1 2 3 4 5 6 7!", wideInput.GetHandle()) >= 0, "seed wide variadic input");
+    std::rewind(wideInput.GetHandle());
+    char16_t wideWord[8]{};
+    int values[7]{};
+    int count = -1;
+    std::int64_t longCount = -1;
+    Require(ScanStream(&wideInput, "%*ls %5ls %d %d %d %d %d %d %d%ln%n", wideWord,
+        &values[0], &values[1], &values[2], &values[3], &values[4], &values[5], &values[6], &longCount, &count) == 8,
+        "vfscanf wide conversion and overflow pointer arguments");
+    Require(std::u16string(wideWord) == u"alpha", "vfscanf writes guest 16-bit characters");
+    for (int index = 0; index < 7; ++index) Require(values[index] == index + 1, "vfscanf mixed pointer values");
+    Require(count == 24 && longCount == 24 && std::ftell(wideInput.GetHandle()) == 24,
+        "vfscanf counts consumed input");
+    Require(std::fgetc(wideInput.GetHandle()) == '!', "vfscanf preserves the next unread byte");
+    Require(ScanStream(&wideInput, "%ls", wideWord) == EOF && std::feof(wideInput.GetHandle()), "vfscanf wide EOF");
+    Require((wideInput.GuestState().flags & 0x20) != 0, "vfscanf synchronizes guest EOF");
+    wideInput.Close();
+    errno = 0;
+    Require(ScanStream(&wideInput, "%ls", wideWord) == -1 && errno == 9, "vfscanf rejects a closed wide stream");
+
+    FileStream wideStandard(std::tmpfile());
+    Require(std::fputs("abc Xdef QZ", wideStandard.GetHandle()) >= 0, "seed wide standard input");
+    std::rewind(wideStandard.GetHandle());
+    __stdinp_nid_postfix = &wideStandard;
+    char16_t pair[3] = {u'!', u'!', u'!'};
+    Require(ScanInput("%l[a-c] %lc", wideWord, pair) == 2, "vscanf wide scanset and character");
+    Require(std::u16string(wideWord) == u"abc" && pair[0] == u'X' && pair[1] == u'!',
+        "vscanf writes one element without terminating lc");
+    Require(scanf_nid_postfix("%S %C", wideWord, pair) == 2 && std::u16string(wideWord) == u"def" && pair[0] == u'Q',
+        "scanf guest standard input wide aliases");
+    Require(std::fgetc(wideStandard.GetHandle()) == 'Z', "scanf preserves next unread input");
+    __stdinp_nid_postfix = standardInput;
+    wideStandard.Close();
+
+#ifndef _WIN32
+    FileStream utf8(std::tmpfile());
+    Require(std::fputs("žluť 7 été!", utf8.GetHandle()) >= 0, "seed UTF-8 variadic input");
+    std::rewind(utf8.GetHandle());
+    longCount = -1;
+    Require(ScanStream(&utf8, "%4ls %d %lc%ln", wideWord, &values[0], pair, &longCount) == 3,
+        "vfscanf mixed UTF-8 and narrow conversions");
+    Require(std::u16string(wideWord) == u"žluť" && values[0] == 7 && pair[0] == u'é' && pair[1] == u'!',
+        "vfscanf decodes UTF-8 and counts width in characters");
+    Require(longCount == 11 && std::ftell(utf8.GetHandle()) == 11, "vfscanf counts UTF-8 input bytes");
+    Require(ScanStream(&utf8, "%lc", pair) == 1 && pair[0] == u't', "vfscanf continues after a multibyte field");
+    Require(ScanStream(&utf8, "%lc", pair) == 1 && pair[0] == u'é', "vfscanf decodes a multibyte character");
+    Require(std::fgetc(utf8.GetHandle()) == '!', "vfscanf preserves input after a multibyte field");
+    utf8.Close();
+#endif
 
     FileStream written(std::tmpfile());
     Require(fwprintf_nid_postfix(&written, u"%d:%ls|", 7, u"été") == 6, "fwprintf counts wide characters");
