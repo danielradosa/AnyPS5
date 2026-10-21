@@ -358,8 +358,10 @@ int APS5_VABI sceNpIntRegisterGamePresenceCallback(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-int APS5_VABI sceNpIsPlusMember(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceNpIsPlusMember(int userId, bool* isPlusMember) {
+    (void)userId;
+    if (!isPlusMember) return SCE_NP_ERROR_INVALID_ARGUMENT;
+    *isPlusMember = false;
     return 0;
 }
 int APS5_VABI sceNpManagerIntAbortRequest(void) {

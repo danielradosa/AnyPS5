@@ -53,6 +53,7 @@ int APS5_VABI sceNpGetAccountDateOfBirthA(int userId, void* dateOfBirth);
 int APS5_VABI sceNpGetAccountLanguageA(int reqId, int userId, void* language);
 int APS5_VABI sceNpGetGamePresenceStatus(const NpOnlineId* onlineId, std::uint32_t* status);
 int APS5_VABI sceNpGetGamePresenceStatusA(int userId, std::uint32_t* status);
+int APS5_VABI sceNpIsPlusMember(int userId, bool* isPlusMember);
 int APS5_VABI sceNpGetParentalControlInfoA(int reqId, int userId, std::int8_t* age, void* info);
 }
 
@@ -341,6 +342,11 @@ void CheckUserIdQueries() {
     Require(sceNpGetGamePresenceStatus(&onlineId, nullptr) == InvalidArgument, "sceNpGetGamePresenceStatus must reject a null status");
     Require(status == Sentinel, "a rejected presence query wrote its status");
     Require(sceNpGetGamePresenceStatus(&onlineId, &status) == 0 && status == Offline, "sceNpGetGamePresenceStatus must report the online id as offline");
+    bool plus = true;
+    Require(sceNpIsPlusMember(InitialUserId, nullptr) == InvalidArgument, "sceNpIsPlusMember must reject a null output");
+    Require(sceNpIsPlusMember(InitialUserId, &plus) == 0 && !plus, "sceNpIsPlusMember must report no PS Plus membership");
+    plus = true;
+    Require(sceNpIsPlusMember(OtherUserId, &plus) == 0 && !plus, "sceNpIsPlusMember must report no PS Plus membership for any user");
 }
 
 }
