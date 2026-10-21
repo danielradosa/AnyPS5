@@ -1,11 +1,13 @@
 #include "SceTypes.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <iterator>
+#include <thread>
 #include <vector>
 
 extern "C" {
@@ -290,6 +292,25 @@ void CheckMixAndPush() {
     Require(sceAudio3dPortClose(0) == 0, "close");
 }
 
+void CheckPushKeepsRealTime() {
+    Audio3dOpenParameters parameters = Defaults();
+    std::uint32_t id = 7;
+    Require(Open(parameters, &id) == 0 && id == 0, "open");
+    const std::int16_t samples[8] = {1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000};
+    Require(sceAudio3dBedWrite(0, 2, 0, samples, 4) == 0, "bed write");
+    constexpr std::uint32_t frames = 200;
+    const std::uint64_t blockUs = 1000000ull * parameters.granularity / 48000ull;
+    const auto start = std::chrono::steady_clock::now();
+    for (std::uint32_t i = 0; i < frames; i++) {
+        Require(sceAudio3dPortAdvance(0) == 0, "advance");
+        Require(sceAudio3dPortPush(0, 1) == 0, "sync push");
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+    const std::uint64_t expected = frames * blockUs;
+    Require(elapsed + 150000 >= static_cast<std::uint64_t>(expected), "a blocking push must run at real time");
+    Require(sceAudio3dPortClose(0) == 0, "close");
+}
+
 void CheckFlush() {
     Require(sceAudio3dPortFlush(0) == INVALID_PORT, "flush needs an open port");
     Audio3dOpenParameters parameters = Defaults();
@@ -364,22 +385,52 @@ void CheckBed() {
     Audio3dOpenParameters parameters = Defaults();
     std::uint32_t id = 7;
     Require(Open(parameters, &id) == 0 && id == 0, "open");
+    const auto consume = [] {
+        Require(sceAudio3dPortAdvance(0) == 0, "advance after a bed write");
+        Require(sceAudio3dPortFlush(0) == 0, "flush the mixed frame after a bed write");
+    };
     Require(sceAudio3dBedWrite(0, 2, 0, samples, 4) == 0, "2 channel s16 bed write");
+    consume();
     Require(sceAudio3dBedWrite(0, 1, 0, samples, 4) == INVALID_PARAMETER, "1 channel bed write");
     Require(sceAudio3dBedWrite(0, 2, 0, nullptr, 4) == INVALID_PARAMETER, "null bed buffer");
     Require(sceAudio3dBedWrite2(0, 2, 0, samples, 4, 0, false) == 0, "bed write2 route both");
+    consume();
     Require(sceAudio3dBedWrite2(0, 2, 0, samples, 4, 1, false) == 0, "bed write2 route hmu only");
+    consume();
     Require(sceAudio3dBedWrite2(0, 2, 0, samples, 4, 2, false) == 0, "bed write2 route tv only");
+    consume();
     Require(sceAudio3dBedWrite2(0, 2, 0, samples, 4, 3, false) == INVALID_PARAMETER, "bed write2 unknown route");
     Require(sceAudio3dBedWrite(0, 2, 2, samples, 4) == INVALID_PARAMETER, "unknown bed format");
     Require(sceAudio3dBedWrite(0, 2, 0, samples, 0) == INVALID_PARAMETER, "zero bed samples");
     Require(sceAudio3dBedWrite(0, 2, 0, reinterpret_cast<const char*>(samples) + 1, 4) == INVALID_PARAMETER, "misaligned s16 bed buffer");
     const float floats[8] = {};
     Require(sceAudio3dBedWrite(0, 2, 1, floats, 4) == 0, "float bed write");
+    consume();
     const std::uint32_t granularity = parameters.granularity;
     std::vector<std::int16_t> wide(static_cast<std::size_t>(granularity) * 8, 0);
     Require(sceAudio3dBedWrite(0, 6, 0, wide.data(), granularity) == 0, "6 channel bed write");
+    consume();
     Require(sceAudio3dBedWrite(0, 8, 0, wide.data(), granularity) == 0, "8 channel bed write");
+    consume();
+    Require(sceAudio3dPortClose(0) == 0, "close");
+}
+
+void CheckBedQueue() {
+    Audio3dOpenParameters parameters = Defaults();
+    std::uint32_t id = 7;
+    Require(Open(parameters, &id) == 0 && id == 0, "open");
+    const std::int16_t samples[8] = {1000, -1000, 2000, -2000, 3000, -3000, 4000, -4000};
+    for (std::uint32_t i = 0; i < parameters.queue_depth; ++i) {
+        Require(sceAudio3dBedWrite(0, 2, 0, samples, 4) == 0, "each bed write fills the queue");
+    }
+    Require(sceAudio3dBedWrite(0, 2, 0, samples, 4) == NOT_READY, "a full bed queue must be NOT_READY");
+    Require(sceAudio3dPortAdvance(0) == 0, "advance consumes one bed");
+    Require(sceAudio3dBedWrite(0, 2, 0, samples, 4) == 0, "the consumed bed makes room");
+    Require(sceAudio3dPortAdvance(0) == 0, "advance consumes the next bed");
+    RequireLevel(2, 0, "two frames are queued from the queued beds");
+    Require(sceAudio3dPortFlush(0) == 0, "flush");
+    Require(sceAudio3dPortAdvance(0) == 0, "advance with no bed left mixes silence");
+    RequireLevel(1, 1, "silence is queued behind the flushed frames");
     Require(sceAudio3dPortClose(0) == 0, "close");
 }
 
@@ -437,10 +488,12 @@ int main() {
     CheckObjects();
     CheckQueue();
     CheckMixAndPush();
+    CheckPushKeepsRealTime();
     CheckFlush();
     CheckAudioOutPorts();
     CheckObjectAttributes();
     CheckBed();
+    CheckBedQueue();
     CheckRemainingExports();
     CheckTerminate();
 }

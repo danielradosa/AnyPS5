@@ -5,6 +5,7 @@
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTrace.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ThreadPriority.hpp"
+#include "prx/libSceAgcDriver/Execution/include/WorkerSampler.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -181,6 +182,7 @@ void DrawPipeline::run() {
     }
     // The committer's items (DrawPipeline.Commit) and their Graphics.Draw scopes on the APS5_TRACE_* timeline.
     if (PerformanceTrace::Configured()) PerformanceTrace::BindThread("draw committer");
+    StartCommitterSampler();
     for (;;) {
         Commit* commit = nullptr;
         SpinUntil(HandoffSpinWindow(), [&] { return outstanding.load(std::memory_order_acquire) != 0; });

@@ -11,24 +11,6 @@ struct NpWebApi2MemoryPoolStats {
     std::int32_t reserved;
 };
 
-struct NpWebApi2IntInitializeArgs {
-    std::int32_t lib_http_ctx_id;
-    std::int32_t reserved;
-    std::uint64_t pool_size;
-    const char* name;
-    std::uint64_t struct_size;
-};
-
-struct NpWebApi2IntInitialize2Args {
-    std::int32_t lib_http_ctx_id;
-    std::int32_t reserved;
-    std::uint64_t pool_size;
-    const char* name;
-    std::uint32_t push_config_group;
-    std::int32_t reserved2;
-    std::uint64_t struct_size;
-};
-
 extern "C" {
 int APS5_VABI sceNpWebApi2Initialize(int, std::size_t);
 int APS5_VABI sceNpWebApi2InitializeForPresence(int, std::uint64_t);
@@ -46,8 +28,8 @@ int APS5_VABI sceNpWebApi2PushEventCreateFilter(int, int, const char*, std::uint
 int APS5_VABI sceNpWebApi2CreateUserContext(int, int);
 int APS5_VABI sceNpWebApi2CreateRequest(int, const char*, const char*, const char*, const void*, std::int64_t*);
 int APS5_VABI sceNpWebApi2SetRequestTimeout(std::int64_t, std::uint32_t);
-int APS5_VABI sceNpWebApi2DeleteRequest(std::int64_t);
 int APS5_VABI sceNpWebApi2AddWebTraceTag(std::int64_t, const char*);
+int APS5_VABI sceNpWebApi2DeleteRequest(std::int64_t);
 }
 
 static constexpr int LibContextNotFound = static_cast<int>(0x80553404);

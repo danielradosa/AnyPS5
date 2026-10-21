@@ -19,6 +19,7 @@ constexpr std::uint32_t MaxTextLength = 2048;
 constexpr int ErrorBusy = static_cast<int>(0x80bc0001u);
 constexpr int ErrorNotOpened = static_cast<int>(0x80bc0002u);
 constexpr int ErrorImeSuspending = static_cast<int>(0x80bc0009u);
+constexpr int ErrorNotInUse = static_cast<int>(0x80bc0107u);
 constexpr int ErrorInvalidMaxTextLength = static_cast<int>(0x80bc0016u);
 constexpr int ErrorInvalidInputTextBuffer = static_cast<int>(0x80bc0017u);
 constexpr int ErrorInvalidAddress = static_cast<int>(0x80bc0031u);
@@ -181,9 +182,9 @@ int APS5_VABI sceImeDialogForTestFunction() {
     return ErrorInternal;
 }
 
-int APS5_VABI sceImeDialogForceClose() {
+int APS5_VABI sceImeDialogForceClose(void) {
     std::lock_guard lock(g_mutex);
-    if (g_dialog.status == StatusNone) return ErrorNotOpened;
+    if (g_dialog.status == StatusNone) return ErrorNotInUse;
     ImeSetHostTextSink_nid_no_patch(nullptr);
     g_dialog = Dialog{};
     return 0;
@@ -205,6 +206,12 @@ int APS5_VABI sceImeDialogSetPanelPosition(int32_t posx, int32_t posy) {
     (void)posy;
     std::lock_guard lock(g_mutex);
     return g_dialog.status == StatusNone ? ErrorNotOpened : ErrorImeSuspending;
+}
+
+
+int APS5_VABI sceImeDialogInitInternalWithSubInfo() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
 }
 
 }

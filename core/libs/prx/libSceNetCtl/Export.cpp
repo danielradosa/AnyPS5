@@ -590,10 +590,6 @@ int APS5_VABI sceNetCtlGetResult(int event_type, int* error_code) {
     return 0;
 }
 
-int APS5_VABI sceNetCtlGetResultV6(int event_type, int* error_code) {
-    return sceNetCtlGetResult(event_type, error_code);
-}
-
 int APS5_VABI sceNetCtlGetState(int* state) {
     if (!state) return SCE_NET_CTL_ERROR_INVALID_ADDR;
     *state = HostHasAddress(AF_UNSPEC) ? NET_CTL_STATE_IPOBTAINED : NET_CTL_STATE_DISCONNECTED;
@@ -777,6 +773,15 @@ int APS5_VABI sceNetCtlRegisterCallbackV6IpcInt(void) {
 
 int APS5_VABI sceNetCtlUnregisterCallbackV6IpcInt(void) {
     NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetResultV6(int event_type, int* error_code) {
+    if (!error_code) return SCE_NET_CTL_ERROR_INVALID_ADDR;
+    if (event_type < NET_CTL_EVENT_DISCONNECTED || event_type > NET_CTL_EVENT_IPOBTAINED) {
+        throw std::runtime_error("sceNetCtlGetResultV6: event type " + std::to_string(event_type) + " is not implemented");
+    }
+    *error_code = 0;
     return 0;
 }
 

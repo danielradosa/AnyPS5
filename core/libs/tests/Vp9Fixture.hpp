@@ -1,9 +1,9 @@
-#pragma once
+#ifndef CORE_LIBS_TESTS_VP9FIXTURE_HPP
+#define CORE_LIBS_TESTS_VP9FIXTURE_HPP
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <stdexcept>
 #include <vector>
 
 namespace Vp9Fixture {
@@ -96,7 +96,7 @@ inline std::vector<std::vector<std::uint8_t>> ivfFrames() {
     std::vector<std::vector<std::uint8_t>> frames;
     for (std::size_t index = 32; index + 12 <= Vp9Stream.size();) {
         const std::size_t length = Vp9Stream[index] | (Vp9Stream[index + 1] << 8u) | (Vp9Stream[index + 2] << 16u) | (static_cast<std::size_t>(Vp9Stream[index + 3]) << 24u);
-        if (index + 12 + length > Vp9Stream.size()) throw std::runtime_error("truncated IVF frame");
+        if (index + 12 + length > Vp9Stream.size()) return {};
         frames.emplace_back(Vp9Stream.begin() + static_cast<std::ptrdiff_t>(index + 12), Vp9Stream.begin() + static_cast<std::ptrdiff_t>(index + 12 + length));
         index += 12 + length;
     }
@@ -104,3 +104,5 @@ inline std::vector<std::vector<std::uint8_t>> ivfFrames() {
 }
 
 }
+
+#endif

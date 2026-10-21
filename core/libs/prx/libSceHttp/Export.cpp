@@ -7,6 +7,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceHttp/src/HttpErrors.hpp"
+#include "prx/libSceHttp/src/Options.hpp"
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -127,17 +128,9 @@ struct HttpEpoll {
 
 struct HttpContext {
     std::uint64_t poolSize = 0;
-    bool acceptEncodingGzip = false;
 };
 
-struct HttpSettings {
-    bool autoRedirect = true;
-    bool nonblock = false;
-    bool acceptEncodingGzip = false;
-    HttpEpollHandle epoll = nullptr;
-    void* epollArg = nullptr;
-    std::vector<std::pair<std::string, std::string>> headers;
-};
+using HttpHeaders = std::vector<std::pair<std::string, std::string>>;
 
 static bool SameHeaderName(std::string_view left, std::string_view right) {
     if (left.size() != right.size()) return false;
@@ -150,50 +143,13 @@ static bool SameHeaderName(std::string_view left, std::string_view right) {
 
 static std::mutex g_stateMutex;
 static std::unordered_map<int, HttpContext> g_contexts;
-static std::unordered_map<int, HttpSettings> g_settings;
+static std::unordered_map<int, HttpHeaders> g_requestHeaders;
 static std::unordered_map<HttpEpollHandle, std::shared_ptr<HttpEpoll>> g_epolls;
 static std::uintptr_t g_nextEpoll = 0;
 
-static int CreateTemplateSettings(int httpCtxId) {
-    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+static void ForgetRequestHeaders(int id) {
     std::lock_guard lock(g_stateMutex);
-    HttpSettings settings;
-    if (const auto context = g_contexts.find(httpCtxId); context != g_contexts.end()) settings.acceptEncodingGzip = context->second.acceptEncodingGzip;
-    g_settings[id] = settings;
-    return id;
-}
-
-static int CreateChildSettings(int parentId) {
-    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
-    std::lock_guard lock(g_stateMutex);
-    HttpSettings settings;
-    if (const auto parent = g_settings.find(parentId); parent != g_settings.end()) settings = parent->second;
-    settings.headers.clear();
-    g_settings[id] = std::move(settings);
-    return id;
-}
-
-static void DeleteSettings(int id) {
-    std::lock_guard lock(g_stateMutex);
-    g_settings.erase(id);
-}
-
-template <typename Change>
-static void UpdateSettings(int id, Change change) {
-    std::lock_guard lock(g_stateMutex);
-    const auto settings = g_settings.find(id);
-    if (settings != g_settings.end()) change(settings->second);
-}
-
-template <typename Read>
-static int ReadSettingFlag(int id, int* isEnable, Read read) {
-    std::lock_guard lock(g_stateMutex);
-    if (g_contexts.empty()) return ERROR_BEFORE_INIT;
-    if (!isEnable) return ERROR_INVALID_VALUE;
-    const auto settings = g_settings.find(id);
-    if (settings == g_settings.end()) return ERROR_INVALID_ID;
-    *isEnable = read(settings->second) ? 1 : 0;
-    return 0;
+    g_requestHeaders.erase(id);
 }
 
 static int FindContext(int httpCtxId, HttpContext*& context) {
@@ -222,12 +178,17 @@ int APS5_VABI sceHttpAbortRequest(int request_id) {
     return 0;
 }
 
+int APS5_VABI sceHttpAbortRequestForce(int request_id) {
+    return sceHttpAbortRequest(request_id);
+}
+
 int APS5_VABI sceHttpAddRequestHeader(int id, const char* name, const char* value, uint32_t mode) {
     if (!name || !value || mode > HTTP_HEADER_ADD) return 0;
-    UpdateSettings(id, [&](HttpSettings& settings) {
-        if (mode == HTTP_HEADER_OVERWRITE) std::erase_if(settings.headers, [&](const auto& header) { return SameHeaderName(header.first, name); });
-        settings.headers.emplace_back(name, value);
-    });
+    std::lock_guard lock(g_stateMutex);
+    if (!FindHttpOptions(id)) return 0;
+    auto& headers = g_requestHeaders[id];
+    if (mode == HTTP_HEADER_OVERWRITE) std::erase_if(headers, [&](const auto& header) { return SameHeaderName(header.first, name); });
+    headers.emplace_back(name, value);
     return 0;
 }
 
@@ -250,13 +211,17 @@ int APS5_VABI sceHttpCreateConnection(int tmpl_id, const char* server_name, cons
     (void)scheme;
     (void)port;
     (void)enable_keep_alive;
-    return CreateChildSettings(tmpl_id);
+    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    AddHttpChild(id, tmpl_id);
+    return id;
 }
 
 int APS5_VABI sceHttpCreateConnectionWithURL(int tmpl_id, const char* url, int enable_keep_alive) {
     (void)url;
     (void)enable_keep_alive;
-    return CreateChildSettings(tmpl_id);
+    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    AddHttpChild(id, tmpl_id);
+    return id;
 }
 
 int APS5_VABI sceHttpCreateEpoll(int http_ctx_id, HttpEpollHandle* eh) {
@@ -274,37 +239,46 @@ int APS5_VABI sceHttpCreateRequest(int conn_id, int method, const char* path, ui
     (void)method;
     (void)path;
     (void)content_length;
-    return CreateChildSettings(conn_id);
+    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    AddHttpChild(id, conn_id);
+    return id;
 }
 
 int APS5_VABI sceHttpCreateRequestWithURL2(int conn_id, const char* method, const char* url, uint64_t content_length) {
     (void)method;
     (void)url;
     (void)content_length;
-    return CreateChildSettings(conn_id);
+    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    AddHttpChild(id, conn_id);
+    return id;
 }
 
 int APS5_VABI sceHttpCreateTemplate(int http_ctx_id, const char* user_agent, int http_ver, int is_auto_proxy_conf) {
     (void)user_agent;
     (void)http_ver;
     (void)is_auto_proxy_conf;
-    return CreateTemplateSettings(http_ctx_id);
+    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    AddHttpTemplate(id, http_ctx_id);
+    return id;
 }
 
 int APS5_VABI sceHttpDeleteConnection(int conn_id) {
-    DeleteSettings(conn_id);
+    RemoveHttpObject(conn_id);
+    ForgetRequestHeaders(conn_id);
     return 0;
 }
 
 int APS5_VABI sceHttpDeleteRequest(int req_id) {
-    DeleteSettings(req_id);
+    RemoveHttpObject(req_id);
+    ForgetRequestHeaders(req_id);
     std::lock_guard lock(g_statusMutex);
     g_statusCallbacks.erase(req_id);
     return 0;
 }
 
 int APS5_VABI sceHttpDeleteTemplate(int tmpl_id) {
-    DeleteSettings(tmpl_id);
+    RemoveHttpObject(tmpl_id);
+    ForgetRequestHeaders(tmpl_id);
     return 0;
 }
 
@@ -348,7 +322,8 @@ int APS5_VABI sceHttpInit_nid_postfix(int memid, int ssl_ctx_id, uint64_t pool_s
     (void)ssl_ctx_id;
     const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard lock(g_stateMutex);
-    g_contexts[id] = {pool_size, false};
+    g_contexts[id] = {pool_size};
+    AddHttpContext(id);
     return id;
 }
 
@@ -385,8 +360,8 @@ int APS5_VABI sceHttpSetCookieEnabled(int id, int enable) {
 }
 
 int APS5_VABI sceHttpSetAutoRedirect(int id, int enable) {
-    UpdateSettings(id, [&](HttpSettings& settings) { settings.autoRedirect = enable != 0; });
-    return 0;
+    if (!HttpInitialised()) return ERROR_BEFORE_INIT;
+    return SetHttpOption(id, &HttpOptions::autoRedirect, enable != 0) ? 0 : ERROR_INVALID_ID;
 }
 
 int APS5_VABI sceHttpSetConnectTimeOut(int id, uint32_t usec) {
@@ -396,16 +371,19 @@ int APS5_VABI sceHttpSetConnectTimeOut(int id, uint32_t usec) {
 }
 
 int APS5_VABI sceHttpSetEpoll(int id, HttpEpollHandle eh, void* user_arg) {
-    UpdateSettings(id, [&](HttpSettings& settings) {
-        settings.epoll = eh;
-        settings.epollArg = user_arg;
-    });
-    return 0;
+    std::lock_guard lock(g_stateMutex);
+    if (g_contexts.empty()) return ERROR_BEFORE_INIT;
+    if (!FindEpoll(eh)) return ERROR_INVALID_ID;
+    return SetHttpEpollBinding(id, eh, user_arg) ? 0 : ERROR_INVALID_ID;
 }
 
 int APS5_VABI sceHttpSetNonblock(int id, int enable) {
-    UpdateSettings(id, [&](HttpSettings& settings) { settings.nonblock = enable != 0; });
-    return 0;
+    if (!HttpInitialised()) return ERROR_BEFORE_INIT;
+    return SetHttpOption(id, &HttpOptions::nonblock, enable != 0) ? 0 : ERROR_INVALID_ID;
+}
+
+int APS5_VABI sceHttpTrySetNonblock(int id, int enable) {
+    return sceHttpSetNonblock(id, enable);
 }
 
 int APS5_VABI sceHttpSetRecvTimeOut(int id, uint32_t usec) {
@@ -469,7 +447,9 @@ int APS5_VABI sceHttpTerm_nid_postfix(int http_ctx_id) {
         std::lock_guard lock(g_stateMutex);
         if (g_contexts.empty()) return ERROR_BEFORE_INIT;
         if (g_contexts.erase(http_ctx_id) == 0) return ERROR_INVALID_ID;
+        RemoveHttpContext(http_ctx_id);
         if (!g_contexts.empty()) return 0;
+        g_requestHeaders.clear();
         for (auto& [handle, epoll] : g_epolls) epolls.push_back(std::move(epoll));
         g_epolls.clear();
     }
@@ -478,11 +458,8 @@ int APS5_VABI sceHttpTerm_nid_postfix(int http_ctx_id) {
 }
 
 int APS5_VABI sceHttpUnsetEpoll(int id) {
-    UpdateSettings(id, [](HttpSettings& settings) {
-        settings.epoll = nullptr;
-        settings.epollArg = nullptr;
-    });
-    return 0;
+    if (!HttpInitialised()) return ERROR_BEFORE_INIT;
+    return SetHttpEpollBinding(id, nullptr, nullptr) ? 0 : ERROR_INVALID_ID;
 }
 
 int APS5_VABI sceHttpWaitRequest(HttpEpollHandle eh, HttpNBEvent* nbev, int maxevents, int timeout) {
@@ -509,7 +486,9 @@ int APS5_VABI sceHttpCreateRequestWithURL(int conn_id, int method, const char* u
     (void)method;
     (void)url;
     (void)content_length;
-    return CreateChildSettings(conn_id);
+    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    AddHttpChild(id, conn_id);
+    return id;
 }
 
 int APS5_VABI sceHttpReadData(int request_id, void* data, size_t size) {
@@ -576,42 +555,51 @@ int APS5_VABI sceHttpParseResponseHeader(const char* header, std::size_t headerL
     }
     if (!found) return notFound;
 
-    while (start < headerLen && isSpace(input[start])) {
-        if (input[start++] == '\n') break;
-    }
-    std::size_t end = headerLen;
-    std::size_t consumed = headerLen;
-    std::size_t scan = start;
-    while (scan < headerLen) {
-        const auto newline = input.find('\n', scan);
-        if (newline == std::string_view::npos) break;
-        const auto next = newline + 1;
-        if (next < headerLen && (input[next] == ' ' || input[next] == '\t')) {
-            scan = next;
-            continue;
-        }
-        end = newline > start && input[newline - 1] == '\r' ? newline - 1 : newline;
-        consumed = next;
-        break;
-    }
-    if (end == start) {
+    const auto continues = [&input, headerLen](std::size_t next) { return next < headerLen && (input[next] == ' ' || input[next] == '\t'); };
+    const auto empty = [fieldValue, valueLen] {
         *fieldValue = nullptr;
         *valueLen = 0;
         return 0;
+    };
+    while (start < headerLen) {
+        const std::size_t lineFeed = input[start] == '\r' && start + 1 < headerLen && input[start + 1] == '\n' ? start + 1 : start;
+        if (input[lineFeed] == '\n') {
+            if (!continues(lineFeed + 1)) return empty();
+            start = lineFeed + 1;
+        } else if (isSpace(input[start])) {
+            ++start;
+        } else {
+            break;
+        }
     }
-    if (consumed > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-        throw std::out_of_range("sceHttpParseResponseHeader: consumed byte count exceeds int");
+    if (start == headerLen) return empty();
+    std::size_t end = headerLen;
+    std::size_t scan = start;
+    while (scan < headerLen) {
+        const auto newline = input.find('\n', scan);
+        if (newline == std::string_view::npos || newline + 1 == headerLen) break;
+        if (continues(newline + 1)) {
+            scan = newline + 1;
+            continue;
+        }
+        end = newline > start && input[newline - 1] == '\r' ? newline - 1 : newline;
+        break;
+    }
+    if (end > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::out_of_range("sceHttpParseResponseHeader: value end exceeds int");
     }
     *fieldValue = header + start;
     *valueLen = end - start;
-    return static_cast<int>(consumed);
+    return static_cast<int>(end);
 }
 
 int APS5_VABI sceHttpCreateRequest2(int conn_id, const char* method, const char* path, uint64_t content_length) {
     (void)method;
     (void)path;
     (void)content_length;
-    return CreateChildSettings(conn_id);
+    const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    AddHttpChild(id, conn_id);
+    return id;
 }
 
 int APS5_VABI sceHttpsEnableOption(int id, uint32_t ssl_flags) {
@@ -762,10 +750,6 @@ int APS5_VABI sceHttpDbgGetRequestStat(void) {
     return 0;
 }
 
-int APS5_VABI sceHttpAbortRequestForce(int request_id) {
-    return sceHttpAbortRequest(request_id);
-}
-
 int APS5_VABI sceHttpAddRequestHeaderRaw(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -775,31 +759,16 @@ int APS5_VABI sceHttpRemoveRequestHeader(int id, const char* name) {
     std::lock_guard lock(g_stateMutex);
     if (g_contexts.empty()) return ERROR_BEFORE_INIT;
     if (!name) return HTTP_ERROR_NOT_FOUND;
-    const auto settings = g_settings.find(id);
-    if (settings == g_settings.end()) return ERROR_INVALID_ID;
-    const auto removed = std::erase_if(settings->second.headers, [&](const auto& header) { return SameHeaderName(header.first, name); });
+    if (!FindHttpOptions(id)) return ERROR_INVALID_ID;
+    const auto headers = g_requestHeaders.find(id);
+    if (headers == g_requestHeaders.end()) return HTTP_ERROR_NOT_FOUND;
+    const auto removed = std::erase_if(headers->second, [&](const auto& header) { return SameHeaderName(header.first, name); });
     return removed == 0 ? HTTP_ERROR_NOT_FOUND : 0;
 }
 
 int APS5_VABI sceHttpGetAuthEnabled(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
-}
-
-int APS5_VABI sceHttpGetAutoRedirect(int id, int* is_enable) {
-    return ReadSettingFlag(id, is_enable, [](const HttpSettings& settings) { return settings.autoRedirect; });
-}
-
-int APS5_VABI sceHttpTrySetNonblock(int id, int enable) {
-    return sceHttpSetNonblock(id, enable);
-}
-
-int APS5_VABI sceHttpGetNonblock(int id, int* is_enable) {
-    return ReadSettingFlag(id, is_enable, [](const HttpSettings& settings) { return settings.nonblock; });
-}
-
-int APS5_VABI sceHttpTryGetNonblock(int id, int* is_enable) {
-    return sceHttpGetNonblock(id, is_enable);
 }
 
 int APS5_VABI sceHttpSetEpollId(void) {
@@ -809,17 +778,6 @@ int APS5_VABI sceHttpSetEpollId(void) {
 
 int APS5_VABI sceHttpGetEpollId(void) {
     NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceHttpGetEpoll(int id, HttpEpollHandle* eh, void** user_arg) {
-    std::lock_guard lock(g_stateMutex);
-    if (g_contexts.empty()) return ERROR_BEFORE_INIT;
-    if (!eh) return ERROR_INVALID_VALUE;
-    const auto settings = g_settings.find(id);
-    if (settings == g_settings.end()) return ERROR_INVALID_ID;
-    *eh = settings->second.epoll;
-    if (user_arg) *user_arg = settings->second.epollArg;
     return 0;
 }
 
@@ -892,14 +850,6 @@ int APS5_VABI sceHttpGetCookieStats(int http_ctx_id, HttpCookieStats* stats) {
     return 0;
 }
 
-int APS5_VABI sceHttpsEnableOptionPrivate(int id, uint32_t ssl_flags) {
-    return sceHttpsEnableOption(id, ssl_flags);
-}
-
-int APS5_VABI sceHttpsDisableOptionPrivate(int id, uint32_t ssl_flags) {
-    return sceHttpsDisableOption(id, ssl_flags);
-}
-
 int APS5_VABI sceHttpSetPriorityOption(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -915,21 +865,10 @@ int APS5_VABI sceHttpRequestGetAllHeaders(void) {
     return 0;
 }
 
-int APS5_VABI sceHttpSetAcceptEncodingGZIPEnabled(int id, int enable) {
-    UpdateSettings(id, [&](HttpSettings& settings) { settings.acceptEncodingGzip = enable != 0; });
-    return 0;
-}
-
-int APS5_VABI sceHttpGetAcceptEncodingGZIPEnabled(int id, int* is_enable) {
-    return ReadSettingFlag(id, is_enable, [](const HttpSettings& settings) { return settings.acceptEncodingGzip; });
-}
-
 int APS5_VABI sceHttpSetDefaultAcceptEncodingGZIPEnabled(int http_ctx_id, int enable) {
     std::lock_guard lock(g_stateMutex);
-    HttpContext* context = nullptr;
-    if (const int result = FindContext(http_ctx_id, context)) return result;
-    context->acceptEncodingGzip = enable != 0;
-    return 0;
+    if (g_contexts.empty()) return ERROR_BEFORE_INIT;
+    return SetHttpContextAcceptEncodingGzip(http_ctx_id, enable != 0) ? 0 : ERROR_INVALID_ID;
 }
 
 int APS5_VABI sceHttpSetProxy(int id, int http_proxy_conf, int wlan_proxy_conf, const char* host, uint16_t port) {
@@ -968,12 +907,6 @@ int APS5_VABI sceHttpAddQuery(void) {
 }
 
 int APS5_VABI sceHttpSetDelayBuildRequestEnabled(int id, int enable) {
-    (void)id;
-    (void)enable;
-    return 0;
-}
-
-int APS5_VABI sceHttpCacheRedirectedConnectionEnabled(int id, int enable) {
     (void)id;
     (void)enable;
     return 0;

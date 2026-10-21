@@ -126,25 +126,30 @@ int main() {
     const int syncReqA = sceNpAuthCreateRequest();
     Require(sceNpAuthGetIdTokenA(syncReqA, nullptr, token) == invalidArgument);
     Require(sceNpAuthGetIdTokenA(syncReqA, param, nullptr) == invalidArgument);
-    Require(sceNpAuthGetAuthorizationCodeA(syncReqA, nullptr, authCode, &issuerId) == invalidArgument);
-    Require(sceNpAuthGetAuthorizationCodeA(syncReqA, param, nullptr, &issuerId) == invalidArgument);
     Require(sceNpAuthGetIdTokenA(syncReqA, param, token) == signedOut);
     Require(sceNpAuthGetIdTokenA(syncReqA, param, token) == invalidArgument);
-    Require(sceNpAuthGetAuthorizationCodeA(syncReqA, param, authCode, &issuerId) == invalidArgument);
-    const int syncReqA2 = sceNpAuthCreateRequest();
-    Require(sceNpAuthGetAuthorizationCodeA(syncReqA2, param, authCode, nullptr) == signedOut);
     Require(sceNpAuthGetIdTokenA(unknownReq, param, token) == requestNotFound);
+
+    const int syncReqAuthA = sceNpAuthCreateRequest();
+    Require(sceNpAuthGetAuthorizationCodeA(syncReqAuthA, nullptr, authCode, &issuerId) == invalidArgument);
+    Require(sceNpAuthGetAuthorizationCodeA(syncReqAuthA, param, nullptr, &issuerId) == invalidArgument);
+    Require(sceNpAuthGetAuthorizationCodeA(syncReqAuthA, param, authCode, nullptr) == signedOut);
+    Require(sceNpAuthGetAuthorizationCodeA(syncReqAuthA, param, authCode, &issuerId) == invalidArgument);
     Require(sceNpAuthGetAuthorizationCodeA(unknownReq, param, authCode, &issuerId) == requestNotFound);
 
     const int asyncReqA = sceNpAuthCreateAsyncRequest(nullptr);
-    Require(sceNpAuthGetAuthorizationCodeA(asyncReqA, param, authCode, &issuerId) == 0);
+    Require(sceNpAuthGetIdTokenA(asyncReqA, param, token) == 0);
+    int asyncPollA = 0;
+    Require(sceNpAuthPollAsync(asyncReqA, &asyncPollA) == pollRunning);
+    Require(sceNpAuthPollAsync(asyncReqA, &asyncPollA) == 0);
+    Require(asyncPollA == signedOut);
+
+    const int asyncReqAuthA = sceNpAuthCreateAsyncRequest(nullptr);
+    Require(sceNpAuthGetAuthorizationCodeA(asyncReqAuthA, param, authCode, &issuerId) == 0);
     int asyncWaitA = 0;
-    Require(sceNpAuthWaitAsync(asyncReqA, &asyncWaitA) == 0);
+    Require(sceNpAuthWaitAsync(asyncReqAuthA, &asyncWaitA) == 0);
     Require(asyncWaitA == signedOut);
-    const int asyncReqA2 = sceNpAuthCreateAsyncRequest(nullptr);
-    Require(sceNpAuthGetIdTokenA(asyncReqA2, param, token) == 0);
-    Require(sceNpAuthWaitAsync(asyncReqA2, &asyncWaitA) == 0);
-    Require(asyncWaitA == signedOut);
+
     const int abortedReqA = sceNpAuthCreateAsyncRequest(nullptr);
     Require(sceNpAuthAbortRequest(abortedReqA) == 0);
     Require(sceNpAuthGetIdTokenA(abortedReqA, param, token) == aborted);

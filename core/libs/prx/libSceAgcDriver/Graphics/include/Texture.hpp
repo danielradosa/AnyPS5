@@ -47,13 +47,13 @@ struct OwnedImage {
     OwnedImage(const Context& context, VkImage image, VkDeviceMemory memory) : context(context), image(image), memory(memory) {}
     OwnedImage(const OwnedImage&) = delete;
     OwnedImage& operator=(const OwnedImage&) = delete;
-    ~OwnedImage() {
-        if (image) context.Function<PFN_vkDestroyImage>("vkDestroyImage")(context.device, image, nullptr);
-        if (memory) context.Function<PFN_vkFreeMemory>("vkFreeMemory")(context.device, memory, nullptr);
-    }
+    ~OwnedImage();
+    void Allocate(const Context& device, const VkMemoryAllocateInfo& allocation, std::uint32_t mask, const char* operation);
     Context context;
     VkImage image;
     VkDeviceMemory memory;
+    VkDeviceSize memoryBytes = 0;
+    std::uint32_t memoryType = 0;
 };
 
 class Texture {
@@ -64,7 +64,7 @@ public:
     // compute pass writing it and the next pass sampling it share one image and copy nothing.
     // CanCopyFrom says whether the two descriptors address the same surface compatibly.
     Texture(const Context& context, const std::shared_ptr<StorageTexture>& source, const GuestTextureResource& descriptor, VkComponentMapping components);
-    Texture(const Context& context, VkImage depthImage, VkFormat depthFormat, VkImageAspectFlags aspect, VkComponentMapping components, VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D, std::uint32_t baseLayer = 0, std::shared_ptr<OwnedImage> owner = {});
+    Texture(const Context& context, VkImage depthImage, VkFormat depthFormat, VkImageAspectFlags aspect, VkComponentMapping components, VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D, std::uint32_t baseLayer = 0, std::shared_ptr<OwnedImage> owner = {}, VkImageUsageFlags usage = 0);
     struct DepthCopyTag {};
     Texture(const Context& context, const std::shared_ptr<StorageTexture>& source, const GuestTextureResource& descriptor, VkComponentMapping components, DepthCopyTag);
     struct SrgbExpandTag {};
@@ -198,6 +198,7 @@ public:
     void WriteBack();
     // Deferred write-back (APS5_EAGER_WRITEBACK=1 stores at once instead).
     void MarkDirty();
+    void MarkWholeWritten();
     void MarkSliceDirty(std::uint32_t slice, std::uint32_t count = 1);
     void Flush();
     bool Dirty() const;
@@ -392,6 +393,9 @@ public:
     // For a writer of the image that does not go through MarkDirty (the depth seed): the content is
     // no longer what its last store left, so no other image copies it as such.
     void ForgetLayerSync() { syncedVersion = ~std::uint64_t{0}; }
+    static std::uint64_t ClearHandOvers();
+    static std::uint64_t HandedOverSuperseded();
+    static void SetClearHandOver(bool enabled);
     static std::uint64_t UntrackedCompares();
     std::uint64_t GuestBytes() const;
     std::uint64_t BudgetBytes() const;
@@ -534,6 +538,8 @@ private:
     // stays responsible for storing them until this image's own results supersede them
     // (markLayersPending). APS5_NO_ALIAS_BORROW=1 stores and re-reads as before.
     std::shared_ptr<StorageTexture> pendingAlias() const;
+    std::optional<DccKeys> clearHandOver();
+    void supersedeHandedOver(std::uint32_t first, std::uint32_t count);
     // The pending images FlushPending(address, bytes) would store (not the one a Refresh validates,
     // a pending unit inside the range), kept alive across the caller's use.
     static std::vector<std::shared_ptr<StorageTexture>> overlappingPending(std::uint64_t address, std::size_t bytes);
@@ -636,6 +642,8 @@ private:
     std::uint64_t syncedRecorder = 0;
     std::uint64_t syncedNote = 0;
     std::uint64_t syncedCompletions = 0;
+    std::vector<std::pair<std::weak_ptr<StorageTexture>, std::uint64_t>> handedOver;
+    std::vector<bool> handedUnits;
     // Units of this image were borrowed since it was last written: the borrower's proofs
     // (the resource cache's serial memo) hold only while this image's version does, so the next
     // write here bumps the pending serial although the image was pending already.
@@ -643,6 +651,7 @@ private:
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkDeviceSize memoryBytes = 0;
+    std::uint32_t memoryType = 0;
     VkImageView view = VK_NULL_HANDLE;
     std::uint32_t defaultMip = 0;
     std::map<std::uint32_t, VkImageView> extraViews;
@@ -661,6 +670,7 @@ private:
     // Results are on the GPU only (guarded by the pending-write registry lock).
     bool dirty = false;
     std::uint64_t version = 0;
+    std::uint64_t writes = 0;
     // `original` holds the guest bytes; false after a GPU-side clear, which never read them.
     std::vector<bool> layerOriginal;
     std::map<std::uint64_t, std::uint64_t> keptAtUnwatch;

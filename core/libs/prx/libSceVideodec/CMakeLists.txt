@@ -1,7 +1,11 @@
-add_library(libSceVideodec SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp)
+add_library(libSceVideodec SHARED EXCLUDE_FROM_ALL
+        ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp
+)
+
 target_include_directories(libSceVideodec PRIVATE ${LIBS_INCLUDE_DIR})
-target_link_libraries(libSceVideodec PRIVATE libSceVideodec2)
 configure_windows_unwind(libSceVideodec)
+
+target_link_libraries(libSceVideodec PRIVATE libSceVideodec2)
 
 if(BUILD_TESTING)
     add_test_executable(guest_videodec_tests ${LIBS_INCLUDE_DIR}/tests/GuestVideodec.cpp)

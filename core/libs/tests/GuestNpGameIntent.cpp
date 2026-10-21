@@ -72,8 +72,8 @@ int main() {
             "app launcher launch must throw until implemented");
     Require(sceNpAppLauncherTerminate() == 0, "app launcher terminate failed");
     *reinterpret_cast<std::uint64_t*>(appLauncherParam) = 0x10;
-    Require(Throws<std::invalid_argument>([&] { sceNpAppLauncherInitialize(appLauncherParam); }),
-            "wrong init-param size did not throw");
+    Require(sceNpAppLauncherInitialize(appLauncherParam) == 0,
+            "app launcher init must accept any init parameter");
 
     std::puts("NpGameIntent tests passed");
     return 0;

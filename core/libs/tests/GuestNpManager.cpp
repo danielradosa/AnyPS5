@@ -22,7 +22,7 @@ int APS5_VABI sceNpGetUserIdByOnlineId(const NpOnlineId* online_id, int* user_id
 int APS5_VABI sceNpCheckPlus(int req_id, const void* param, void* result);
 int APS5_VABI sceNpNotifyPlusFeature(const void* param);
 int APS5_VABI sceNpGetAccountId(const NpOnlineId* online_id, std::uint64_t* account_id);
-int APS5_VABI sceNpSetGamePresenceOnline(int user_id, std::uint32_t timeout);
+int APS5_VABI sceNpSetGamePresenceOnline(int req_id, const NpOnlineId* online_id, std::uint32_t presence);
 int APS5_VABI sceNpRegisterPlusEventCallback(void* callback, void* userdata);
 int APS5_VABI sceNpUnregisterPlusEventCallback(void);
 }
@@ -42,6 +42,7 @@ int APS5_VABI sceNpUnregisterStateCallback(void);
 int APS5_VABI sceNpRegisterStateCallbackA(void* callback, void* userdata);
 int APS5_VABI sceNpUnregisterStateCallbackA(int callbackId);
 int APS5_VABI sceNpRegisterNpReachabilityStateCallback(void* callback, void* userdata);
+void APS5_VABI sceNpRegisterGamePresenceCallback(void* callback, void* userdata);
 int APS5_VABI sceNpUnregisterNpReachabilityStateCallback(void);
 }
 
@@ -88,6 +89,10 @@ bool SignedOutOnce(const StateCall& call, void* userdata) {
         call.npId == nullptr && call.userdata == userdata;
 }
 
+void APS5_VABI AbortingGamePresenceCallback(const void*, const void*, void*) {
+    std::abort();
+}
+
 void APS5_VABI AbortingReachabilityCallback(int, std::uint32_t, void*) {
     std::fprintf(stderr, "NpManager: the reachability callback was called\n");
     std::abort();
@@ -123,6 +128,8 @@ void CheckStateCallbacksA() {
     Require(stateCallsA[0].calls == 0, "registering calls the state callback");
     Require(sceNpRegisterNpReachabilityStateCallback(reinterpret_cast<void*>(&AbortingReachabilityCallback), nullptr) == 0,
         "registering the reachability callback");
+    sceNpRegisterGamePresenceCallback(nullptr, nullptr);
+    sceNpRegisterGamePresenceCallback(reinterpret_cast<void*>(&AbortingGamePresenceCallback), &userdata[0]);
     Require(sceNpCheckCallback() == 0, "sceNpCheckCallback failed");
     Require(SignedOutOnce(stateCallsA[0], &userdata[0]), "sceNpCheckCallback must deliver SIGNED_OUT once");
     Require(sceNpUnregisterNpReachabilityStateCallback() == 0, "unregistering the reachability callback");
@@ -247,7 +254,14 @@ void CheckOnlineIdQueries() {
     Require(sceNpGetAccountId(&onlineId, &accountId) == SignedOut, "sceNpGetAccountId must report NP as signed out");
     Require(sceNpGetAccountId(nullptr, &accountId) == InvalidArgument, "sceNpGetAccountId must reject a null online id");
     Require(sceNpGetAccountId(&onlineId, nullptr) == InvalidArgument, "sceNpGetAccountId must reject a null output");
-    Require(sceNpSetGamePresenceOnline(0x10000000, 0) == SignedOut, "sceNpSetGamePresenceOnline must report NP as signed out");
+    const int presenceRequest = sceNpCreateRequest();
+    Require(presenceRequest > 0, "sceNpCreateRequest must return a positive request id");
+    Require(sceNpSetGamePresenceOnline(presenceRequest, &onlineId, 0) == SignedOut, "sceNpSetGamePresenceOnline must report NP as signed out");
+    Require(sceNpSetGamePresenceOnline(0, &onlineId, 0) == InvalidArgument, "sceNpSetGamePresenceOnline must reject request id 0");
+    Require(sceNpSetGamePresenceOnline(presenceRequest, nullptr, 0) == InvalidArgument, "sceNpSetGamePresenceOnline must reject a null online id");
+    Require(sceNpSetGamePresenceOnline(0x7fffffff, &onlineId, 0) == RequestNotFound, "sceNpSetGamePresenceOnline must reject a request that was never created");
+    Require(sceNpDeleteRequest(presenceRequest) == 0, "sceNpDeleteRequest failed");
+    Require(sceNpSetGamePresenceOnline(presenceRequest, &onlineId, 0) == RequestNotFound, "sceNpSetGamePresenceOnline must reject a deleted request");
     Require(sceNpRegisterPlusEventCallback(output, nullptr) == 0 && sceNpUnregisterPlusEventCallback() == 0, "the plus event callback must register and unregister");
     Require(sceNpUnregisterPlusEventCallback() == 0, "unregistering the plus event callback again must succeed like the premium one");
     Require(std::memcmp(output, untouched, sizeof(output)) == 0 && age == 0x5a && userId == 0x5a5a && accountId == 0x5a5a, "a failed query wrote its output");
@@ -287,15 +301,8 @@ int main() {
     Require(sceNpGetOnlineId(0x10000, &onlineId) == SignedOut, "sceNpGetOnlineId must report the user as signed out");
     Require(std::memcmp(&onlineId, &untouchedOnlineId, sizeof(onlineId)) == 0, "sceNpGetOnlineId must leave the online id untouched");
     Require(sceNpGetOnlineId(0x10000, nullptr) == InvalidArgument, "sceNpGetOnlineId must reject a null online id");
-
-    const int request = sceNpCreateRequest();
-    Require(request > 0, "sceNpCreateRequest must return a positive request id");
-    Require(sceNpDeleteRequest(request) == 0, "sceNpDeleteRequest must accept the request");
     int userId = 0x5a5a;
-    Require(sceNpGetUserIdByAccountId(0x1234567890ull, &userId) == SignedOut, "sceNpGetUserIdByAccountId must report no signed-in user for the account");
-    Require(userId == 0x5a5a, "sceNpGetUserIdByAccountId must leave the user id untouched");
     Require(sceNpGetUserIdByAccountId(0, &userId) == InvalidArgument, "sceNpGetUserIdByAccountId must reject account id 0");
-    Require(sceNpGetUserIdByAccountId(0x1234567890ull, nullptr) == InvalidArgument, "sceNpGetUserIdByAccountId must reject a null user id");
     Require(sceNpGetUserIdByAccountId(0x1234, nullptr) == InvalidArgument, "sceNpGetUserIdByAccountId must reject a null output");
     Require(sceNpGetUserIdByAccountId(0x1234, &userId) == SignedOut, "sceNpGetUserIdByAccountId must report NP as signed out");
     Require(userId == 0x5a5a, "sceNpGetUserIdByAccountId must leave the user id untouched");

@@ -35,8 +35,7 @@ std::int32_t APS5_VABI sceDeviceServiceQueryDeviceInfo_(std::int32_t deviceClass
 }
 
 std::int32_t APS5_VABI sceDeviceServiceGetGeneration(void) {
-    constexpr std::int32_t UnchangedDeviceSet = 0;
-    return UnchangedDeviceSet;
+    return 0;
 }
 
 }

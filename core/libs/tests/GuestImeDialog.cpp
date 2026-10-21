@@ -32,6 +32,7 @@ constexpr int ErrorBusy = static_cast<int>(0x80bc0001u);
 constexpr int ErrorNotOpened = static_cast<int>(0x80bc0002u);
 constexpr int ErrorImeSuspending = static_cast<int>(0x80bc0009u);
 constexpr int ErrorInternal = static_cast<int>(0x80bc00ffu);
+constexpr int ErrorNotInUse = static_cast<int>(0x80bc0107u);
 constexpr int ErrorInvalidMaxTextLength = static_cast<int>(0x80bc0016u);
 constexpr int ErrorInvalidInputTextBuffer = static_cast<int>(0x80bc0017u);
 constexpr int ErrorInvalidAddress = static_cast<int>(0x80bc0031u);
@@ -153,6 +154,35 @@ int main() {
     Require(std::u16string(buffer) == u"keep");
     Close();
 
+    Require(sceImeDialogForceClose() == ErrorNotInUse);
+    Open(param);
+    Type("zz");
+    Require(sceImeDialogForceClose() == 0);
+    Require(sceImeDialogGetStatus() == StatusNone);
+    Require(!ImeCapturesKeyboard_nid_postfix());
+    Type("ignored");
+    Press(SDL_SCANCODE_RETURN);
+    Require(std::u16string(buffer) == u"keep");
+    Result closed{};
+    Require(sceImeDialogGetResult(&closed) == ErrorNotOpened);
+    Require(sceImeDialogTerm() == ErrorNotOpened);
+    Require(sceImeDialogForceClose() == ErrorNotInUse);
+
+    Open(param);
+    Type("!");
+    Press(SDL_SCANCODE_RETURN);
+    Require(sceImeDialogGetStatus() == StatusFinished);
+    Require(sceImeDialogForceClose() == 0);
+    Require(sceImeDialogGetStatus() == StatusNone);
+    Require(std::u16string(buffer) == u"keep!");
+
+    Open(param);
+    Require(sceImeDialogAbort() == 0);
+    Require(sceImeDialogForceClose() == 0);
+    Require(sceImeDialogGetStatus() == StatusNone);
+    Open(param);
+    Close();
+
     Require(sceImeDialogInit(nullptr, nullptr) == ErrorInvalidAddress);
     const Param empty = DialogParam(buffer, 0);
     Require(sceImeDialogInit(&empty, nullptr) == ErrorInvalidMaxTextLength);
@@ -165,7 +195,6 @@ int main() {
 
     Require(sceImeDialogForTestFunction() == ErrorInternal);
     std::uint32_t star = 0x5a5a5a5au;
-    Require(sceImeDialogForceClose() == ErrorNotOpened);
     Require(sceImeDialogGetCurrentStarState(&star) == ErrorNotOpened);
     Require(sceImeDialogSetPanelPosition(100, 200) == ErrorNotOpened);
 
@@ -183,8 +212,7 @@ int main() {
     Require(sceImeDialogForceClose() == 0);
     Require(sceImeDialogGetStatus() == StatusNone);
     Require(!ImeCapturesKeyboard_nid_postfix());
-    Require(std::u16string(buffer) == u"keep");
-    Require(sceImeDialogForceClose() == ErrorNotOpened);
+    Require(std::u16string(buffer) == u"keep!");
     Require(sceImeDialogTerm() == ErrorNotOpened);
 
     Open(param);

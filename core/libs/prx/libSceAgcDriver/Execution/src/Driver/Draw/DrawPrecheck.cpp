@@ -25,6 +25,17 @@ std::optional<DrawVerdict> Driver::precheckDraw(const QueueState& queue, const S
         localDevice->ColorMetadataPass(*pass);
         return DrawVerdict::Drawn;
     }
+    if (const auto copy = Graphics::DecodeDepthCopyPass(queue)) {
+        require(!drawParameters.indirect, "indirect DB depth copies are unsupported");
+        if (DrawPipeline::Active()) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, (packet[0] >> 8u) & 0xffu);
+        GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Draw);
+        std::lock_guard gpuLock(GuestMemory::GpuMutex());
+        if (device == nullptr) device = std::make_shared<VulkanDevice>();
+        const std::shared_ptr<VulkanDevice> localDevice = device;
+        recordLabelsForPacket(localDevice.get(), submission.queue);
+        localDevice->DepthCopyPass(*copy);
+        return DrawVerdict::Drawn;
+    }
     static const bool traceIndirectEnabled = std::getenv("APS5_TRACE_INDIRECT_DRAWS") != nullptr;
     traceIndirect = traceIndirectEnabled;
     if (traceIndirect && drawParameters.indirect) std::fprintf(stderr, "[draw] indirect packet %s args 0x%llx count %u reached\n", Pm4::Name(packet[0]).c_str(), static_cast<unsigned long long>(drawParameters.indirect->arguments), drawParameters.indirect->count);

@@ -22,7 +22,6 @@ extern "C" void APS5_VABI scePthreadExit(void* retval);
 
 namespace {
 
-thread_local UltUlthreadState* gCurrentUlthread = nullptr;
 
 std::mutex gMutex;
 std::unordered_map<void*, std::shared_ptr<UltMutexState>> gMutexes;
@@ -110,6 +109,8 @@ void ReleaseQueue(UltQueueState& state) {
     state._alive = false;
     --pool._queues;
 }
+
+thread_local UltUlthreadState* gCurrentUlthread = nullptr;
 
 void* APS5_VABI ulthreadRunner(void* arg) {
     auto* state = static_cast<UltUlthreadState*>(arg);
@@ -1037,6 +1038,11 @@ int APS5_VABI sceUltConditionVariableCreate(void* condition, const char* name, v
 int APS5_VABI sceUltConditionVariableOptParamInitialize(void* optParam, std::uint32_t buildVersion) {
     (void)buildVersion;
     return optParam == nullptr ? ULT_ERROR_NULL : ULT_OK;
+}
+
+int APS5_VABI _sceUltConditionVariableOptParamInitialize() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
 }
 
 }

@@ -25,26 +25,6 @@ struct NpWebApi2MemoryPoolStats {
     int32_t reserved;
 };
 
-struct NpWebApi2IntInitializeArgs {
-    int32_t lib_http_ctx_id;
-    int32_t reserved;
-    uint64_t pool_size;
-    const char* name;
-    uint64_t struct_size;
-};
-static_assert(sizeof(NpWebApi2IntInitializeArgs) == 32 && offsetof(NpWebApi2IntInitializeArgs, struct_size) == 24);
-
-struct NpWebApi2IntInitialize2Args {
-    int32_t lib_http_ctx_id;
-    int32_t reserved;
-    uint64_t pool_size;
-    const char* name;
-    uint32_t push_config_group;
-    int32_t reserved2;
-    uint64_t struct_size;
-};
-static_assert(sizeof(NpWebApi2IntInitialize2Args) == 40 && offsetof(NpWebApi2IntInitialize2Args, struct_size) == 32);
-
 struct NpWebApi2PushEventHandle {
     int libCtxId;
     bool aborted;
@@ -64,6 +44,13 @@ static int FindPushEventHandle(int libCtxId, int handleId, NpWebApi2PushEventHan
 
 static std::mutex g_requestsMutex;
 static std::unordered_map<int64_t, std::vector<std::string>> g_requestTraceTags;
+
+static int CreateLibraryContext(size_t poolSize) {
+    const int libCtxId = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard lock(g_poolsMutex);
+    g_pools[libCtxId] = poolSize;
+    return libCtxId;
+}
 
 extern "C" {
 
@@ -141,10 +128,7 @@ int APS5_VABI sceNpWebApi2GetHttpResponseHeaderValueLength(int64_t request_id, c
 
 int APS5_VABI sceNpWebApi2Initialize(int lib_http_ctx_id, size_t pool_size) {
     (void)lib_http_ctx_id;
-    const int lib_ctx_id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
-    std::lock_guard lock(g_poolsMutex);
-    g_pools[lib_ctx_id] = pool_size;
-    return lib_ctx_id;
+    return CreateLibraryContext(pool_size);
 }
 
 int APS5_VABI sceNpWebApi2GetMemoryPoolStats(int lib_ctx_id, NpWebApi2MemoryPoolStats* stats) {
@@ -277,7 +261,8 @@ int APS5_VABI sceNpWebApi2CreateMultipartRequest(int user_ctx_id, const char* ap
 }
 
 int APS5_VABI sceNpWebApi2InitializeForPresence(int lib_http_ctx_id, uint64_t pool_size) {
-    return sceNpWebApi2Initialize(lib_http_ctx_id, pool_size);
+    (void)lib_http_ctx_id;
+    return CreateLibraryContext(pool_size);
 }
 
 int APS5_VABI sceNpWebApi2IntCreateRequest() {
@@ -286,13 +271,13 @@ int APS5_VABI sceNpWebApi2IntCreateRequest() {
 }
 
 int APS5_VABI sceNpWebApi2IntInitialize(const NpWebApi2IntInitializeArgs* args) {
-    if (!args || args->struct_size != sizeof(NpWebApi2IntInitializeArgs)) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
-    return sceNpWebApi2Initialize(args->lib_http_ctx_id, args->pool_size);
+    if (args == nullptr || args->struct_size != sizeof(NpWebApi2IntInitializeArgs)) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+    return CreateLibraryContext(args->pool_size);
 }
 
 int APS5_VABI sceNpWebApi2IntInitialize2(const NpWebApi2IntInitialize2Args* args) {
-    if (!args || args->struct_size != sizeof(NpWebApi2IntInitialize2Args)) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
-    return sceNpWebApi2Initialize(args->lib_http_ctx_id, args->pool_size);
+    if (args == nullptr || args->struct_size != sizeof(NpWebApi2IntInitialize2Args)) return SCE_NP_WEBAPI2_ERROR_INVALID_ARGUMENT;
+    return CreateLibraryContext(args->pool_size);
 }
 
 int APS5_VABI sceNpWebApi2IntPushEventCreateCtxIndFilter() {

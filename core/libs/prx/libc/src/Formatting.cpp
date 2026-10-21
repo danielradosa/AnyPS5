@@ -10,6 +10,8 @@
 #include <cstdlib>
 #include <memory>
 #include <vector>
+#include <climits>
+#include <stdexcept>
 
 #include "prx/libc/include/General.hpp"
 #include "SceTypes.hpp"
@@ -17,6 +19,7 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 
 #include "prx/libc/include/WindowsFormatting.hpp"
+#include "prx/libc/include/ScanWideField.hpp"
 
 #ifdef _WIN32
 #include "prx/libc/include/WindowsScanning.hpp"
@@ -45,14 +48,14 @@ bool RequiresGuestFormatting(const char* format) {
     return false;
 }
 
-void RejectGuestWideScan(const char* format) {
-    if (format == nullptr) return;
+bool HasGuestWideScan(const char* format) {
+    if (format == nullptr) return false;
     while ((format = std::strchr(format, '%')) != nullptr) {
         ++format;
         if (*format == '%') { ++format; continue; }
         while (*format && std::strchr("-+ #0'0123456789.*$", *format)) ++format;
         if (*format == 'S' || *format == 'C' || (*format == 'l' && format[1] != '\0' && std::strchr("sc[", format[1])))
-            NotImplemented_nid_no_patch("scanf 16-bit wide conversion on Linux");
+            return true;
         if (*format == '[') {
             ++format;
             if (*format == '^') ++format;
@@ -61,7 +64,24 @@ void RejectGuestWideScan(const char* format) {
         }
         if (*format) ++format;
     }
+    return false;
 }
+
+bool ScansWideInProcess(const char* format) {
+    if (!HasGuestWideScan(format)) return false;
+    LibcDetail::RequireNoPositionalWideScan(format);
+    return true;
+}
+
+void RejectGuestWideScan(const char* format) {
+    if (HasGuestWideScan(format)) NotImplemented_nid_no_patch("fscanf 16-bit wide conversion on Linux");
+}
+
+bool IsWideScan(const std::string& length, char conversion) {
+    return conversion == 'S' || conversion == 'C' || (length == "l" && (conversion == 's' || conversion == 'c' || conversion == '['));
+}
+
+
 #endif
 
 std::string HostLength(const std::string& length, char conversion) {
@@ -162,6 +182,58 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
             }
             continue;
         }
+#ifndef _WIN32
+        if (IsWideScan(length, conversion)) {
+            const char kind = conversion == 'S' ? 's' : conversion == 'C' ? 'c' : conversion;
+            const char* field = input;
+            if (kind == 's') {
+                while (std::isspace(static_cast<unsigned char>(*field))) ++field;
+            }
+            if (*field == '\0') return finish(converted ? assigned : EOF);
+            auto* target = suppress ? nullptr : static_cast<char16_t*>(nextPointer());
+            unsigned long limit = ULONG_MAX;
+            if (secure && !suppress) {
+                const auto capacity = static_cast<unsigned long>(nextCapacity());
+                limit = kind == 'c' ? capacity : (capacity == 0 ? 0 : capacity - 1);
+                if (limit == 0 || (kind == 'c' && (width == 0 ? 1 : width) > limit)) {
+                    if (capacity != 0) target[0] = u'\0';
+                    return finish(assigned);
+                }
+            }
+            const unsigned long wanted = width != 0 ? width : (kind == 'c' ? 1 : ULONG_MAX);
+            const unsigned long taken = std::min(wanted, limit);
+            std::u16string text;
+            const auto accepts = [&](char32_t point) {
+                if (kind == 's') return point >= 0x80 || !std::isspace(static_cast<int>(point));
+                if (kind == '[') return LibcDetail::InWideScanset(specifier, point);
+                return true;
+            };
+            while (text.size() < taken && *field != '\0') {
+                char32_t point = 0;
+                const std::size_t size = LibcDetail::ReadWideScanCharacter(field, &point);
+                if (!accepts(point)) break;
+                text.push_back(static_cast<char16_t>(point));
+                field += size;
+            }
+            if (text.empty()) return finish(assigned);
+            if (target != nullptr && kind != 'c' && wanted > limit && text.size() == limit && *field != '\0') {
+                char32_t point = 0;
+                LibcDetail::ReadWideScanCharacter(field, &point);
+                if (accepts(point)) {
+                    target[0] = u'\0';
+                    return finish(assigned);
+                }
+            }
+            if (target != nullptr) {
+                std::memcpy(target, text.data(), text.size() * sizeof(char16_t));
+                if (kind != 'c') target[text.size()] = u'\0';
+                ++assigned;
+            }
+            input = field;
+            converted = true;
+            continue;
+        }
+#endif
         if (conversion != 'c' && conversion != '[') {
             const char* probe = input;
             while (std::isspace(static_cast<unsigned char>(*probe))) ++probe;
@@ -215,45 +287,6 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
     return finish(assigned);
 }
 
-[[maybe_unused]] bool HasGuestWideScan(const char* format) {
-    if (format == nullptr) return false;
-    while ((format = std::strchr(format, '%')) != nullptr) {
-        ++format;
-        if (*format == '%') { ++format; continue; }
-        while (*format && std::strchr("-+ #0'0123456789.*$", *format)) ++format;
-        if (*format == 'S' || *format == 'C' || (*format == 'l' && format[1] != '\0' && std::strchr("sc[", format[1]))) return true;
-        if (*format == '[') {
-            ++format;
-            if (*format == '^') ++format;
-            if (*format == ']') ++format;
-            while (*format && *format != ']') ++format;
-        }
-        if (*format) ++format;
-    }
-    return false;
-}
-
-[[maybe_unused]] std::uint32_t DecodeGuestCodePoint(const char* input, std::size_t& length) {
-    const auto lead = static_cast<unsigned char>(input[0]);
-    if (lead < 0x80) { length = 1; return lead; }
-    if ((lead & 0xE0) == 0xC0 && input[1] != '\0') {
-        length = 2;
-        return ((lead & 0x1Fu) << 6) | (static_cast<unsigned char>(input[1]) & 0x3Fu);
-    }
-    if ((lead & 0xF0) == 0xE0 && input[1] != '\0' && input[2] != '\0') {
-        length = 3;
-        return ((lead & 0x0Fu) << 12) | ((static_cast<unsigned char>(input[1]) & 0x3Fu) << 6) |
-            (static_cast<unsigned char>(input[2]) & 0x3Fu);
-    }
-    if ((lead & 0xF8) == 0xF0 && input[1] != '\0' && input[2] != '\0' && input[3] != '\0') {
-        length = 4;
-        return ((lead & 0x07u) << 18) | ((static_cast<unsigned char>(input[1]) & 0x3Fu) << 12) |
-            ((static_cast<unsigned char>(input[2]) & 0x3Fu) << 6) | (static_cast<unsigned char>(input[3]) & 0x3Fu);
-    }
-    length = 1;
-    return lead;
-}
-
 [[maybe_unused]] void AppendGuestWide(char16_t*& out, std::uint32_t value) {
     if (value <= 0xFFFF) {
         *out++ = static_cast<char16_t>(value);
@@ -262,136 +295,6 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
     const std::uint32_t adjusted = value - 0x10000;
     *out++ = static_cast<char16_t>(0xD800 + (adjusted >> 10));
     *out++ = static_cast<char16_t>(0xDC00 + (adjusted & 0x3FF));
-}
-
-[[maybe_unused]] int ScanWideGuest(const char* buffer, const char* format, std::va_list args) {
-    if (buffer == nullptr || format == nullptr) return EOF;
-    const char* input = buffer;
-    const std::size_t inputLimit = std::strlen(buffer);
-    int assigned = 0;
-    bool converted = false;
-    const char* cursor = format;
-    while (*cursor != '\0') {
-        if (std::isspace(static_cast<unsigned char>(*cursor))) {
-            while (std::isspace(static_cast<unsigned char>(*cursor))) ++cursor;
-            while (std::isspace(static_cast<unsigned char>(*input))) ++input;
-            continue;
-        }
-        if (*cursor != '%' || cursor[1] == '%') {
-            const char expected = *cursor == '%' ? '%' : *cursor;
-            cursor += *cursor == '%' ? 2 : 1;
-            if (expected == '%') while (std::isspace(static_cast<unsigned char>(*input))) ++input;
-            if (*input != expected) return !converted && *input == '\0' ? EOF : assigned;
-            ++input;
-            continue;
-        }
-        ++cursor;
-        const bool suppress = *cursor == '*';
-        if (suppress) ++cursor;
-        unsigned long width = 0;
-        while (std::isdigit(static_cast<unsigned char>(*cursor))) width = width * 10 + static_cast<unsigned long>(*cursor++ - '0');
-        const char* lengthStart = cursor;
-        while (std::strchr("hljztL", *cursor) != nullptr && *cursor != '\0') ++cursor;
-        const std::string length(lengthStart, cursor);
-        const char conversion = *cursor;
-        if (conversion == '\0') return assigned;
-        std::string scanset;
-        if (conversion == '[') {
-            const char* setStart = cursor++;
-            if (*cursor == '^') ++cursor;
-            if (*cursor == ']') ++cursor;
-            while (*cursor != '\0' && *cursor != ']') ++cursor;
-            if (*cursor != ']') return assigned;
-            scanset.assign(setStart, cursor + 1);
-        }
-        ++cursor;
-        if (conversion == 'n') {
-            if (!suppress) {
-                void* target = va_arg(args, void*);
-                const auto count = input - buffer;
-                if (length == "hh") *static_cast<signed char*>(target) = static_cast<signed char>(count);
-                else if (length == "h") *static_cast<short*>(target) = static_cast<short>(count);
-                else if (length.empty()) *static_cast<int*>(target) = static_cast<int>(count);
-                else {
-                    const std::int64_t value = count;
-                    std::memcpy(target, &value, sizeof(value));
-                }
-            }
-            continue;
-        }
-        const bool wide = conversion == 'S' || conversion == 'C' ||
-            (length == "l" && (conversion == 's' || conversion == 'c' || conversion == '['));
-        if (conversion != 'c' && conversion != 'C' && conversion != '[') {
-            const char* probe = input;
-            while (std::isspace(static_cast<unsigned char>(*probe))) ++probe;
-            if (*probe == '\0') return converted ? assigned : EOF;
-        }
-        if (wide) {
-            char16_t* target = suppress ? nullptr : static_cast<char16_t*>(va_arg(args, void*));
-            if (conversion == '[') {
-                const std::size_t bound = width != 0 ? static_cast<std::size_t>(width) : inputLimit;
-                std::vector<wchar_t> temporary(bound + 1, 0);
-                std::string directive = "%l";
-                if (width != 0) directive += std::to_string(width);
-                directive += scanset;
-                directive += "%n";
-                int consumed = -1;
-                const int matched = HostSscanf(input, directive.c_str(), temporary.data(), &consumed);
-                if (consumed < 0 || matched != 1) return !converted && *input == '\0' ? EOF : assigned;
-                if (!suppress) {
-                    for (const wchar_t value : temporary) {
-                        if (value == L'\0') break;
-                        AppendGuestWide(target, static_cast<std::uint32_t>(value));
-                    }
-                    *target = char16_t{0};
-                }
-                input += consumed;
-                converted = true;
-                if (!suppress) ++assigned;
-                continue;
-            }
-            const bool single = conversion == 'c' || conversion == 'C';
-            if (!single) {
-                while (std::isspace(static_cast<unsigned char>(*input))) ++input;
-            }
-            std::size_t count = 0;
-            while (*input != '\0' && (width == 0 || count < width) && !(single && count == 1)) {
-                if (!single && std::isspace(static_cast<unsigned char>(*input))) break;
-                std::size_t length = 0;
-                const std::uint32_t code = DecodeGuestCodePoint(input, length);
-                input += length;
-                if (!suppress) AppendGuestWide(target, code);
-                ++count;
-            }
-            if (count == 0) return !converted && *input == '\0' ? EOF : assigned;
-            if (!suppress) {
-                if (!single) *target = char16_t{0};
-                ++assigned;
-            }
-            converted = true;
-            continue;
-        }
-        std::string directive = "%";
-        void* target = nullptr;
-        if (suppress) directive += '*';
-        else target = va_arg(args, void*);
-        if (width != 0) directive += std::to_string(width);
-        if (conversion == '[') {
-            directive += HostLength(length, conversion);
-            directive += scanset;
-        } else {
-            directive += HostLength(length, conversion);
-            directive += conversion;
-        }
-        directive += "%n";
-        int consumed = -1;
-        const int matched = suppress ? HostSscanf(input, directive.c_str(), &consumed) : HostSscanf(input, directive.c_str(), target, &consumed);
-        if (consumed < 0 || (!suppress && matched != 1)) return !converted && *input == '\0' ? EOF : assigned;
-        input += consumed;
-        converted = true;
-        if (!suppress) ++assigned;
-    }
-    return assigned;
 }
 
 [[maybe_unused]] int ScanWideFile(std::FILE* stream, const char* format, std::va_list args) {
@@ -627,6 +530,7 @@ int APS5_VABI fprintf_nid_postfix(FileStream* stream, const char* format, ...) {
 int APS5_VABI fscanf_nid_postfix(FileStream* stream, const char* format, ...) {
     if (stream && !stream->IsOpen()) { errno = 9; return -1; }
     auto* native = GetNativeStream(stream);
+    if (!stream->SwitchToReading()) return EOF;
 #ifdef _WIN32
     __builtin_sysv_va_list args;
     __builtin_sysv_va_start(args, format);
@@ -720,9 +624,13 @@ int APS5_VABI vsscanf_nid_postfix(const char* input, const char* format, VaList*
 #ifdef _WIN32
     return LibcDetail::ScanWindows(input, format, args);
 #else
+    if (ScansWideInProcess(format)) {
+        LibcDetail::FormatArguments arguments(args);
+        return ScanGuest(input, format, false, [&] { return arguments.Next<void*>(); }, [] { return 0u; });
+    }
     std::va_list copy;
     va_copy(copy, *reinterpret_cast<std::va_list*>(args));
-    const int result = HasGuestWideScan(format) ? ScanWideGuest(input, format, copy) : HostVsscanf(input, format, copy);
+    const int result = HostVsscanf(input, format, copy);
     va_end(copy);
     return result;
 #endif
@@ -740,7 +648,8 @@ int APS5_VABI sscanf_nid_postfix(const char* input, const char* format, ...) {
 int APS5_VABI sscanf_nid_postfix(const char* input, const char* format, ...) {
     std::va_list args;
     va_start(args, format);
-    const int result = HasGuestWideScan(format) ? ScanWideGuest(input, format, args) : HostVsscanf(input, format, args);
+    const int result = ScansWideInProcess(format) ? ScanGuest(input, format, false, [&] { return va_arg(args, void*); }, [] { return 0u; })
+                                                  : HostVsscanf(input, format, args);
     va_end(args);
     return result;
 }
@@ -766,7 +675,6 @@ int APS5_VABI sscanf_s_nid_postfix(const char* buffer, const char* format, ...) 
 
 int APS5_VABI vsscanf_s_nid_postfix(const char* buffer, const char* format, VaList* args) {
     if (!buffer || !format || !args) { errno = 22; return EOF; }
-    RejectGuestWideScan(format);
     std::va_list copy;
     va_copy(copy, *reinterpret_cast<std::va_list*>(args));
     const int result = ScanGuest(buffer, format, true, [&] { return va_arg(copy, void*); }, [&] { return va_arg(copy, unsigned int); });
@@ -775,7 +683,6 @@ int APS5_VABI vsscanf_s_nid_postfix(const char* buffer, const char* format, VaLi
 }
 
 int APS5_VABI sscanf_s_nid_postfix(const char* buffer, const char* format, ...) {
-    RejectGuestWideScan(format);
     std::va_list args;
     va_start(args, format);
     const int result = ScanGuest(buffer, format, true, [&] { return va_arg(args, void*); }, [&] { return va_arg(args, unsigned int); });

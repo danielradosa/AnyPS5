@@ -1,6 +1,5 @@
 #include "prx/libSceHmd/Hmd.hpp"
 
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,54 +22,47 @@ void CheckDisconnected() {
     Require(sceHmdInternalMmapIsConnect() == 0, "connection reported present");
 }
 
-void CheckQueries() {
-    Require(sceHmdReprojectionQueryGarlicBuffAlign() == 0x100, "garlic alignment");
-    Require(sceHmdReprojectionQueryGarlicBuffSize() == 0x100000, "garlic size");
-    Require(sceHmdReprojectionQueryOnionBuffAlign() == 0x100, "onion alignment");
-    Require(sceHmdReprojectionQueryOnionBuffSize() == 0x810, "onion size");
-    Require(sceHmdDistortionGetWorkMemoryAlign() == 0x400, "distortion alignment");
-    Require(sceHmdDistortionGetWorkMemorySize() == 0x20000, "distortion size");
-    Require(sceHmdGetDistortionWorkMemoryAlign() == 0x400, "distortion alignment alias");
-    Require(sceHmdGetDistortionWorkMemorySize() == 0x20000, "distortion size alias");
-    Require(sceHmdDistortionGetCompoundEyeCorrectionCommand() == Hmd::ParameterInvalid,
-            "compound eye command");
+void CheckBufferQueries() {
+    Require(sceHmdDistortionGetWorkMemoryAlign() == 0x400, "distortion work memory alignment");
+    Require(sceHmdDistortionGetWorkMemorySize() == 0x20000, "distortion work memory size");
+    Require(sceHmdReprojectionQueryGarlicBuffAlign() == 0x100, "reprojection garlic buffer alignment");
+    Require(sceHmdReprojectionQueryGarlicBuffSize() == 0x100000, "reprojection garlic buffer size");
+    Require(sceHmdReprojectionQueryOnionBuffAlign() == 0x100, "reprojection onion buffer alignment");
+    Require(sceHmdReprojectionQueryOnionBuffSize() == 0x810, "reprojection onion buffer size");
+    Require(sceHmdGetDistortionWorkMemoryAlign() == 0x400, "distortion work memory alignment alias");
+    Require(sceHmdGetDistortionWorkMemorySize() == 0x20000, "distortion work memory size alias");
+    Require(sceHmdDistortionGetCompoundEyeCorrectionCommand() == Hmd::ParameterInvalid, "compound eye correction command");
 }
 
-void CheckHandleQueries(bool initialized) {
-    Hmd::EyeOffset left;
-    Hmd::EyeOffset right;
-    Hmd::FieldOfView fieldOfView;
+void CheckHandleQueries(std::int32_t expected) {
+    unsigned char left[16];
+    unsigned char right[16];
+    unsigned char fieldOfView[16];
     unsigned char sensor[64];
-    unsigned char assy[64];
-    std::memset(&left, 0xa5, sizeof(left));
-    std::memset(&right, 0xa5, sizeof(right));
-    std::memset(&fieldOfView, 0xa5, sizeof(fieldOfView));
-    std::memset(sensor, 0xa5, sizeof(sensor));
-    std::memset(assy, 0xa5, sizeof(assy));
-    const auto leftBefore = left;
-    const auto rightBefore = right;
-    const auto fieldOfViewBefore = fieldOfView;
-    unsigned char untouched[64];
-    std::memset(untouched, 0xa5, sizeof(untouched));
-    const std::int32_t handleAnswer = initialized ? Hmd::InvalidHandle : Hmd::NotInitialized;
-
+    std::memset(left, 0x5a, sizeof(left));
+    std::memset(right, 0x5a, sizeof(right));
+    std::memset(fieldOfView, 0x5a, sizeof(fieldOfView));
+    std::memset(sensor, 0x5a, sizeof(sensor));
     for (const auto handle : {0, -1, 1, 0x0f000000}) {
-        Require(sceHmdGet2DEyeOffset(handle, &left, &right) == handleAnswer, "eye offset answer");
-        Require(sceHmdGet2DEyeOffset(handle, nullptr, nullptr) == handleAnswer, "null eye offset answer");
-        Require(sceHmdGetInertialSensorData(handle, sensor, 1) == handleAnswer, "sensor answer");
-        Require(sceHmdGetInertialSensorData(handle, nullptr, 0) == handleAnswer, "null sensor answer");
-        Require(sceHmdGetFieldOfView(handle, &fieldOfView) == Hmd::InvalidHandle, "field of view answer");
-        Require(sceHmdGetFieldOfView(handle, nullptr) == Hmd::ParameterNull, "null field of view");
+        Require(sceHmdGetFieldOfView(handle, nullptr) == Hmd::ParameterNull, "null field of view accepted");
+        Require(sceHmdGetFieldOfView(handle, fieldOfView) == expected, "field of view without a headset");
+        Require(sceHmdGet2DEyeOffset(handle, left, right) == expected, "eye offset without a headset");
+        Require(sceHmdGet2DEyeOffset(handle, nullptr, nullptr) == expected, "eye offset with null outputs");
+        Require(sceHmdGetInertialSensorData(handle, sensor, 1) == expected, "sensor data without a headset");
+        Require(sceHmdGetInertialSensorData(handle, nullptr, 0) == expected, "sensor data with a null output");
     }
-    Require(sceHmdGetAssyError(nullptr) == Hmd::ParameterNull, "null assy error");
-    Require(sceHmdGetAssyError(assy) ==
-                (initialized ? Hmd::DeviceDisconnected : Hmd::NotInitialized), "assy error answer");
-    Require(std::memcmp(&left, &leftBefore, sizeof(left)) == 0, "left eye offset written");
-    Require(std::memcmp(&right, &rightBefore, sizeof(right)) == 0, "right eye offset written");
-    Require(std::memcmp(&fieldOfView, &fieldOfViewBefore, sizeof(fieldOfView)) == 0,
-            "field of view written");
-    Require(std::memcmp(sensor, untouched, sizeof(sensor)) == 0, "sensor data written");
-    Require(std::memcmp(assy, untouched, sizeof(assy)) == 0, "assy error written");
+    for (const auto* bytes : {left, right, fieldOfView}) {
+        for (std::size_t index = 0; index < 16; ++index) Require(bytes[index] == 0x5a, "a refused query wrote its output");
+    }
+    for (const auto byte : sensor) Require(byte == 0x5a, "a refused sensor query wrote its output");
+}
+
+void CheckAssyError(std::int32_t expected) {
+    unsigned char data[32];
+    std::memset(data, 0x5a, sizeof(data));
+    Require(sceHmdGetAssyError(nullptr) == Hmd::ParameterNull, "null assembly error output accepted");
+    Require(sceHmdGetAssyError(data) == expected, "assembly error query without a headset");
+    for (const auto byte : data) Require(byte == 0x5a, "a refused assembly error query wrote its output");
 }
 
 }
@@ -82,14 +74,15 @@ int main() {
     const auto untouched = info;
 
     CheckDisconnected();
-    CheckQueries();
-    CheckHandleQueries(false);
+    CheckBufferQueries();
     Require(sceHmdTerminate() == Hmd::NotInitialized, "terminate before initialize");
     Require(sceHmdOpen(1, 0, 0, nullptr) == Hmd::NotInitialized, "open before initialize");
     Require(sceHmdClose(0) == Hmd::NotInitialized, "close before initialize");
     Require(sceHmdGetDeviceInformation(nullptr) == Hmd::ParameterNull, "null information");
     Require(sceHmdGetDeviceInformation(&info) == Hmd::NotInitialized, "query before initialize");
     Require(std::memcmp(&info, &untouched, sizeof(info)) == 0, "failed query modified output");
+    CheckHandleQueries(Hmd::NotInitialized);
+    CheckAssyError(Hmd::NotInitialized);
     Require(sceHmdGetDeviceInformationByHandle(0, &info) == Hmd::NotInitialized,
             "handle query before initialize");
     Require(sceHmdInitialize(nullptr) == Hmd::ParameterNull, "null initialize");
@@ -126,14 +119,16 @@ int main() {
                     "query accepted invalid handle");
             Require(std::memcmp(&info, &expected, sizeof(info)) == 0, "invalid handle modified output");
         }
+        CheckHandleQueries(Hmd::InvalidHandle);
+        CheckAssyError(Hmd::DeviceDisconnected);
         Require(sceHmdGetDeviceInformationByHandle(0, nullptr) == Hmd::InvalidHandle,
                 "null query accepted invalid handle");
-        CheckQueries();
-        CheckHandleQueries(true);
+        CheckBufferQueries();
         Require(sceHmdTerminate() == 0, "terminate failed");
         Require(sceHmdTerminate() == Hmd::NotInitialized, "duplicate terminate");
         Require(sceHmdGetDeviceInformation(&info) == Hmd::NotInitialized, "query after terminate");
         CheckDisconnected();
-        CheckHandleQueries(false);
+        CheckHandleQueries(Hmd::NotInitialized);
+        CheckAssyError(Hmd::NotInitialized);
     }
 }

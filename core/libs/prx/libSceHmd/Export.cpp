@@ -119,7 +119,7 @@ int APS5_VABI sceHmdInternalGetDebugTextMode(void) {
     return 0;
 }
 
-std::int32_t APS5_VABI sceHmdDistortionGetWorkMemoryAlign() {
+int APS5_VABI sceHmdDistortionGetWorkMemoryAlign(void) {
     return 0x400;
 }
 
@@ -128,7 +128,7 @@ int APS5_VABI sceHmdInternalRegisterEventCallback(void) {
     return 0;
 }
 
-std::int32_t APS5_VABI sceHmdDistortionGetWorkMemorySize() {
+int APS5_VABI sceHmdDistortionGetWorkMemorySize(void) {
     return 0x20000;
 }
 
@@ -261,8 +261,7 @@ int APS5_VABI sceHmdReprojectionInitializeCapture(void) {
     return 0;
 }
 
-std::int32_t APS5_VABI sceHmdGet2DEyeOffset(std::int32_t handle, Hmd::EyeOffset* leftOffset,
-                                          Hmd::EyeOffset* rightOffset) {
+int APS5_VABI sceHmdGet2DEyeOffset(std::int32_t handle, void* leftOffset, void* rightOffset) {
     (void)handle;
     (void)leftOffset;
     (void)rightOffset;
@@ -337,7 +336,7 @@ int APS5_VABI sceHmdDistortionGetCorrectionCommand(void) {
     return 0;
 }
 
-std::uint32_t APS5_VABI sceHmdReprojectionQueryOnionBuffAlign() {
+int APS5_VABI sceHmdReprojectionQueryOnionBuffAlign(void) {
     return 0x100;
 }
 
@@ -376,9 +375,10 @@ int APS5_VABI sceHmdInternalSetM2LedOn(void) {
     return 0;
 }
 
-std::int32_t APS5_VABI sceHmdGetFieldOfView(std::int32_t handle, Hmd::FieldOfView* fieldOfView) {
+int APS5_VABI sceHmdGetFieldOfView(std::int32_t handle, void* fieldOfView) {
     (void)handle;
-    return fieldOfView ? Hmd::InvalidHandle : Hmd::ParameterNull;
+    if (!fieldOfView) return Hmd::ParameterNull;
+    return initialized.load() ? Hmd::InvalidHandle : Hmd::NotInitialized;
 }
 
 int APS5_VABI sceHmdReprojectionAddDisplayBuffer(void) {
@@ -446,7 +446,7 @@ int APS5_VABI sceHmdInternalDfuClose(void) {
     return 0;
 }
 
-std::uint32_t APS5_VABI sceHmdReprojectionQueryGarlicBuffAlign() {
+int APS5_VABI sceHmdReprojectionQueryGarlicBuffAlign(void) {
     return 0x100;
 }
 
@@ -495,7 +495,7 @@ int APS5_VABI sceHmdInternalIsGameVr2d(void) {
     return 0;
 }
 
-std::int32_t APS5_VABI sceHmdGetAssyError(void* data) {
+int APS5_VABI sceHmdGetAssyError(void* data) {
     if (!data) return Hmd::ParameterNull;
     return initialized.load() ? Hmd::DeviceDisconnected : Hmd::NotInitialized;
 }
@@ -675,7 +675,7 @@ int APS5_VABI sceHmdInternalResetLedForVrTracker(void) {
     return 0;
 }
 
-std::size_t APS5_VABI sceHmdReprojectionQueryOnionBuffSize() {
+int APS5_VABI sceHmdReprojectionQueryOnionBuffSize(void) {
     return 0x810;
 }
 
@@ -764,10 +764,10 @@ int APS5_VABI sceHmdInternalSetDefaultLedData(void) {
     return 0;
 }
 
-std::int32_t APS5_VABI sceHmdGetInertialSensorData(std::int32_t handle, void* data, std::int32_t unknown) {
+int APS5_VABI sceHmdGetInertialSensorData(std::int32_t handle, void* data, std::int32_t count) {
     (void)handle;
     (void)data;
-    (void)unknown;
+    (void)count;
     return initialized.load() ? Hmd::InvalidHandle : Hmd::NotInitialized;
 }
 
@@ -851,7 +851,7 @@ int APS5_VABI sceHmdInternalGetPuRevision(void) {
     return 0;
 }
 
-std::size_t APS5_VABI sceHmdReprojectionQueryGarlicBuffSize() {
+int APS5_VABI sceHmdReprojectionQueryGarlicBuffSize(void) {
     return 0x100000;
 }
 

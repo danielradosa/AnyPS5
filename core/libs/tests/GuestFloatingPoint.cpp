@@ -9,6 +9,8 @@
 #include <xmmintrin.h>
 
 extern "C" {
+int* APS5_VABI __error_nid_postfix();
+void APS5_VABI _Feraise_nid_postfix(int);
 int APS5_VABI fegetround_nid_postfix();
 int APS5_VABI fesetround_nid_postfix(int);
 int APS5_VABI fetestexcept_nid_postfix(int);
@@ -96,6 +98,21 @@ void CheckRounding() {
     Require(fegetround_nid_postfix() == 0x400, "query uses the x87 rounding mode");
 }
 
+void CheckFeraise() {
+    for (unsigned requested = 0; requested <= 0x3f; ++requested) {
+        const auto seeded = SeedFlags(0, 0);
+        *__error_nid_postfix() = 0;
+        _Feraise_nid_postfix(static_cast<int>(requested));
+        const unsigned raised = (requested & 0x18) != 0 ? requested | 0x20 : requested;
+        const auto state = ReadEnvironment();
+        Require((state.x87[1] & 0x3f) == raised && (state.sse & 0x3f) == raised, "_Feraise raises the flags on both units");
+        Require(state.x87[0] == seeded.x87[0] && (state.sse & ~0x3fu) == (seeded.sse & ~0x3fu), "_Feraise preserves control bits");
+        const int error = (raised & 0x01) != 0 || (raised & 0x1c) == 0 ? 33 : 34;
+        Require(*__error_nid_postfix() == error, "_Feraise sets EDOM or ERANGE");
+    }
+    SeedFlags(0, 0);
+}
+
 void CheckFlags() {
     const auto initial = SeedFlags(0x03, 0x24);
     Require(fetestexcept_nid_postfix(0) == 0, "empty exception query");
@@ -139,6 +156,7 @@ void CheckFlags() {
         } catch (const std::invalid_argument&) { threw = true; }
         Require(threw, "reject null exception storage");
     }
+    CheckFeraise();
 }
 
 void CheckThreads() {
@@ -169,27 +187,26 @@ unsigned SseMasks() {
     return (ReadEnvironment().sse >> 7) & 0x3fu;
 }
 
-int PreviousTraps() {
-    return static_cast<int>(~(SseMasks() | X87Masks()) | ~0x3fu);
-}
-
 void CheckTraps() {
     const auto seeded = SeedFlags(0, 0);
     Require(feenableexcept_nid_postfix(0x49) == static_cast<int>(0xffffffc0u), "enable reports no previous trap as the console does");
     Require(X87Masks() == 0x36 && fegettrapenable_nid_postfix() == 0x09, "enable unmasks the x87 exceptions");
-    Require(SseMasks() == 0x36 || SseMasks() == 0x3f, "enable unmasks the SSE exceptions");
-    int previous = PreviousTraps();
-    Require(fedisableexcept_nid_postfix(0x41) == previous, "disable returns the traps enabled on both units");
+    Require(SseMasks() == 0x36, "enable unmasks the SSE exceptions");
+    Require(fedisableexcept_nid_postfix(0x41) == static_cast<int>(0xffffffc9u), "disable returns the traps enabled on both units");
     Require(X87Masks() == 0x37 && fegettrapenable_nid_postfix() == 0x08, "disable masks the x87 exception");
-    Require(SseMasks() == 0x37 || SseMasks() == 0x3f, "disable masks the SSE exception");
-    previous = PreviousTraps();
-    Require(__feenableexcept_nid_postfix(0x02) == previous && X87Masks() == 0x35, "the internal enable differs");
-    previous = PreviousTraps();
-    Require(__fedisableexcept_nid_postfix(0x3f) == previous && X87Masks() == 0x3f && fegettrapenable_nid_postfix() == 0, "the internal disable differs");
+    Require(SseMasks() == 0x37, "disable masks the SSE exception");
+    Require(__feenableexcept_nid_postfix(0x02) == static_cast<int>(0xffffffc8u) && X87Masks() == 0x35, "the internal enable differs");
+    Require(__fedisableexcept_nid_postfix(0x3f) == static_cast<int>(0xffffffcau) && X87Masks() == 0x3f && fegettrapenable_nid_postfix() == 0, "the internal disable differs");
     Require(fesettrapenable_nid_postfix(0x40) == 1 && X87Masks() == 0x3f, "an out-of-range trap set was accepted");
-    Require(fesettrapenable_nid_postfix(0x10004) == 0 && fegettrapenable_nid_postfix() == 0x04, "a trap set did not use the low 16 bits");
-    Require(fesettrapenable_nid_postfix(0x01) == 0 && fegettrapenable_nid_postfix() == 0x05, "a trap set masked enabled traps");
-    Require(fesettrapenable_nid_postfix(0) == 0 && fegettrapenable_nid_postfix() == 0x05, "an empty trap set masked enabled traps");
+    Require(fesettrapenable_nid_postfix(0x10004) == 0 && fegettrapenable_nid_postfix() == 0x04 && SseMasks() == 0x3b, "a trap set did not use the low 16 bits");
+    Require(fesettrapenable_nid_postfix(0x01) == 0 && fegettrapenable_nid_postfix() == 0x05 && SseMasks() == 0x3a, "a trap set masked enabled traps");
+    Require(fesettrapenable_nid_postfix(0) == 0 && fegettrapenable_nid_postfix() == 0x05 && SseMasks() == 0x3a, "an empty trap set masked enabled traps");
+    auto mixed = ReadEnvironment();
+    mixed.x87[0] = (mixed.x87[0] & ~0x3fu) | 0x36;
+    mixed.sse = (mixed.sse & ~(0x3fu << 7)) | (0x3au << 7);
+    WriteEnvironment(mixed);
+    Require(feenableexcept_nid_postfix(0) == static_cast<int>(0xffffffc1u), "enable reports only the traps enabled on both units");
+    Require(fegettrapenable_nid_postfix() == 0x09, "the trap query reads only the x87 control word");
     WriteEnvironment(seeded);
 }
 
