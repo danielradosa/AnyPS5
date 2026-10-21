@@ -76,6 +76,8 @@ void ObjectsCleanup();
 X509Object* X509FromDer(const unsigned char* der, std::size_t length);
 const mbedtls_x509_crt& X509Certificate(const X509Object& x);
 bool DigestCopyFinal(const EvpMdCtx& ctx, unsigned char* out, const char* function);
+std::vector<unsigned char> EncodePrivateKey(const EvpPkey* pkey, const char* function);
+EvpPkey* DecodePrivateKey(const unsigned char* der, std::size_t length, const char* function);
 VerifyParam* NewVerifyParam();
 void FreeVerifyParam(VerifyParam* param);
 int AddTrustedCertificate(Store* store, X509Object* x, const char* function);

@@ -51,6 +51,7 @@ std::int64_t APS5_VABI BIO_ctrl_nid_postfix(LibreSsl::Bio* bp, int cmd, std::int
 void APS5_VABI X509_free_nid_postfix(LibreSsl::X509Object* a);
 LibreSsl::Store* APS5_VABI X509_STORE_new_nid_postfix();
 void APS5_VABI X509_STORE_free_nid_postfix(LibreSsl::Store* v);
+void APS5_VABI EVP_PKEY_free_nid_postfix(LibreSsl::EvpPkey* pkey);
 }
 
 namespace LibreSsl {
@@ -164,6 +165,7 @@ static_assert(sizeof(SslMethodObject) == 48 && sizeof(SslCipherObject) == 88 && 
 using VerifyCallback = int (APS5_VABI*)(int, void*);
 using ServernameCallback = int (APS5_VABI*)(SslObject*, int*, void*);
 using NewSessionCallback = int (APS5_VABI*)(SslObject*, SslSessionObject*);
+using ClientCertCallback = int (APS5_VABI*)(SslObject*, X509Object**, EvpPkey**);
 
 namespace {
 
@@ -178,6 +180,7 @@ constexpr int SslFunctionCtxUseCertificate = 171;
 constexpr int SslFunctionCtxUseCertificateAsn1 = 172;
 constexpr int SslFunctionCtxUseCertificateChainFile = 220;
 constexpr int SslFunctionCtxUseCertificateFile = 173;
+constexpr int SslFunctionCtxUsePrivateKey = 174;
 constexpr int SslFunctionCtxUsePrivateKeyAsn1 = 175;
 constexpr int SslFunctionCtxUsePrivateKeyFile = 176;
 constexpr int SslFunctionCtxCheckPrivateKey = 168;
@@ -219,13 +222,16 @@ constexpr int ErrorNone = 0;
 constexpr int ErrorSsl = 1;
 constexpr int ErrorWantRead = 2;
 constexpr int ErrorWantWrite = 3;
+constexpr int ErrorWantX509Lookup = 4;
 constexpr int ErrorSyscall = 5;
 constexpr int ErrorZeroReturn = 6;
 
 constexpr int StateNothing = 1;
 constexpr int StateWriting = 2;
 constexpr int StateReading = 3;
+constexpr int StateX509Lookup = 4;
 
+constexpr int HandshakeWantX509Lookup = 1;
 constexpr int StoreCtxSslIndex = 0;
 
 constexpr int SentShutdown = 1;
@@ -465,6 +471,7 @@ struct SslCtxState {
     int maxVersion = 0;
     std::shared_ptr<const Identity> identity = std::make_shared<Identity>();
     std::vector<Der> clientAuthorities;
+    ClientCertCallback clientCertCallback = nullptr;
     CertVerifyCallback certVerifyCallback = nullptr;
     void* certVerifyArgument = nullptr;
     std::vector<X509Object*> extraCertificates;
@@ -516,6 +523,9 @@ struct SslState {
     std::int64_t verifyResult = X509VOk;
     CertVerifyCallback certVerifyCallback = nullptr;
     void* certVerifyArgument = nullptr;
+    bool certificateRequested = false;
+    std::shared_ptr<const Identity> privateKeyIdentity;
+    EvpPkey* privateKey = nullptr;
     std::exception_ptr pending;
     std::vector<Der> clientAuthorities;
     std::vector<int> suiteList;
@@ -553,6 +563,7 @@ struct SslState {
         mbedtls_pk_free(&ownKey);
         mbedtls_x509_crt_free(&ownChain);
         if (ownCertificate) X509_free_nid_postfix(ownCertificate);
+        if (privateKey) EVP_PKEY_free_nid_postfix(privateKey);
     }
 };
 
@@ -1341,6 +1352,49 @@ void Finish(SslObject& ssl) {
     }
 }
 
+int SelectClientCertificate(SslObject& ssl) {
+    auto& state = *ssl.internal;
+    ClientCertCallback callback = nullptr;
+    {
+        std::lock_guard lock(ssl.ctx->internal->mutex);
+        callback = ssl.ctx->internal->clientCertCallback;
+    }
+    if (!callback || !state.identity->certificate.empty()) {
+        state.certificateRequested = false;
+        return 0;
+    }
+    X509Object* x509 = nullptr;
+    EvpPkey* pkey = nullptr;
+    const int result = callback(&ssl, &x509, &pkey);
+    if (result < 0) return -1;
+    state.certificateRequested = false;
+    if (result == 0) return 0;
+    if (result != 1 || !x509 || !pkey)
+        throw std::invalid_argument("SSL client certificate callback: result " + std::to_string(result) + " without both a certificate and a key is not documented");
+    auto identity = state.identity;
+    if (!SetCertificate(identity, CertificateDer(x509, "SSL client certificate callback"), SslFunctionUseCertificateAsn1, true) ||
+        !SetKey(identity, EncodePrivateKey(pkey, "SSL client certificate callback"), 0, SslFunctionUsePrivateKeyAsn1))
+        throw std::invalid_argument("SSL client certificate callback: the returned certificate and key do not install; what LibreSSL does then is not documented");
+    state.identity = std::move(identity);
+    if (ParseIdentity(state.ownChain, state.ownKey, *state.identity) <= 0 || mbedtls_ssl_conf_own_cert(&state.config, &state.ownChain, &state.ownKey) != 0)
+        throw std::runtime_error("SSL client certificate callback: Mbed TLS rejected the returned certificate and key");
+    return 0;
+}
+
+int RunHandshake(SslObject& ssl) {
+    auto& state = *ssl.internal;
+    while (!mbedtls_ssl_is_handshake_over(&state.ssl)) {
+        const int step = state.ssl.MBEDTLS_PRIVATE(state);
+        if (step == MBEDTLS_SSL_CLIENT_CERTIFICATE && state.certificateRequested && SelectClientCertificate(ssl) < 0) return HandshakeWantX509Lookup;
+        const int result = mbedtls_ssl_handshake_step(&state.ssl);
+        if (result != 0) return result;
+        if (step == MBEDTLS_SSL_CERTIFICATE_REQUEST && state.role == 1)
+            state.certificateRequested = state.ssl.MBEDTLS_PRIVATE(in_msgtype) == MBEDTLS_SSL_MSG_HANDSHAKE &&
+                state.ssl.MBEDTLS_PRIVATE(in_msg)[0] == MBEDTLS_SSL_HS_CERTIFICATE_REQUEST;
+    }
+    return 0;
+}
+
 int Handshake(SslObject& ssl, const char* function) {
     auto& state = *ssl.internal;
     if (state.handshaken) return 1;
@@ -1352,7 +1406,7 @@ int Handshake(SslObject& ssl, const char* function) {
     }
     state.want = StateNothing;
     state.syscallFailure = false;
-    const int result = mbedtls_ssl_handshake(&state.ssl);
+    const int result = RunHandshake(ssl);
     if (state.pending) {
         auto pending = state.pending;
         state.pending = nullptr;
@@ -1362,6 +1416,10 @@ int Handshake(SslObject& ssl, const char* function) {
     if (result == 0) {
         Finish(ssl);
         return 1;
+    }
+    if (result == HandshakeWantX509Lookup) {
+        state.want = StateX509Lookup;
+        return -1;
     }
     if (result == MBEDTLS_ERR_SSL_WANT_READ) {
         state.want = StateReading;
@@ -2256,6 +2314,7 @@ int APS5_VABI SSL_get_error_nid_postfix(const SslObject* s, int ret_code) {
     if (error) return ((error >> 24) & 0xff) == ErrReasonSysLib ? ErrorSyscall : ErrorSsl;
     if (state.want == StateReading) return ErrorWantRead;
     if (state.want == StateWriting) return ErrorWantWrite;
+    if (state.want == StateX509Lookup) return ErrorWantX509Lookup;
     if (ret_code == 0 && (state.shutdown & ReceivedShutdown)) return ErrorZeroReturn;
     return ErrorSyscall;
 }
@@ -2490,6 +2549,33 @@ void APS5_VABI SSL_CTX_set_cert_verify_callback_nid_postfix(SslCtxObject* ctx, C
     std::lock_guard lock(context.internal->mutex);
     context.internal->certVerifyCallback = cb;
     context.internal->certVerifyArgument = arg;
+}
+
+void APS5_VABI SSL_CTX_set_client_cert_cb_nid_postfix(SslCtxObject* ctx, ClientCertCallback client_cert_cb) {
+    auto& context = RequireCtx(ctx, __func__);
+    std::lock_guard lock(context.internal->mutex);
+    context.internal->clientCertCallback = client_cert_cb;
+}
+
+int APS5_VABI SSL_CTX_use_PrivateKey_nid_postfix(SslCtxObject* ctx, EvpPkey* pkey) {
+    auto& context = RequireCtx(ctx, __func__);
+    if (!pkey) throw std::invalid_argument("SSL_CTX_use_PrivateKey: null key");
+    auto der = EncodePrivateKey(pkey, __func__);
+    std::lock_guard lock(context.internal->mutex);
+    return SetKey(context.internal->identity, std::move(der), 0, SslFunctionCtxUsePrivateKey);
+}
+
+EvpPkey* APS5_VABI SSL_get_privatekey_nid_postfix(const SslObject* ssl) {
+    auto& object = RequireSsl(const_cast<SslObject*>(ssl), __func__);
+    auto& state = *object.internal;
+    if (state.identity->key.empty()) return nullptr;
+    if (state.privateKeyIdentity != state.identity) {
+        auto* pkey = DecodePrivateKey(state.identity->key.data(), state.identity->key.size(), __func__);
+        if (state.privateKey) EVP_PKEY_free_nid_postfix(state.privateKey);
+        state.privateKey = pkey;
+        state.privateKeyIdentity = state.identity;
+    }
+    return state.privateKey;
 }
 
 VerifyParam* APS5_VABI SSL_get0_param_nid_postfix(SslObject* ssl) {

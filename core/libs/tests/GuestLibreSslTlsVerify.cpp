@@ -14,6 +14,7 @@ struct GuestSsl;
 struct GuestCtx;
 struct GuestMethod;
 struct GuestX509;
+struct GuestPkey;
 struct GuestStore;
 struct GuestStoreCtx;
 struct GuestVerifyParam;
@@ -38,6 +39,7 @@ struct GuestSslHead {
 
 using GuestVerifyCallback = int (APS5_VABI*)(int, GuestStoreCtx*);
 using GuestCertVerifyCallback = int (APS5_VABI*)(GuestStoreCtx*, void*);
+using GuestClientCertCallback = int (APS5_VABI*)(GuestSsl*, GuestX509**, GuestPkey**);
 
 extern "C" {
 const GuestMethod* APS5_VABI SSLv23_server_method_nid_postfix();
@@ -47,27 +49,37 @@ void APS5_VABI SSL_CTX_free_nid_postfix(GuestCtx*);
 void APS5_VABI SSL_CTX_set_verify_nid_postfix(GuestCtx*, int, GuestVerifyCallback);
 int APS5_VABI SSL_CTX_use_certificate_ASN1_nid_postfix(GuestCtx*, int, const unsigned char*);
 int APS5_VABI SSL_CTX_use_PrivateKey_ASN1_nid_postfix(int, GuestCtx*, const unsigned char*, std::int64_t);
+int APS5_VABI SSL_CTX_use_PrivateKey_nid_postfix(GuestCtx*, GuestPkey*);
 int APS5_VABI SSL_CTX_check_private_key_nid_postfix(const GuestCtx*);
 int APS5_VABI SSL_CTX_load_verify_mem_nid_postfix(GuestCtx*, void*, int);
 GuestStore* APS5_VABI SSL_CTX_get_cert_store_nid_postfix(const GuestCtx*);
 void APS5_VABI SSL_CTX_set_cert_store_nid_postfix(GuestCtx*, GuestStore*);
 void APS5_VABI SSL_CTX_set_cert_verify_callback_nid_postfix(GuestCtx*, GuestCertVerifyCallback, void*);
+void APS5_VABI SSL_CTX_set_client_cert_cb_nid_postfix(GuestCtx*, GuestClientCertCallback);
 GuestSsl* APS5_VABI SSL_new_nid_postfix(GuestCtx*);
 void APS5_VABI SSL_free_nid_postfix(GuestSsl*);
 void APS5_VABI SSL_set_bio_nid_postfix(GuestSsl*, GuestBio*, GuestBio*);
 int APS5_VABI SSL_connect_nid_postfix(GuestSsl*);
 int APS5_VABI SSL_accept_nid_postfix(GuestSsl*);
 int APS5_VABI SSL_get_error_nid_postfix(const GuestSsl*, int);
+int APS5_VABI SSL_want_nid_postfix(const GuestSsl*);
 std::int64_t APS5_VABI SSL_get_verify_result_nid_postfix(const GuestSsl*);
 GuestX509* APS5_VABI SSL_get_peer_certificate_nid_postfix(const GuestSsl*);
+GuestX509* APS5_VABI SSL_get_certificate_nid_postfix(const GuestSsl*);
+GuestPkey* APS5_VABI SSL_get_privatekey_nid_postfix(const GuestSsl*);
 GuestVerifyParam* APS5_VABI SSL_get0_param_nid_postfix(GuestSsl*);
 int APS5_VABI SSL_get_ex_data_X509_STORE_CTX_idx_nid_postfix();
 const GuestBioMethod* APS5_VABI BIO_s_mem_nid_postfix();
 GuestBio* APS5_VABI BIO_new_nid_postfix(const GuestBioMethod*);
+int APS5_VABI BIO_free_nid_postfix(GuestBio*);
 int APS5_VABI BIO_write_nid_postfix(GuestBio*, const void*, int);
 std::int64_t APS5_VABI BIO_ctrl_nid_postfix(GuestBio*, int, std::int64_t, void*);
 GuestX509* APS5_VABI d2i_X509_nid_postfix(GuestX509**, const unsigned char**, std::int64_t);
 void APS5_VABI X509_free_nid_postfix(GuestX509*);
+GuestPkey* APS5_VABI X509_get_pubkey_nid_postfix(GuestX509*);
+GuestPkey* APS5_VABI PEM_read_bio_PrivateKey_nid_postfix(GuestBio*, GuestPkey**, void*, void*);
+int APS5_VABI EVP_PKEY_id_nid_postfix(const GuestPkey*);
+void APS5_VABI EVP_PKEY_free_nid_postfix(GuestPkey*);
 GuestStore* APS5_VABI X509_STORE_new_nid_postfix();
 int APS5_VABI X509_STORE_add_cert_nid_postfix(GuestStore*, GuestX509*);
 void* APS5_VABI X509_STORE_CTX_get_ex_data_nid_postfix(const GuestStoreCtx*, int);
@@ -83,23 +95,12 @@ void APS5_VABI ERR_clear_error_nid_postfix();
 
 namespace {
 
-constexpr int ErrorWantRead = 2;
-constexpr int VerifyPeer = 1;
+constexpr int ErrorWantRead = 2, ErrorWantX509Lookup = 4;
+constexpr int VerifyPeer = 1, VerifyFailIfNoPeerCert = 2;
 constexpr int PkeyEc = 408;
 constexpr int BioCtrlReset = 1, BioCtrlInfo = 3;
 constexpr std::uint64_t ClientVerifyFailed = 0x14084086, ServerUnknownCa = 0x14080418, ServerBadCertificate = 0x14080412;
-constexpr std::uint64_t ServerAccessDenied = 0x14080419;
-
-const unsigned char KeyDer[] = {
-    0x30, 0x77, 0x02, 0x01, 0x01, 0x04, 0x20, 0x2e, 0x55, 0x4b, 0x8a, 0x03, 0xe8, 0xa3, 0x67, 0xb1,
-    0x41, 0x2c, 0x71, 0x1e, 0x80, 0xd1, 0xf6, 0xba, 0x9c, 0x6b, 0xac, 0xfc, 0x52, 0x32, 0xb4, 0x79,
-    0x5b, 0x2d, 0x3c, 0xcd, 0xd4, 0x58, 0x1d, 0xa0, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d,
-    0x03, 0x01, 0x07, 0xa1, 0x44, 0x03, 0x42, 0x00, 0x04, 0xe4, 0x69, 0xf7, 0xb5, 0x03, 0x82, 0xe1,
-    0xce, 0x56, 0x84, 0xef, 0x9b, 0xca, 0x1e, 0x18, 0x70, 0xdb, 0x0d, 0xc7, 0xb6, 0xec, 0xca, 0x8b,
-    0x82, 0x77, 0x71, 0xe2, 0xad, 0xfe, 0x6a, 0x79, 0xaf, 0xbf, 0x34, 0xde, 0x4c, 0xa3, 0xb3, 0xc5,
-    0xed, 0xba, 0xa4, 0xe9, 0x02, 0xf2, 0x80, 0xfd, 0xcc, 0x88, 0xeb, 0x4b, 0x85, 0xa6, 0xbd, 0x22,
-    0x0b, 0xc2, 0x9d, 0xbd, 0x50, 0xb5, 0xec, 0xed, 0xe2,
-};
+constexpr std::uint64_t ServerAccessDenied = 0x14080419, ServerNoClientCertificate = 0x140800C7;
 
 const unsigned char CertificateDer[] = {
     0x30, 0x82, 0x01, 0xb4, 0x30, 0x82, 0x01, 0x59, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x02, 0x10,
@@ -146,6 +147,20 @@ const char CertificatePem[] =
     "L9N7J4c1spk=\n"
     "-----END CERTIFICATE-----\n";
 
+const char KeyPem[] =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLlVLigPoo2exQSxx\n"
+    "HoDR9rqca6z8UjK0eVstPM3UWB2hRANCAATkafe1A4LhzlaE75vKHhhw2w3HtuzK\n"
+    "i4J3ceKt/mp5r7803kyjs8XtuqTpAvKA/cyI60uFpr0iC8KdvVC17O3i\n"
+    "-----END PRIVATE KEY-----\n";
+
+const char OtherKeyPem[] =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgaXjnWg9rFYJrhLF/\n"
+    "Af6CXZNnPylrF/GoWuBUMe3vg6+hRANCAARiydPqm7wmO7Nmetx2Qkj8pU0acbuW\n"
+    "u+DyjSbTenBPeHayvdTEfTty7SgeJhjl2wu//G6r/pE5PD3Fs1ZeB2ar\n"
+    "-----END PRIVATE KEY-----\n";
+
 void Require(bool condition, std::source_location location = std::source_location::current()) {
     if (condition) return;
     std::fprintf(stderr, "LibreSSL TLS verification check failed at line %u\n", location.line());
@@ -169,10 +184,21 @@ GuestX509* Certificate() {
     return x509;
 }
 
+GuestPkey* ReadKey(const char* pem) {
+    auto* bio = BIO_new_nid_postfix(BIO_s_mem_nid_postfix());
+    Require(BIO_write_nid_postfix(bio, pem, static_cast<int>(std::strlen(pem))) > 0);
+    auto* pkey = PEM_read_bio_PrivateKey_nid_postfix(bio, nullptr, nullptr, nullptr);
+    BIO_free_nid_postfix(bio);
+    Require(pkey != nullptr && EVP_PKEY_id_nid_postfix(pkey) == PkeyEc);
+    return pkey;
+}
+
 GuestCtx* ServerContext() {
     auto* ctx = SSL_CTX_new_nid_postfix(SSLv23_server_method_nid_postfix());
     Require(ctx != nullptr && SSL_CTX_use_certificate_ASN1_nid_postfix(ctx, sizeof(CertificateDer), CertificateDer) == 1);
-    Require(SSL_CTX_use_PrivateKey_ASN1_nid_postfix(PkeyEc, ctx, KeyDer, sizeof(KeyDer)) == 1 && SSL_CTX_check_private_key_nid_postfix(ctx) == 1);
+    auto* pkey = ReadKey(KeyPem);
+    Require(SSL_CTX_use_PrivateKey_nid_postfix(ctx, pkey) == 1 && SSL_CTX_check_private_key_nid_postfix(ctx) == 1);
+    EVP_PKEY_free_nid_postfix(pkey);
     return ctx;
 }
 
@@ -204,6 +230,7 @@ struct Link {
     int serverResult = 0;
     std::uint64_t clientCode = 0;
     std::uint64_t serverCode = 0;
+    bool sawLookup = false;
 
     Link(GuestCtx* clientCtx, GuestCtx* serverCtx) : client(SSL_new_nid_postfix(clientCtx)), server(SSL_new_nid_postfix(serverCtx)) {
         Require(client && server);
@@ -223,7 +250,11 @@ struct Link {
             if (!clientDone) {
                 clientResult = SSL_connect_nid_postfix(client);
                 const int error = clientResult == 1 ? 0 : SSL_get_error_nid_postfix(client, clientResult);
-                if (clientResult == 1 || error != ErrorWantRead) {
+                if (error == ErrorWantX509Lookup) {
+                    Require(SSL_want_nid_postfix(client) == 4);
+                    sawLookup = true;
+                }
+                if (clientResult == 1 || (error != ErrorWantRead && error != ErrorWantX509Lookup)) {
                     clientDone = true;
                     clientCode = ERR_get_error_nid_postfix();
                     ERR_clear_error_nid_postfix();
@@ -278,6 +309,23 @@ int APS5_VABI AppVerify(GuestStoreCtx* ctx, void* arg) {
     return appVerdict;
 }
 
+int clientCertCalls = 0;
+int clientCertMode = 1;
+GuestX509* givenCertificate = nullptr;
+GuestPkey* givenKey = nullptr;
+
+int APS5_VABI ClientCertificate(GuestSsl* ssl, GuestX509** x509, GuestPkey** pkey) {
+    Require(ssl && x509 && pkey);
+    ++clientCertCalls;
+    if (clientCertMode == 0) return 0;
+    if (clientCertCalls == 1) return -1;
+    givenCertificate = Certificate();
+    givenKey = ReadKey(KeyPem);
+    *x509 = givenCertificate;
+    *pkey = givenKey;
+    return 1;
+}
+
 }
 
 int main() {
@@ -287,6 +335,36 @@ int main() {
     Require(SSL_get_ex_data_X509_STORE_CTX_idx_nid_postfix() == 0);
 
     auto* server = ServerContext();
+    {
+        auto* ctx = SSL_CTX_new_nid_postfix(SSLv23_server_method_nid_postfix());
+        auto* pkey = ReadKey(KeyPem);
+        auto* other = ReadKey(OtherKeyPem);
+        auto* certificate = Certificate();
+        auto* publicKey = X509_get_pubkey_nid_postfix(certificate);
+        Require(publicKey != nullptr);
+        Require(SSL_CTX_use_PrivateKey_nid_postfix(ctx, other) == 1);
+        Require(SSL_CTX_use_certificate_ASN1_nid_postfix(ctx, sizeof(CertificateDer), CertificateDer) == 1);
+        Require(SSL_CTX_check_private_key_nid_postfix(ctx) == 0 && ERR_get_error_nid_postfix() == 0x0B080074);
+        Require(SSL_CTX_use_PrivateKey_nid_postfix(ctx, other) == 0 && ERR_get_error_nid_postfix() == 0x0B080074);
+        Require(SSL_CTX_use_PrivateKey_nid_postfix(ctx, pkey) == 1 && SSL_CTX_check_private_key_nid_postfix(ctx) == 1);
+        Require(Throws([&] { SSL_CTX_use_PrivateKey_nid_postfix(ctx, nullptr); }));
+        Require(Throws([&] { SSL_CTX_use_PrivateKey_nid_postfix(ctx, publicKey); }));
+        auto* ssl = SSL_new_nid_postfix(ctx);
+        auto* active = SSL_get_privatekey_nid_postfix(ssl);
+        Require(active && active != pkey && EVP_PKEY_id_nid_postfix(active) == PkeyEc && SSL_get_privatekey_nid_postfix(ssl) == active);
+        SSL_free_nid_postfix(ssl);
+        auto* bareCtx = SSL_CTX_new_nid_postfix(TLS_client_method_nid_postfix());
+        auto* bare = SSL_new_nid_postfix(bareCtx);
+        Require(SSL_get_privatekey_nid_postfix(bare) == nullptr && SSL_get_certificate_nid_postfix(bare) == nullptr);
+        SSL_free_nid_postfix(bare);
+        SSL_CTX_free_nid_postfix(bareCtx);
+        EVP_PKEY_free_nid_postfix(publicKey);
+        X509_free_nid_postfix(certificate);
+        EVP_PKEY_free_nid_postfix(other);
+        EVP_PKEY_free_nid_postfix(pkey);
+        SSL_CTX_free_nid_postfix(ctx);
+    }
+
     {
         auto* client = ClientContext(false, VerifyPeer);
         SSL_CTX_set_verify_nid_postfix(client, VerifyPeer, RecordVerify);
@@ -365,6 +443,37 @@ int main() {
         Require(SSL_CTX_get_cert_store_nid_postfix(client) == nullptr);
         Require(Throws([&] { SSL_CTX_load_verify_mem_nid_postfix(client, const_cast<char*>(CertificatePem), sizeof(CertificatePem) - 1); }));
         SSL_CTX_free_nid_postfix(client);
+    }
+
+    {
+        auto* requesting = ServerContext();
+        SSL_CTX_set_verify_nid_postfix(requesting, VerifyPeer | VerifyFailIfNoPeerCert, nullptr);
+        Require(SSL_CTX_load_verify_mem_nid_postfix(requesting, const_cast<char*>(CertificatePem), sizeof(CertificatePem) - 1) == 1);
+        auto* client = ClientContext(true, VerifyPeer);
+        SSL_CTX_set_client_cert_cb_nid_postfix(client, ClientCertificate);
+
+        Link plain(client, server);
+        Require(plain.Run() && clientCertCalls == 0 && SSL_get_certificate_nid_postfix(plain.client) == nullptr);
+
+        Link mutual(client, requesting);
+        Require(mutual.Run() && mutual.sawLookup && clientCertCalls == 2);
+        Require(SSL_get_verify_result_nid_postfix(mutual.server) == 0 && SSL_get_verify_result_nid_postfix(mutual.client) == 0);
+        auto* peer = SSL_get_peer_certificate_nid_postfix(mutual.server);
+        Require(peer != nullptr);
+        X509_free_nid_postfix(peer);
+        Require(SSL_get_certificate_nid_postfix(mutual.client) != nullptr);
+        auto* active = SSL_get_privatekey_nid_postfix(mutual.client);
+        Require(active && active != givenKey && EVP_PKEY_id_nid_postfix(active) == PkeyEc);
+        X509_free_nid_postfix(givenCertificate);
+        EVP_PKEY_free_nid_postfix(givenKey);
+
+        clientCertCalls = 0;
+        clientCertMode = 0;
+        Link declined(client, requesting);
+        Require(!declined.Run() && clientCertCalls == 1 && declined.serverResult == -1 && declined.serverCode == ServerNoClientCertificate);
+        Require(declined.clientResult == -1 && SSL_get_certificate_nid_postfix(declined.client) == nullptr);
+        SSL_CTX_free_nid_postfix(client);
+        SSL_CTX_free_nid_postfix(requesting);
     }
 
     SSL_CTX_free_nid_postfix(server);

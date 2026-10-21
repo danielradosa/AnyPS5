@@ -182,7 +182,7 @@ void FreePkey(EvpPkey* pkey);
 void AssignRsa(EvpPkey& pkey, Rsa* rsa);
 void AssignEcKey(EvpPkey& pkey, EcKey* key);
 EvpPkey* PkeyFromMbed(const mbedtls_pk_context& pk, const char* function);
-bool PkeyToMbed(const EvpPkey& pkey, mbedtls_pk_context& pk, const char* function);
+bool PkeyToMbed(const EvpPkey& pkey, mbedtls_pk_context& pk, bool needPrivate, const char* function);
 int PkeySize(const EvpPkey& pkey, const char* function);
 Rsa* PkeyRsa(const EvpPkey* pkey, int function);
 EcKey* PkeyEcKey(const EvpPkey* pkey, int function);

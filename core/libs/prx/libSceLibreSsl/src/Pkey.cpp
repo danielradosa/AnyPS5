@@ -409,14 +409,15 @@ EvpPkey* PkeyFromMbed(const mbedtls_pk_context& pk, const char* function) {
     return pkey;
 }
 
-bool PkeyToMbed(const EvpPkey& pkey, mbedtls_pk_context& pk, const char* function) {
+bool PkeyToMbed(const EvpPkey& pkey, mbedtls_pk_context& pk, bool needPrivate, const char* function) {
     if (pkey.type == NidRsaEncryption) {
         if (mbedtls_pk_setup(&pk, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA)) != 0) throw std::bad_alloc();
-        return RsaContext(*static_cast<const Rsa*>(pkey.pkey), *mbedtls_pk_rsa(pk), false, function);
+        return RsaContext(*static_cast<const Rsa*>(pkey.pkey), *mbedtls_pk_rsa(pk), needPrivate, function);
     }
     if (pkey.type == NidEcPublicKey) {
         if (mbedtls_pk_setup(&pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0) throw std::bad_alloc();
-        return EcKeypair(*static_cast<const EcKey*>(pkey.pkey), *mbedtls_pk_ec(pk), false, function);
+        if (!EcKeypair(*static_cast<const EcKey*>(pkey.pkey), *mbedtls_pk_ec(pk), needPrivate, function)) return false;
+        return !needPrivate || static_cast<const EcKey*>(pkey.pkey)->publicKey || mbedtls_ecp_keypair_calc_public(mbedtls_pk_ec(pk), RandomBytes, nullptr) == 0;
     }
     throw std::invalid_argument(std::string(function) + ": the key algorithm is not supported");
 }
@@ -470,7 +471,7 @@ std::vector<unsigned char> EncodeSubjectPublicKey(const EvpPkey& pkey, const cha
     std::vector<unsigned char> buffer(4096);
     int length = -1;
     try {
-        if (PkeyToMbed(pkey, pk, function)) length = mbedtls_pk_write_pubkey_der(&pk, buffer.data(), buffer.size());
+        if (PkeyToMbed(pkey, pk, false, function)) length = mbedtls_pk_write_pubkey_der(&pk, buffer.data(), buffer.size());
     } catch (...) {
         mbedtls_pk_free(&pk);
         throw;
@@ -478,6 +479,33 @@ std::vector<unsigned char> EncodeSubjectPublicKey(const EvpPkey& pkey, const cha
     mbedtls_pk_free(&pk);
     if (length < 0) throw std::invalid_argument(std::string(function) + ": the public key cannot be encoded");
     return std::vector<unsigned char>(buffer.end() - length, buffer.end());
+}
+
+std::vector<unsigned char> EncodePrivateKey(const EvpPkey* pkey, const char* function) {
+    const auto& key = RequirePkey(pkey, function);
+    if (key.type != NidRsaEncryption && key.type != NidEcPublicKey) throw std::invalid_argument(std::string(function) + ": only RSA and EC keys are supported");
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    std::vector<unsigned char> buffer(16384);
+    int length = -1;
+    try {
+        if (PkeyToMbed(key, pk, true, function)) length = mbedtls_pk_write_key_der(&pk, buffer.data(), buffer.size());
+    } catch (...) {
+        mbedtls_pk_free(&pk);
+        throw;
+    }
+    mbedtls_pk_free(&pk);
+    std::vector<unsigned char> der;
+    if (length > 0) der.assign(buffer.end() - length, buffer.end());
+    mbedtls_platform_zeroize(buffer.data(), buffer.size());
+    if (length <= 0) throw std::invalid_argument(std::string(function) + ": the private key is inconsistent and cannot be encoded");
+    return der;
+}
+
+EvpPkey* DecodePrivateKey(const unsigned char* der, std::size_t length, const char* function) {
+    EvpPkey* pkey = nullptr;
+    if (ParsePrivateKey(der, length, nullptr, pkey, function) != KeyParse::Ok) throw std::runtime_error(std::string(function) + ": the stored private key no longer parses");
+    return pkey;
 }
 
 }
