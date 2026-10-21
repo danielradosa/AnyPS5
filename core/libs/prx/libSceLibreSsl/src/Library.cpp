@@ -28,6 +28,7 @@ void APS5_VABI SSL_load_error_strings_nid_postfix() {
 }
 
 void APS5_VABI OBJ_cleanup_nid_postfix() {
+    LibreSsl::ObjectsCleanup();
 }
 
 void APS5_VABI CONF_modules_free_nid_postfix() {

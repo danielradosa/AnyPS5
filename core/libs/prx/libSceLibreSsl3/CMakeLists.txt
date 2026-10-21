@@ -1,7 +1,8 @@
 add_library(libSceLibreSsl3 SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/Digest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Evp.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Runtime.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/X509.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/X509.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Objects.cpp)
 target_include_directories(libSceLibreSsl3 PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(libSceLibreSsl3 PRIVATE libSceLibreSsl)
 configure_windows_unwind(libSceLibreSsl3)
@@ -35,6 +36,16 @@ if(BUILD_TESTING)
     set_tests_properties(guest_libressl3_x509 PROPERTIES TIMEOUT 30)
     if(WIN32)
         set_tests_properties(guest_libressl3_x509 PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+    add_test_executable(guest_libressl3_objects_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Objects.cpp)
+    target_include_directories(guest_libressl3_objects_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_objects_tests PRIVATE libSceLibreSsl3 libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl3_objects_tests)
+    add_test(NAME guest_libressl3_objects COMMAND guest_libressl3_objects_tests)
+    set_tests_properties(guest_libressl3_objects PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_objects PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
     endif()
 endif()

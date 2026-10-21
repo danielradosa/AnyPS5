@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <mbedtls/md.h>
@@ -44,6 +45,14 @@ Bignum* NewBignum();
 void FreeBignum(Bignum* bn);
 void SetBignumBytes(Bignum& bn, const unsigned char* bigEndian, std::size_t length);
 std::vector<unsigned char> BignumBytes(const Bignum& bn);
+std::vector<unsigned char> EncodeObjectIdentifier(const char* dotted);
+bool DecodeObjectIdentifier(const unsigned char* data, std::size_t length, std::string& out);
+const Asn1Object* TableObject(int nid, bool version3);
+int ObjectNid(const Asn1Object* object, bool version3);
+const char* TableShortName(int nid, const char* function);
+bool ObjectText(const Asn1Object* object, bool noName, std::string& out, const char* function);
+bool ReleaseCreatedObject(Asn1Object* object);
+void ObjectsCleanup();
 
 }
 

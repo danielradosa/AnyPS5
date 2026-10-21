@@ -87,6 +87,8 @@ int LibreSslX509ExtensionCount_nid_no_patch(const LibreSsl::X509Object* x);
 LibreSsl::Asn1String* LibreSslD2iAsn1Integer_nid_no_patch(LibreSsl::Asn1String** a, const unsigned char** pp, std::int64_t length);
 void LibreSslAsn1IntegerFree_nid_no_patch(LibreSsl::Asn1String* a);
 void LibreSslAsn1ObjectFree_nid_no_patch(LibreSsl::Asn1Object* a);
+int LibreSslObjCmp_nid_no_patch(const LibreSsl::Asn1Object* a, const LibreSsl::Asn1Object* b);
+LibreSsl::Asn1Object* LibreSslObjTxt2Obj_nid_no_patch(const char* s, int noName);
 }
 
 #endif
