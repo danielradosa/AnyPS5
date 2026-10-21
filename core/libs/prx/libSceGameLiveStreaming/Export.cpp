@@ -17,6 +17,21 @@ struct GameLiveStreamingStatus2 {
 };
 static_assert(sizeof(GameLiveStreamingStatus2) == 72);
 
+struct GameLiveStreamingStatus {
+    bool isOnAir;
+    std::uint8_t align[3];
+    std::uint32_t spectatorCounts;
+    std::int32_t userId;
+    std::uint8_t reserved[60];
+};
+static_assert(sizeof(GameLiveStreamingStatus) == 72 && offsetof(GameLiveStreamingStatus, userId) == 8);
+
+static constexpr int GAME_LIVE_STREAMING_ERROR_INVALID_PARAM = static_cast<int>(0x80A00002);
+
+static bool IsSocialFeedbackMessageType(int type) {
+    return type >= 1 && type <= 3;
+}
+
 extern "C" {
 
 int APS5_VABI sceGameLiveStreamingInitialize(size_t heap_size) {
@@ -84,8 +99,10 @@ int APS5_VABI sceGameLiveStreamingSetMaxBitrate(void) {
     return 0;
 }
 
-int APS5_VABI sceGameLiveStreamingGetCurrentStatus(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceGameLiveStreamingGetCurrentStatus(GameLiveStreamingStatus* status) {
+    if (status == nullptr) APS5_INVALID_ARG_EX;
+    std::memset(status, 0, sizeof(*status));
+    status->userId = USER_SERVICE_USER_ID_INVALID;
     return 0;
 }
 
@@ -94,13 +111,17 @@ int APS5_VABI sceGameLiveStreamingEnableSocialFeedback(void) {
     return 0;
 }
 
-int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessagesCount(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessagesCount(int type, std::uint32_t* count) {
+    if (!IsSocialFeedbackMessageType(type) || count == nullptr) return GAME_LIVE_STREAMING_ERROR_INVALID_PARAM;
+    *count = 0;
     return 0;
 }
 
-int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessages(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessages(int type, size_t feedbackCount, void* feedback, size_t* acquiredCount) {
+    (void)feedbackCount;
+    (void)feedback;
+    if (!IsSocialFeedbackMessageType(type) || acquiredCount == nullptr) return GAME_LIVE_STREAMING_ERROR_INVALID_PARAM;
+    *acquiredCount = 0;
     return 0;
 }
 
@@ -139,8 +160,8 @@ int APS5_VABI sceGameLiveStreamingSetPresetSocialFeedbackCommandsDescription(voi
     return 0;
 }
 
-int APS5_VABI sceGameLiveStreamingClearSocialFeedbackMessages(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceGameLiveStreamingClearSocialFeedbackMessages(int type) {
+    if (!IsSocialFeedbackMessageType(type)) return GAME_LIVE_STREAMING_ERROR_INVALID_PARAM;
     return 0;
 }
 
