@@ -1,6 +1,7 @@
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
-#include <mutex>
+#include <cstring>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -12,22 +13,58 @@ constexpr int COMMON_DIALOG_STATUS_RUNNING = 2;
 constexpr int COMMON_DIALOG_STATUS_FINISHED = 3;
 constexpr int COMMON_DIALOG_ERROR_NOT_INITIALIZED = static_cast<int>(0x80B80003u);
 constexpr int COMMON_DIALOG_ERROR_ALREADY_INITIALIZED = static_cast<int>(0x80B80004u);
-constexpr int COMMON_DIALOG_ERROR_INVALID_STATE = static_cast<int>(0x80B80006u);
-constexpr int COMMON_DIALOG_ERROR_NOT_RUNNING = static_cast<int>(0x80B8000Bu);
+constexpr int COMMON_DIALOG_ERROR_NOT_FINISHED = static_cast<int>(0x80B80005u);
+constexpr int COMMON_DIALOG_ERROR_BUSY = static_cast<int>(0x80B80007u);
 constexpr int COMMON_DIALOG_ERROR_ARG_NULL = static_cast<int>(0x80B8000Du);
+constexpr int COMMON_DIALOG_RESULT_USER_CANCELED = 1;
 
-std::mutex g_mutex;
-int g_status = COMMON_DIALOG_STATUS_NONE;
+std::atomic<int> g_status{COMMON_DIALOG_STATUS_NONE};
 
 }
 
 extern "C" {
 
-int APS5_VABI sceNpFriendListDialogClose(void) {
-    std::lock_guard lock(g_mutex);
-    if (g_status == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
-    if (g_status != COMMON_DIALOG_STATUS_RUNNING) return COMMON_DIALOG_ERROR_NOT_RUNNING;
+int APS5_VABI sceNpFriendListDialogInitialize(void) {
+    int expected = COMMON_DIALOG_STATUS_NONE;
+    if (!g_status.compare_exchange_strong(expected, COMMON_DIALOG_STATUS_INITIALIZED)) return COMMON_DIALOG_ERROR_ALREADY_INITIALIZED;
+    return 0;
+}
+
+int APS5_VABI sceNpFriendListDialogOpenA(const void* param) {
+    const int status = g_status.load();
+    if (status == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
+    if (status == COMMON_DIALOG_STATUS_RUNNING) return COMMON_DIALOG_ERROR_BUSY;
+    if (param == nullptr) return COMMON_DIALOG_ERROR_ARG_NULL;
     g_status = COMMON_DIALOG_STATUS_FINISHED;
+    return 0;
+}
+
+int APS5_VABI sceNpFriendListDialogUpdateStatus(void) {
+    return g_status.load();
+}
+
+int APS5_VABI sceNpFriendListDialogGetStatus(void) {
+    return g_status.load();
+}
+
+int APS5_VABI sceNpFriendListDialogGetResultA(void* result) {
+    const int status = g_status.load();
+    if (status == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
+    if (result == nullptr) return COMMON_DIALOG_ERROR_ARG_NULL;
+    if (status != COMMON_DIALOG_STATUS_FINISHED) return COMMON_DIALOG_ERROR_NOT_FINISHED;
+    const std::int32_t canceled = COMMON_DIALOG_RESULT_USER_CANCELED;
+    std::memcpy(result, &canceled, sizeof(canceled));
+    return 0;
+}
+
+int APS5_VABI sceNpFriendListDialogClose(void) {
+    if (g_status.load() == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
+    g_status = COMMON_DIALOG_STATUS_FINISHED;
+    return 0;
+}
+
+int APS5_VABI sceNpFriendListDialogTerminate(void) {
+    if (g_status.exchange(COMMON_DIALOG_STATUS_NONE) == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
     return 0;
 }
 
@@ -36,46 +73,9 @@ int APS5_VABI sceNpFriendListDialogGetResult() {
     return 0;
 }
 
-int APS5_VABI sceNpFriendListDialogGetResultA() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceNpFriendListDialogGetStatus(void) {
-    std::lock_guard lock(g_mutex);
-    return g_status;
-}
-
-int APS5_VABI sceNpFriendListDialogInitialize(void) {
-    std::lock_guard lock(g_mutex);
-    if (g_status != COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_ALREADY_INITIALIZED;
-    g_status = COMMON_DIALOG_STATUS_INITIALIZED;
-    return 0;
-}
-
 int APS5_VABI sceNpFriendListDialogOpen() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
-}
-
-int APS5_VABI sceNpFriendListDialogOpenA(const void* param) {
-    std::lock_guard lock(g_mutex);
-    if (g_status != COMMON_DIALOG_STATUS_INITIALIZED && g_status != COMMON_DIALOG_STATUS_FINISHED) return COMMON_DIALOG_ERROR_INVALID_STATE;
-    if (!param) return COMMON_DIALOG_ERROR_ARG_NULL;
-    g_status = COMMON_DIALOG_STATUS_FINISHED;
-    return 0;
-}
-
-int APS5_VABI sceNpFriendListDialogTerminate(void) {
-    std::lock_guard lock(g_mutex);
-    if (g_status == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
-    g_status = COMMON_DIALOG_STATUS_NONE;
-    return 0;
-}
-
-int APS5_VABI sceNpFriendListDialogUpdateStatus(void) {
-    std::lock_guard lock(g_mutex);
-    return g_status;
 }
 
 }

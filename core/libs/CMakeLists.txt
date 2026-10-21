@@ -495,12 +495,12 @@ if(BUILD_TESTING)
 
     add_test_executable(guest_np_dialogs_tests tests/GuestNpDialogs.cpp)
     target_include_directories(guest_np_dialogs_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(guest_np_dialogs_tests PRIVATE libSceNpFriendListDialog libSceNpSnsFacebookDialog libc)
+    target_link_libraries(guest_np_dialogs_tests PRIVATE libSceNpSnsFacebookDialog libc)
     configure_windows_unwind(guest_np_dialogs_tests)
     add_test(NAME guest_np_dialogs COMMAND guest_np_dialogs_tests)
     if(WIN32)
         set_tests_properties(guest_np_dialogs PROPERTIES ENVIRONMENT_MODIFICATION
-            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceNpFriendListDialog>")
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceNpSnsFacebookDialog>")
     endif()
 
     add_test_executable(guest_offline_imports_tests tests/GuestOfflineImports.cpp)

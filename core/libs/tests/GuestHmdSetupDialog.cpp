@@ -60,8 +60,10 @@ int main() {
     Require(sceHmdSetupDialogTerminate() == 0);
     Require(sceHmdSetupDialogTerminate() == kErrNotInitialized);
     Require(sceHmdSetupDialogGetStatus() == kStatusNone);
+    Require(sceHmdSetupDialogUpdateStatus() == kStatusNone);
 
     Require(sceHmdSetupDialogInitialize() == 0);
+    Require(sceHmdSetupDialogUpdateStatus() == kStatusInitialized);
     Require(sceHmdSetupDialogClose() == 0);
     Require(sceHmdSetupDialogUpdateStatus() == kStatusFinished);
     result[0] = -1;
