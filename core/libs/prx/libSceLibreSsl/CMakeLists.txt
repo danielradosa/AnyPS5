@@ -18,7 +18,8 @@ add_library(libSceLibreSsl SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/E
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Asn1.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/PemKey.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/X509Ext.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/PemX509.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/PemX509.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Verify.cpp)
 target_include_directories(libSceLibreSsl PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(libSceLibreSsl PRIVATE mbedtls mbedx509 mbedcrypto)
 set_target_properties(libSceLibreSsl PROPERTIES VISIBILITY_INLINES_HIDDEN ON)
@@ -189,6 +190,16 @@ if(BUILD_TESTING)
     set_tests_properties(guest_libressl_x509ext PROPERTIES TIMEOUT 60)
     if(WIN32)
         set_tests_properties(guest_libressl_x509ext PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
+    add_test_executable(guest_libressl_store_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslStore.cpp)
+    target_include_directories(guest_libressl_store_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_store_tests PRIVATE libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl_store_tests)
+    add_test(NAME guest_libressl_store COMMAND guest_libressl_store_tests guest_libressl_store.tmp)
+    set_tests_properties(guest_libressl_store PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(guest_libressl_store PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
     endif()
 endif()
