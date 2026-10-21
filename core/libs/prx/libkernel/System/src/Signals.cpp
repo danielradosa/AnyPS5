@@ -4,6 +4,7 @@
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "prx/libkernel/System/include/SignalQueue.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -12,6 +13,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -55,6 +58,7 @@ constexpr int GuestSigsetmask = 3;
 constexpr int GuestEintr = 4;
 constexpr int GuestEagain = 35;
 constexpr int GuestSiuser = 0;
+constexpr int SigqueueMax = 128;
 struct GuestSiginfo {
     std::int32_t signo;
     std::int32_t error;
@@ -102,28 +106,87 @@ PendingSignals& Pending() {
     return *state;
 }
 
+struct QueuedSignals {
+    std::mutex lock;
+    bool plain[MaxSignal + 1]{};
+    std::deque<GuestSignalRecord> records[MaxSignal + 1];
+    int counted = 0;
+};
+
+QueuedSignals& Queued() {
+    static auto* state = new QueuedSignals();
+    return *state;
+}
+
+struct TakenSignal {
+    bool hasRecord = false;
+    GuestSignalRecord record{};
+};
+
 void MarkPending(int guest) {
     auto& pending = Pending();
     {
         // under the same lock the waits check the set with: without it a signal raised
         // between the check and the wait is lost and the wait never returns
         std::lock_guard lock(pending.lock);
+        auto& queued = Queued();
+        std::lock_guard queuedLock(queued.lock);
+        queued.plain[guest] = true;
         pending.words[SignalWord(guest)].fetch_or(SignalBit(guest), std::memory_order_relaxed);
     }
     pending.changed.notify_all();
 }
 
-bool TakePending(int guest) {
+int EnqueueRecord(int guest, const GuestSignalRecord& record) {
+    auto& pending = Pending();
+    {
+        std::lock_guard lock(pending.lock);
+        auto& queued = Queued();
+        std::lock_guard queuedLock(queued.lock);
+        auto& records = queued.records[guest];
+        if (record.key != 0) {
+            for (const auto& entry : records)
+                if (entry.key == record.key) return 1;
+        } else if (queued.counted >= SigqueueMax) {
+            return GuestEagain;
+        }
+        records.push_back(record);
+        if (record.key == 0) ++queued.counted;
+        pending.words[SignalWord(guest)].fetch_or(SignalBit(guest), std::memory_order_relaxed);
+    }
+    pending.changed.notify_all();
+    return 0;
+}
+
+bool TakePending(int guest, TakenSignal& taken) {
     auto& pending = Pending();
     auto& word = pending.words[SignalWord(guest)];
     const std::uint32_t bit = SignalBit(guest);
     if ((word.load(std::memory_order_relaxed) & bit) == 0) return false;
-    return (word.fetch_and(~bit, std::memory_order_relaxed) & bit) != 0;
+    auto& queued = Queued();
+    std::lock_guard lock(queued.lock);
+    if ((word.load(std::memory_order_relaxed) & bit) == 0) return false;
+    taken = {};
+    auto& records = queued.records[guest];
+    if (queued.plain[guest]) {
+        queued.plain[guest] = false;
+    } else if (!records.empty()) {
+        taken.hasRecord = true;
+        taken.record = records.front();
+        records.pop_front();
+        if (taken.record.key == 0) --queued.counted;
+    }
+    if (!queued.plain[guest] && records.empty()) word.fetch_and(~bit, std::memory_order_relaxed);
+    return true;
 }
 
-bool PendingInSet(const GuestSignalSet& set, int* guest) {
+void AcceptTaken(TakenSignal& taken) {
+    if (taken.hasRecord && taken.record.accept != nullptr) taken.record.reason[1] = taken.record.accept(taken.record.key);
+}
+
+bool PendingInSet(const GuestSignalSet& set, int* guest, TakenSignal& taken) {
     for (int candidate = 1; candidate <= MaxSignal; ++candidate) {
-        if (!SignalInSet(set, candidate) || !TakePending(candidate)) continue;
+        if (!SignalInSet(set, candidate) || !TakePending(candidate, taken)) continue;
         *guest = candidate;
         return true;
     }
@@ -206,10 +269,10 @@ bool Deliverable(int guest) {
     return NativeSignal(guest) != 0 || CaughtByGuest(guest) || TerminatesWithoutHandler(guest);
 }
 
-bool TakePendingUnblocked(int* guest) {
+bool TakePendingUnblocked(int* guest, TakenSignal& taken) {
     for (int candidate = 1; candidate <= MaxSignal; ++candidate) {
         if (SignalBlocked(candidate) || !Deliverable(candidate)) continue;
-        if (!TakePending(candidate)) continue;
+        if (!TakePending(candidate, taken)) continue;
         *guest = candidate;
         return true;
     }
@@ -233,12 +296,12 @@ bool DeliverPendingSignal(int guest) {
     return false;
 }
 
-int WaitForPendingInSet(const GuestSignalSet& set, bool waitForever, const GuestTimespec* timeout, int* guest) {
+int WaitForPendingInSet(const GuestSignalSet& set, bool waitForever, const GuestTimespec* timeout, int* guest, TakenSignal& taken) {
     auto& pending = Pending();
     std::unique_lock lock(pending.lock);
     std::optional<std::chrono::steady_clock::time_point> deadline;
     for (;;) {
-        if (PendingInSet(set, guest)) return 0;
+        if (PendingInSet(set, guest, taken)) return 0;
         if (waitForever) {
             pending.changed.wait(lock);
             continue;
@@ -246,28 +309,37 @@ int WaitForPendingInSet(const GuestSignalSet& set, bool waitForever, const Guest
         if (!deadline) deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout->seconds) +
             std::chrono::nanoseconds(timeout->nanoseconds);
         if (pending.changed.wait_until(lock, *deadline) == std::cv_status::no_timeout) continue;
-        return PendingInSet(set, guest) ? 0 : GuestEagain;
+        return PendingInSet(set, guest, taken) ? 0 : GuestEagain;
     }
 }
 
-void FillSiginfo(GuestSiginfo* info, int guest) {
+void FillSiginfo(GuestSiginfo* info, int guest, const TakenSignal& taken) {
     *info = {};
     info->signo = guest;
-    info->code = GuestSiuser;
-    info->pid = getpid_nid_postfix();
+    if (!taken.hasRecord) {
+        info->code = GuestSiuser;
+        info->pid = getpid_nid_postfix();
+        return;
+    }
+    info->code = taken.record.code;
+    info->pid = taken.record.pid;
+    std::memcpy(&info->value, &taken.record.value, sizeof(taken.record.value));
+    std::memcpy(&info->band, taken.record.reason, sizeof(taken.record.reason));
 }
 
 void WaitForDeliverableSignal() {
     auto& pending = Pending();
     for (;;) {
         int guest = 0;
+        TakenSignal taken;
         {
             std::unique_lock lock(pending.lock);
-            if (!TakePendingUnblocked(&guest)) {
+            if (!TakePendingUnblocked(&guest, taken)) {
                 pending.changed.wait(lock);
                 continue;
             }
         }
+        AcceptTaken(taken);
         if (DeliverPendingSignal(guest)) return;
     }
 }
@@ -308,7 +380,9 @@ void ExpireAlarm(std::chrono::microseconds interval) {
     if (SignalBlocked(GuestSigalrm)) {
         MarkPending(GuestSigalrm);
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        if (SignalBlocked(GuestSigalrm) || !TakePending(GuestSigalrm)) return;
+        TakenSignal taken;
+        if (SignalBlocked(GuestSigalrm) || !TakePending(GuestSigalrm, taken)) return;
+        AcceptTaken(taken);
         handler = Disposition(GuestSigalrm).handler;
         if (handler == 1) return;
     }
@@ -477,6 +551,35 @@ constexpr std::size_t MinSignalStackSize = 2048;
 thread_local GuestStack alternateStack{nullptr, 0, SsDisable};
 }
 
+namespace {
+int RaiseSignal(int guest, const GuestSignalRecord* record, const char* caller) {
+    if (guest == 0) return 0;
+    if (guest < 1 || guest > MaxSignal) { *__error_nid_postfix() = 22; return -1; }
+    KqueueSignalSent(guest);
+    const GuestSigaction action = Disposition(guest);
+    if (action.handler > 1 && !Delivered(action)) throw std::runtime_error(std::string(caller) + ": SA_SIGINFO handlers are not delivered");
+    if (action.handler == 1 || (action.handler == 0 && guest != GuestSigcont && IgnoredByDefault(guest))) return 0;
+    if (SignalBlocked(guest)) {
+        if (record == nullptr) {
+            MarkPending(guest);
+            return 0;
+        }
+        if (EnqueueRecord(guest, *record) == GuestEagain) { *__error_nid_postfix() = GuestEagain; return -1; }
+        return 0;
+    }
+    if (action.handler == 0 && IgnoredByDefault(guest)) return 0;
+    const int native = NativeSignal(guest);
+    if (native != 0) {
+        const int result = std::raise(native);
+        if (result) *__error_nid_postfix() = 22;
+        return result ? -1 : 0;
+    }
+    if (!CaughtByGuest(guest)) { *__error_nid_postfix() = 22; return -1; }
+    DeliverPendingSignal(guest);
+    return 0;
+}
+}
+
 extern "C" {
 GuestHandler APS5_VABI signal_nid_postfix(int guest, GuestHandler handler) {
     const auto invalid = reinterpret_cast<GuestHandler>(static_cast<std::uintptr_t>(-1));
@@ -501,26 +604,39 @@ int APS5_VABI sigaction_nid_postfix(int guest, const GuestSigaction* action, Gue
     return 0;
 }
 int APS5_VABI raise_nid_postfix(int guest) {
-    if (guest == 0) return 0;
-    if (guest < 1 || guest > MaxSignal) { *__error_nid_postfix() = 22; return -1; }
+    return RaiseSignal(guest, nullptr, "raise");
+}
+int APS5_VABI GuestSignalQueue_nid_no_patch(int guest, const GuestSignalRecord* record) {
+    if (record == nullptr) throw std::invalid_argument("GuestSignalQueue: null record");
+    return RaiseSignal(guest, record, "sigqueue");
+}
+int APS5_VABI GuestSignalPost_nid_no_patch(int guest, const GuestSignalRecord* record) {
+    if (guest < 1 || guest > MaxSignal || record == nullptr) throw std::invalid_argument("GuestSignalPost: invalid signal or record");
     KqueueSignalSent(guest);
     const GuestSigaction action = Disposition(guest);
-    if (action.handler > 1 && !Delivered(action)) throw std::runtime_error("raise: SA_SIGINFO handlers are not delivered");
     if (action.handler == 1 || (action.handler == 0 && guest != GuestSigcont && IgnoredByDefault(guest))) return 0;
     if (SignalBlocked(guest)) {
-        MarkPending(guest);
-        return 0;
+        const int queued = EnqueueRecord(guest, *record);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (SignalBlocked(guest)) return queued;
     }
+    if (action.handler == 0 && guest == GuestSigalrm) TerminateBySigalrm("a timer expired");
     if (action.handler == 0 && IgnoredByDefault(guest)) return 0;
-    const int native = NativeSignal(guest);
-    if (native != 0) {
-        const int result = std::raise(native);
-        if (result) *__error_nid_postfix() = 22;
-        return result ? -1 : 0;
+    throw std::runtime_error("signal " + std::to_string(guest) + " from a timer: delivering it while no thread blocks it is not implemented");
+}
+void APS5_VABI GuestSignalCancel_nid_no_patch(std::uint64_t key) {
+    auto& pending = Pending();
+    auto& queued = Queued();
+    std::lock_guard lock(queued.lock);
+    for (int guest = 1; guest <= MaxSignal; ++guest) {
+        auto& records = queued.records[guest];
+        for (auto entry = records.begin(); entry != records.end();) {
+            if (entry->key == key) entry = records.erase(entry);
+            else ++entry;
+        }
+        if (!queued.plain[guest] && records.empty())
+            pending.words[SignalWord(guest)].fetch_and(~SignalBit(guest), std::memory_order_relaxed);
     }
-    if (!CaughtByGuest(guest)) { *__error_nid_postfix() = 22; return -1; }
-    DeliverPendingSignal(guest);
-    return 0;
 }
 int APS5_VABI kill_nid_postfix(int pid, int guest) {
     if (guest < 0 || guest > MaxSignal) { *__error_nid_postfix() = 22; return -1; }
@@ -581,7 +697,9 @@ int APS5_VABI _sigprocmask_nid_postfix(int how, const GuestSignalSet* set, Guest
     }
     std::atomic_thread_fence(std::memory_order_seq_cst);
     for (int guest = 1; guest <= MaxSignal; ++guest) {
-        if (SignalBlocked(guest) || !Deliverable(guest) || !TakePending(guest)) continue;
+        TakenSignal taken;
+        if (SignalBlocked(guest) || !Deliverable(guest) || !TakePending(guest, taken)) continue;
+        AcceptTaken(taken);
         DeliverPendingSignal(guest);
     }
     return 0;
@@ -604,25 +722,31 @@ int APS5_VABI sigtimedwait_nid_postfix(const GuestSignalSet* set, void* info, co
         return -1;
     }
     int guest = 0;
-    const int result = WaitForPendingInSet(*set, timeout == nullptr, timeout, &guest);
+    TakenSignal taken;
+    const int result = WaitForPendingInSet(*set, timeout == nullptr, timeout, &guest, taken);
     if (result != 0) { *__error_nid_postfix() = result; return -1; }
-    if (info != nullptr) FillSiginfo(static_cast<GuestSiginfo*>(info), guest);
+    AcceptTaken(taken);
+    if (info != nullptr) FillSiginfo(static_cast<GuestSiginfo*>(info), guest, taken);
     return guest;
 }
 
 int APS5_VABI sigwaitinfo_nid_postfix(const GuestSignalSet* set, void* info) {
     if (set == nullptr || !SetHasSignal(*set)) { *__error_nid_postfix() = 22; return -1; }
     int guest = 0;
-    if (WaitForPendingInSet(*set, true, nullptr, &guest) != 0) { *__error_nid_postfix() = GuestEagain; return -1; }
-    if (info != nullptr) FillSiginfo(static_cast<GuestSiginfo*>(info), guest);
+    TakenSignal taken;
+    if (WaitForPendingInSet(*set, true, nullptr, &guest, taken) != 0) { *__error_nid_postfix() = GuestEagain; return -1; }
+    AcceptTaken(taken);
+    if (info != nullptr) FillSiginfo(static_cast<GuestSiginfo*>(info), guest, taken);
     return guest;
 }
 
 int APS5_VABI sigwait_nid_postfix(const GuestSignalSet* set, int* received) {
     if (set == nullptr || received == nullptr || !SetHasSignal(*set)) return 22;
     int guest = 0;
-    const int result = WaitForPendingInSet(*set, true, nullptr, &guest);
+    TakenSignal taken;
+    const int result = WaitForPendingInSet(*set, true, nullptr, &guest, taken);
     if (result != 0) return result;
+    AcceptTaken(taken);
     *received = guest;
     return 0;
 }
