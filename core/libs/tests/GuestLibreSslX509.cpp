@@ -1,3 +1,4 @@
+#include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -298,6 +299,8 @@ static void TestStrings() {
 
 int main(int argc, char** argv) {
     Require(argc == 2);
+    void* const heapApi[10] {};
+    ApplicationHeapRegister_nid_no_patch(heapApi);
     TestDer();
     TestPem(argv[1]);
     TestStrings();
