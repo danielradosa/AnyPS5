@@ -1,7 +1,17 @@
 add_library(libSceLibreSsl SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/Digest.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Aes.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/Runtime.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Aes.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/Runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Error.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/EvpCipher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/EvpDigest.cpp)
 target_include_directories(libSceLibreSsl PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(libSceLibreSsl PRIVATE mbedcrypto)
+set_target_properties(libSceLibreSsl PROPERTIES VISIBILITY_INLINES_HIDDEN ON)
+if(MINGW OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(libSceLibreSsl PRIVATE LINKER:--exclude-libs,ALL)
+endif()
+if(WIN32)
+    target_link_libraries(libSceLibreSsl PRIVATE bcrypt)
+endif()
 configure_windows_unwind(libSceLibreSsl)
 
 if(BUILD_TESTING)
@@ -43,6 +53,16 @@ if(BUILD_TESTING)
     set_tests_properties(guest_libressl_des PROPERTIES TIMEOUT 20)
     if(WIN32)
         set_tests_properties(guest_libressl_des PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
+    add_test_executable(guest_libressl_evp_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslEvp.cpp)
+    target_include_directories(guest_libressl_evp_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_evp_tests PRIVATE libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl_evp_tests)
+    add_test(NAME guest_libressl_evp COMMAND guest_libressl_evp_tests)
+    set_tests_properties(guest_libressl_evp PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl_evp PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
     endif()
 endif()
