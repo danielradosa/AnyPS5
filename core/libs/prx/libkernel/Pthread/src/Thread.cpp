@@ -510,6 +510,10 @@ bool LiveGuestThreadExists(std::int64_t tid) {
     return false;
 }
 
+extern "C" bool GuestThreadIdIsLive_nid_no_patch(std::int64_t tid) {
+    return LiveGuestThreadExists(tid);
+}
+
 bool SetGuestThreadAffinityIfLive(PthreadPrivate* thread, KernelCpumask mask) {
     auto& registry = CpuClocks();
     std::lock_guard lock(registry.lock);
