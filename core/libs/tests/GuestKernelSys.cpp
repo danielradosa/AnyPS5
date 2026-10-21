@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
@@ -78,6 +79,16 @@ int APS5_VABI scePthreadCondattrInit(PthreadCondattr*);
 int APS5_VABI scePthreadCondattrDestroy(PthreadCondattr*);
 int APS5_VABI scePthreadCondattrSetclock(PthreadCondattr*, KernelClockid);
 int APS5_VABI scePthreadCondattrGetclock_nid_postfix(const PthreadCondattr*, KernelClockid*);
+int APS5_VABI scePthreadAttrInit(PthreadAttr*);
+int APS5_VABI scePthreadAttrDestroy(PthreadAttr*);
+int APS5_VABI scePthreadMutexInitForInternalLibc(PthreadMutex*, const PthreadMutexattr*);
+int APS5_VABI scePthreadMutexattrInitForInternalLibc(PthreadMutexattr*);
+int APS5_VABI scePthreadMutexattrGettype(const PthreadMutexattr*, int*);
+int APS5_VABI scePthreadMutexattrDestroy(PthreadMutexattr*);
+int APS5_VABI scePthreadMutexLock(PthreadMutex*);
+int APS5_VABI scePthreadMutexUnlock(PthreadMutex*);
+int APS5_VABI scePthreadMutexDestroy(PthreadMutex*);
+Pthread APS5_VABI scePthreadSelf(void);
 void AddPathAlias_nid_no_patch(const char*, const char*);
 void RemovePathAlias_nid_no_patch(const char*);
 }
@@ -448,6 +459,21 @@ void CheckForwards(const std::filesystem::path& root) {
     PthreadCondattr missing = nullptr;
     Require(scePthreadCondattrGetclock_nid_postfix(&missing, &clock) == static_cast<int>(0x80020016u));
     Require(scePthreadCondattrGetclock_nid_postfix(nullptr, &clock) == static_cast<int>(0x80020016u));
+}
+
+void CheckScePthreadWrappers() {
+    PthreadMutexattr mutexAttr = nullptr;
+    int type = 0;
+    Require(scePthreadMutexattrInitForInternalLibc(&mutexAttr) == 0);
+    Require(scePthreadMutexattrGettype(&mutexAttr, &type) == 0 && type == 1);
+    PthreadMutex mutex = nullptr;
+    Require(scePthreadMutexInitForInternalLibc(&mutex, &mutexAttr) == 0);
+    Require(scePthreadMutexLock(&mutex) == 0 && scePthreadMutexLock(&mutex) == static_cast<int>(0x8002000Bu));
+    Require(scePthreadMutexUnlock(&mutex) == 0 && scePthreadMutexDestroy(&mutex) == 0);
+    Require(scePthreadMutexInitForInternalLibc(&mutex, nullptr) == 0);
+    Require(scePthreadMutexLock(&mutex) == 0 && scePthreadMutexLock(&mutex) == static_cast<int>(0x8002000Bu));
+    Require(scePthreadMutexUnlock(&mutex) == 0 && scePthreadMutexDestroy(&mutex) == 0);
+    Require(scePthreadMutexattrDestroy(&mutexAttr) == 0);
 }
 
 int main() {
@@ -915,6 +941,7 @@ int main() {
     }
 #endif
     CheckForwards(root);
+    CheckScePthreadWrappers();
     RemoveTree(root);
     return 0;
 }

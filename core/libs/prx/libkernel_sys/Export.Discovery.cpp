@@ -2330,11 +2330,6 @@ int APS5_VABI scePthreadMutexGetprioceiling(void) {
     return 0;
 }
 
-int APS5_VABI scePthreadMutexInitForInternalLibc(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI scePthreadMutexIsowned(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -2351,11 +2346,6 @@ int APS5_VABI scePthreadMutexattrGetgen(void) {
 }
 
 int APS5_VABI scePthreadMutexattrGetkind(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI scePthreadMutexattrInitForInternalLibc(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
