@@ -26,6 +26,10 @@ int APS5_VABI sceVoiceResumePortAll(void);
 int APS5_VABI sceVoiceGetResourceInfo(VoiceResourceInfo*);
 int APS5_VABI sceVoiceEnableChat(void);
 int APS5_VABI sceVoiceDisableChat(void);
+int APS5_VABI sceVoiceSetMuteFlagAll(bool);
+int APS5_VABI sceVoiceGetBitRate(std::uint32_t, std::uint32_t*);
+int APS5_VABI sceVoiceSetBitRate(std::uint32_t, std::uint32_t);
+int APS5_VABI sceVoiceUpdatePort(std::uint32_t, const VoicePortParam*);
 }
 
 namespace {
@@ -84,6 +88,7 @@ int main() {
     RequireThrows([] { VoiceResourceInfo info{}; sceVoiceGetResourceInfo(&info); });
     RequireThrows([] { sceVoiceEnableChat(); });
     RequireThrows([] { sceVoiceDisableChat(); });
+    RequireThrows([] { sceVoiceSetMuteFlagAll(true); });
     VoiceInitParam init{};
     VoiceStartParam start{};
     Require(sceVoiceInit(&init, 0) == 0);
@@ -138,6 +143,40 @@ int main() {
     Require(sceVoiceReadFromOPort(output, data, &size) == 0 && size == 0);
     Require(sceVoiceDisconnectIPortFromOPort(input, output) == 0);
 
+    Require(sceVoiceGetMuteFlag(input, &muted) == 0 && !muted);
+    Require(sceVoiceSetMuteFlagAll(true) == 0);
+    Require(sceVoiceGetMuteFlag(input, &muted) == 0 && muted);
+    Require(sceVoiceSetMuteFlagAll(false) == 0);
+    Require(sceVoiceGetMuteFlag(input, &muted) == 0 && !muted);
+    Require(sceVoiceGetMuteFlag(output, &muted) == 0 && muted);
+
+    std::uint32_t bitrate = 0;
+    Require(sceVoiceSetBitRate(input, 7300) == 0);
+    Require(sceVoiceGetBitRate(input, &bitrate) == 0 && bitrate == 7300);
+    RequireThrows([&] { sceVoiceSetBitRate(output, 7300); });
+    RequireThrows([&] { sceVoiceSetBitRate(output + 1, 7300); });
+
+    VoicePortParam update{};
+    update.port_type = 2;
+    update.mute = 1;
+    update.volume = 0.75f;
+    update.voice.bitrate = 14400;
+    Require(sceVoiceUpdatePort(input, &update) == 0);
+    Require(sceVoiceGetMuteFlag(input, &muted) == 0 && muted);
+    Require(sceVoiceGetVolume(input, &volume) == 0 && volume == 0.75f);
+    Require(sceVoiceGetBitRate(input, &bitrate) == 0 && bitrate == 14400);
+    update.port_type = 3;
+    RequireThrows([&] { sceVoiceUpdatePort(input, &update); });
+    RequireThrows([&] { sceVoiceUpdatePort(input, nullptr); });
+    VoicePortParam pcm{};
+    pcm.port_type = 3;
+    pcm.volume = 1.0f;
+    Require(sceVoiceUpdatePort(output, &pcm) == 0);
+    Require(sceVoiceGetMuteFlag(output, &muted) == 0 && !muted);
+    Require(sceVoiceGetVolume(output, &volume) == 0 && volume == 1.0f);
+
+    Require(sceVoiceSetMuteFlagAll(true) == 0);
+
     Require(sceVoiceDeletePort(input) == 0);
     RequireThrows([&] { sceVoiceResetPort(input); });
     RequireThrows([&] { sceVoicePausePort(input); });
@@ -149,4 +188,9 @@ int main() {
     RequireThrows([] { VoiceResourceInfo info{}; sceVoiceGetResourceInfo(&info); });
     RequireThrows([] { sceVoiceEnableChat(); });
     RequireThrows([] { sceVoiceDisableChat(); });
+    RequireThrows([] { sceVoiceSetMuteFlagAll(false); });
+    Require(sceVoiceInit(&init, 0) == 0);
+    const auto fresh = CreatePort(2, 1.0f);
+    Require(sceVoiceGetMuteFlag(fresh, &muted) == 0 && !muted);
+    Require(sceVoiceEnd_nid_postfix() == 0);
 }

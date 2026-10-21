@@ -36,6 +36,7 @@ struct Voice {
     bool initialized = false;
     bool started = false;
     bool chatEnabled = false;
+    bool mutedAll = false;
     std::uint32_t nextId = 0;
     std::map<std::uint32_t, Port> ports;
     std::set<std::pair<std::uint32_t, std::uint32_t>> connections;
@@ -103,6 +104,7 @@ int APS5_VABI sceVoiceEnd_nid_postfix(void) {
     voice.connections.clear();
     voice.started = false;
     voice.chatEnabled = false;
+    voice.mutedAll = false;
     voice.initialized = false;
     return 0;
 }
@@ -228,7 +230,7 @@ int APS5_VABI sceVoiceGetMuteFlag(uint32_t port_id, bool* muted) {
     if (muted == nullptr) APS5_INVALID_ARG_EX;
     auto& voice = State();
     std::lock_guard lock(voice.mutex);
-    *muted = RequirePort(voice, port_id, __func__).muted;
+    *muted = RequirePort(voice, port_id, __func__).muted || voice.mutedAll;
     return 0;
 }
 
@@ -317,18 +319,32 @@ int APS5_VABI sceVoiceVADSetVersion(void) {
     return 0;
 }
 
-int APS5_VABI sceVoiceSetMuteFlagAll(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceVoiceSetMuteFlagAll(bool muted) {
+    auto& voice = State();
+    std::lock_guard lock(voice.mutex);
+    if (!voice.initialized) Fail(__func__, "library not initialized");
+    voice.mutedAll = muted;
     return 0;
 }
 
-int APS5_VABI sceVoiceSetBitRate(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceVoiceSetBitRate(uint32_t port_id, uint32_t bitrate) {
+    auto& voice = State();
+    std::lock_guard lock(voice.mutex);
+    auto& port = RequirePort(voice, port_id, __func__);
+    if (port.type != PortInVoice && port.type != PortOutVoice) Fail(__func__, "port does not carry encoded voice");
+    port.bitrate = bitrate;
     return 0;
 }
 
-int APS5_VABI sceVoiceUpdatePort(void) {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceVoiceUpdatePort(uint32_t port_id, const VoicePortParam* param) {
+    if (param == nullptr) APS5_INVALID_ARG_EX;
+    auto& voice = State();
+    std::lock_guard lock(voice.mutex);
+    auto& port = RequirePort(voice, port_id, __func__);
+    if (param->port_type != port.type) Fail(__func__, "port type " + std::to_string(param->port_type) + " differs from the port's " + std::to_string(port.type));
+    port.muted = param->mute != 0;
+    port.volume = param->volume;
+    if (port.type == PortInVoice || port.type == PortOutVoice) port.bitrate = static_cast<std::uint32_t>(param->voice.bitrate);
     return 0;
 }
 
