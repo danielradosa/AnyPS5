@@ -7,6 +7,7 @@ extern "C" {
 int APS5_VABI sceContentSearchInit(const ContentSearchInitParam* init_param);
 int APS5_VABI sceContentSearchTerm(void);
 int APS5_VABI sceContentSearchGetContentLastUpdateId(std::int64_t* lastUpdateId);
+int APS5_VABI sceContentSearchGetApplicationLastUpdateId(std::int64_t* lastUpdateId);
 int APS5_VABI sceContentSearchGetNumOfContent(const ContentSearchContentColumnSet* columnSet, std::uint32_t columnSetLength, std::int64_t* numOfContent, std::int64_t* lastUpdateId);
 int APS5_VABI sceContentSearchGetTotalContentSize(const ContentSearchContentColumnSet* columnSet, std::uint32_t columnSetLength, std::int64_t* size, std::int64_t* lastUpdateId);
 int APS5_VABI sceContentSearchSearchContent(const ContentSearchContentColumnSet* columnSet, std::uint32_t columnSetLength, const ContentSearchContentOrderByCondition* orderByConditions, std::uint32_t orderByConditionsLength, std::uint32_t offset, std::uint32_t limit, std::int64_t* numOfContent, void* infos, std::int64_t* lastUpdateId);
@@ -58,6 +59,7 @@ int main() {
     MetadataValue value{-1, -1, -1};
 
     Require(sceContentSearchGetContentLastUpdateId(&updateId) == ErrorNotInitialized);
+    Require(sceContentSearchGetApplicationLastUpdateId(&updateId) == ErrorNotInitialized);
     Require(sceContentSearchGetNumOfContent(&columnSet, 1, &count, &updateId) == ErrorNotInitialized);
     Require(sceContentSearchGetTotalContentSize(&columnSet, 1, &size, &updateId) == ErrorNotInitialized);
     Require(sceContentSearchSearchContent(&columnSet, 1, &orderBy, 1, 0, 2, &count, infos, &updateId) == ErrorNotInitialized);
@@ -69,6 +71,9 @@ int main() {
     Require(sceContentSearchInit(&param) == 0);
 
     Require(sceContentSearchGetContentLastUpdateId(&updateId) == 0);
+    Require(updateId == 0);
+    updateId = -1;
+    Require(sceContentSearchGetApplicationLastUpdateId(&updateId) == 0);
     Require(updateId == 0);
     updateId = -1;
     Require(sceContentSearchGetNumOfContent(&columnSet, 1, &count, &updateId) == 0);
@@ -94,6 +99,7 @@ int main() {
     Require(count == -1 && updateId == -1);
 
     Require(Throws([&] { sceContentSearchGetContentLastUpdateId(nullptr); }));
+    Require(Throws([&] { sceContentSearchGetApplicationLastUpdateId(nullptr); }));
     Require(Throws([&] { sceContentSearchGetNumOfContent(&columnSet, 1, nullptr, &updateId); }));
     Require(Throws([&] { sceContentSearchGetNumOfContent(&columnSet, 1, &count, nullptr); }));
     Require(Throws([&] { sceContentSearchGetTotalContentSize(nullptr, 1, &size, &updateId); }));
@@ -123,5 +129,6 @@ int main() {
 
     Require(sceContentSearchTerm() == 0);
     Require(sceContentSearchGetContentLastUpdateId(&updateId) == ErrorNotInitialized);
+    Require(sceContentSearchGetApplicationLastUpdateId(&updateId) == ErrorNotInitialized);
     Require(updateId == -1);
 }

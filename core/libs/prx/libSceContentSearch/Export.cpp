@@ -165,8 +165,10 @@ int APS5_VABI sceContentBinderStart() {
 int APS5_VABI sceContentBinderTerminate() {
     return static_cast<int>(0x809D000F);
 }
-int APS5_VABI sceContentSearchGetApplicationLastUpdateId() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceContentSearchGetApplicationLastUpdateId(std::int64_t* lastUpdateId) {
+    if (!g_initialized.load()) return ErrorNotInitialized;
+    if (lastUpdateId == nullptr) APS5_INVALID_ARG_EX;
+    *lastUpdateId = LibraryUpdateId;
     return 0;
 }
 int APS5_VABI sceContentSearchGetMyApplicationIndex() {
