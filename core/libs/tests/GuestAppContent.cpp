@@ -20,6 +20,7 @@ int APS5_VABI sceAppContentTemporaryDataGetAvailableSpaceKb(const AppContentMoun
 int APS5_VABI access_nid_postfix(const char*, int);
 int* APS5_VABI __error_nid_postfix();
 int APS5_VABI sceAppContentGetAddcontInfo(uint32_t, const NpUnifiedEntitlementLabel*, void*);
+int APS5_VABI sceAppContentGetEntitlementKey(uint32_t, const NpUnifiedEntitlementLabel*, void*);
 int APS5_VABI sceAppContentGetAddcontInfoList(uint32_t, void*, uint32_t, uint32_t*);
 int APS5_VABI sceAppContentDownloadDataGetAvailableSpaceKb(const AppContentMountPoint*, size_t*);
 int APS5_VABI sceAppContentDownloadDataFormat(const AppContentMountPoint*);
@@ -158,6 +159,10 @@ int main() {
     Require(std::memcmp(info, untouchedInfo, sizeof(info)) == 0);
     Require(sceAppContentGetAddcontInfo(0, nullptr, info) == ErrorParameter);
     Require(sceAppContentGetAddcontInfo(0, &label, nullptr) == ErrorParameter);
+    unsigned char key[16] = {0x5a};
+    Require(sceAppContentGetEntitlementKey(0, &label, key) == ErrorDrmNoEntitlement && key[0] == 0x5a);
+    Require(sceAppContentGetEntitlementKey(0, nullptr, key) == ErrorParameter);
+    Require(sceAppContentGetEntitlementKey(0, &label, nullptr) == ErrorParameter);
 
     uint32_t hitNum = 0x5a5a5a5a;
     Require(sceAppContentGetAddcontInfoList(0, nullptr, 0, &hitNum) == 0);
