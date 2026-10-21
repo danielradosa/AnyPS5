@@ -51,8 +51,4 @@ int APS5_VABI sceVideodec2QueryHevcDecoderMemoryInfo() {
     NotImplemented_nid_no_patch(__func__);
 }
 
-int APS5_VABI sceVideodec2GetHevcPictureInfo() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
 }
