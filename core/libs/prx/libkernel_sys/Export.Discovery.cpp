@@ -306,11 +306,6 @@ int APS5_VABI profil_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI pselect_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI pthread_attr_setcreatesuspend_np_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -1606,11 +1601,6 @@ int APS5_VABI sceKernelMemoryPoolMove(void) {
     return 0;
 }
 
-int APS5_VABI sceKernelMlockall(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceKernelMsync(void* address, std::size_t length, int flags) {
     return msync_nid_postfix(address, length, flags) == 0 ? 0 : SceKernelError(*__error_nid_postfix());
 }
@@ -1916,11 +1906,6 @@ int APS5_VABI sceKernelSetUpdatemode(void) {
 }
 
 int APS5_VABI sceKernelSetVmContainer(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceKernelSettimeofday(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -2335,11 +2320,6 @@ int APS5_VABI set_phys_fmem_limit_nid_postfix(void) {
 }
 
 int APS5_VABI setlogin_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI settimeofday_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

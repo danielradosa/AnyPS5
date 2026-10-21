@@ -82,6 +82,8 @@ constexpr int GuestAtRemovedir = 0x800;
 constexpr std::size_t GuestPathMax = 1024;
 constexpr std::size_t GuestNameMax = 255;
 constexpr std::size_t GuestLoginNameMax = 33;
+constexpr std::size_t GuestSignalSetWords = 4;
+constexpr int GuestSigSetmask = 3;
 
 constexpr int PcLinkMax = 1;
 constexpr int PcMaxCanon = 2;
@@ -520,6 +522,51 @@ std::int64_t APS5_VABI _fpathconf_nid_postfix(int fd, int name) {
 
 std::int64_t APS5_VABI fpathconf_nid_postfix(int fd, int name) {
     return _fpathconf_nid_postfix(fd, name);
+}
+
+int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* exceptfds, const void* timeout);
+int APS5_VABI sigprocmask_nid_postfix(int how, const void* set, void* previousSet);
+int APS5_VABI mlockall_nid_postfix(int flags);
+
+int APS5_VABI pselect_nid_postfix(int nfds, void* readfds, void* writefds, void* exceptfds, const KernelTimespec* timeout, const void* mask) {
+    KernelTimeval limit{};
+    if (timeout != nullptr) {
+        limit.tv_sec = timeout->tv_sec;
+        limit.tv_usec = timeout->tv_nsec / 1000;
+    }
+    std::array<std::uint32_t, GuestSignalSetWords> previous{};
+    if (mask != nullptr && sigprocmask_nid_postfix(GuestSigSetmask, mask, previous.data()) != 0) return -1;
+    const int result = select_nid_postfix(nfds, readfds, writefds, exceptfds, timeout != nullptr ? &limit : nullptr);
+    if (mask != nullptr) {
+        const int saved = *__error_nid_postfix();
+        if (sigprocmask_nid_postfix(GuestSigSetmask, previous.data(), nullptr) != 0)
+            throw std::runtime_error("pselect: restoring the signal mask failed");
+        *__error_nid_postfix() = saved;
+    }
+    return result;
+}
+
+int APS5_VABI settimeofday_nid_postfix(const KernelTimeval* tv, const KernelTimezone* tz) {
+    if (tv != nullptr && (tv->tv_usec < 0 || tv->tv_usec >= 1000000 || tv->tv_sec < 0)) return static_cast<int>(Fail(GuestEinval));
+    if (tv != nullptr) {
+        throw std::runtime_error("settimeofday: setting the time to " + std::to_string(tv->tv_sec) + " s " + std::to_string(tv->tv_usec) +
+            " us is not supported, the host clock is not changed");
+    }
+    if (tz != nullptr && (tz->tz_minuteswest != 0 || tz->tz_dsttime != 0)) {
+        throw std::runtime_error("settimeofday: setting the kernel time zone to " + std::to_string(tz->tz_minuteswest) + " minutes west, DST " +
+            std::to_string(tz->tz_dsttime) + " is not supported, gettimeofday reports 0 and 0");
+    }
+    return 0;
+}
+
+int APS5_VABI sceKernelSettimeofday(const KernelTimeval* tv, const KernelTimezone* tz) {
+    if (settimeofday_nid_postfix(tv, tz) == 0) return 0;
+    return static_cast<int>(0x80020000u | static_cast<std::uint32_t>(*__error_nid_postfix()));
+}
+
+int APS5_VABI sceKernelMlockall(int flags) {
+    if (mlockall_nid_postfix(flags) == 0) return 0;
+    return static_cast<int>(0x80020000u | static_cast<std::uint32_t>(*__error_nid_postfix()));
 }
 
 int APS5_VABI link_nid_postfix(const char* existing, const char* created) {

@@ -152,6 +152,11 @@ int APS5_VABI sem_unlink_nid_postfix(const char*);
 int APS5_VABI sem_trywait_nid_postfix(void*);
 int APS5_VABI sem_post_nid_postfix(void*);
 int APS5_VABI sem_getvalue_nid_postfix(void*, int*);
+int APS5_VABI pselect_nid_postfix(int, void*, void*, void*, const KernelTimespec*, const void*);
+int APS5_VABI sigprocmask_nid_postfix(int, const void*, void*);
+int APS5_VABI settimeofday_nid_postfix(const KernelTimeval*, const KernelTimezone*);
+int APS5_VABI sceKernelSettimeofday(const KernelTimeval*, const KernelTimezone*);
+int APS5_VABI sceKernelMlockall(int);
 void AddPathAlias_nid_no_patch(const char*, const char*);
 void RemovePathAlias_nid_no_patch(const char*);
 }
@@ -831,6 +836,49 @@ void CheckNamedSemaphores() {
     Require(sem_destroy_nid_postfix(&unnamed) == 0);
 }
 
+std::array<std::uint32_t, 4> SignalMask() {
+    std::array<std::uint32_t, 4> mask{};
+    Require(sigprocmask_nid_postfix(1, nullptr, mask.data()) == 0);
+    return mask;
+}
+
+void CheckTimeAndSelect() {
+    const auto before = SignalMask();
+    std::array<std::uint32_t, 4> blocked = before;
+    blocked[0] |= 1u << (30 - 1);
+    const KernelTimespec brief{0, 1000000};
+    Require(pselect_nid_postfix(0, nullptr, nullptr, nullptr, &brief, blocked.data()) == 0);
+    Require(SignalMask() == before);
+    const KernelTimespec invalid{0, 1000000000};
+    Require(pselect_nid_postfix(0, nullptr, nullptr, nullptr, &invalid, blocked.data()) == -1 && Error() == 22 && SignalMask() == before);
+    const KernelTimespec negative{0, -1};
+    Require(pselect_nid_postfix(0, nullptr, nullptr, nullptr, &negative, nullptr) == -1 && Error() == 22);
+    Require(pselect_nid_postfix(-1, nullptr, nullptr, nullptr, &brief, nullptr) == -1 && Error() == 22);
+    int streams[2];
+    Require(pipe_nid_postfix(streams) == 0);
+    std::array<std::uint64_t, 16> writable{};
+    writable[static_cast<std::size_t>(streams[1]) / 64] |= std::uint64_t{1} << (streams[1] % 64);
+    const KernelTimespec second{1, 0};
+    Require(pselect_nid_postfix(streams[1] + 1, nullptr, writable.data(), nullptr, &second, blocked.data()) == 1);
+    Require((writable[static_cast<std::size_t>(streams[1]) / 64] >> (streams[1] % 64)) & 1);
+    Require(SignalMask() == before);
+    Require(close_nid_postfix(streams[0]) == 0 && close_nid_postfix(streams[1]) == 0);
+    Require(settimeofday_nid_postfix(nullptr, nullptr) == 0);
+    const KernelTimezone utc{0, 0};
+    Require(settimeofday_nid_postfix(nullptr, &utc) == 0 && sceKernelSettimeofday(nullptr, &utc) == 0);
+    const KernelTimeval badTime{1, 1000000};
+    Require(settimeofday_nid_postfix(&badTime, nullptr) == -1 && Error() == 22);
+    Require(sceKernelSettimeofday(&badTime, nullptr) == static_cast<int>(0x80020016u));
+    const KernelTimeval earlier{-1, 0};
+    Require(settimeofday_nid_postfix(&earlier, &utc) == -1 && Error() == 22);
+    const KernelTimeval valid{1700000000, 0};
+    Require(Throws([&] { settimeofday_nid_postfix(&valid, nullptr); }) && Throws([&] { sceKernelSettimeofday(&valid, &utc); }));
+    const KernelTimezone east{-60, 0};
+    Require(Throws([&] { settimeofday_nid_postfix(nullptr, &east); }));
+    Require(sceKernelMlockall(0) == static_cast<int>(0x80020016u) && sceKernelMlockall(4) == static_cast<int>(0x80020016u));
+    Require(Throws([] { sceKernelMlockall(1); }));
+}
+
 int main() {
 #ifdef _WIN32
     auto hostDirectorySpelling = std::filesystem::current_path().native();
@@ -1301,6 +1349,7 @@ int main() {
     CheckScePthreadWrappers();
     CheckPosixThreadExtensions();
     CheckNamedSemaphores();
+    CheckTimeAndSelect();
     RemoveTree(root);
     return 0;
 }
