@@ -1,6 +1,8 @@
 #include "prx/libSceLibreSsl/include/Internal.hpp"
+#include "prx/libc/include/General.hpp"
 
 #include <deque>
+#include <stdexcept>
 
 namespace LibreSsl {
 
@@ -25,6 +27,41 @@ void PushError(int library, int function, int reason) {
 std::uint64_t PeekLastError() {
     const auto& queue = Queue();
     return queue.empty() ? 0 : queue.back();
+}
+
+}
+
+using namespace LibreSsl;
+
+extern "C" {
+
+std::uint64_t LibreSslPeekLastError_nid_no_patch() {
+    return PeekLastError();
+}
+
+std::uint64_t APS5_VABI ERR_get_error_nid_postfix() {
+    auto& queue = Queue();
+    if (queue.empty()) return 0;
+    const auto code = queue.front();
+    queue.pop_front();
+    return code;
+}
+
+std::uint64_t APS5_VABI ERR_peek_error_nid_postfix() {
+    const auto& queue = Queue();
+    return queue.empty() ? 0 : queue.front();
+}
+
+void APS5_VABI ERR_clear_error_nid_postfix() {
+    Queue().clear();
+}
+
+void APS5_VABI ERR_remove_thread_state_nid_postfix(const void* tid) {
+    if (tid) throw std::invalid_argument("ERR_remove_thread_state: removing another thread's queue is not supported");
+    Queue().clear();
+}
+
+void APS5_VABI ERR_free_strings_nid_postfix() {
 }
 
 }
