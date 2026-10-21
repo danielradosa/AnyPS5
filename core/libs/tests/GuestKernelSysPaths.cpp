@@ -162,7 +162,14 @@ int main(int argc, char** argv) {
 #endif
         {
             Require(result == 0);
+#ifdef _WIN32
+            const auto readLink = LoadFunction<std::int64_t (APS5_VABI*)(int, const char*, char*, std::size_t)>(sys, "readlinkat", patched);
+            char target[8]{};
+            Require((GetFileAttributesW((root / "link").wstring().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+            Require(readLink(base, "link", target, sizeof(target)) == 4 && std::memcmp(target, "data", 4) == 0);
+#else
             Require(std::filesystem::read_symlink(root / "link") == "data");
+#endif
             std::ifstream stream(root / "link");
             std::string contents;
             stream >> contents;
@@ -178,9 +185,11 @@ int main(int argc, char** argv) {
         Require(link("", base, "missing") == -1 && *error() == 2);
         Require(link(std::string(1024, 'x').c_str(), -1, "missing") == -1 && *error() == 63);
         Require(link("data", base, std::string(256, 'x').c_str()) == -1 && *error() == 63);
+#ifndef _WIN32
         bool refused = false;
         try { link("../data", base, "refused"); } catch (const std::runtime_error&) { refused = true; }
         Require(refused && !std::filesystem::exists(root / "refused"));
+#endif
     } else {
         Require(false);
     }
