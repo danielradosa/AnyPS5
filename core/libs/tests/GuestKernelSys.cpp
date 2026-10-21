@@ -157,6 +157,13 @@ int APS5_VABI sigprocmask_nid_postfix(int, const void*, void*);
 int APS5_VABI settimeofday_nid_postfix(const KernelTimeval*, const KernelTimezone*);
 int APS5_VABI sceKernelSettimeofday(const KernelTimeval*, const KernelTimezone*);
 int APS5_VABI sceKernelMlockall(int);
+int APS5_VABI sceKernelGetModuleInfoInternal(KernelModule, ModuleInfoEx*);
+int APS5_VABI sceKernelGetModuleInfo(KernelModule, ModuleInfo*);
+int APS5_VABI sceKernelGetModuleList(KernelModule*, std::size_t, std::size_t*);
+int APS5_VABI sceKernelIsInSandbox(void);
+int APS5_VABI tcgetsid_nid_postfix(int);
+int APS5_VABI tcsetsid_nid_postfix(int, int);
+int APS5_VABI getsid_nid_postfix(int);
 void AddPathAlias_nid_no_patch(const char*, const char*);
 void RemovePathAlias_nid_no_patch(const char*);
 }
@@ -879,6 +886,43 @@ void CheckTimeAndSelect() {
     Require(Throws([] { sceKernelMlockall(1); }));
 }
 
+void CheckModuleAndTerminalQueries(const std::filesystem::path& root) {
+    std::array<KernelModule, 512> modules{};
+    std::size_t count = 0;
+    Require(sceKernelGetModuleList(modules.data(), modules.size(), &count) == 0);
+    for (std::size_t index = 0; index < count; ++index) {
+        ModuleInfoEx extended{};
+        extended.st_size = sizeof(extended);
+        ModuleInfo plain{};
+        plain.st_size = sizeof(plain);
+        const int internal = sceKernelGetModuleInfoInternal(modules[index], &extended);
+        Require(internal == sceKernelGetModuleInfo(modules[index], &plain));
+        if (internal != 0) continue;
+        Require(extended.st_size == sizeof(extended) && extended.id == modules[index] && std::strcmp(extended.name, plain.name) == 0);
+        Require(extended.segment_count == plain.segment_count && extended.ref_count == 1);
+        for (std::uint32_t segment = 0; segment < plain.segment_count; ++segment)
+            Require(extended.segments[segment].address == plain.segments[segment].address && extended.segments[segment].size == plain.segments[segment].size);
+    }
+    ModuleInfoEx probe{};
+    probe.st_size = sizeof(probe) - 8;
+    if (count != 0) Require(sceKernelGetModuleInfoInternal(modules[0], &probe) == static_cast<int>(0x80020016u));
+    Require(sceKernelGetModuleInfoInternal(0, nullptr) == static_cast<int>(0x8002000Eu));
+    probe.st_size = sizeof(probe);
+    Require(sceKernelGetModuleInfoInternal(-0x5a5a, &probe) == static_cast<int>(0x80020003u));
+    Require(sceKernelIsInSandbox() == 1);
+    const auto path = (root / "terminal.txt").string();
+    std::ofstream(path) << "t";
+    const int fd = sceKernelOpen(path.c_str(), SCE_KERNEL_O_RDONLY, 0);
+    Require(fd >= 0);
+    Require(tcgetsid_nid_postfix(fd) == -1 && Error() == 25);
+    Require(tcgetsid_nid_postfix(-1) == -1 && Error() == 9);
+    const int session = getsid_nid_postfix(0);
+    Require(tcsetsid_nid_postfix(fd, session + 1) == -1 && Error() == 22);
+    Require(tcsetsid_nid_postfix(fd, session) == -1 && Error() == 25);
+    Require(tcsetsid_nid_postfix(-1, session) == -1 && Error() == 9);
+    Require(sceKernelClose(fd) == 0);
+}
+
 int main() {
 #ifdef _WIN32
     auto hostDirectorySpelling = std::filesystem::current_path().native();
@@ -1345,6 +1389,7 @@ int main() {
 #endif
     CheckForwards(root);
     CheckPosixAio(root);
+    CheckModuleAndTerminalQueries(root);
     CheckOwnershipAndLinks(root);
     CheckScePthreadWrappers();
     CheckPosixThreadExtensions();

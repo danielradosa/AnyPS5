@@ -28,6 +28,7 @@
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/System/include/CompiledSdkVersion.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
+#include "prx/libkernel/Module/ModuleInfo.hpp"
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -84,6 +85,7 @@ constexpr std::size_t GuestNameMax = 255;
 constexpr std::size_t GuestLoginNameMax = 33;
 constexpr std::size_t GuestSignalSetWords = 4;
 constexpr int GuestSigSetmask = 3;
+constexpr std::size_t GuestTermiosBytes = 44;
 
 constexpr int PcLinkMax = 1;
 constexpr int PcMaxCanon = 2;
@@ -562,6 +564,33 @@ int APS5_VABI settimeofday_nid_postfix(const KernelTimeval* tv, const KernelTime
 int APS5_VABI sceKernelSettimeofday(const KernelTimeval* tv, const KernelTimezone* tz) {
     if (settimeofday_nid_postfix(tv, tz) == 0) return 0;
     return static_cast<int>(0x80020000u | static_cast<std::uint32_t>(*__error_nid_postfix()));
+}
+
+int APS5_VABI sceKernelGetModuleInfoInternal(KernelModule handle, ModuleInfoEx* info) {
+    return ModuleInfoExForHandle_nid_no_patch(handle, info);
+}
+
+int APS5_VABI sceKernelIsInSandbox(void) {
+    return 1;
+}
+
+int APS5_VABI tcgetattr_nid_postfix(int descriptor, void* attributes);
+int APS5_VABI getsid_nid_postfix(int pid);
+
+int APS5_VABI tcgetsid_nid_postfix(int descriptor) {
+    std::array<std::byte, GuestTermiosBytes> attributes{};
+    if (tcgetattr_nid_postfix(descriptor, attributes.data()) != 0) return -1;
+    throw std::runtime_error("tcgetsid: descriptor " + std::to_string(descriptor) + " is a terminal, and terminal sessions are not modelled");
+}
+
+int APS5_VABI tcsetsid_nid_postfix(int descriptor, int pid) {
+    const int saved = *__error_nid_postfix();
+    const int session = getsid_nid_postfix(0);
+    *__error_nid_postfix() = saved;
+    if (pid != session) return static_cast<int>(Fail(GuestEinval));
+    std::array<std::byte, GuestTermiosBytes> attributes{};
+    if (tcgetattr_nid_postfix(descriptor, attributes.data()) != 0) return -1;
+    throw std::runtime_error("tcsetsid: descriptor " + std::to_string(descriptor) + " is a terminal, and making it the controlling terminal is not modelled");
 }
 
 int APS5_VABI sceKernelMlockall(int flags) {
