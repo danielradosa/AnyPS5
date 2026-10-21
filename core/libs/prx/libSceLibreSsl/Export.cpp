@@ -21,11 +21,6 @@ int APS5_VABI BN_print_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI CONF_modules_load_file_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI CRYPTO_THREADID_set_callback_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <source_location>
 #include <string>
 #include <vector>
@@ -61,6 +62,7 @@ void APS5_VABI CRYPTO_THREADID_set_numeric_nid_postfix(GuestThreadId*, std::uint
 int APS5_VABI ASN1_STRING_print_nid_postfix(GuestBio*, const GuestAsn1String*);
 int APS5_VABI ASN1_TIME_print_nid_postfix(GuestBio*, const GuestAsn1String*);
 int APS5_VABI X509_NAME_print_ex_nid_postfix(GuestBio*, const GuestName*, int, std::uint64_t);
+int APS5_VABI CONF_modules_load_file_nid_postfix(const char*, const char*, std::uint64_t);
 const GuestBioMethod* APS5_VABI BIO_s_mem_nid_postfix();
 GuestBio* APS5_VABI BIO_new_nid_postfix(const GuestBioMethod*);
 int APS5_VABI BIO_free_nid_postfix(GuestBio*);
@@ -135,7 +137,7 @@ struct NameBuilder {
 
 }
 
-int main() {
+int main(int argc, char** argv) {
     Require(SSLeay_nid_postfix() == 0x20000000);
     GuestThreadId id{&id, 7};
     CRYPTO_THREADID_set_numeric_nid_postfix(&id, 0x123456789abcdefull);
@@ -258,6 +260,15 @@ int main() {
 
     NameBuilder empty;
     Require(X509_NAME_print_ex_nid_postfix(bio, empty.Build(), 0, FlagOneline) == 0 && Take(bio).empty());
+
+    Require(CONF_modules_load_file_nid_postfix("guest_libressl_no_such.cnf", nullptr, 0x10) == 1);
+    Require(CONF_modules_load_file_nid_postfix("guest_libressl_no_such.cnf", "app", 0x10 | 0x20) == 1);
+    Require(Throws([] { CONF_modules_load_file_nid_postfix("guest_libressl_no_such.cnf", nullptr, 0); }));
+    if (argc > 1) {
+        std::ofstream(argv[1], std::ios::binary) << "openssl_conf = openssl_init" << std::endl;
+        Require(Throws([&] { CONF_modules_load_file_nid_postfix(argv[1], nullptr, 0x10); }));
+        std::remove(argv[1]);
+    }
 
     Require(BIO_free_nid_postfix(bio) == 1);
     return 0;
