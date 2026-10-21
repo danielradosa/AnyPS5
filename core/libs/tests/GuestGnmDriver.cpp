@@ -3,11 +3,13 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libSceGnmDriver/include/Lowering.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <initializer_list>
+#include <iterator>
 #include <stdexcept>
 #include <vector>
 
@@ -15,6 +17,10 @@ extern "C" {
 int APS5_VABI sceGnmSetGsRingSizes(std::uint32_t esgsRingSize, std::uint32_t gsvsRingSize);
 int APS5_VABI sceGnmSetupMipStatsReport(void* outputBuffer, std::uint32_t sizeInBytes, std::uint8_t intervalsBetweenReports, std::uint8_t numReportsBeforeReset, std::uint32_t mipStatsResetForce);
 int APS5_VABI sceGnmRequestFlipAndSubmitDone(std::uint32_t* commands, std::uint32_t sizeInBytes, std::uint32_t handle, std::uint32_t index, std::uint32_t flipMode, std::int64_t flipArg);
+std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState175(std::uint32_t* cmd, std::uint32_t size);
+int APS5_VABI sceGnmSetPsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs);
+int APS5_VABI sceGnmSetCsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs);
+int APS5_VABI sceGnmLogicalCuIndexToPhysicalCuIndex();
 }
 
 namespace {
@@ -35,6 +41,22 @@ constexpr std::uint32_t OpIncrementCeCounter = 0x84;
 constexpr std::uint32_t OpIncrementDeCounter = 0x85;
 constexpr std::uint32_t OpWaitOnCeCounter = 0x86;
 constexpr std::uint32_t OpWaitOnDeCounterDiff = 0x88;
+constexpr std::uint32_t Fill = 0xeeeeeeeeu;
+
+constexpr std::uint32_t Sdk175Sequence[]{
+    0xc0017600, 0x216, 0xffffffff, 0xc0017600, 0x217, 0xffffffff, 0xc0017600, 0x215, 0x0, 0xc0016900,
+    0x2f9, 0x2d, 0xc0016900, 0x282, 0x8, 0xc0016900, 0x280, 0x80008, 0xc0016900, 0x281,
+    0xffff0000, 0xc0016900, 0x204, 0x0, 0xc0016900, 0x206, 0x43f, 0xc0016900, 0x83, 0xffff,
+    0xc0016900, 0x317, 0x10, 0xc0016900, 0x2fa, 0x3f800000, 0xc0016900, 0x2fc, 0x3f800000, 0xc0016900,
+    0x2fb, 0x3f800000, 0xc0016900, 0x2fd, 0x3f800000, 0xc0016900, 0x202, 0xcc0010, 0xc0016900, 0x30e,
+    0xffffffff, 0xc0016900, 0x30f, 0xffffffff, 0xc0002f00, 0x1, 0xc0017600, 0x7, 0x1ff, 0xc0017600,
+    0x46, 0x1ff, 0xc0017600, 0x87, 0x1ff, 0xc0017600, 0xc7, 0x1ff, 0xc0017600, 0x107,
+    0x0, 0xc0017600, 0x147, 0x1ff, 0xc0016900, 0x1b1, 0x2, 0xc0016900, 0x101, 0x0,
+    0xc0016900, 0x100, 0xffffffff, 0xc0016900, 0x103, 0x0, 0xc0016900, 0x284, 0x0, 0xc0016900,
+    0x290, 0x0, 0xc0016900, 0x2ae, 0x0, 0xc0016900, 0x292, 0x0, 0xc0016900, 0x293,
+    0x6020000, 0xc0016900, 0x2f8, 0x0, 0xc0016900, 0x2de, 0x1e9, 0xc0036900, 0x295, 0x100,
+    0x100, 0x4, 0xc0017900, 0x200, 0xe0000000,
+};
 
 void Require(bool value, std::source_location where = std::source_location::current()) {
     if (!value) {
@@ -171,6 +193,35 @@ void CheckFlips() {
     Require(Throws([&] { GnmDriver::PatchFlip(reserve.data(), label, 2, 1, 0, argument); }));
 }
 
+void CheckWriters() {
+    std::vector<std::uint32_t> state(0x100, Fill);
+    Require(sceGnmDrawInitDefaultHardwareState175(state.data(), 0xff) == 0 && state[0] == Fill);
+    Require(sceGnmDrawInitDefaultHardwareState175(state.data(), 0x100) == 0x100);
+    const auto prefix = Words({0xc0012800u, 0x80000000u, 0x80000000u, 0xc0001200u, 0, 0xc0055800u, 0x2ec47fc0u, 0xffffffffu, 0, 0, 0, 10});
+    Require(std::equal(prefix.begin(), prefix.end(), state.begin()));
+    Require(std::equal(std::begin(Sdk175Sequence), std::end(Sdk175Sequence), state.begin() + prefix.size()));
+    const auto nop = prefix.size() + std::size(Sdk175Sequence);
+    Require(state[nop] == Header(OpNop, static_cast<std::uint32_t>(0x100 - nop - 1)));
+    for (auto at = nop + 1; at < state.size(); ++at) Require(state[at] == 0);
+
+    std::vector<std::uint32_t> pixel(40, Fill);
+    Require(sceGnmSetPsShader(pixel.data(), 0x27, nullptr) == -1 && pixel[0] == Fill);
+    Require(sceGnmSetPsShader(pixel.data(), 40, nullptr) == 0);
+    auto expected = Words({0xc0027600u, 8, 0, 0, 0xc0016900u, 0x203, 0, Header(OpNop, 0x20)});
+    expected.resize(40, 0);
+    Require(pixel == expected);
+
+    const std::uint32_t regs[]{0x1000, 0, 0x2fff, 0x92, 64, 1, 1};
+    std::vector<std::uint32_t> compute(25, Fill);
+    Require(sceGnmSetCsShader(compute.data(), 0x18, regs) == -1 && compute[0] == Fill);
+    Require(sceGnmSetCsShader(compute.data(), 25, regs) == 0);
+    expected = Words({0xc0027600u, 0x20c, 0x1000, 0, 0xc0027600u, 0x212, 0x2fff, 0x92, 0xc0037600u, 0x207, 64, 1, 1, Header(OpNop, 11)});
+    expected.resize(25, 0);
+    Require(compute == expected);
+
+    Require(sceGnmLogicalCuIndexToPhysicalCuIndex() == 0);
+}
+
 }
 
 int main() {
@@ -206,4 +257,5 @@ int main() {
     CheckEndOfShader();
     CheckEngines();
     CheckFlips();
+    CheckWriters();
 }

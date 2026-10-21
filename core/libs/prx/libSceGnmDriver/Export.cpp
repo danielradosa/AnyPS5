@@ -16,31 +16,31 @@
 #include "prx/libSceAgcDriver/Execution/include/VideoOutput.hpp"
 #include "prx/libSceAgcDriver/Eq/include/Event.hpp"
 #include "prx/libSceVideoOut/include/Buffer.hpp"
+#include "prx/libSceGnmDriver/include/Commands.hpp"
 #include "prx/libSceGnmDriver/include/Lowering.hpp"
 
 namespace {
 
 using GnmDriver::Emit;
 using GnmDriver::FlipReserveWords;
+using GnmDriver::HardwareState;
 using GnmDriver::Header;
+using GnmDriver::HwInitPacketWords;
 using GnmDriver::Nop;
 using GnmDriver::OpAcquireMem;
+using GnmDriver::OpClearState;
 using GnmDriver::OpNop;
+using GnmDriver::OpSetContextReg;
+using GnmDriver::OpSetShReg;
 using GnmDriver::OpWriteData;
 using GnmDriver::PrepareFlip;
 using GnmDriver::PrepareFlipHeader;
+using GnmDriver::SetRegisters;
 using GnmDriver::WriteDataToMemory;
 
-constexpr std::uint32_t OpClearState = 0x12;
-constexpr std::uint32_t OpContextControl = 0x28;
-constexpr std::uint32_t OpNumInstances = 0x2f;
 constexpr std::uint32_t OpWaitRegMem = 0x3c;
-constexpr std::uint32_t OpSetContextReg = 0x69;
-constexpr std::uint32_t OpSetShReg = 0x76;
-constexpr std::uint32_t OpSetUconfigReg = 0x79;
 constexpr std::uint32_t GfxEndOfPipeEvent = 0x40;
 
-constexpr std::uint32_t HwInitPacketWords = 0x100;
 constexpr std::uint32_t MarkerPush = 0x68750001u;
 constexpr std::uint32_t MarkerPop = 0x68750002u;
 constexpr std::uint32_t MarkerSet = 0x68750003u;
@@ -63,31 +63,12 @@ constexpr std::uint32_t GsRingAlignment = 0x100000;
 constexpr std::uint32_t MipStatsHeaderBytes = 0x40;
 constexpr std::uint32_t MinMipStatsBytes = 0x1040;
 
-using RegisterValue = std::pair<std::uint32_t, std::uint32_t>;
-
-std::uint32_t* SetRegisters(std::uint32_t* at, std::uint32_t opcode, std::initializer_list<RegisterValue> values) {
-    for (const auto& [reg, value] : values) at = Emit(at, opcode, {reg, value});
-    return at;
-}
-
-std::uint32_t* DefaultState(std::uint32_t* at, std::uint32_t scModeCntl1) {
-    at = SetRegisters(at, OpSetShReg, {{0x216, 0xffffffffu}, {0x217, 0xffffffffu}, {0x215, 0}});
-    at = SetRegisters(at, OpSetContextReg, {{0x2f9, 0x2d}, {0x282, 8}, {0x280, 0x80008}, {0x281, 0xffff0000u}, {0x204, 0}, {0x206, 0x43f}, {0x83, 0xffff}, {0x317, 0x10},
-        {0x2fa, 0x3f800000u}, {0x2fc, 0x3f800000u}, {0x2fb, 0x3f800000u}, {0x2fd, 0x3f800000u}, {0x202, 0xcc0010}, {0x30e, 0xffffffffu}, {0x30f, 0xffffffffu}});
-    at = Emit(at, OpNumInstances, {1});
-    at = SetRegisters(at, OpSetShReg, {{7, 0x1ff}, {0x46, 0x1ff}, {0x87, 0x1ff}, {0xc7, 0x1ff}, {0x107, 0}, {0x147, 0x1ff}});
-    at = SetRegisters(at, OpSetContextReg, {{0x1b1, 2}, {0x101, 0}, {0x100, 0xffffffffu}, {0x103, 0}, {0x284, 0}, {0x290, 0}, {0x2ae, 0}, {0x292, 0}, {0x293, scModeCntl1},
-        {0x2f8, 0}, {0x2de, 0x1e9}});
-    at = Emit(at, OpSetContextReg, {0x295, 0x100, 0x100, 4});
-    return Emit(at, OpSetUconfigReg, {0x200, 0xe0000000u});
-}
-
 struct FrameStart {
     std::uint32_t words[HwInitPacketWords]{};
     std::uint32_t size = 0;
     FrameStart() {
         auto* at = Emit(words, OpClearState, {0});
-        size = static_cast<std::uint32_t>(DefaultState(at, 0x6000000) - words);
+        size = static_cast<std::uint32_t>(GnmDriver::DefaultState(at, HardwareState::Sdk100) - words);
     }
 };
 
@@ -144,21 +125,7 @@ void WriteMarker(std::uint32_t* at, std::uint32_t kind, const char* marker, std:
 extern "C" {
 
 int APS5_VABI sceGnmSetPsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs) {
-    if (!cmd || size <= 0x27) return -1;
-    if (!regs) {
-        cmd = Emit(cmd, OpSetShReg, {8, 0, 0});
-        cmd = Emit(cmd, OpSetContextReg, {0x203, 0});
-        Nop(cmd, 0x20);
-        return 0;
-    }
-    if (regs[1] != 0) return -1;
-    cmd = Emit(cmd, OpSetShReg, {8, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {10, regs[2], regs[3]});
-    cmd = Emit(cmd, OpSetContextReg, {0x1c4, regs[4], regs[5]});
-    cmd = Emit(cmd, OpSetContextReg, {0x1b3, regs[6], regs[7]});
-    cmd = SetRegisters(cmd, OpSetContextReg, {{0x1b6, regs[8]}, {0x1b8, regs[9]}, {0x203, regs[10]}, {0x8f, regs[11]}});
-    Nop(cmd, 11);
-    return 0;
+    return GnmDriver::SetPsShader(cmd, size, regs, false);
 }
 
 int APS5_VABI sceGnmSetVsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t modifier) {
@@ -172,12 +139,7 @@ int APS5_VABI sceGnmSetVsShader(std::uint32_t* cmd, std::uint32_t size, const st
 }
 
 int APS5_VABI sceGnmSetCsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs) {
-    if (!cmd || size <= 0x18 || !regs || regs[1] != 0) return -1;
-    cmd = Emit(cmd, OpSetShReg, {0x20c, regs[0], 0});
-    cmd = Emit(cmd, OpSetShReg, {0x212, regs[2], regs[3]});
-    cmd = Emit(cmd, OpSetShReg, {0x207, regs[4], regs[5], regs[6]});
-    Nop(cmd, 11);
-    return 0;
+    return GnmDriver::SetCsShader(cmd, size, regs, 0);
 }
 
 int APS5_VABI sceGnmSetEsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* regs, std::uint32_t modifier) {
@@ -221,13 +183,7 @@ int APS5_VABI sceGnmSetLsShader(std::uint32_t* cmd, std::uint32_t size, const st
 }
 
 std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState175(std::uint32_t* cmd, std::uint32_t size) {
-    if (size < HwInitPacketWords) return 0;
-    auto* at = Emit(cmd, OpContextControl, {0x80000000u, 0x80000000u});
-    at = Emit(at, OpClearState, {0});
-    at = Emit(at, OpAcquireMem, {0x2ec47fc0u, 0xffffffffu, 0, 0, 0, 10});
-    at = DefaultState(at, 0x6020000);
-    Nop(at, static_cast<std::uint32_t>(cmd + HwInitPacketWords - at) - 1);
-    return HwInitPacketWords;
+    return GnmDriver::DrawInitDefaultHardwareState(cmd, size, HardwareState::Sdk175);
 }
 
 std::uint32_t APS5_VABI sceGnmDispatchInitDefaultHardwareState(std::uint32_t* cmd, std::uint32_t size) {
@@ -395,7 +351,6 @@ int APS5_VABI sceGnmGetTheTessellationFactorRingBufferBaseAddress() {
 }
 
 int APS5_VABI sceGnmLogicalCuIndexToPhysicalCuIndex() {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
