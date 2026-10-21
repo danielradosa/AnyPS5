@@ -4,6 +4,7 @@
 #include "prx/libkernel/File/include/FileFlags.hpp"
 #include "SceTypes.hpp"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -89,6 +90,27 @@ int APS5_VABI scePthreadMutexLock(PthreadMutex*);
 int APS5_VABI scePthreadMutexUnlock(PthreadMutex*);
 int APS5_VABI scePthreadMutexDestroy(PthreadMutex*);
 Pthread APS5_VABI scePthreadSelf(void);
+int APS5_VABI pthread_timedjoin_np_nid_postfix(Pthread, void**, const KernelTimespec*);
+int APS5_VABI pthread_create_nid_postfix(Pthread*, const PthreadAttr*, PthreadEntry, void*);
+int APS5_VABI clock_gettime_nid_postfix(int, KernelTimespec*);
+int APS5_VABI pthread_rwlock_reltimedrdlock_np_nid_postfix(PthreadRwlock*, KernelUseconds);
+int APS5_VABI pthread_rwlock_reltimedwrlock_np_nid_postfix(PthreadRwlock*, KernelUseconds);
+int APS5_VABI pthread_rwlock_wrlock_nid_postfix(PthreadRwlock*);
+int APS5_VABI pthread_rwlock_unlock_nid_postfix(PthreadRwlock*);
+int APS5_VABI pthread_rwlock_destroy_nid_postfix(PthreadRwlock*);
+int APS5_VABI scePthreadRwlockattrInit(PthreadRwlockattr*);
+int APS5_VABI scePthreadRwlockattrDestroy(PthreadRwlockattr*);
+int APS5_VABI pthread_rwlockattr_settype_np_nid_postfix(PthreadRwlockattr*, int);
+int APS5_VABI pthread_rwlockattr_gettype_np_nid_postfix(const PthreadRwlockattr*, int*);
+int APS5_VABI scePthreadMutexInit(PthreadMutex*, const PthreadMutexattr*, const char*);
+int APS5_VABI pthread_mutex_setname_np_nid_postfix(PthreadMutex*, const char*);
+int APS5_VABI scePthreadCondInit(PthreadCond*, const PthreadCondattr*, const char*);
+int APS5_VABI scePthreadCondDestroy(PthreadCond*);
+int APS5_VABI pthread_cond_setname_np_nid_postfix(PthreadCond*, const char*);
+int APS5_VABI pthread_rwlock_setname_np_nid_postfix(PthreadRwlock*, const char*);
+int APS5_VABI sem_init_nid_postfix(void*, int, unsigned);
+int APS5_VABI sem_destroy_nid_postfix(void*);
+int APS5_VABI sem_setname_nid_postfix(void*, const char*);
 void AddPathAlias_nid_no_patch(const char*, const char*);
 void RemovePathAlias_nid_no_patch(const char*);
 }
@@ -474,6 +496,83 @@ void CheckScePthreadWrappers() {
     Require(scePthreadMutexLock(&mutex) == 0 && scePthreadMutexLock(&mutex) == static_cast<int>(0x8002000Bu));
     Require(scePthreadMutexUnlock(&mutex) == 0 && scePthreadMutexDestroy(&mutex) == 0);
     Require(scePthreadMutexattrDestroy(&mutexAttr) == 0);
+}
+
+std::atomic<bool> joinRelease{false};
+
+void* APS5_VABI JoinTarget(void* argument) {
+    while (!joinRelease.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return argument;
+}
+
+KernelTimespec RealtimeAfter(std::int64_t milliseconds) {
+    KernelTimespec now{};
+    Require(clock_gettime_nid_postfix(0, &now) == 0);
+    const std::int64_t nanos = now.tv_nsec + milliseconds * 1000000;
+    now.tv_sec += nanos / 1000000000;
+    now.tv_nsec = nanos % 1000000000;
+    if (now.tv_nsec < 0) {
+        now.tv_nsec += 1000000000;
+        --now.tv_sec;
+    }
+    return now;
+}
+
+void CheckPosixThreadExtensions() {
+    Pthread thread = nullptr;
+    joinRelease = false;
+    Require(pthread_create_nid_postfix(&thread, nullptr, JoinTarget, reinterpret_cast<void*>(0x1234)) == 0);
+    void* value = nullptr;
+    const auto soon = RealtimeAfter(30);
+    Require(pthread_timedjoin_np_nid_postfix(thread, &value, &soon) == 60 && value == nullptr);
+    const auto past = RealtimeAfter(-1000);
+    Require(pthread_timedjoin_np_nid_postfix(thread, &value, &past) == 60);
+    auto invalid = RealtimeAfter(1000);
+    invalid.tv_nsec = 1000000000;
+    Require(pthread_timedjoin_np_nid_postfix(thread, &value, &invalid) == 22 && pthread_timedjoin_np_nid_postfix(thread, &value, nullptr) == 22);
+    const auto self = RealtimeAfter(1000);
+    Require(pthread_timedjoin_np_nid_postfix(scePthreadSelf(), &value, &self) == 11);
+    joinRelease = true;
+    const auto later = RealtimeAfter(10000);
+    Require(pthread_timedjoin_np_nid_postfix(thread, &value, &later) == 0 && value == reinterpret_cast<void*>(0x1234));
+    PthreadRwlock rwlock = nullptr;
+    Require(pthread_rwlock_wrlock_nid_postfix(&rwlock) == 0);
+    Require(pthread_rwlock_reltimedrdlock_np_nid_postfix(&rwlock, 1000) == 11);
+    int readTimeout = 0;
+    int writeTimeout = 0;
+    std::thread contender([&] {
+        readTimeout = pthread_rwlock_reltimedrdlock_np_nid_postfix(&rwlock, 2000);
+        writeTimeout = pthread_rwlock_reltimedwrlock_np_nid_postfix(&rwlock, 2000);
+    });
+    contender.join();
+    Require(readTimeout == 60 && writeTimeout == 60);
+    Require(pthread_rwlock_unlock_nid_postfix(&rwlock) == 0);
+    Require(pthread_rwlock_reltimedrdlock_np_nid_postfix(&rwlock, 1000) == 0 && pthread_rwlock_unlock_nid_postfix(&rwlock) == 0);
+    Require(pthread_rwlock_reltimedwrlock_np_nid_postfix(&rwlock, 1000) == 0 && pthread_rwlock_unlock_nid_postfix(&rwlock) == 0);
+    Require(pthread_rwlock_setname_np_nid_postfix(&rwlock, "rw") == 0 && pthread_rwlock_setname_np_nid_postfix(&rwlock, nullptr) == 22);
+    Require(pthread_rwlock_destroy_nid_postfix(&rwlock) == 0);
+    PthreadRwlockattr rwlockAttr = nullptr;
+    int type = -1;
+    Require(scePthreadRwlockattrInit(&rwlockAttr) == 0);
+    Require(pthread_rwlockattr_settype_np_nid_postfix(&rwlockAttr, 1) == 0);
+    Require(pthread_rwlockattr_gettype_np_nid_postfix(&rwlockAttr, &type) == 0 && type == 1);
+    Require(scePthreadRwlockattrDestroy(&rwlockAttr) == 0);
+    PthreadRwlockattr noAttr = nullptr;
+    Require(pthread_rwlockattr_settype_np_nid_postfix(&noAttr, 1) == 22 && pthread_rwlockattr_settype_np_nid_postfix(nullptr, 1) == 22);
+    PthreadMutex mutex = nullptr;
+    Require(scePthreadMutexInit(&mutex, nullptr, "named") == 0);
+    Require(pthread_mutex_setname_np_nid_postfix(&mutex, "renamed") == 0 && pthread_mutex_setname_np_nid_postfix(&mutex, nullptr) == 0);
+    Require(scePthreadMutexDestroy(&mutex) == 0);
+    PthreadCond cond = nullptr;
+    Require(scePthreadCondInit(&cond, nullptr, "cond") == 0);
+    Require(pthread_cond_setname_np_nid_postfix(&cond, "renamed") == 0 && pthread_cond_setname_np_nid_postfix(&cond, nullptr) == 22);
+    Require(scePthreadCondDestroy(&cond) == 0);
+    void* semaphore = nullptr;
+    Require(sem_init_nid_postfix(&semaphore, 0, 1) == 0);
+    *__error_nid_postfix() = 0;
+    Require(sem_setname_nid_postfix(&semaphore, "sem") == 0 && Error() == 0);
+    Require(sem_setname_nid_postfix(&semaphore, nullptr) == -1 && Error() == 22);
+    Require(sem_destroy_nid_postfix(&semaphore) == 0);
 }
 
 int main() {
@@ -942,6 +1041,7 @@ int main() {
 #endif
     CheckForwards(root);
     CheckScePthreadWrappers();
+    CheckPosixThreadExtensions();
     RemoveTree(root);
     return 0;
 }

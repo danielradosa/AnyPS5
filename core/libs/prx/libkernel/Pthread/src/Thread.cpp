@@ -976,7 +976,7 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
     return SCE_OK;
 }
 
-int APS5_VABI scePthreadJoin(Pthread thread, void** retval) {
+static int JoinGuestThread(Pthread thread, void** retval, std::optional<std::uint64_t> deadline) {
     if (!thread) return SCE_KERNEL_ERROR_EINVAL;
     if (thread == CurrentGuestState().current) return SCE_KERNEL_ERROR_EDEADLK;
     if (thread->_detached) return SCE_KERNEL_ERROR_EINVAL;
@@ -988,7 +988,11 @@ int APS5_VABI scePthreadJoin(Pthread thread, void** retval) {
         if (thread->_joining) return SCE_KERNEL_ERROR_EOPNOTSUPP;
         thread->_joining = true;
         while (!thread->_finished.load()) {
-            ThreadCancel::Wait(thread->_join_cv, lock, std::nullopt);
+            if (deadline && TimedWait::NowNanos() >= *deadline) {
+                thread->_joining = false;
+                return SCE_KERNEL_ERROR_ETIMEDOUT;
+            }
+            ThreadCancel::Wait(thread->_join_cv, lock, deadline);
             if (ThreadCancel::Requested()) {
                 thread->_joining = false;
                 lock.unlock();
@@ -1012,6 +1016,23 @@ int APS5_VABI scePthreadJoin(Pthread thread, void** retval) {
 #endif
     RetainJoinedThread(thread);
     return SCE_OK;
+}
+
+int APS5_VABI scePthreadJoin(Pthread thread, void** retval) {
+    return JoinGuestThread(thread, retval, std::nullopt);
+}
+
+int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp);
+
+int PthreadTimedJoin_nid_no_patch(Pthread thread, void** retval, const KernelTimespec* abstime) {
+    KernelTimespec now{};
+    clock_gettime_nid_postfix(0, &now);
+    const std::uint64_t start = TimedWait::NowNanos();
+    const auto remaining = static_cast<__int128>(abstime->tv_sec - now.tv_sec) * 1000000000 + (abstime->tv_nsec - now.tv_nsec);
+    const auto limit = static_cast<__int128>(std::numeric_limits<std::uint64_t>::max() - start);
+    const std::uint64_t deadline = remaining <= 0 ? start : remaining >= limit ? std::numeric_limits<std::uint64_t>::max() : start + static_cast<std::uint64_t>(remaining);
+    const int result = JoinGuestThread(thread, retval, deadline);
+    return result == 0 ? 0 : static_cast<int>(static_cast<std::uint32_t>(result) & 0xffffu);
 }
 
 int APS5_VABI scePthreadDetach(Pthread thread) {
