@@ -1,5 +1,6 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "prx/libkernel/File/include/FileFlags.hpp"
 #include "prx/libkernel/System/include/UserContext.hpp"
 #include <array>
 #include <chrono>
@@ -9,6 +10,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <source_location>
+#include <string>
+#include <vector>
 #include <stdexcept>
 #include <thread>
 
@@ -60,6 +63,20 @@ int APS5_VABI ktimer_delete_nid_postfix(int);
 int APS5_VABI ktimer_settime_nid_postfix(int, int, const TestItimerspec*, TestItimerspec*);
 int APS5_VABI ktimer_gettime_nid_postfix(int, TestItimerspec*);
 int APS5_VABI ktimer_getoverrun_nid_postfix(int);
+int APS5_VABI pipe_nid_postfix(int*);
+int APS5_VABI pthread_create_nid_postfix(Pthread*, const PthreadAttr*, PthreadEntry, void*);
+int APS5_VABI pthread_join_nid_postfix(Pthread, void**);
+int APS5_VABI close_nid_postfix(int);
+int APS5_VABI ksem_init_nid_postfix(std::intptr_t*, unsigned int);
+int APS5_VABI ksem_open_nid_postfix(std::intptr_t*, const char*, int, std::uint16_t, unsigned int);
+int APS5_VABI ksem_unlink_nid_postfix(const char*);
+int APS5_VABI ksem_close_nid_postfix(std::intptr_t);
+int APS5_VABI ksem_destroy_nid_postfix(std::intptr_t);
+int APS5_VABI ksem_post_nid_postfix(std::intptr_t);
+int APS5_VABI ksem_wait_nid_postfix(std::intptr_t);
+int APS5_VABI ksem_trywait_nid_postfix(std::intptr_t);
+int APS5_VABI ksem_timedwait_nid_postfix(std::intptr_t, const KernelTimespec*);
+int APS5_VABI ksem_getvalue_nid_postfix(std::intptr_t, int*);
 [[gnu::returns_twice]] int APS5_VABI getcontext_nid_postfix(UserUcontext*);
 int APS5_VABI setcontext_nid_postfix(const UserUcontext*);
 [[gnu::returns_twice]] int APS5_VABI swapcontext_nid_postfix(UserUcontext*, const UserUcontext*);
@@ -315,6 +332,111 @@ void CheckSignalTimers() {
     Require(signal_nid_postfix(Sigusr1, nullptr) == reinterpret_cast<SignalHandler>(1));
 }
 
+int KernelSemaphoreValue(std::intptr_t id) {
+    int value = -1;
+    Require(ksem_getvalue_nid_postfix(id, &value) == 0);
+    return value;
+}
+
+struct KernelSemaphoreWaiter {
+    std::intptr_t id;
+    int result;
+};
+
+void* APS5_VABI WaitKernelSemaphore(void* argument) {
+    auto* waiter = static_cast<KernelSemaphoreWaiter*>(argument);
+    waiter->result = ksem_wait_nid_postfix(waiter->id);
+    return nullptr;
+}
+
+void CheckAnonymousKernelSemaphores() {
+    std::intptr_t id = -1;
+    Require(ksem_init_nid_postfix(&id, 0x80000000u) == -1 && Error() == 22);
+    Require(ksem_init_nid_postfix(nullptr, 1) == -1 && Error() == 14);
+    Require(ksem_init_nid_postfix(&id, 2) == 0 && id >= 0 && KernelSemaphoreValue(id) == 2);
+    Require(ksem_trywait_nid_postfix(id) == 0 && ksem_trywait_nid_postfix(id) == 0);
+    Require(ksem_trywait_nid_postfix(id) == -1 && Error() == 35);
+    Require(ksem_post_nid_postfix(id) == 0 && KernelSemaphoreValue(id) == 1 && ksem_wait_nid_postfix(id) == 0);
+    Require(ksem_getvalue_nid_postfix(id, nullptr) == -1 && Error() == 14);
+    const KernelTimespec invalid{0, 1000000000};
+    Require(ksem_timedwait_nid_postfix(id, &invalid) == -1 && Error() == 22);
+    Require(ksem_timedwait_nid_postfix(-5, &invalid) == -1 && Error() == 22);
+    const KernelTimespec past{1, 0};
+    Require(ksem_timedwait_nid_postfix(id, &past) == -1 && Error() == 60);
+    KernelTimespec soon{};
+    Require(clock_gettime_nid_postfix(ClockRealtime, &soon) == 0);
+    soon.tv_nsec += 30000000;
+    if (soon.tv_nsec >= 1000000000) {
+        ++soon.tv_sec;
+        soon.tv_nsec -= 1000000000;
+    }
+    Require(ksem_timedwait_nid_postfix(id, &soon) == -1 && Error() == 60);
+    Require(ksem_post_nid_postfix(id) == 0 && ksem_timedwait_nid_postfix(id, &past) == 0);
+    Require(ksem_post_nid_postfix(id) == 0 && ksem_timedwait_nid_postfix(id, nullptr) == 0);
+    Require(ksem_close_nid_postfix(id) == -1 && Error() == 22);
+    KernelSemaphoreWaiter waiter{id, -1};
+    Pthread thread = nullptr;
+    Require(pthread_create_nid_postfix(&thread, nullptr, WaitKernelSemaphore, &waiter) == 0);
+    Pause(50);
+    Require(ksem_destroy_nid_postfix(id) == -1 && Error() == 16);
+    Require(ksem_post_nid_postfix(id) == 0);
+    Require(pthread_join_nid_postfix(thread, nullptr) == 0);
+    Require(waiter.result == 0 && KernelSemaphoreValue(id) == 0);
+    Require(ksem_destroy_nid_postfix(id) == 0 && ksem_destroy_nid_postfix(id) == -1 && Error() == 22);
+    int value = 0;
+    Require(ksem_getvalue_nid_postfix(id, &value) == -1 && Error() == 22);
+    Require(ksem_post_nid_postfix(id) == -1 && Error() == 22 && ksem_wait_nid_postfix(id) == -1 && Error() == 22);
+    Require(ksem_init_nid_postfix(&id, 0x7fffffff) == 0 && ksem_post_nid_postfix(id) == -1 && Error() == 84);
+    Require(ksem_destroy_nid_postfix(id) == 0);
+    Require(ksem_open_nid_postfix(&id, nullptr, 0, 0, 1) == 0 && KernelSemaphoreValue(id) == 1);
+    Require(ksem_close_nid_postfix(id) == -1 && Error() == 22 && ksem_destroy_nid_postfix(id) == 0);
+    int streams[2];
+    Require(pipe_nid_postfix(streams) == 0);
+    Require(ksem_post_nid_postfix(streams[0]) == -1 && Error() == 22 && ksem_destroy_nid_postfix(streams[1]) == -1 && Error() == 22);
+    Require(close_nid_postfix(streams[0]) == 0 && close_nid_postfix(streams[1]) == 0);
+}
+
+void CheckNamedKernelSemaphores() {
+    constexpr int Create = SCE_KERNEL_O_CREAT;
+    constexpr int Exclusive = SCE_KERNEL_O_EXCL;
+    const char* name = "/anyps5-ksem";
+    std::intptr_t first = -1;
+    std::intptr_t second = -1;
+    std::intptr_t third = -1;
+    Require(ksem_open_nid_postfix(&first, name, 0, 0, 0) == -1 && Error() == 2);
+    Require(ksem_open_nid_postfix(&first, name, SCE_KERNEL_O_RDWR, 0, 0) == -1 && Error() == 22);
+    Require(ksem_open_nid_postfix(&first, name, Create, 0644, 0x80000000u) == -1 && Error() == 22);
+    Require(ksem_open_nid_postfix(&first, "anyps5-ksem", Create, 0644, 1) == -1 && Error() == 22);
+    const std::string longName = "/" + std::string(1023, 'k');
+    Require(ksem_open_nid_postfix(&first, longName.c_str(), Create, 0644, 1) == -1 && Error() == 63);
+    Require(ksem_unlink_nid_postfix(longName.c_str()) == -1 && Error() == 63);
+    Require(ksem_unlink_nid_postfix(nullptr) == -1 && Error() == 14);
+    Require(ksem_open_nid_postfix(&first, name, Create, 0644, 1) == 0);
+    Require(ksem_open_nid_postfix(&second, name, Create, 0644, 7) == 0 && second != first && KernelSemaphoreValue(second) == 1);
+    Require(ksem_post_nid_postfix(second) == 0 && KernelSemaphoreValue(first) == 2);
+    Require(ksem_open_nid_postfix(&third, name, Create | Exclusive, 0644, 1) == -1 && Error() == 17);
+    Require(ksem_destroy_nid_postfix(first) == -1 && Error() == 22);
+    Require(ksem_close_nid_postfix(first) == 0 && ksem_close_nid_postfix(first) == -1 && Error() == 22);
+    Require(ksem_unlink_nid_postfix(name) == 0 && ksem_unlink_nid_postfix(name) == -1 && Error() == 2);
+    Require(ksem_unlink_nid_postfix("anyps5-ksem") == -1 && Error() == 2);
+    Require(KernelSemaphoreValue(second) == 2 && ksem_open_nid_postfix(&third, name, 0, 0, 0) == -1 && Error() == 2);
+    Require(ksem_open_nid_postfix(&third, name, Create | Exclusive, 0600, 0) == 0 && KernelSemaphoreValue(third) == 0);
+    Require(close_nid_postfix(static_cast<int>(third)) == 0);
+    Require(ksem_post_nid_postfix(third) == -1 && Error() == 22);
+    Require(ksem_open_nid_postfix(&third, name, 0, 0, 0) == 0 && KernelSemaphoreValue(third) == 0);
+    Require(ksem_close_nid_postfix(third) == 0 && ksem_close_nid_postfix(second) == 0 && ksem_unlink_nid_postfix(name) == 0);
+    std::vector<std::intptr_t> held;
+    std::intptr_t id = -1;
+    while (held.size() < 40 && ksem_init_nid_postfix(&id, 0) == 0) held.push_back(id);
+    Require(held.size() == 30 && Error() == 28);
+    Require(ksem_open_nid_postfix(&id, name, Create, 0644, 0) == -1 && Error() == 23);
+    Require(ksem_destroy_nid_postfix(held.back()) == 0);
+    held.pop_back();
+    Require(ksem_open_nid_postfix(&id, name, Create, 0644, 0) == 0 && ksem_unlink_nid_postfix(name) == 0);
+    Require(ksem_init_nid_postfix(&first, 0) == -1 && Error() == 28 && ksem_close_nid_postfix(id) == 0);
+    for (const std::intptr_t semaphore : held) Require(ksem_destroy_nid_postfix(semaphore) == 0);
+}
+
 UserUcontext g_swapMain;
 UserUcontext g_swapOther;
 volatile int g_swapPhase = 0;
@@ -347,5 +469,7 @@ int main() {
     CheckTimerArguments();
     CheckQuietTimers();
     CheckSignalTimers();
+    CheckAnonymousKernelSemaphores();
+    CheckNamedKernelSemaphores();
     return 0;
 }

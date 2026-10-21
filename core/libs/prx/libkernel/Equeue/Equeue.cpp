@@ -3,6 +3,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/File/include/ReservedDescriptor.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -689,8 +690,36 @@ int APS5_VABI sceKernelDeleteWriteEvent(KernelEqueue eq, int fd) {
 
 }
 
+namespace {
+
+struct CloseObservers {
+    std::mutex lock;
+    std::vector<GuestDescriptorObserver> observers;
+};
+
+CloseObservers& DescriptorCloseObservers() {
+    static auto* observers = new CloseObservers();
+    return *observers;
+}
+
+}
+
+extern "C" void APS5_VABI GuestWatchDescriptorClose_nid_no_patch(GuestDescriptorObserver observer) {
+    auto& registry = DescriptorCloseObservers();
+    std::lock_guard lock(registry.lock);
+    if (std::find(registry.observers.begin(), registry.observers.end(), observer) == registry.observers.end())
+        registry.observers.push_back(observer);
+}
+
 void EqueueDescriptorClosed(int descriptor) {
     KqueueDescriptorClosed(descriptor);
+    std::vector<GuestDescriptorObserver> observers;
+    {
+        auto& registry = DescriptorCloseObservers();
+        std::lock_guard lock(registry.lock);
+        observers = registry.observers;
+    }
+    for (const auto observer : observers) observer(descriptor);
     std::vector<KernelEqueueRef> owners;
     {
         std::unique_lock lock(g_equeueMutex);

@@ -2,6 +2,7 @@
 #include "prx/libkernel/Equeue/include/EdgeWatch.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/File/include/ReservedDescriptor.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include "prx/libkernel/Time/include/TimedWait.hpp"
@@ -487,6 +488,14 @@ void KqueueDescriptorClosed(int descriptor) {
 }
 
 extern "C" {
+
+int APS5_VABI GuestReserveDescriptor_nid_no_patch(void) {
+    const int descriptor = ReserveDescriptor();
+    if (descriptor >= 0) return descriptor;
+    if (errno == EMFILE) return PosixFailure(GUEST_EMFILE);
+    if (errno == ENFILE) return PosixFailure(GUEST_ENFILE);
+    throw std::runtime_error(std::string(__func__) + ": reserving a descriptor failed, errno=" + std::to_string(errno));
+}
 
 int APS5_VABI kqueue_nid_postfix() {
     const int descriptor = ReserveDescriptor();
