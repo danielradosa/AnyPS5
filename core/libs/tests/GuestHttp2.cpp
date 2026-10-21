@@ -37,8 +37,28 @@ struct Http2MemoryPoolStats {
     std::int32_t reserved;
 };
 
+struct Http2CookieStats {
+    std::size_t current_inuse_size;
+    std::uint32_t current_inuse_num;
+    std::size_t max_inuse_size;
+    std::uint32_t max_inuse_num;
+    std::uint32_t removed_num;
+    std::int32_t reserved;
+};
+
 extern "C" {
 int APS5_VABI sceHttp2GetMemoryPoolStats(int, Http2MemoryPoolStats*);
+int APS5_VABI sceHttp2GetCookieStats(int, Http2CookieStats*);
+int APS5_VABI sceHttp2SetCookieMaxNum(int, std::uint32_t);
+int APS5_VABI sceHttp2SetCookieMaxNumPerDomain(int, std::uint32_t);
+int APS5_VABI sceHttp2SetCookieMaxSize(int, std::uint32_t);
+int APS5_VABI sceHttp2AuthCacheFlush(int);
+int APS5_VABI sceHttp2RedirectCacheFlush(int);
+int APS5_VABI sceHttp2SetAuthInfoCallback(int, void*, void*);
+int APS5_VABI sceHttp2SetCookieRecvCallback(int, void*, void*);
+int APS5_VABI sceHttp2SetCookieSendCallback(int, void*, void*);
+int APS5_VABI sceHttp2SetPreSendCallback(int, void*, void*);
+int APS5_VABI sceHttp2AddCookie();
 int APS5_VABI sceHttp2SetResolveRetry(int, std::int32_t);
 int APS5_VABI sceHttp2WebSocketSetPingInterval();
 }
@@ -91,6 +111,28 @@ int main() {
     Require(sceHttp2SetRequestNoContentLength(request) == 0);
     Require(Throws([] { sceHttp2WebSocketSetPingInterval(); }));
     Require(sceHttp2CookieFlush(context) == 0);
+    Http2CookieStats cookieStats{1, 1, 1, 1, 1, 1};
+    Require(sceHttp2GetCookieStats(box, &cookieStats) == 0);
+    Require(cookieStats.current_inuse_size == 0 && cookieStats.current_inuse_num == 0 && cookieStats.max_inuse_size == 0 && cookieStats.max_inuse_num == 0 && cookieStats.removed_num == 0 && cookieStats.reserved == 0);
+    Require(sceHttp2GetCookieStats(box, nullptr) == NullPointer);
+    Require(sceHttp2GetCookieStats(context, &cookieStats) == InvalidId);
+    Require(sceHttp2GetCookieStats(discarded, &cookieStats) == InvalidId);
+    Require(sceHttp2SetCookieMaxNum(box, 16) == 0);
+    Require(sceHttp2SetCookieMaxNumPerDomain(box, 4) == 0);
+    Require(sceHttp2SetCookieMaxSize(other, 4096) == 0);
+    Require(sceHttp2SetCookieMaxNum(context, 16) == InvalidId);
+    Require(sceHttp2SetCookieMaxNumPerDomain(discarded, 4) == InvalidId);
+    Require(sceHttp2SetCookieMaxSize(tmpl, 4096) == InvalidId);
+    Require(sceHttp2AuthCacheFlush(context) == 0);
+    Require(sceHttp2RedirectCacheFlush(context) == 0);
+    Require(sceHttp2AuthCacheFlush(box) == InvalidId);
+    Require(sceHttp2RedirectCacheFlush(request) == InvalidId);
+    int callbackTag = 0;
+    Require(sceHttp2SetAuthInfoCallback(tmpl, &callbackTag, &callbackTag) == 0);
+    Require(sceHttp2SetCookieRecvCallback(request, &callbackTag, nullptr) == 0);
+    Require(sceHttp2SetCookieSendCallback(tmpl, nullptr, nullptr) == 0);
+    Require(sceHttp2SetPreSendCallback(tmpl, &callbackTag, &callbackTag) == 0);
+    Require(Throws([] { sceHttp2AddCookie(); }));
     Require(sceHttp2SendRequest(request, nullptr, 0) == static_cast<int>(0x80436063));
 
     RequireSslSetters(0, InvalidId);
@@ -203,7 +245,9 @@ int main() {
     Require(sceHttp2DeleteRequest(request) == 0);
     Require(sceKernelDeleteEqueue(eq) == 0);
     Require(sceHttp2DeleteCookieBox(box) == 0 && sceHttp2DeleteCookieBox(other) == 0);
+    Require(sceHttp2SetCookieMaxNum(box, 16) == InvalidId);
     Require(sceHttp2Term(context) == 0);
+    Require(sceHttp2AuthCacheFlush(context) == InvalidId && sceHttp2RedirectCacheFlush(context) == InvalidId);
 
     KernelEqueue templateEqueue = 0;
     Require(sceKernelCreateEqueue(&templateEqueue, "http2-template") == 0);
