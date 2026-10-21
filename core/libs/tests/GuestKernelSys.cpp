@@ -858,7 +858,7 @@ void CheckTimeAndSelect() {
     Require(SignalMask() == before);
     const KernelTimespec invalid{0, 1000000000};
     Require(pselect_nid_postfix(0, nullptr, nullptr, nullptr, &invalid, blocked.data()) == -1 && Error() == 22 && SignalMask() == before);
-    const KernelTimespec negative{0, -1};
+    const KernelTimespec negative{0, -1000};
     Require(pselect_nid_postfix(0, nullptr, nullptr, nullptr, &negative, nullptr) == -1 && Error() == 22);
     Require(pselect_nid_postfix(-1, nullptr, nullptr, nullptr, &brief, nullptr) == -1 && Error() == 22);
     int streams[2];
