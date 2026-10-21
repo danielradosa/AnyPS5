@@ -263,8 +263,9 @@ int APS5_VABI scePlayGoTerminate(void) {
     return 0;
 }
 
-int APS5_VABI scePlayGoRequestNextChunk() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI scePlayGoRequestNextChunk(int handle, const void* reserved) {
+    (void)reserved;
+    if (handle != PLAYGO_HANDLE) return SCE_PLAYGO_ERROR_BAD_HANDLE;
     return 0;
 }
 

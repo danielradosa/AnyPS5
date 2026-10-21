@@ -24,6 +24,7 @@ int APS5_VABI scePlayGoSetToDoList(int, const PlayGoToDo*, std::uint32_t);
 int APS5_VABI scePlayGoGetToDoList(int, PlayGoToDo*, std::uint32_t, std::uint32_t*);
 int APS5_VABI scePlayGoGetLocus(int, const std::uint16_t*, std::uint32_t, std::int8_t*);
 int APS5_VABI scePlayGoGetChunkId(int, std::uint16_t*, std::uint32_t, std::uint32_t*);
+int APS5_VABI scePlayGoRequestNextChunk(int, const void*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -57,6 +58,9 @@ static int CheckPackageChunkTable(const char* root) {
     Require(scePlayGoGetLocus(handle, outside, 2, loci) == badChunkId);
     std::uint32_t chunkCount = 0;
     Require(scePlayGoGetChunkId(handle, nullptr, 0, &chunkCount) == 0 && chunkCount == 3);
+    Require(scePlayGoRequestNextChunk(handle, nullptr) == 0);
+    Require(scePlayGoGetLocus(handle, known, 3, loci) == 0 && loci[0] == 3 && loci[1] == 3 && loci[2] == 3);
+    Require(scePlayGoRequestNextChunk(handle + 1, nullptr) == static_cast<int>(0x80B20009));
     Require(scePlayGoClose(handle) == 0);
     return 0;
 }
