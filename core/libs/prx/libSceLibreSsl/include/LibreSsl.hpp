@@ -80,6 +80,7 @@ struct EvpPkeyCtx;
 struct EcKey;
 struct Store;
 struct StoreCtx;
+struct VerifyParam;
 struct Pkcs8;
 struct Pubkey;
 struct Algor;

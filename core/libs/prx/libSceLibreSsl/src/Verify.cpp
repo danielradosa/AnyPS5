@@ -1410,3 +1410,51 @@ void LibreSslX509StoreCtxSetExData_nid_no_patch(StoreCtx* ctx, int idx, void* da
 }
 
 }
+
+namespace LibreSsl {
+
+VerifyParam* NewVerifyParam() {
+    return NewParam();
+}
+
+void FreeVerifyParam(VerifyParam* param) {
+    FreeParam(param);
+}
+
+int AddTrustedCertificate(Store* store, X509Object* x, const char* function) {
+    auto& target = RequireStore(store, function);
+    {
+        std::lock_guard lock(StoreMutex(&target));
+        const Stack* objects = target.objs;
+        for (int index = 0; index < objects->num; ++index) {
+            const auto* entry = reinterpret_cast<const StoreEntry*>(objects->data[index]);
+            if (entry->type == LuX509 && SameCertificate(*static_cast<const X509Object*>(entry->data), *x)) return 0;
+        }
+    }
+    return AddEntry(store, LuX509, x, X509FunctionStoreAddCert);
+}
+
+int VerifyPeerChain(Store* store, VerifyParam* overrides, X509Object* leaf, Stack* untrusted, void* verifyCallback, int sslIndex, void* ssl,
+    CertVerifyCallback callback, void* argument, int& error) {
+    std::unique_ptr<StoreCtx, void (*)(StoreCtx*)> ctx(LibreSslX509StoreCtxNew_nid_no_patch(), LibreSslX509StoreCtxFree_nid_no_patch);
+    if (!ctx) throw std::bad_alloc();
+    LibreSslX509StoreCtxInit_nid_no_patch(ctx.get(), store, leaf, untrusted);
+    auto& param = *ctx->param;
+    param.flags |= overrides->flags;
+    if (overrides->depth >= 0) param.depth = overrides->depth;
+    if (overrides->flags & FlagUseCheckTime) param.checkTime = overrides->checkTime;
+    if (overrides->purpose) param.purpose = overrides->purpose;
+    if (overrides->trust) param.trust = overrides->trust;
+    const auto& from = Id(overrides, "SSL certificate verification");
+    auto& to = Id(&param, "SSL certificate verification");
+    if (!from.hosts.empty()) to.hosts = from.hosts;
+    if (from.hostFlags) to.hostFlags = from.hostFlags;
+    if (!from.ip.empty()) to.ip = from.ip;
+    if (verifyCallback) ctx->verifyCb = verifyCallback;
+    LibreSslX509StoreCtxSetExData_nid_no_patch(ctx.get(), sslIndex, ssl);
+    const int result = callback ? callback(ctx.get(), argument) : X509_verify_cert_nid_postfix(ctx.get());
+    error = ctx->error;
+    return result;
+}
+
+}

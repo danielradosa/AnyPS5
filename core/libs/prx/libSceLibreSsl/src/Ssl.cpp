@@ -49,6 +49,8 @@ LibreSsl::Bio* APS5_VABI BIO_new_nid_postfix(const LibreSsl::BioMethod* type);
 int APS5_VABI BIO_free_nid_postfix(LibreSsl::Bio* a);
 std::int64_t APS5_VABI BIO_ctrl_nid_postfix(LibreSsl::Bio* bp, int cmd, std::int64_t larg, void* parg);
 void APS5_VABI X509_free_nid_postfix(LibreSsl::X509Object* a);
+LibreSsl::Store* APS5_VABI X509_STORE_new_nid_postfix();
+void APS5_VABI X509_STORE_free_nid_postfix(LibreSsl::Store* v);
 }
 
 namespace LibreSsl {
@@ -224,6 +226,8 @@ constexpr int StateNothing = 1;
 constexpr int StateWriting = 2;
 constexpr int StateReading = 3;
 
+constexpr int StoreCtxSslIndex = 0;
+
 constexpr int SentShutdown = 1;
 constexpr int ReceivedShutdown = 2;
 
@@ -283,12 +287,20 @@ constexpr int NpnNegotiated = 1;
 constexpr int NpnNoOverlap = 2;
 
 constexpr std::int64_t X509VOk = 0;
-constexpr std::int64_t X509VErrCertNotYetValid = 9;
-constexpr std::int64_t X509VErrCertHasExpired = 10;
-constexpr std::int64_t X509VErrDepthZeroSelfSigned = 18;
-constexpr std::int64_t X509VErrSelfSignedInChain = 19;
-constexpr std::int64_t X509VErrUnableToGetIssuerLocally = 20;
-constexpr std::int64_t VerifyUndecided = std::int64_t{1} << 40;
+constexpr int X509VErrUnableToGetIssuerCert = 2;
+constexpr int X509VErrCertSignatureFailure = 7;
+constexpr int X509VErrCertNotYetValid = 9;
+constexpr int X509VErrCertHasExpired = 10;
+constexpr int X509VErrDepthZeroSelfSigned = 18;
+constexpr int X509VErrSelfSignedInChain = 19;
+constexpr int X509VErrUnableToGetIssuerLocally = 20;
+constexpr int X509VErrUnableToVerifyLeafSignature = 21;
+constexpr int X509VErrCertRevoked = 23;
+constexpr int X509VErrInvalidCa = 24;
+constexpr int X509VErrPathLengthExceeded = 25;
+constexpr int X509VErrCertUntrusted = 27;
+constexpr int X509VErrHostnameMismatch = 62;
+constexpr int X509VErrIpAddressMismatch = 64;
 
 constexpr int TypeSocket = 5 | 0x0400 | 0x0100;
 constexpr int TypeSsl = 7 | 0x0200;
@@ -452,8 +464,9 @@ struct SslCtxState {
     int minVersion = 0;
     int maxVersion = 0;
     std::shared_ptr<const Identity> identity = std::make_shared<Identity>();
-    std::shared_ptr<const std::vector<Der>> authorities = std::make_shared<std::vector<Der>>();
     std::vector<Der> clientAuthorities;
+    CertVerifyCallback certVerifyCallback = nullptr;
+    void* certVerifyArgument = nullptr;
     std::vector<X509Object*> extraCertificates;
     std::map<int, void*> exData;
     ServernameCallback servernameCallback = nullptr;
@@ -500,10 +513,10 @@ struct SslState {
     unsigned char masterSecret[48]{};
     bool haveRandoms = false;
     bool reused = false;
-    std::uint32_t verifyFlags = 0;
     std::int64_t verifyResult = X509VOk;
+    CertVerifyCallback certVerifyCallback = nullptr;
+    void* certVerifyArgument = nullptr;
     std::exception_ptr pending;
-    std::shared_ptr<const std::vector<Der>> authorities;
     std::vector<Der> clientAuthorities;
     std::vector<int> suiteList;
     std::vector<std::uint16_t> groupList;
@@ -707,54 +720,66 @@ int ReceiveCallback(void* argument, unsigned char* data, std::size_t length) {
     }
 }
 
-bool SelfIssued(const mbedtls_x509_crt& certificate) {
-    return certificate.issuer_raw.len == certificate.subject_raw.len &&
-        std::memcmp(certificate.issuer_raw.p, certificate.subject_raw.p, certificate.subject_raw.len) == 0;
+using StoreReference = std::unique_ptr<Store, void (APS5_VABI*)(Store*)>;
+
+StoreReference AcquireStore(SslCtxObject& ctx, const char* function) {
+    std::lock_guard lock(ctx.internal->mutex);
+    auto* store = static_cast<Store*>(ctx.certStore);
+    if (!store) throw std::invalid_argument(std::string(function) + ": the SSL_CTX has no X509_STORE (SSL_CTX_set_cert_store with NULL); what LibreSSL does then is not documented");
+    LibreSslX509StoreUpRef_nid_no_patch(store);
+    return StoreReference(store, X509_STORE_free_nid_postfix);
 }
+
+std::uint32_t AlertFlags(int error) {
+    switch (error) {
+    case X509VErrCertNotYetValid:
+        return MBEDTLS_X509_BADCERT_FUTURE;
+    case X509VErrCertHasExpired:
+        return MBEDTLS_X509_BADCERT_EXPIRED;
+    case X509VErrCertRevoked:
+        return MBEDTLS_X509_BADCERT_REVOKED;
+    case X509VErrHostnameMismatch:
+    case X509VErrIpAddressMismatch:
+        return MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    case X509VErrUnableToGetIssuerCert:
+    case X509VErrCertSignatureFailure:
+    case X509VErrDepthZeroSelfSigned:
+    case X509VErrSelfSignedInChain:
+    case X509VErrUnableToGetIssuerLocally:
+    case X509VErrUnableToVerifyLeafSignature:
+    case X509VErrInvalidCa:
+    case X509VErrPathLengthExceeded:
+    case X509VErrCertUntrusted:
+        return MBEDTLS_X509_BADCERT_NOT_TRUSTED;
+    default:
+        return MBEDTLS_X509_BADCERT_OTHER;
+    }
+}
+
+std::shared_ptr<PeerChain> BuildPeer(const mbedtls_x509_crt* certificate, bool includeLeaf);
 
 int VerifyCallbackHook(void* argument, mbedtls_x509_crt* certificate, int depth, std::uint32_t* flags) {
     auto& ssl = *static_cast<SslObject*>(argument);
     auto& state = *ssl.internal;
-    if (depth == 0) *flags &= ~static_cast<std::uint32_t>(MBEDTLS_X509_BADCERT_CN_MISMATCH);
-    state.verifyFlags |= *flags;
-    if (state.verifyCallback && !state.pending) {
-        try {
-            throw std::invalid_argument("SSL: verify callbacks need X509_STORE_CTX objects, which this build does not create (libSceLibreSsl X509 store work)");
-        } catch (...) {
-            state.pending = std::current_exception();
-        }
+    *flags = 0;
+    if (depth != 0 || state.pending) return 0;
+    try {
+        const auto store = AcquireStore(*ssl.ctx, "SSL certificate verification");
+        const auto peer = BuildPeer(certificate, false);
+        if (!peer->leaf) throw std::runtime_error("SSL: the peer certificate Mbed TLS accepted does not convert to an X509 object");
+        int error = 0;
+        const int result = VerifyPeerChain(store.get(), static_cast<VerifyParam*>(ssl.param), peer->leaf, &peer->stack, reinterpret_cast<void*>(state.verifyCallback),
+            StoreCtxSslIndex, &ssl, state.certVerifyCallback, state.certVerifyArgument, error);
+        state.verifyResult = error;
+        ssl.verifyResult = error;
+        if (result > 0 || !(ssl.verifyMode & VerifyPeer)) return 0;
+        if (state.role == 2 && !(ssl.verifyMode & VerifyFailIfNoPeerCert)) return MBEDTLS_ERR_X509_FATAL_ERROR;
+        *flags = AlertFlags(error);
+        return 0;
+    } catch (...) {
+        state.pending = std::current_exception();
         return MBEDTLS_ERR_X509_FATAL_ERROR;
     }
-    if (depth != 0) return 0;
-    const std::uint32_t all = state.verifyFlags;
-    constexpr std::uint32_t known = MBEDTLS_X509_BADCERT_NOT_TRUSTED | MBEDTLS_X509_BADCERT_EXPIRED | MBEDTLS_X509_BADCERT_FUTURE;
-    int kinds = 0;
-    std::int64_t result = X509VOk;
-    if (all & MBEDTLS_X509_BADCERT_NOT_TRUSTED) {
-        ++kinds;
-        const mbedtls_x509_crt* top = certificate;
-        int length = 0;
-        for (const auto* entry = certificate; entry; entry = entry->next) {
-            top = entry;
-            ++length;
-        }
-        if (length == 1 && SelfIssued(*certificate)) result = X509VErrDepthZeroSelfSigned;
-        else if (SelfIssued(*top)) result = X509VErrSelfSignedInChain;
-        else result = X509VErrUnableToGetIssuerLocally;
-    }
-    if (all & MBEDTLS_X509_BADCERT_EXPIRED) {
-        ++kinds;
-        result = X509VErrCertHasExpired;
-    }
-    if (all & MBEDTLS_X509_BADCERT_FUTURE) {
-        ++kinds;
-        result = X509VErrCertNotYetValid;
-    }
-    if (kinds > 1 || (all & ~known)) result = VerifyUndecided;
-    state.verifyResult = result;
-    ssl.verifyResult = result == VerifyUndecided ? -1 : result;
-    if (result != X509VOk && state.role == 2 && (ssl.verifyMode & VerifyPeer) && !(ssl.verifyMode & VerifyFailIfNoPeerCert)) return MBEDTLS_ERR_X509_FATAL_ERROR;
-    return 0;
 }
 
 void ExportKeys(void* argument, mbedtls_ssl_key_export_type type, const unsigned char* secret, std::size_t secretLength,
@@ -1175,11 +1200,7 @@ int Configure(SslObject& ssl) {
     {
         auto& ctx = *ssl.ctx->internal;
         std::lock_guard lock(ctx.mutex);
-        state.authorities = ctx.authorities;
         state.clientAuthorities = ctx.clientAuthorities;
-    }
-    for (const auto& der : *state.authorities) {
-        if (mbedtls_x509_crt_parse_der(&state.caChain, der.data(), der.size()) != 0) throw std::runtime_error("SSL: a loaded CA certificate no longer parses");
     }
     mbedtls_ssl_conf_ca_chain(&state.config, &state.caChain, nullptr);
     if (server) {
@@ -1401,6 +1422,7 @@ void Unref(SslCtxObject* ctx) {
     const int left = ctx->internal->references.fetch_sub(1) - 1;
     ctx->references = left;
     if (left > 0) return;
+    X509_STORE_free_nid_postfix(static_cast<Store*>(ctx->certStore));
     delete ctx->internal;
     delete ctx;
 }
@@ -1413,6 +1435,8 @@ void CopyFromCtx(SslObject& ssl, SslCtxObject& ctx) {
     state.mode = source.mode;
     state.quietShutdown = source.quietShutdown;
     state.verifyCallback = source.verifyCallback;
+    state.certVerifyCallback = source.certVerifyCallback;
+    state.certVerifyArgument = source.certVerifyArgument;
     state.ciphers = source.ciphers;
     state.groups = source.groups;
     state.alpn = source.alpn;
@@ -1600,6 +1624,7 @@ SslCtxObject* APS5_VABI SSL_CTX_new_nid_postfix(const SslMethodObject* meth) {
     ctx->references = 1;
     ctx->verifyMode = VerifyNone;
     ctx->internal = new SslCtxState();
+    ctx->certStore = X509_STORE_new_nid_postfix();
     return ctx;
 }
 
@@ -1921,13 +1946,26 @@ int APS5_VABI SSL_CTX_load_verify_mem_nid_postfix(SslCtxObject* ctx, void* buf, 
     bool malformed = false;
     auto objects = PemObjects(static_cast<const unsigned char*>(buf), static_cast<std::size_t>(len), "CERTIFICATE", malformed);
     if (objects.empty() || malformed) return 0;
+    std::vector<X509Object*> certificates;
+    const auto release = [&] {
+        for (auto* certificate : certificates) X509_free_nid_postfix(certificate);
+    };
     for (const auto& object : objects) {
-        if (!ValidCertificate(object)) return 0;
+        auto* certificate = ValidCertificate(object) ? X509FromDer(object.data(), object.size()) : nullptr;
+        if (!certificate) {
+            release();
+            return 0;
+        }
+        certificates.push_back(certificate);
     }
-    std::lock_guard lock(context.internal->mutex);
-    auto updated = std::make_shared<std::vector<Der>>(*context.internal->authorities);
-    updated->insert(updated->end(), objects.begin(), objects.end());
-    context.internal->authorities = std::move(updated);
+    try {
+        const auto store = AcquireStore(context, __func__);
+        for (auto* certificate : certificates) AddTrustedCertificate(store.get(), certificate, __func__);
+    } catch (...) {
+        release();
+        throw;
+    }
+    release();
     return 1;
 }
 
@@ -1967,6 +2005,7 @@ SslObject* APS5_VABI SSL_new_nid_postfix(SslCtxObject* ctx) {
     ssl->verifyResult = X509VOk;
     ssl->tlsextStatusType = -1;
     ssl->server = Info(context.method).server ? 1 : 0;
+    ssl->param = NewVerifyParam();
     context.references = context.internal->references.fetch_add(1) + 1;
     CopyFromCtx(*ssl, context);
     return ssl;
@@ -1981,6 +2020,7 @@ void APS5_VABI SSL_free_nid_postfix(SslObject* ssl) {
     ReleaseSession(ssl->session);
     auto* ctx = ssl->ctx;
     delete ssl->internal;
+    FreeVerifyParam(static_cast<VerifyParam*>(ssl->param));
     delete[] ssl->tlsextHostname;
     delete ssl;
     Unref(ctx);
@@ -2279,10 +2319,7 @@ void APS5_VABI SSL_set_verify_nid_postfix(SslObject* s, int mode, VerifyCallback
 }
 
 std::int64_t APS5_VABI SSL_get_verify_result_nid_postfix(const SslObject* ssl) {
-    auto& object = RequireSsl(const_cast<SslObject*>(ssl), __func__);
-    if (object.internal->verifyResult == VerifyUndecided)
-        throw std::invalid_argument("SSL_get_verify_result: the peer chain has several problems or one without a documented X509_V_ERR code");
-    return object.verifyResult;
+    return RequireSsl(const_cast<SslObject*>(ssl), __func__).verifyResult;
 }
 
 X509Object* APS5_VABI SSL_get_peer_certificate_nid_postfix(const SslObject* s) {
@@ -2428,6 +2465,39 @@ std::size_t LibreSslSslGetClientRandom_nid_no_patch(const SslObject* ssl, unsign
     const std::size_t count = std::min(outlen, sizeof(object.internal->clientRandom));
     std::memcpy(out, object.internal->clientRandom, count);
     return count;
+}
+
+Store* APS5_VABI SSL_CTX_get_cert_store_nid_postfix(const SslCtxObject* ctx) {
+    auto& context = RequireCtx(const_cast<SslCtxObject*>(ctx), __func__);
+    std::lock_guard lock(context.internal->mutex);
+    return static_cast<Store*>(context.certStore);
+}
+
+void APS5_VABI SSL_CTX_set_cert_store_nid_postfix(SslCtxObject* ctx, Store* store) {
+    auto& context = RequireCtx(ctx, __func__);
+    Store* previous = nullptr;
+    {
+        std::lock_guard lock(context.internal->mutex);
+        previous = static_cast<Store*>(context.certStore);
+        if (previous == store) return;
+        context.certStore = store;
+    }
+    X509_STORE_free_nid_postfix(previous);
+}
+
+void APS5_VABI SSL_CTX_set_cert_verify_callback_nid_postfix(SslCtxObject* ctx, CertVerifyCallback cb, void* arg) {
+    auto& context = RequireCtx(ctx, __func__);
+    std::lock_guard lock(context.internal->mutex);
+    context.internal->certVerifyCallback = cb;
+    context.internal->certVerifyArgument = arg;
+}
+
+VerifyParam* APS5_VABI SSL_get0_param_nid_postfix(SslObject* ssl) {
+    return static_cast<VerifyParam*>(RequireSsl(ssl, __func__).param);
+}
+
+int APS5_VABI SSL_get_ex_data_X509_STORE_CTX_idx_nid_postfix() {
+    return StoreCtxSslIndex;
 }
 
 int APS5_VABI SSL_get_ex_new_index_nid_postfix(std::int64_t, void*, void* new_func, void* dup_func, void* free_func) {

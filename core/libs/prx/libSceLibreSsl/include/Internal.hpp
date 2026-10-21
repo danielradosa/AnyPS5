@@ -76,6 +76,12 @@ void ObjectsCleanup();
 X509Object* X509FromDer(const unsigned char* der, std::size_t length);
 const mbedtls_x509_crt& X509Certificate(const X509Object& x);
 bool DigestCopyFinal(const EvpMdCtx& ctx, unsigned char* out, const char* function);
+VerifyParam* NewVerifyParam();
+void FreeVerifyParam(VerifyParam* param);
+int AddTrustedCertificate(Store* store, X509Object* x, const char* function);
+using CertVerifyCallback = int (APS5_VABI*)(StoreCtx* ctx, void* arg);
+int VerifyPeerChain(Store* store, VerifyParam* overrides, X509Object* leaf, Stack* untrusted, void* verifyCallback, int sslIndex, void* ssl,
+    CertVerifyCallback callback, void* argument, int& error);
 
 }
 
