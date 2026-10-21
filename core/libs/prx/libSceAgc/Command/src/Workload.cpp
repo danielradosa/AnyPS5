@@ -6,10 +6,11 @@
 namespace Agc::Command {
 
 std::uint32_t* WriteWorkloadsActive(CommandBuffer* buffer, bool compute, std::uint32_t streamId, const std::uint32_t* workloadIds, std::uint32_t workloadCount, const char* function) {
-    const auto mask = AgcDriver::Workload::ActiveMask(workloadIds, workloadCount);
-    if (mask == 0) return nullptr;
+    if (workloadIds == nullptr || workloadCount == 0 || workloadCount > AgcDriver::Workload::MaxWorkloadId) return nullptr;
     const auto slot = AgcDriverWorkloadStreamSlot_nid_no_patch(streamId);
     if (slot == 0) return nullptr;
+    const auto mask = AgcDriver::Workload::ActiveMask(workloadIds, workloadCount);
+    if (mask == 0) return nullptr;
     auto* packet = Allocate(buffer, AgcDriver::Workload::ActiveWords, function);
     AgcDriver::Workload::WriteActive(packet, compute, streamId, slot, mask);
     return packet;
