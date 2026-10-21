@@ -2448,9 +2448,8 @@ int APS5_VABI sceNetShowRoute6(void) {
     return 0;
 }
 
-int APS5_VABI sceNetShowRoute6WithMemory(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI sceNetShowRoute6WithMemory(int memid) {
+    return sceNetShowRouteWithMemory(memid);
 }
 
 int APS5_VABI sceNetAllocateAllRouteInfo(void) {
