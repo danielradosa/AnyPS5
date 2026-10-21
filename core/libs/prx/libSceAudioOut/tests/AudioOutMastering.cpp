@@ -1,8 +1,10 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -10,6 +12,7 @@ extern "C" {
 int APS5_VABI sceAudioOutMasteringInit(std::uint32_t);
 int APS5_VABI sceAudioOutMasteringTerm();
 int APS5_VABI sceAudioOutMasteringSetParam(const AudioOut2MasteringParamsHeader*, std::uint32_t);
+int APS5_VABI sceAudioOutMasteringGetState(AudioOut2MasteringStatesHeader*);
 int APS5_VABI sceAudioOut2MasteringInit(std::uint32_t);
 int APS5_VABI sceAudioOut2MasteringTerm();
 int APS5_VABI sceAudioOut2MasteringSetParam(const void*, std::uint32_t, std::uint32_t);
@@ -35,6 +38,7 @@ namespace {
 
 constexpr int invalidApiParam = static_cast<int>(0x80260201);
 constexpr int notInitialized = static_cast<int>(0x80260203);
+constexpr int invalidStatesId = static_cast<int>(0x80260204);
 constexpr int audioOut2NotInitialized = static_cast<int>(0x80268203);
 const AudioOut2MasteringParamsHeader params{1};
 
@@ -42,6 +46,37 @@ void TestBeforeInit() {
     Require(sceAudioOutMasteringSetParam(&params, 0) == notInitialized, "parameters before initialization must be refused");
     Require(sceAudioOutMasteringTerm() == 0, "termination without an initialization must be accepted");
     Require(sceAudioOutMasteringSetParam(&params, 0) == notInitialized, "an unmatched termination must not initialize");
+    AudioOut2MasteringStatesHeader header{1};
+    Require(sceAudioOutMasteringGetState(&header) == notInitialized, "states before initialization must be refused");
+}
+
+struct StatesBuffer {
+    AudioOut2MasteringStates states;
+    unsigned char after[16];
+};
+
+void TestGetState() {
+    Require(sceAudioOutMasteringGetState(nullptr) == invalidApiParam, "a null states block must be refused");
+    StatesBuffer buffer;
+    std::memset(&buffer, 0xA5, sizeof(buffer));
+    buffer.states.states_header.states_id = 1;
+    Require(sceAudioOutMasteringGetState(&buffer.states.states_header) == 0, "the default states must be returned");
+    Require(buffer.states.states_header.states_id == 1, "the states id must be kept");
+    Require(buffer.states.reserved[0] == 0 && buffer.states.reserved[1] == 0 && buffer.states.reserved[2] == 0, "the reserved words must be cleared");
+    Require(buffer.states.compressor_states.descriptor.id == 0x01010001 && buffer.states.compressor_states.descriptor.size == 0xD0, "the compressor descriptor must be written");
+    Require(buffer.states.limiter_states.descriptor.id == 0x01010003 && buffer.states.limiter_states.descriptor.size == 0x70, "the limiter descriptor must be written");
+    Require(buffer.states.compressor_states.input_rms[0][0] == 0.0f && buffer.states.compressor_states.compression_coeff[2][7] == 0.0f, "the compressor meters must read 0");
+    Require(buffer.states.limiter_states.input_peak[0] == 0.0f && buffer.states.limiter_states.gain_peak[7] == 0.0f, "the limiter meters must read 0");
+    for (unsigned char byte : buffer.after) Require(byte == 0xA5, "nothing past the default states may be written");
+
+    StatesBuffer untouched;
+    std::memset(&untouched, 0xA5, sizeof(untouched));
+    untouched.states.states_header.states_id = 3;
+    StatesBuffer expected = untouched;
+    Require(sceAudioOutMasteringGetState(&untouched.states.states_header) == invalidStatesId, "an unknown states id must be refused");
+    Require(std::memcmp(&untouched, &expected, sizeof(untouched)) == 0, "a refused states id must leave the block alone");
+    untouched.states.states_header.states_id = 2;
+    Require(ThrowsRuntimeError([&] { sceAudioOutMasteringGetState(&untouched.states.states_header); }), "states id 2 is not modelled for this call");
 }
 
 void TestInit() {
@@ -76,6 +111,7 @@ int main() {
     TestBeforeInit();
     TestInit();
     TestSetParam();
+    TestGetState();
     TestTerm();
     return 0;
 }
