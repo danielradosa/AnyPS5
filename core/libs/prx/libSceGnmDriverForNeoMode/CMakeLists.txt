@@ -1,0 +1,16 @@
+add_library(libSceGnmDriverForNeoMode SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../libSceGnmDriver/src/Commands.cpp)
+target_include_directories(libSceGnmDriverForNeoMode PRIVATE ${LIBS_INCLUDE_DIR})
+target_link_libraries(libSceGnmDriverForNeoMode PRIVATE libSceGnmDriver)
+configure_windows_unwind(libSceGnmDriverForNeoMode)
+
+if(BUILD_TESTING)
+    add_test_executable(guest_gnm_driver_neo_mode_tests ${LIBS_INCLUDE_DIR}/tests/GuestGnmDriverForNeoMode.cpp)
+    target_include_directories(guest_gnm_driver_neo_mode_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_gnm_driver_neo_mode_tests PRIVATE libSceGnmDriverForNeoMode libc)
+    configure_windows_unwind(guest_gnm_driver_neo_mode_tests)
+    add_test(NAME guest_gnm_driver_neo_mode COMMAND guest_gnm_driver_neo_mode_tests)
+    if(WIN32)
+        set_tests_properties(guest_gnm_driver_neo_mode PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceGnmDriverForNeoMode>")
+    endif()
+endif()
