@@ -6,8 +6,10 @@
 #include <libusb.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <climits>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -29,6 +31,7 @@ constexpr std::uint8_t TRANSFER_TYPE_BULK = 2;
 constexpr std::uint8_t TRANSFER_TYPE_INTERRUPT = 3;
 constexpr std::int32_t CONTROL_SETUP_SIZE = 8;
 constexpr std::uint8_t SUPPORTED_TRANSFER_FLAGS = LIBUSB_TRANSFER_SHORT_NOT_OK | LIBUSB_TRANSFER_ADD_ZERO_PACKET;
+constexpr std::int64_t HANDLE_EVENTS_SECONDS = 60;
 
 struct UsbdTimeval {
     std::int64_t seconds;
@@ -82,6 +85,52 @@ struct UsbdState {
 UsbdState& State() {
     static auto* state = new UsbdState();
     return *state;
+}
+
+struct UsbdLocalEvents {
+    std::mutex eventsLock;
+    std::mutex waitersLock;
+    std::condition_variable_any waiters;
+    std::atomic<bool> handlerActive{false};
+};
+
+UsbdLocalEvents& LocalEvents() {
+    static auto* events = new UsbdLocalEvents();
+    return *events;
+}
+
+bool LocalTryLockEvents(UsbdLocalEvents& events) {
+    if (!events.eventsLock.try_lock()) return false;
+    events.handlerActive = true;
+    return true;
+}
+
+void LocalUnlockEvents(UsbdLocalEvents& events) {
+    events.handlerActive = false;
+    events.eventsLock.unlock();
+    std::lock_guard waiters(events.waitersLock);
+    events.waiters.notify_all();
+}
+
+libusb_context* Context() {
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    return state.context;
+}
+
+bool ValidTimeout(const UsbdTimeval* timeout) {
+    return timeout != nullptr && timeout->seconds >= 0 && timeout->microseconds >= 0 && timeout->microseconds < 1000000;
+}
+
+std::chrono::microseconds GuestDuration(const UsbdTimeval& timeout) {
+    return std::chrono::seconds(timeout.seconds) + std::chrono::microseconds(timeout.microseconds);
+}
+
+timeval HostTimeval(const UsbdTimeval& timeout) {
+    timeval host{};
+    host.tv_sec = static_cast<decltype(host.tv_sec)>(timeout.seconds);
+    host.tv_usec = static_cast<decltype(host.tv_usec)>(timeout.microseconds);
+    return host;
 }
 
 void* g_emptyDeviceList[1] = {nullptr};
@@ -207,20 +256,13 @@ void APS5_VABI sceUsbdFreeDeviceList(void** list, std::int32_t unrefDevices) {
 }
 
 std::int32_t APS5_VABI sceUsbdHandleEventsTimeout(const UsbdTimeval* timeout) {
-    if (timeout == nullptr || timeout->seconds < 0 || timeout->microseconds < 0 || timeout->microseconds >= 1000000) return SCE_USBD_ERROR_INVALID_ARG;
-    libusb_context* context;
-    {
-        auto& state = State();
-        std::lock_guard lock(state.mutex);
-        context = state.context;
-    }
+    if (!ValidTimeout(timeout)) return SCE_USBD_ERROR_INVALID_ARG;
+    libusb_context* context = Context();
     if (context == nullptr) {
-        std::this_thread::sleep_for(std::chrono::seconds(timeout->seconds) + std::chrono::microseconds(timeout->microseconds));
+        std::this_thread::sleep_for(GuestDuration(*timeout));
         return 0;
     }
-    timeval host{};
-    host.tv_sec = static_cast<decltype(host.tv_sec)>(timeout->seconds);
-    host.tv_usec = static_cast<decltype(host.tv_usec)>(timeout->microseconds);
+    timeval host = HostTimeval(*timeout);
     return ToGuestError(libusb_handle_events_timeout_completed(context, &host, nullptr));
 }
 
@@ -394,7 +436,10 @@ void APS5_VABI sceUsbdClose(void* deviceHandle) {
     std::lock_guard lock(state.mutex);
     auto* host = static_cast<libusb_device_handle*>(deviceHandle);
     if (state.handles.erase(host) == 0) throw std::runtime_error(UnopenedHandle(__func__));
+    libusb_device* device = libusb_get_device(host);
     libusb_close(host);
+    DropDeviceReference(state, device);
+    libusb_unref_device(device);
 }
 
 std::int32_t APS5_VABI sceUsbdControlTransfer(void* deviceHandle, std::uint8_t requestType, std::uint8_t request, std::uint16_t value, std::uint16_t index, std::uint8_t* data, std::uint16_t length, std::uint32_t timeout) {
@@ -462,11 +507,13 @@ std::int32_t APS5_VABI sceUsbdOpen(void* device, void** deviceHandle) {
     if (deviceHandle == nullptr) return SCE_USBD_ERROR_INVALID_ARG;
     *deviceHandle = nullptr;
     libusb_device_handle* host = nullptr;
-    const int result = libusb_open(KnownDevice(device, __func__), &host);
+    auto* known = KnownDevice(device, __func__);
+    const int result = libusb_open(known, &host);
     if (result != 0) return ToGuestError(result);
     auto& state = State();
     std::lock_guard lock(state.mutex);
     state.handles.insert(host);
+    AddDeviceReference(state, libusb_ref_device(known));
     *deviceHandle = host;
     return 0;
 }
@@ -543,104 +590,185 @@ void APS5_VABI sceUsbdUnrefDevice(void* device) {
 }
 
 std::int32_t APS5_VABI sceUsbdClearHalt(void* deviceHandle, std::uint8_t endpoint) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (deviceHandle == nullptr) return SCE_USBD_ERROR_INVALID_ARG;
+    return ToGuestError(libusb_clear_halt(KnownHandle(deviceHandle, __func__), endpoint));
 }
 
 std::int32_t APS5_VABI sceUsbdDetachKernelDriver(void* deviceHandle, int interfaceNumber) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (deviceHandle == nullptr) return SCE_USBD_ERROR_INVALID_ARG;
+    return ToGuestError(libusb_detach_kernel_driver(KnownHandle(deviceHandle, __func__), interfaceNumber));
 }
 
 std::int32_t APS5_VABI sceUsbdEventHandlerActive() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    libusb_context* context = Context();
+    if (context == nullptr) return LocalEvents().handlerActive ? 1 : 0;
+    return libusb_event_handler_active(context);
 }
 
 std::int32_t APS5_VABI sceUsbdGetConfigDescriptorByValue(void* device, std::uint8_t configurationValue, void** config) {
-    NotImplemented_nid_no_patch(__func__);
+    if (device == nullptr || config == nullptr) return SCE_USBD_ERROR_INVALID_ARG;
+    libusb_config_descriptor* host = nullptr;
+    const int result = libusb_get_config_descriptor_by_value(KnownDevice(device, __func__), configurationValue, &host);
+    *config = nullptr;
+    if (result != 0) return ToGuestError(result);
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    state.configs.insert(host);
+    *config = host;
     return 0;
 }
 
 std::int32_t APS5_VABI sceUsbdGetConfiguration(void* deviceHandle, std::int32_t* configuration) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (deviceHandle == nullptr || configuration == nullptr) return SCE_USBD_ERROR_INVALID_ARG;
+    int host = 0;
+    const int result = libusb_get_configuration(KnownHandle(deviceHandle, __func__), &host);
+    if (result == 0) *configuration = host;
+    return ToGuestError(result);
 }
 
 std::int32_t APS5_VABI sceUsbdGetDescriptor(void* deviceHandle, std::uint8_t descriptorType, std::uint8_t descriptorIndex, std::uint8_t* data, std::int32_t length) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (deviceHandle == nullptr || data == nullptr || length < 1) return SCE_USBD_ERROR_INVALID_ARG;
+    auto* handle = KnownHandle(deviceHandle, __func__);
+    if (length > 65535) length = 65535;
+    return ToGuestError(libusb_get_descriptor(handle, descriptorType, descriptorIndex, data, length));
 }
 
 void* APS5_VABI sceUsbdGetDevice(void* deviceHandle) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (deviceHandle == nullptr) return nullptr;
+    return libusb_get_device(KnownHandle(deviceHandle, __func__));
 }
 
 int APS5_VABI sceUsbdGetDeviceSpeed(void* device) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (device == nullptr) return LIBUSB_SPEED_UNKNOWN;
+    return libusb_get_device_speed(KnownDevice(device, __func__));
 }
 
 std::int32_t APS5_VABI sceUsbdGetMaxIsoPacketSize(void* device, std::uint8_t endpoint) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (device == nullptr) throw std::runtime_error(std::string(__func__) + ": null device");
+    return ToGuestError(libusb_get_max_iso_packet_size(KnownDevice(device, __func__), endpoint));
 }
 
 std::int32_t APS5_VABI sceUsbdGetMaxPacketSize(void* device, std::uint8_t endpoint) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (device == nullptr) return ToGuestError(LIBUSB_ERROR_NO_DEVICE);
+    return ToGuestError(libusb_get_max_packet_size(KnownDevice(device, __func__), endpoint));
 }
 
 std::int32_t APS5_VABI sceUsbdGetStringDescriptorAscii(void* deviceHandle, std::uint8_t descriptorIndex, std::uint8_t* data, std::int32_t length) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (deviceHandle == nullptr || data == nullptr || length < 1) return SCE_USBD_ERROR_INVALID_ARG;
+    auto* handle = KnownHandle(deviceHandle, __func__);
+    if (length > 65535) length = 65535;
+    data[0] = 0;
+    return ToGuestError(libusb_get_string_descriptor_ascii(handle, descriptorIndex, data, length));
 }
 
 std::int32_t APS5_VABI sceUsbdHandleEvents() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    libusb_context* context = Context();
+    if (context != nullptr) return ToGuestError(libusb_handle_events(context));
+    auto& events = LocalEvents();
+    const auto pass = std::chrono::seconds(HANDLE_EVENTS_SECONDS);
+    while (true) {
+        if (LocalTryLockEvents(events)) {
+            std::this_thread::sleep_for(pass);
+            LocalUnlockEvents(events);
+            return 0;
+        }
+        std::unique_lock waiters(events.waitersLock);
+        if (!events.handlerActive) continue;
+        events.waiters.wait_for(waiters, pass);
+        return 0;
+    }
 }
 
-std::int32_t APS5_VABI sceUsbdHandleEventsLocked(UsbdTimeval* timeout) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceUsbdHandleEventsLocked(const UsbdTimeval* timeout) {
+    if (!ValidTimeout(timeout)) return SCE_USBD_ERROR_INVALID_ARG;
+    libusb_context* context = Context();
+    if (context == nullptr) {
+        std::this_thread::sleep_for(GuestDuration(*timeout));
+        return 0;
+    }
+    timeval host = HostTimeval(*timeout);
+    return ToGuestError(libusb_handle_events_locked(context, &host));
 }
 
 void APS5_VABI sceUsbdLockEventWaiters() {
-    NotImplemented_nid_no_patch(__func__);
+    libusb_context* context = Context();
+    if (context == nullptr) {
+        LocalEvents().waitersLock.lock();
+        return;
+    }
+    libusb_lock_event_waiters(context);
 }
 
 void APS5_VABI sceUsbdLockEvents() {
-    NotImplemented_nid_no_patch(__func__);
+    libusb_context* context = Context();
+    if (context == nullptr) {
+        auto& events = LocalEvents();
+        events.eventsLock.lock();
+        events.handlerActive = true;
+        return;
+    }
+    libusb_lock_events(context);
 }
 
 void* APS5_VABI sceUsbdOpenDeviceWithVidPid(std::uint16_t vendorId, std::uint16_t productId) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    libusb_context* context = Context();
+    if (context == nullptr) return nullptr;
+    libusb_device_handle* host = libusb_open_device_with_vid_pid(context, vendorId, productId);
+    if (host == nullptr) return nullptr;
+    auto& state = State();
+    std::lock_guard lock(state.mutex);
+    state.handles.insert(host);
+    AddDeviceReference(state, libusb_ref_device(libusb_get_device(host)));
+    return host;
 }
 
 std::int32_t APS5_VABI sceUsbdSetInterfaceAltSetting(void* deviceHandle, int interfaceNumber, int alternateSetting) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (deviceHandle == nullptr) return SCE_USBD_ERROR_INVALID_ARG;
+    return ToGuestError(libusb_set_interface_alt_setting(KnownHandle(deviceHandle, __func__), interfaceNumber, alternateSetting));
 }
 
 std::int32_t APS5_VABI sceUsbdTryLockEvents() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    libusb_context* context = Context();
+    if (context == nullptr) return LocalTryLockEvents(LocalEvents()) ? 0 : 1;
+    return libusb_try_lock_events(context);
 }
 
 void APS5_VABI sceUsbdUnlockEventWaiters() {
-    NotImplemented_nid_no_patch(__func__);
+    libusb_context* context = Context();
+    if (context == nullptr) {
+        LocalEvents().waitersLock.unlock();
+        return;
+    }
+    libusb_unlock_event_waiters(context);
 }
 
 void APS5_VABI sceUsbdUnlockEvents() {
-    NotImplemented_nid_no_patch(__func__);
+    libusb_context* context = Context();
+    if (context == nullptr) {
+        LocalUnlockEvents(LocalEvents());
+        return;
+    }
+    libusb_unlock_events(context);
 }
 
-std::int32_t APS5_VABI sceUsbdWaitForEvent(UsbdTimeval* timeout) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int32_t APS5_VABI sceUsbdWaitForEvent(const UsbdTimeval* timeout) {
+    if (timeout != nullptr && !ValidTimeout(timeout)) return SCE_USBD_ERROR_INVALID_ARG;
+    libusb_context* context = Context();
+    if (context == nullptr) {
+        auto& events = LocalEvents();
+        std::unique_lock waiters(events.waitersLock, std::adopt_lock);
+        std::cv_status status = std::cv_status::no_timeout;
+        if (timeout == nullptr) {
+            events.waiters.wait(waiters);
+        } else {
+            status = events.waiters.wait_for(waiters, GuestDuration(*timeout));
+        }
+        waiters.release();
+        return status == std::cv_status::timeout ? 1 : 0;
+    }
+    if (timeout == nullptr) return ToGuestError(libusb_wait_for_event(context, nullptr));
+    timeval host = HostTimeval(*timeout);
+    return ToGuestError(libusb_wait_for_event(context, &host));
 }
 
 }
