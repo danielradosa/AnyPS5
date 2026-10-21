@@ -189,6 +189,7 @@ std::unordered_set<const Asn1String*>& StandaloneIntegers() {
 }
 
 X509Object::~X509Object() {
+    ReleaseX509Extras(*this);
     std::lock_guard lock(StackMutex());
     for (const auto& stack : arena.stacks) OwnedStacks().erase(stack.get());
     mbedtls_x509_crt_free(&crt);
@@ -323,6 +324,7 @@ X509Object* Build(const unsigned char* der, std::size_t length) {
     ParseTbs(*x);
     x->info.validity = &x->validity;
     x->certInfo = &x->info;
+    CompleteX509(*x);
     {
         std::lock_guard lock(StackMutex());
         for (const auto& stack : arena.stacks) OwnedStacks().insert(stack.get());
