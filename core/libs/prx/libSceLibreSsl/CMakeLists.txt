@@ -11,7 +11,12 @@ add_library(libSceLibreSsl SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/E
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Objects.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Text.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Ssl.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Conf.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Conf.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Rsa.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ec.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Pkey.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Asn1.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/PemKey.cpp)
 target_include_directories(libSceLibreSsl PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(libSceLibreSsl PRIVATE mbedtls mbedx509 mbedcrypto)
 set_target_properties(libSceLibreSsl PROPERTIES VISIBILITY_INLINES_HIDDEN ON)
@@ -152,6 +157,26 @@ if(BUILD_TESTING)
     set_tests_properties(guest_libressl_tls PROPERTIES TIMEOUT 60)
     if(WIN32)
         set_tests_properties(guest_libressl_tls PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
+    add_test_executable(guest_libressl_rsa_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslRsa.cpp)
+    target_include_directories(guest_libressl_rsa_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_rsa_tests PRIVATE libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl_rsa_tests)
+    add_test(NAME guest_libressl_rsa COMMAND guest_libressl_rsa_tests guest_libressl_rsa.tmp)
+    set_tests_properties(guest_libressl_rsa PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(guest_libressl_rsa PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
+    add_test_executable(guest_libressl_ec_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslEc.cpp)
+    target_include_directories(guest_libressl_ec_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_ec_tests PRIVATE libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl_ec_tests)
+    add_test(NAME guest_libressl_ec COMMAND guest_libressl_ec_tests)
+    set_tests_properties(guest_libressl_ec PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(guest_libressl_ec PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
     endif()
 endif()

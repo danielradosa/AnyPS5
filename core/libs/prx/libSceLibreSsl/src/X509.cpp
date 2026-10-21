@@ -1,5 +1,6 @@
 #include "prx/libSceLibreSsl/include/Asn1.hpp"
 #include "prx/libSceLibreSsl/include/Internal.hpp"
+#include "prx/libSceLibreSsl/include/X509Internal.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/GuestHeap.hpp"
 
@@ -165,35 +166,6 @@ const Asn1Object* ObjectByNid(int nid) {
     return nullptr;
 }
 
-struct Arena {
-    std::vector<std::unique_ptr<Asn1String>> strings;
-    std::vector<std::unique_ptr<Asn1Object>> objects;
-    std::vector<std::unique_ptr<NameEntry>> entries;
-    std::vector<std::unique_ptr<Name>> names;
-    std::vector<std::unique_ptr<Stack>> stacks;
-    std::vector<std::unique_ptr<std::vector<char*>>> stackData;
-    std::vector<std::unique_ptr<unsigned char[]>> buffers;
-
-    unsigned char* Copy(const unsigned char* data, std::size_t length) {
-        buffers.push_back(std::make_unique<unsigned char[]>(length + 1));
-        if (length) std::memcpy(buffers.back().get(), data, length);
-        buffers.back()[length] = 0;
-        return buffers.back().get();
-    }
-
-    Asn1String* String(int type, const unsigned char* data, std::size_t length, std::int64_t flags = 0) {
-        strings.push_back(std::make_unique<Asn1String>(Asn1String{static_cast<int>(length), type, Copy(data, length), flags}));
-        return strings.back().get();
-    }
-
-    Stack* NewStack(const std::vector<char*>& items) {
-        stackData.push_back(std::make_unique<std::vector<char*>>(items));
-        auto& data = *stackData.back();
-        stacks.push_back(std::make_unique<Stack>(Stack{static_cast<int>(data.size()), data.data(), 0, static_cast<int>(data.size()), nullptr}));
-        return stacks.back().get();
-    }
-};
-
 std::mutex& StackMutex() {
     static std::mutex mutex;
     return mutex;
@@ -216,35 +188,11 @@ std::unordered_set<const Asn1String*>& StandaloneIntegers() {
 
 }
 
-struct X509Object {
-    CertInfo* certInfo = nullptr;
-    void* sigAlg = nullptr;
-    Asn1String* signature = nullptr;
-    int valid = 0;
-    int references = 1;
-    char* name = nullptr;
-    std::atomic<int> count{1};
-    mbedtls_x509_crt crt;
-    Arena arena;
-    CertInfo info{};
-    Validity validity{};
-    int extensionCount = 0;
-
-    X509Object() {
-        mbedtls_x509_crt_init(&crt);
-    }
-
-    ~X509Object() {
-        std::lock_guard lock(StackMutex());
-        for (const auto& stack : arena.stacks) OwnedStacks().erase(stack.get());
-        mbedtls_x509_crt_free(&crt);
-    }
-
-    X509Object(const X509Object&) = delete;
-    X509Object& operator=(const X509Object&) = delete;
-};
-
-static_assert(offsetof(X509Object, signature) == 16 && offsetof(X509Object, references) == 28);
+X509Object::~X509Object() {
+    std::lock_guard lock(StackMutex());
+    for (const auto& stack : arena.stacks) OwnedStacks().erase(stack.get());
+    mbedtls_x509_crt_free(&crt);
+}
 
 namespace {
 
@@ -504,6 +452,14 @@ X509Object* ReadPem(Bio* bio, const char* function) {
     return Build(der.data(), size);
 }
 
+}
+
+Name* NewName(Arena& arena, const mbedtls_x509_buf& raw) {
+    return ParseName(arena, raw);
+}
+
+Asn1String* NewInteger(Arena& arena, const unsigned char* data, std::size_t length) {
+    return IntegerFromContent(arena, data, length);
 }
 
 }

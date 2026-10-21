@@ -73,6 +73,17 @@ struct Asn1Object;
 struct SslCtxObject;
 struct SslObject;
 struct SslSessionObject;
+struct Stack;
+struct Rsa;
+struct EvpPkey;
+struct EvpPkeyCtx;
+struct EcKey;
+struct Store;
+struct StoreCtx;
+struct Pkcs8;
+struct Pubkey;
+struct Algor;
+struct Extension;
 
 }
 
@@ -99,6 +110,45 @@ int LibreSslSslCtxClearChainCerts_nid_no_patch(LibreSsl::SslCtxObject* ctx);
 int LibreSslSslUpRef_nid_no_patch(LibreSsl::SslObject* ssl);
 int LibreSslSslSessionUpRef_nid_no_patch(LibreSsl::SslSessionObject* session);
 std::size_t LibreSslSslGetClientRandom_nid_no_patch(const LibreSsl::SslObject* ssl, unsigned char* out, std::size_t outlen);
+int LibreSslRsaUpRef_nid_no_patch(LibreSsl::Rsa* r);
+void LibreSslRsaGet0Key_nid_no_patch(const LibreSsl::Rsa* r, const LibreSsl::Bignum** n, const LibreSsl::Bignum** e, const LibreSsl::Bignum** d);
+int LibreSslRsaPaddingAddPssMgf1_nid_no_patch(LibreSsl::Rsa* rsa, unsigned char* EM, const unsigned char* mHash, const LibreSsl::EvpMd* Hash,
+    const LibreSsl::EvpMd* mgf1Hash, int sLen);
+int LibreSslRsaCheckKey_nid_no_patch(const LibreSsl::Rsa* rsa);
+int LibreSslEcKeyUpRef_nid_no_patch(LibreSsl::EcKey* key);
+LibreSsl::EcKey* LibreSslD2iEcParameters_nid_no_patch(LibreSsl::EcKey** key, const unsigned char** in, std::int64_t len);
+LibreSsl::EcKey* LibreSslO2iEcPublicKey_nid_no_patch(LibreSsl::EcKey** key, const unsigned char** in, std::int64_t len);
+int LibreSslDigestSignInit_nid_no_patch(LibreSsl::EvpMdCtx* ctx, LibreSsl::EvpPkeyCtx** pctx, const LibreSsl::EvpMd* type, void* e, LibreSsl::EvpPkey* pkey);
+int LibreSslDigestSignFinal_nid_no_patch(LibreSsl::EvpMdCtx* ctx, unsigned char* sigret, std::size_t* siglen);
+int LibreSslSignFinal_nid_no_patch(LibreSsl::EvpMdCtx* ctx, unsigned char* md, unsigned int* s, LibreSsl::EvpPkey* pkey);
+int LibreSslVerifyFinal_nid_no_patch(LibreSsl::EvpMdCtx* ctx, const unsigned char* sigbuf, unsigned int siglen, LibreSsl::EvpPkey* pkey);
+LibreSsl::EvpPkeyCtx* LibreSslPkeyCtxNew_nid_no_patch(LibreSsl::EvpPkey* pkey, void* e);
+int LibreSslPkeyCtxCtrl_nid_no_patch(LibreSsl::EvpPkeyCtx* ctx, int keytype, int optype, int cmd, int p1, void* p2);
+int LibreSslPkeyEncryptInit_nid_no_patch(LibreSsl::EvpPkeyCtx* ctx);
+int LibreSslPkeyDecryptInit_nid_no_patch(LibreSsl::EvpPkeyCtx* ctx);
+int LibreSslPkeyEncrypt_nid_no_patch(LibreSsl::EvpPkeyCtx* ctx, unsigned char* out, std::size_t* outlen, const unsigned char* in, std::size_t inlen);
+int LibreSslPkeyDecrypt_nid_no_patch(LibreSsl::EvpPkeyCtx* ctx, unsigned char* out, std::size_t* outlen, const unsigned char* in, std::size_t inlen);
+LibreSsl::EvpPkey* LibreSslPkeyNewMacKey_nid_no_patch(int type, void* e, const unsigned char* key, int keylen);
+int LibreSslPkeySize_nid_no_patch(const LibreSsl::EvpPkey* pkey);
+int LibreSslPkeyUpRef_nid_no_patch(LibreSsl::EvpPkey* pkey);
+LibreSsl::Rsa* LibreSslPkeyGet0Rsa_nid_no_patch(LibreSsl::EvpPkey* pkey);
+void* LibreSslPkeyGet0Other_nid_no_patch(LibreSsl::EvpPkey* pkey, int dsa);
+int LibreSslPkeySet1EcKey_nid_no_patch(LibreSsl::EvpPkey* pkey, LibreSsl::EcKey* key);
+LibreSsl::EvpPkey* LibreSslD2iPrivateKeyBio_nid_no_patch(LibreSsl::Bio* bp, LibreSsl::EvpPkey** a);
+LibreSsl::Rsa* LibreSslD2iRsaPublicKeyBio_nid_no_patch(LibreSsl::Bio* bp, LibreSsl::Rsa** a);
+LibreSsl::Pkcs8* LibreSslD2iPkcs8Bio_nid_no_patch(LibreSsl::Bio* bp, LibreSsl::Pkcs8** p8);
+void LibreSslPkcs8Free_nid_no_patch(LibreSsl::Pkcs8* a);
+LibreSsl::EvpPkey* LibreSslPkcs82Pkey_nid_no_patch(const LibreSsl::Pkcs8* p8);
+LibreSsl::Extension* LibreSslX509GetExt_nid_no_patch(const LibreSsl::X509Object* x, int loc);
+const LibreSsl::Stack* LibreSslX509Get0Extensions_nid_no_patch(const LibreSsl::X509Object* x);
+void LibreSslX509Get0Signature_nid_no_patch(const LibreSsl::Asn1String** psig, const LibreSsl::Algor** palg, const LibreSsl::X509Object* x);
+int LibreSslX509PubkeyGet0Param_nid_no_patch(const LibreSsl::Asn1Object** ppkalg, const unsigned char** pk, int* ppklen, LibreSsl::Algor** pa,
+    const LibreSsl::Pubkey* pub);
+int LibreSslX509StoreUpRef_nid_no_patch(LibreSsl::Store* store);
+LibreSsl::StoreCtx* LibreSslX509StoreCtxNew_nid_no_patch();
+void LibreSslX509StoreCtxFree_nid_no_patch(LibreSsl::StoreCtx* ctx);
+int LibreSslX509StoreCtxInit_nid_no_patch(LibreSsl::StoreCtx* ctx, LibreSsl::Store* store, LibreSsl::X509Object* x509, LibreSsl::Stack* chain);
+void LibreSslX509StoreCtxSetExData_nid_no_patch(LibreSsl::StoreCtx* ctx, int idx, void* data);
 }
 
 #endif

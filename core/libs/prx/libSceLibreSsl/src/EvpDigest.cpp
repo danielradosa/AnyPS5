@@ -1,4 +1,5 @@
 #include "prx/libSceLibreSsl/include/Internal.hpp"
+#include "prx/libSceLibreSsl/include/Keys.hpp"
 #include "prx/libc/include/General.hpp"
 
 #include <cstring>
@@ -71,6 +72,17 @@ HmacCtx& RequireHmac(HmacCtx* ctx, const char* function) {
 
 }
 
+bool DigestCopyFinal(const EvpMdCtx& ctx, unsigned char* out, const char* function) {
+    const auto& context = StartedContext(ctx, function);
+    mbedtls_md_context_t copy;
+    mbedtls_md_init(&copy);
+    int status = mbedtls_md_setup(&copy, mbedtls_md_info_from_type(ctx.digest->md), 0);
+    if (status == 0) status = mbedtls_md_clone(&copy, &context);
+    if (status == 0) status = mbedtls_md_finish(&copy, out);
+    mbedtls_md_free(&copy);
+    return status == 0;
+}
+
 const EvpMd* DigestByMbedType(mbedtls_md_type_t type) {
     for (const EvpMd* md : {&Md5, &Sha1, &Sha224, &Sha256, &Sha384, &Sha512}) {
         if (md->md == type) return md;
@@ -120,6 +132,7 @@ void APS5_VABI EVP_MD_CTX_init_nid_postfix(EvpMdCtx* ctx) {
 int APS5_VABI EVP_MD_CTX_cleanup_nid_postfix(EvpMdCtx* ctx) {
     auto& context = RequireMdCtx(ctx, __func__);
     ReleaseContext(context);
+    FreePkeyCtx(context.pctx);
     std::memset(&context, 0, sizeof(EvpMdCtx));
     return 1;
 }
@@ -131,6 +144,7 @@ EvpMdCtx* APS5_VABI EVP_MD_CTX_create_nid_postfix() {
 void APS5_VABI EVP_MD_CTX_destroy_nid_postfix(EvpMdCtx* ctx) {
     if (!ctx) return;
     ReleaseContext(*ctx);
+    FreePkeyCtx(ctx->pctx);
     delete ctx;
 }
 

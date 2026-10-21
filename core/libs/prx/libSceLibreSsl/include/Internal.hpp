@@ -68,12 +68,14 @@ std::vector<unsigned char> EncodeObjectIdentifier(const char* dotted);
 bool DecodeObjectIdentifier(const unsigned char* data, std::size_t length, std::string& out);
 const Asn1Object* TableObject(int nid, bool version3);
 int ObjectNid(const Asn1Object* object, bool version3);
+const Asn1Object* TableObjectByOid(const unsigned char* data, std::size_t length, bool version3);
 const char* TableShortName(int nid, const char* function);
 bool ObjectText(const Asn1Object* object, bool noName, std::string& out, const char* function);
 bool ReleaseCreatedObject(Asn1Object* object);
 void ObjectsCleanup();
 X509Object* X509FromDer(const unsigned char* der, std::size_t length);
 const mbedtls_x509_crt& X509Certificate(const X509Object& x);
+bool DigestCopyFinal(const EvpMdCtx& ctx, unsigned char* out, const char* function);
 
 }
 

@@ -200,6 +200,10 @@ int ObjectNid(const Asn1Object* object, bool version3) {
     return found ? found->nid : NidUndef;
 }
 
+const Asn1Object* TableObjectByOid(const unsigned char* data, std::size_t length, bool version3) {
+    return BuiltinByOid(Builtin(version3), data, length);
+}
+
 const char* TableShortName(int nid, const char* function) {
     if (nid != NidUndef) {
         const auto& table = Builtin(false);
