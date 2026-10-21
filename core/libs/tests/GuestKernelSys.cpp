@@ -29,6 +29,25 @@
 #include <unistd.h>
 #endif
 
+struct TestAiocb {
+    int fildes;
+    std::int64_t offset;
+    void* buf;
+    std::uint64_t nbytes;
+    int spare[2];
+    void* spare2;
+    int lioOpcode;
+    int reqprio;
+    std::int64_t status;
+    std::int64_t error;
+    void* kernelinfo;
+    int notify;
+    int signo;
+    std::uint64_t value;
+    std::uint64_t data[8];
+};
+static_assert(sizeof(TestAiocb) == 160);
+
 extern "C" {
 int APS5_VABI fstatfs_nid_postfix(int, void*);
 int APS5_VABI _fstatfs_nid_postfix(int, void*);
@@ -119,6 +138,14 @@ int APS5_VABI linkat_nid_postfix(int, const char*, int, const char*, int);
 char* APS5_VABI getlogin_nid_postfix(void);
 int APS5_VABI getlogin_r_nid_postfix(char*, int);
 int APS5_VABI vfork_nid_postfix(void);
+int APS5_VABI aio_read_nid_postfix(TestAiocb*);
+int APS5_VABI aio_write_nid_postfix(TestAiocb*);
+int APS5_VABI aio_fsync_nid_postfix(int, TestAiocb*);
+int APS5_VABI aio_error_nid_postfix(const TestAiocb*);
+std::int64_t APS5_VABI aio_return_nid_postfix(TestAiocb*);
+int APS5_VABI aio_suspend_nid_postfix(const TestAiocb* const*, int, const KernelTimespec*);
+int APS5_VABI aio_cancel_nid_postfix(int, TestAiocb*);
+std::int64_t APS5_VABI aio_waitcomplete_nid_postfix(TestAiocb**, const KernelTimespec*);
 void AddPathAlias_nid_no_patch(const char*, const char*);
 void RemovePathAlias_nid_no_patch(const char*);
 }
@@ -640,6 +667,112 @@ void CheckOwnershipAndLinks(const std::filesystem::path& root) {
     Require(vfork_nid_postfix() == -1 && Error() == 78);
 }
 
+TestAiocb Request(int fd, std::int64_t offset, void* buffer, std::uint64_t bytes) {
+    TestAiocb block{};
+    block.fildes = fd;
+    block.offset = offset;
+    block.buf = buffer;
+    block.nbytes = bytes;
+    block.status = 7;
+    block.error = 7;
+    return block;
+}
+
+void CheckPosixAio(const std::filesystem::path& root) {
+    const auto path = (root / "aio.bin").string();
+    std::ofstream(path) << "0123456789";
+    const int fd = sceKernelOpen(path.c_str(), SCE_KERNEL_O_RDWR, 0);
+    Require(fd >= 0);
+    const KernelTimespec zero{};
+    const KernelTimespec brief{0, 20000000};
+    Require(aio_suspend_nid_postfix(nullptr, 0, nullptr) == -1 && Error() == 35);
+    Require(aio_cancel_nid_postfix(fd, nullptr) == 3);
+    char buffer[4] = {};
+    auto block = Request(fd, 2, buffer, sizeof(buffer));
+    Require(aio_error_nid_postfix(&block) == 22);
+    Require(aio_return_nid_postfix(&block) == -1 && Error() == 22);
+    Require(aio_read_nid_postfix(&block) == 0 && block.error == 36 && block.status == -1);
+    Require(block.kernelinfo != nullptr && block.kernelinfo != reinterpret_cast<void*>(-1));
+    Require(aio_error_nid_postfix(&block) == 0);
+    const TestAiocb* listed[] = {nullptr, &block};
+    Require(aio_suspend_nid_postfix(listed, 2, nullptr) == 0 && aio_suspend_nid_postfix(listed, 2, &zero) == 0);
+    Require(aio_return_nid_postfix(&block) == 4 && std::memcmp(buffer, "2345", 4) == 0 && block.status == 4 && block.error == 0);
+    Require(aio_return_nid_postfix(&block) == -1 && Error() == 22 && aio_error_nid_postfix(&block) == 22);
+    Require(aio_suspend_nid_postfix(listed, 2, nullptr) == 0);
+    auto write = Request(fd, 8, const_cast<char*>("ab"), 2);
+    Require(aio_write_nid_postfix(&write) == 0);
+    TestAiocb* completed = nullptr;
+    Require(aio_waitcomplete_nid_postfix(&completed, &zero) == 2 && completed == &write && write.status == 2 && write.error == 0);
+    char contents[10] = {};
+    Require(sceKernelPread(fd, contents, sizeof(contents), 0) == 10 && std::memcmp(contents, "01234567ab", 10) == 0);
+    Require(aio_waitcomplete_nid_postfix(&completed, &zero) == -1 && Error() == 35 && completed == nullptr);
+    Require(aio_waitcomplete_nid_postfix(&completed, &brief) == -1 && Error() == 35);
+    const KernelTimespec invalid{0, 1000000000};
+    Require(aio_waitcomplete_nid_postfix(&completed, &invalid) == -1 && Error() == 22);
+    auto empty = Request(fd, 0, buffer, 0);
+    Require(aio_read_nid_postfix(&empty) == 0 && aio_return_nid_postfix(&empty) == 0);
+    auto sync = Request(fd, 0, nullptr, 0);
+    Require(aio_fsync_nid_postfix(0, &sync) == -1 && Error() == 22 && sync.error == 7);
+    Require(aio_fsync_nid_postfix(0x80, &sync) == 0 && aio_error_nid_postfix(&sync) == 0 && aio_return_nid_postfix(&sync) == 0);
+    auto bad = Request(-1, 0, buffer, 1);
+    Require(aio_read_nid_postfix(&bad) == -1 && Error() == 9 && bad.error == 9 && bad.status == -1);
+    Require(aio_error_nid_postfix(&bad) == 9 && aio_return_nid_postfix(&bad) == -1 && Error() == 22);
+    auto negative = Request(fd, -1, buffer, 1);
+    Require(aio_read_nid_postfix(&negative) == -1 && Error() == 22 && negative.error == 22);
+    auto huge = Request(fd, 0, buffer, 0x8000000000000000ull);
+    Require(aio_read_nid_postfix(&huge) == -1 && Error() == 22 && huge.error == 0);
+    auto thread = Request(fd, 0, buffer, 1);
+    thread.notify = 2;
+    Require(aio_read_nid_postfix(&thread) == -1 && Error() == 22 && thread.error == 22);
+    auto signal = Request(fd, 0, buffer, 1);
+    signal.notify = 1;
+    Require(aio_read_nid_postfix(&signal) == -1 && Error() == 22);
+    signal.signo = 30;
+    Require(Throws([&] { aio_read_nid_postfix(&signal); }));
+    Require(aio_read_nid_postfix(nullptr) == -1 && Error() == 14);
+    const int readOnly = sceKernelOpen(path.c_str(), SCE_KERNEL_O_RDONLY, 0);
+    const int writeOnly = sceKernelOpen(path.c_str(), SCE_KERNEL_O_WRONLY, 0);
+    Require(readOnly >= 0 && writeOnly >= 0);
+    auto readFromWriter = Request(writeOnly, 0, buffer, 1);
+    Require(aio_read_nid_postfix(&readFromWriter) == -1 && Error() == 9);
+    auto writeToReader = Request(readOnly, 0, buffer, 1);
+    Require(aio_write_nid_postfix(&writeToReader) == -1 && Error() == 9);
+    Require(sceKernelClose(readOnly) == 0 && sceKernelClose(writeOnly) == 0);
+    int streams[2];
+    Require(pipe_nid_postfix(streams) == 0);
+    auto piped = Request(streams[0], 0, buffer, 1);
+    Require(aio_read_nid_postfix(&piped) == -1 && Error() == 45 && piped.error == 45);
+    auto pipeSync = Request(streams[1], 0, nullptr, 0);
+    Require(aio_fsync_nid_postfix(0x80, &pipeSync) == -1 && Error() == 22);
+    Require(close_nid_postfix(streams[0]) == 0 && close_nid_postfix(streams[1]) == 0);
+    Require(aio_suspend_nid_postfix(listed, -1, nullptr) == -1 && Error() == 22);
+    Require(aio_suspend_nid_postfix(nullptr, 1, nullptr) == -1 && Error() == 14);
+    Require(aio_suspend_nid_postfix(listed, 2, &invalid) == -1 && Error() == 22);
+    Require(aio_cancel_nid_postfix(-1, nullptr) == -1 && Error() == 9);
+    Require(aio_cancel_nid_postfix(fd, &block) == 3);
+    std::vector<TestAiocb> many(257);
+    std::vector<char> bytes(many.size());
+    for (std::size_t index = 0; index < 256; ++index) {
+        many[index] = Request(fd, static_cast<std::int64_t>(index % 10), &bytes[index], 1);
+        Require(aio_read_nid_postfix(&many[index]) == 0);
+    }
+    many[256] = Request(fd, 0, &bytes[256], 1);
+    Require(aio_read_nid_postfix(&many[256]) == -1 && Error() == 35 && many[256].error == 35);
+    for (std::size_t index = 0; index < 256; ++index) {
+        Require(aio_waitcomplete_nid_postfix(&completed, nullptr) == 1 && completed == &many[index]);
+        Require(bytes[index] == contents[index % 10]);
+    }
+    TestAiocb* woken = nullptr;
+    std::int64_t wokenStatus = 0;
+    std::thread waiter([&] { wokenStatus = aio_waitcomplete_nid_postfix(&woken, nullptr); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    auto late = Request(fd, 9, buffer, 1);
+    Require(aio_read_nid_postfix(&late) == 0);
+    waiter.join();
+    Require(wokenStatus == 1 && woken == &late && buffer[0] == 'b');
+    Require(sceKernelClose(fd) == 0);
+}
+
 int main() {
 #ifdef _WIN32
     auto hostDirectorySpelling = std::filesystem::current_path().native();
@@ -1105,6 +1238,7 @@ int main() {
     }
 #endif
     CheckForwards(root);
+    CheckPosixAio(root);
     CheckOwnershipAndLinks(root);
     CheckScePthreadWrappers();
     CheckPosixThreadExtensions();
