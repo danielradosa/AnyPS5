@@ -4,7 +4,8 @@ add_library(libSceLibreSsl SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/E
     ${CMAKE_CURRENT_SOURCE_DIR}/src/EvpCipher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/EvpDigest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Library.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Bio.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Bio.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Bn.cpp)
 target_include_directories(libSceLibreSsl PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(libSceLibreSsl PRIVATE mbedcrypto)
 set_target_properties(libSceLibreSsl PROPERTIES VISIBILITY_INLINES_HIDDEN ON)
@@ -85,6 +86,16 @@ if(BUILD_TESTING)
     set_tests_properties(guest_libressl_bio PROPERTIES TIMEOUT 30)
     if(WIN32)
         set_tests_properties(guest_libressl_bio PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
+    add_test_executable(guest_libressl_bn_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslBn.cpp)
+    target_include_directories(guest_libressl_bn_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_bn_tests PRIVATE libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl_bn_tests)
+    add_test(NAME guest_libressl_bn COMMAND guest_libressl_bn_tests)
+    set_tests_properties(guest_libressl_bn PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl_bn PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
     endif()
 endif()
