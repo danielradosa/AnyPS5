@@ -111,6 +111,14 @@ int APS5_VABI pthread_rwlock_setname_np_nid_postfix(PthreadRwlock*, const char*)
 int APS5_VABI sem_init_nid_postfix(void*, int, unsigned);
 int APS5_VABI sem_destroy_nid_postfix(void*);
 int APS5_VABI sem_setname_nid_postfix(void*, const char*);
+int APS5_VABI chown_nid_postfix(const char*, std::uint32_t, std::uint32_t);
+int APS5_VABI lchown_nid_postfix(const char*, std::uint32_t, std::uint32_t);
+int APS5_VABI fchownat_nid_postfix(int, const char*, std::uint32_t, std::uint32_t, int);
+int APS5_VABI lchmod_nid_postfix(const char*, std::uint16_t);
+int APS5_VABI linkat_nid_postfix(int, const char*, int, const char*, int);
+char* APS5_VABI getlogin_nid_postfix(void);
+int APS5_VABI getlogin_r_nid_postfix(char*, int);
+int APS5_VABI vfork_nid_postfix(void);
 void AddPathAlias_nid_no_patch(const char*, const char*);
 void RemovePathAlias_nid_no_patch(const char*);
 }
@@ -573,6 +581,63 @@ void CheckPosixThreadExtensions() {
     Require(sem_setname_nid_postfix(&semaphore, "sem") == 0 && Error() == 0);
     Require(sem_setname_nid_postfix(&semaphore, nullptr) == -1 && Error() == 22);
     Require(sem_destroy_nid_postfix(&semaphore) == 0);
+}
+
+void CheckOwnershipAndLinks(const std::filesystem::path& root) {
+    const auto directory = root / "owners";
+    Require(std::filesystem::create_directory(directory));
+    const auto file = (directory / "owned.txt").string();
+    std::ofstream(file) << "owned";
+    const auto missing = (directory / "missing.txt").string();
+    Require(chown_nid_postfix(file.c_str(), 0, 0) == 0 && chown_nid_postfix(file.c_str(), 0xFFFFFFFFu, 0xFFFFFFFFu) == 0);
+    Require(chown_nid_postfix(missing.c_str(), 0, 0) == -1 && Error() == 2);
+    Require(chown_nid_postfix(nullptr, 0, 0) == -1 && Error() == 14);
+    Require(chown_nid_postfix("", 0, 0) == -1 && Error() == 2);
+    Require(chown_nid_postfix((file + "/inner").c_str(), 0, 0) == -1 && Error() == 20);
+    Require(chown_nid_postfix((directory / std::string(256, 'n')).string().c_str(), 0, 0) == -1 && Error() == 63);
+    Require(Throws([&] { chown_nid_postfix(file.c_str(), 1, 0); }) && Throws([&] { chown_nid_postfix(file.c_str(), 0, 1); }));
+    Require(chown_nid_postfix(missing.c_str(), 1, 1) == -1 && Error() == 2);
+    Require(lchown_nid_postfix(file.c_str(), 0, 0) == 0 && lchown_nid_postfix(missing.c_str(), 0, 0) == -1 && Error() == 2);
+    Require(Throws([&] { lchown_nid_postfix(file.c_str(), 7, 7); }));
+    const auto dangling = (directory / "dangling").string();
+    const bool symbolic = symlink_nid_postfix("absent.txt", dangling.c_str()) == 0;
+    if (!symbolic) Require(Error() == 1);
+    if (symbolic) Require(lchown_nid_postfix(dangling.c_str(), 0, 0) == 0 && chown_nid_postfix(dangling.c_str(), 0, 0) == -1 && Error() == 2);
+    const int base = sceKernelOpen(directory.string().c_str(), SCE_KERNEL_O_RDONLY | SCE_KERNEL_O_DIRECTORY, 0);
+    Require(base >= 0);
+    Require(fchownat_nid_postfix(base, "owned.txt", 0, 0, 0) == 0);
+    if (symbolic) Require(fchownat_nid_postfix(base, "dangling", 0, 0, 0x0200) == 0 && fchownat_nid_postfix(base, "dangling", 0, 0, 0) == -1 && Error() == 2);
+    Require(fchownat_nid_postfix(base, "owned.txt", 0, 0, 0x0400) == -1 && Error() == 22);
+    Require(fchownat_nid_postfix(-100, file.c_str(), 0, 0, 0) == 0);
+    Require(fchownat_nid_postfix(-1, "owned.txt", 0, 0, 0) == -1 && Error() == 9);
+    Require(fchownat_nid_postfix(base, nullptr, 0, 0, 0) == -1 && Error() == 14);
+    Require(Throws([&] { fchownat_nid_postfix(base, "owned.txt", 3, 0, 0); }));
+    Require(lchmod_nid_postfix(file.c_str(), 0644) == 0);
+    Require(lchmod_nid_postfix(missing.c_str(), 0644) == -1 && Error() == 2);
+    Require(lchmod_nid_postfix(nullptr, 0644) == -1 && Error() == 14);
+    const auto linked = (directory / "linked.txt").string();
+    Require(linkat_nid_postfix(-100, file.c_str(), -100, linked.c_str(), 0) == 0);
+    Require(std::filesystem::equivalent(file, linked) && std::filesystem::hard_link_count(file) == 2);
+    Require(linkat_nid_postfix(base, "owned.txt", base, "relative.txt", 0x0400) == 0);
+    Require(std::filesystem::equivalent(file, directory / "relative.txt") && std::filesystem::hard_link_count(file) == 3);
+    Require(linkat_nid_postfix(base, "owned.txt", base, "linked.txt", 0) == -1 && Error() == 17);
+    Require(linkat_nid_postfix(base, "missing.txt", base, "other.txt", 0) == -1 && Error() == 2);
+    Require(linkat_nid_postfix(-100, directory.string().c_str(), base, "folder", 0) == -1 && Error() == 1);
+    Require(linkat_nid_postfix(base, "owned.txt", base, "other.txt", 0x0200) == -1 && Error() == 22);
+    Require(linkat_nid_postfix(-1, "owned.txt", base, "other.txt", 0) == -1 && Error() == 9);
+    Require(linkat_nid_postfix(base, "owned.txt", -1, "other.txt", 0) == -1 && Error() == 9);
+    Require(linkat_nid_postfix(base, nullptr, base, "other.txt", 0) == -1 && Error() == 14);
+    Require(linkat_nid_postfix(base, "", base, "other.txt", 0) == -1 && Error() == 2);
+    if (symbolic) Require(Throws([&] { linkat_nid_postfix(base, "dangling", base, "other.txt", 0); }));
+    Require(!std::filesystem::exists(std::filesystem::symlink_status(directory / "other.txt")));
+    Require(sceKernelClose(base) == 0);
+    char expected[64] = {};
+    Require(getlogin_r_nid_postfix(expected, sizeof(expected)) == 0);
+    char* login = getlogin_nid_postfix();
+    if (std::strlen(expected) < 33) Require(login != nullptr && std::strcmp(login, expected) == 0 && getlogin_nid_postfix() == login);
+    else Require(login == nullptr && Error() == 34);
+    *__error_nid_postfix() = 0;
+    Require(vfork_nid_postfix() == -1 && Error() == 78);
 }
 
 int main() {
@@ -1040,6 +1105,7 @@ int main() {
     }
 #endif
     CheckForwards(root);
+    CheckOwnershipAndLinks(root);
     CheckScePthreadWrappers();
     CheckPosixThreadExtensions();
     RemoveTree(root);
