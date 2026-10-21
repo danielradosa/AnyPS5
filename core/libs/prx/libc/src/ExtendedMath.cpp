@@ -5,6 +5,7 @@
 #include <cfenv>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 static_assert(sizeof(long double) == 16 && std::numeric_limits<long double>::digits == 64);
@@ -40,6 +41,14 @@ long double CheckRange_nid_no_patch(long double input, long double result) {
         }
     }
     return result;
+}
+
+bool IsNan_nid_no_patch(long double value) {
+    std::uint64_t significand;
+    std::uint16_t signAndExponent;
+    std::memcpy(&significand, &value, sizeof(significand));
+    std::memcpy(&signAndExponent, reinterpret_cast<const unsigned char*>(&value) + sizeof(significand), sizeof(signAndExponent));
+    return (signAndExponent & 0x7fff) == 0x7fff && (significand & UINT64_C(0x7fffffffffffffff)) != 0;
 }
 
 long double CheckNeighbor_nid_no_patch(long double from, long double to, long double result) {
@@ -95,12 +104,16 @@ long double APS5_VABI sqrtl_nid_postfix(long double value) {
 long double APS5_VABI cbrtl_nid_postfix(long double value) { return std::cbrt(value); }
 long double APS5_VABI fabsl_nid_postfix(long double value) { return std::fabs(value); }
 long double APS5_VABI fmaxl_nid_postfix(long double x, long double y) {
+    if (IsNan_nid_no_patch(x)) return y;
+    if (IsNan_nid_no_patch(y)) return x;
     if (x == 0.L && y == 0.L) return std::signbit(x) ? y : x;
-    return std::fmax(x, y);
+    return x > y ? x : y;
 }
 long double APS5_VABI fminl_nid_postfix(long double x, long double y) {
+    if (IsNan_nid_no_patch(x)) return y;
+    if (IsNan_nid_no_patch(y)) return x;
     if (x == 0.L && y == 0.L) return std::signbit(x) ? x : y;
-    return std::fmin(x, y);
+    return x < y ? x : y;
 }
 
 long double APS5_VABI ceill_nid_postfix(long double value) { return std::ceil(value); }
