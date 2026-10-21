@@ -357,11 +357,11 @@ int APS5_VABI sceNpInt64ToStr(char* buf, std::size_t size, std::int64_t value, s
 }
 
 int APS5_VABI sceNpStrToInt32(const char* str, std::int32_t* value, int base, std::size_t* parsedLength) {
-    long parsed = 0;
+    long long parsed = 0;
     bool saturated = false;
     const int result = ParseInteger(str, parsedLength, [&](const char* s, char** end) {
-        parsed = std::strtol(s, end, base);
-        saturated = parsed == LONG_MIN || parsed == LONG_MAX;
+        parsed = std::strtoll(s, end, base);
+        saturated = parsed == LLONG_MIN || parsed == LLONG_MAX;
     }, &saturated);
     if (result < 0) return result;
     if (parsed != static_cast<std::int32_t>(parsed)) return NP_ERROR_OUT_OF_RANGE;
