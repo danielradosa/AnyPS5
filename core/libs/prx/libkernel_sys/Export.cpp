@@ -25,6 +25,7 @@
 #include "prx/libc/include/CreationMask.hpp"
 #include "prx/libkernel/File/include/FileFlags.hpp"
 #include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/System/include/CompiledSdkVersion.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -398,6 +399,10 @@ std::int64_t APS5_VABI _fstat_nid_postfix(int d, FileStat* sb);
 
 int APS5_VABI fstat_nid_postfix(int d, FileStat* sb) {
     return static_cast<int>(_fstat_nid_postfix(d, sb));
+}
+
+int APS5_VABI sceKernelGetCompiledSdkVersion(std::int32_t* version) {
+    return CompiledSdkVersion_nid_no_patch(version);
 }
 
 std::int64_t APS5_VABI readlink_nid_postfix(const char* path, char* buffer, std::size_t size) {

@@ -70,6 +70,14 @@ int APS5_VABI fstatat_nid_postfix(int, const char*, FileStat*, int);
 std::int64_t APS5_VABI sceKernelRead(int, void*, std::size_t);
 std::uint16_t APS5_VABI umask_nid_postfix(std::uint16_t);
 int* APS5_VABI __error_nid_postfix();
+int APS5_VABI fstat_nid_postfix(int, FileStat*);
+std::int64_t APS5_VABI _fstat_nid_postfix(int, FileStat*);
+int APS5_VABI sceKernelGetCompiledSdkVersion(std::int32_t*);
+int APS5_VABI sceKernelGetCompiledSdkVersion_nid_postfix(std::int32_t*);
+int APS5_VABI scePthreadCondattrInit(PthreadCondattr*);
+int APS5_VABI scePthreadCondattrDestroy(PthreadCondattr*);
+int APS5_VABI scePthreadCondattrSetclock(PthreadCondattr*, KernelClockid);
+int APS5_VABI scePthreadCondattrGetclock_nid_postfix(const PthreadCondattr*, KernelClockid*);
 void AddPathAlias_nid_no_patch(const char*, const char*);
 void RemovePathAlias_nid_no_patch(const char*);
 }
@@ -402,6 +410,44 @@ static void SceKernelFlock() {
     Require(sceKernelFlock(-1, 2) == static_cast<int>(0x80020009u));
     Require(close_nid_postfix(second) == 0 && close_nid_postfix(first) == 0);
     std::filesystem::remove(path);
+}
+
+template<typename F>
+bool Throws(F call) {
+    try {
+        call();
+    } catch (const std::exception&) {
+        return true;
+    }
+    return false;
+}
+
+void CheckForwards(const std::filesystem::path& root) {
+    const auto path = (root / "forward.bin").string();
+    std::ofstream(path) << "0123456789";
+    const int descriptor = sceKernelOpen(path.c_str(), SCE_KERNEL_O_RDWR, 0);
+    Require(descriptor >= 0);
+    FileStat viaSys{};
+    FileStat viaKernel{};
+    Require(fstat_nid_postfix(descriptor, &viaSys) == 0 && _fstat_nid_postfix(descriptor, &viaKernel) == 0);
+    Require(viaSys.st_size == 10 && viaSys.st_mode == viaKernel.st_mode && viaSys.st_ino == viaKernel.st_ino);
+    Require(fstat_nid_postfix(-1, &viaSys) == -1 && Error() == 9);
+    Require(fstat_nid_postfix(descriptor, nullptr) == -1 && Error() == 14);
+    Require(sceKernelClose(descriptor) == 0);
+    Require(sceKernelGetCompiledSdkVersion(nullptr) == static_cast<int>(0x80020016u));
+    std::int32_t viaSysVersion = 0;
+    std::int32_t viaKernelVersion = 0;
+    const bool sysThrows = Throws([&] { sceKernelGetCompiledSdkVersion(&viaSysVersion); });
+    const bool kernelThrows = Throws([&] { sceKernelGetCompiledSdkVersion_nid_postfix(&viaKernelVersion); });
+    Require(sysThrows == kernelThrows && viaSysVersion == viaKernelVersion);
+    PthreadCondattr attr = nullptr;
+    Require(scePthreadCondattrInit(&attr) == 0 && scePthreadCondattrSetclock(&attr, 4) == 0);
+    KernelClockid clock = -1;
+    Require(scePthreadCondattrGetclock_nid_postfix(&attr, &clock) == 0 && clock == 4);
+    Require(scePthreadCondattrDestroy(&attr) == 0);
+    PthreadCondattr missing = nullptr;
+    Require(scePthreadCondattrGetclock_nid_postfix(&missing, &clock) == static_cast<int>(0x80020016u));
+    Require(scePthreadCondattrGetclock_nid_postfix(nullptr, &clock) == static_cast<int>(0x80020016u));
 }
 
 int main() {
@@ -868,6 +914,7 @@ int main() {
         Require(!std::filesystem::exists(std::filesystem::symlink_status(throughLink)));
     }
 #endif
+    CheckForwards(root);
     RemoveTree(root);
     return 0;
 }

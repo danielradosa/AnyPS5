@@ -381,14 +381,10 @@ int APS5_VABI pselect_nid_postfix(void) {
     return 0;
 }
 
-
-
-
 int APS5_VABI pthread_attr_setcreatesuspend_np_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-
 
 int APS5_VABI pthread_barrier_setname_np_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
@@ -414,7 +410,6 @@ int APS5_VABI pthread_getstack_np_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-
 
 int APS5_VABI pthread_multi_np_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
@@ -927,11 +922,6 @@ int APS5_VABI sceKernelGetCallRecord(void) {
 }
 
 int APS5_VABI sceKernelGetChildApp(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceKernelGetCompiledSdkVersion(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -2317,11 +2307,6 @@ int APS5_VABI scePthreadBarrierattrSetpshared(void** attr, int pshared) {
     return SceResult(pthread_barrierattr_setpshared_nid_postfix(attr, pshared));
 }
 
-int APS5_VABI scePthreadCondattrGetclock(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI scePthreadGetconcurrency(void) {
     return pthread_getconcurrency_nid_postfix();
 }
@@ -2518,7 +2503,6 @@ int APS5_VABI swapon_nid_postfix(void) {
     return 0;
 }
 
-
 int APS5_VABI sysKernelGetIntdevModeForInternalLibc_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -2593,7 +2577,5 @@ int APS5_VABI vfork_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-
-
 
 }
