@@ -70,6 +70,9 @@ struct Bio;
 struct X509Object;
 struct Asn1String;
 struct Asn1Object;
+struct SslCtxObject;
+struct SslObject;
+struct SslSessionObject;
 
 }
 
@@ -89,6 +92,13 @@ void LibreSslAsn1IntegerFree_nid_no_patch(LibreSsl::Asn1String* a);
 void LibreSslAsn1ObjectFree_nid_no_patch(LibreSsl::Asn1Object* a);
 int LibreSslObjCmp_nid_no_patch(const LibreSsl::Asn1Object* a, const LibreSsl::Asn1Object* b);
 LibreSsl::Asn1Object* LibreSslObjTxt2Obj_nid_no_patch(const char* s, int noName);
+int LibreSslSslCtxUpRef_nid_no_patch(LibreSsl::SslCtxObject* ctx);
+int LibreSslSslCtxSetProtoVersion_nid_no_patch(LibreSsl::SslCtxObject* ctx, std::uint16_t version, int maximum);
+int LibreSslSslCtxAdd0ChainCert_nid_no_patch(LibreSsl::SslCtxObject* ctx, LibreSsl::X509Object* x);
+int LibreSslSslCtxClearChainCerts_nid_no_patch(LibreSsl::SslCtxObject* ctx);
+int LibreSslSslUpRef_nid_no_patch(LibreSsl::SslObject* ssl);
+int LibreSslSslSessionUpRef_nid_no_patch(LibreSsl::SslSessionObject* session);
+std::size_t LibreSslSslGetClientRandom_nid_no_patch(const LibreSsl::SslObject* ssl, unsigned char* out, std::size_t outlen);
 }
 
 #endif

@@ -3,6 +3,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/GuestHeap.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstring>
@@ -27,10 +28,6 @@ int APS5_VABI vsnprintf_nid_postfix(char* buffer, std::size_t size, const char* 
 }
 
 namespace LibreSsl {
-
-struct BioMethod {
-    int type;
-};
 
 namespace {
 
@@ -64,8 +61,8 @@ constexpr int BioFunctionMemWrite = 117;
 constexpr int BioReasonNoSuchFile = 128;
 constexpr int BioReasonWriteToReadOnly = 126;
 
-constexpr BioMethod MemMethod{TypeMem};
-constexpr BioMethod FileMethod{TypeFile};
+constexpr BioMethod MemMethod{TypeMem, nullptr};
+constexpr BioMethod FileMethod{TypeFile, nullptr};
 
 struct BufMem {
     std::uint64_t length;
@@ -86,6 +83,7 @@ struct Bio {
     char* original = nullptr;
     std::int64_t eofReturn = -1;
     FileStream* stream = nullptr;
+    void* state = nullptr;
 };
 
 namespace {
@@ -112,7 +110,9 @@ void CloseFile(Bio& bio) {
 }
 
 void Destroy(Bio* bio) {
-    if (bio->method->type == TypeFile) {
+    if (bio->method->hooks) {
+        bio->method->hooks->destroy(*bio);
+    } else if (bio->method->type == TypeFile) {
         CloseFile(*bio);
     } else if (bio->memory && (bio->shutdown & BioClose)) {
         if (!bio->readOnly) GuestHeap::GuestHeapFree_nid_postfix(bio->memory->data);
@@ -124,6 +124,11 @@ void Destroy(Bio* bio) {
 int Write(Bio& bio, const void* data, std::size_t length, const char* function) {
     if (!data && length) throw std::invalid_argument(std::string(function) + ": null data");
     if (length > static_cast<std::size_t>(std::numeric_limits<int>::max())) throw std::invalid_argument(std::string(function) + ": length above INT_MAX");
+    if (bio.method->hooks) {
+        if (!length) return 0;
+        bool retry = false;
+        return bio.method->hooks->write(bio, data, static_cast<int>(length), retry);
+    }
     if (bio.method->type == TypeFile) {
         if (!bio.stream) throw std::logic_error(std::string(function) + ": the file BIO has no stream");
         if (!length) return 0;
@@ -226,8 +231,53 @@ std::int64_t FileCtrl(Bio& bio, int cmd, std::int64_t larg, void* parg) {
 
 }
 
+void*& BioState(Bio& bio) {
+    return bio.state;
+}
+
+int BioCloseFlag(const Bio& bio) {
+    return bio.shutdown;
+}
+
+const BioMethod* BioMethodOf(const Bio& bio) {
+    return bio.method;
+}
+
+int BioTransportRead(Bio* bio, void* data, int length, bool& retry, const char* function) {
+    auto& source = RequireBio(bio, function);
+    retry = false;
+    if (length <= 0) return 0;
+    if (source.method->hooks) return source.method->hooks->read(source, data, length, retry);
+    if (source.method->type == TypeFile) throw std::invalid_argument(std::string(function) + ": a file BIO as TLS transport is not supported");
+    auto& memory = *source.memory;
+    if (!memory.length) {
+        if (source.eofReturn == 0) return 0;
+        retry = true;
+        return static_cast<int>(source.eofReturn);
+    }
+    const std::size_t count = std::min<std::size_t>(static_cast<std::size_t>(length), static_cast<std::size_t>(memory.length));
+    std::memcpy(data, memory.data, count);
+    if (source.readOnly) {
+        memory.data += count;
+    } else {
+        std::memmove(memory.data, memory.data + count, static_cast<std::size_t>(memory.length) - count);
+    }
+    memory.length -= count;
+    return static_cast<int>(count);
+}
+
+int BioTransportWrite(Bio* bio, const void* data, int length, bool& retry, const char* function) {
+    auto& target = RequireBio(bio, function);
+    retry = false;
+    if (length <= 0) return 0;
+    if (target.method->hooks) return target.method->hooks->write(target, data, length, retry);
+    if (target.method->type == TypeFile) throw std::invalid_argument(std::string(function) + ": a file BIO as TLS transport is not supported");
+    return Write(target, data, static_cast<std::size_t>(length), function);
+}
+
 std::vector<unsigned char> BioReadAll(Bio* bio, const char* function) {
     auto& stream = RequireBio(bio, function);
+    if (stream.method->hooks) throw std::invalid_argument(std::string(function) + ": reading an object from this BIO type is not supported");
     std::vector<unsigned char> bytes;
     if (stream.method->type == TypeFile) {
         if (!stream.stream) throw std::logic_error(std::string(function) + ": the file BIO has no stream");
@@ -248,6 +298,7 @@ std::vector<unsigned char> BioReadAll(Bio* bio, const char* function) {
 
 void BioPutBack(Bio* bio, const unsigned char* data, std::size_t length) {
     if (!length) return;
+    if (bio->method->hooks) throw std::logic_error("BIO: cannot put data back into this BIO type");
     if (bio->method->type == TypeFile) {
         if (fseek_nid_postfix(bio->stream, -static_cast<std::int64_t>(length), 1) != 0) throw std::runtime_error("BIO: cannot seek back over unread file data");
         return;
@@ -278,7 +329,7 @@ const BioMethod* APS5_VABI BIO_s_file_nid_postfix() {
 }
 
 Bio* APS5_VABI BIO_new_nid_postfix(const BioMethod* type) {
-    if (type != &MemMethod && type != &FileMethod) throw std::invalid_argument("BIO_new: unsupported BIO method");
+    if (type != &MemMethod && type != &FileMethod && !(type && type->hooks)) throw std::invalid_argument("BIO_new: unsupported BIO method");
     auto* bio = new (std::nothrow) Bio{type};
     if (!bio) return nullptr;
     if (type == &MemMethod) {
@@ -376,6 +427,7 @@ std::int64_t APS5_VABI BIO_ctrl_nid_postfix(Bio* bp, int cmd, std::int64_t larg,
         bio.shutdown = static_cast<int>(larg);
         return 1;
     }
+    if (bio.method->hooks) return bio.method->hooks->ctrl(bio, cmd, larg, parg);
     return bio.method->type == TypeFile ? FileCtrl(bio, cmd, larg, parg) : MemCtrl(bio, cmd, larg, parg);
 }
 

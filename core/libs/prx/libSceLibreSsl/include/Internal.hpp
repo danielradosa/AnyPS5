@@ -10,6 +10,8 @@
 
 #include "LibreSsl.hpp"
 
+struct mbedtls_x509_crt;
+
 namespace LibreSsl {
 
 constexpr int NidUndef = 0;
@@ -28,6 +30,18 @@ constexpr int ErrLibRand = 36;
 constexpr int ErrReasonMallocFailure = 1 | 64;
 constexpr int ErrReasonPassedNullParameter = 3 | 64;
 
+struct BioHooks {
+    int (*write)(Bio& bio, const void* data, int length, bool& retry);
+    int (*read)(Bio& bio, void* data, int length, bool& retry);
+    std::int64_t (*ctrl)(Bio& bio, int cmd, std::int64_t larg, void* parg);
+    void (*destroy)(Bio& bio);
+};
+
+struct BioMethod {
+    int type;
+    const BioHooks* hooks;
+};
+
 struct EvpMd {
     int type;
     int pkeyType;
@@ -41,6 +55,11 @@ std::uint64_t PeekLastError();
 const EvpMd* DigestByMbedType(mbedtls_md_type_t type);
 std::vector<unsigned char> BioReadAll(Bio* bio, const char* function);
 void BioPutBack(Bio* bio, const unsigned char* data, std::size_t length);
+void*& BioState(Bio& bio);
+int BioCloseFlag(const Bio& bio);
+const BioMethod* BioMethodOf(const Bio& bio);
+int BioTransportRead(Bio* bio, void* data, int length, bool& retry, const char* function);
+int BioTransportWrite(Bio* bio, const void* data, int length, bool& retry, const char* function);
 Bignum* NewBignum();
 void FreeBignum(Bignum* bn);
 void SetBignumBytes(Bignum& bn, const unsigned char* bigEndian, std::size_t length);
@@ -53,6 +72,8 @@ const char* TableShortName(int nid, const char* function);
 bool ObjectText(const Asn1Object* object, bool noName, std::string& out, const char* function);
 bool ReleaseCreatedObject(Asn1Object* object);
 void ObjectsCleanup();
+X509Object* X509FromDer(const unsigned char* der, std::size_t length);
+const mbedtls_x509_crt& X509Certificate(const X509Object& x);
 
 }
 

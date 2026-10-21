@@ -9,9 +9,10 @@ add_library(libSceLibreSsl SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/E
     ${CMAKE_CURRENT_SOURCE_DIR}/src/X509.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Ui.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Objects.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Text.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Text.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ssl.cpp)
 target_include_directories(libSceLibreSsl PRIVATE ${LIBS_INCLUDE_DIR})
-target_link_libraries(libSceLibreSsl PRIVATE mbedx509 mbedcrypto)
+target_link_libraries(libSceLibreSsl PRIVATE mbedtls mbedx509 mbedcrypto)
 set_target_properties(libSceLibreSsl PROPERTIES VISIBILITY_INLINES_HIDDEN ON)
 if(MINGW OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(libSceLibreSsl PRIVATE LINKER:--exclude-libs,ALL)
@@ -140,6 +141,16 @@ if(BUILD_TESTING)
     set_tests_properties(guest_libressl_text PROPERTIES TIMEOUT 30)
     if(WIN32)
         set_tests_properties(guest_libressl_text PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
+    add_test_executable(guest_libressl_tls_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslTls.cpp)
+    target_include_directories(guest_libressl_tls_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_tls_tests PRIVATE libSceLibreSsl libkernel libc)
+    configure_windows_unwind(guest_libressl_tls_tests)
+    add_test(NAME guest_libressl_tls COMMAND guest_libressl_tls_tests guest_libressl_tls.tmp)
+    set_tests_properties(guest_libressl_tls PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(guest_libressl_tls PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
     endif()
 endif()

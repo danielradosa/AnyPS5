@@ -728,3 +728,15 @@ void LibreSslAsn1ObjectFree_nid_no_patch(Asn1Object* a) {
 }
 
 }
+
+namespace LibreSsl {
+
+X509Object* X509FromDer(const unsigned char* der, std::size_t length) {
+    return Build(der, length);
+}
+
+const mbedtls_x509_crt& X509Certificate(const X509Object& x) {
+    return x.crt;
+}
+
+}
