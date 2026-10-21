@@ -597,6 +597,7 @@ void Driver::prepareDraw(const Submission& submission, std::span<const std::uint
             timer.Mark(ProbeWalk);
             stageCapture.compiled = invocation->Materialize(*capture);
             stageCapture.capture = capture;
+            stageCapture.userDataMask = stageUserDataMask(stageCapture, vertexInfos[i]);
             timer.Mark(ProbeMaterialize);
             const auto slotEnd = (pushCursor / Graphics::PipelinePushSlotBytes + 1u) * Graphics::PipelinePushSlotBytes;
             if (stageCapture.compiled->pushConstants.size() > slotEnd - pushCursor) {

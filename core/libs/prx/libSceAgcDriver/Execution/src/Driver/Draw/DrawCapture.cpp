@@ -51,6 +51,17 @@ std::shared_ptr<DispatchVariant> Driver::drawVariant(const StageCapture& stageCa
     return variant;
 }
 
+std::uint64_t Driver::stageUserDataMask(const StageCapture& stageCapture, const std::optional<ShaderRecompiler::ShaderVertexStageInfo>& vertexInfo) {
+    const auto walked = stageCapture.userDataUse.asValue | stageCapture.userDataUse.asBase;
+    auto mask = walked == 0 ? ~std::uint64_t{0} : walked | stageCapture.compiled->userDataRegisterReads;
+    if (vertexInfo) {
+        for (const auto reg : {static_cast<std::uint32_t>(vertexInfo->fetchAttribReg), static_cast<std::uint32_t>(vertexInfo->fetchBufferReg)}) {
+            mask |= reg + 1u < 64u ? std::uint64_t{3} << reg : ~std::uint64_t{0};
+        }
+    }
+    return mask;
+}
+
 std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDrawStage(std::size_t i, std::uint32_t pushOffset, const QueueState& queue, const Submission& submission, const std::vector<DrawProgram>& programs, const Graphics::State& graphics, const ShaderRecompiler::ShaderPixelStageInfo& pixel, const std::vector<std::optional<ShaderRecompiler::ShaderVertexStageInfo>>& vertexInfos, std::vector<ShaderRecompiler::MemoryRegion>& memory, const std::vector<ShaderRecompiler::LinkedProgram>& linked, const Pm4::DrawParameters& drawParameters, const std::shared_ptr<VulkanDevice>& localDevice, ShaderMemory& shaderMemory, std::vector<StageCapture>& stageCaptures, std::vector<bool>& recompiled, bool drawHit, const std::vector<std::shared_ptr<DispatchVariant>>& matched, const std::vector<std::vector<ShaderRecompiler::MemoryRegion>>& matchedRegions, bool profile, std::uint64_t dumpTarget, std::uint64_t dumpSlot1, std::uint64_t& captures, DrawPhaseTiming& phaseTiming, std::array<double, DrawDriverPhaseCount>& phaseMs, std::string& rejected, const std::optional<ShaderRecompiler::MeshBarycentricLayout>& meshBarycentrics) try {
     PerformanceTimer timing("Shader.DrawStage");
     using Stage = ShaderRecompiler::ShaderStage;
@@ -150,14 +161,7 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
     }
     stageCapture.capture = capture;
     timing.Mark("materialize");
-    const auto walked = capture->userDataUse.asValue | capture->userDataUse.asBase;
-    auto mask = walked == 0 ? ~std::uint64_t{0} : walked | stageCapture.compiled->userDataRegisterReads;
-    if (vertexInfos[i]) {
-        for (const auto reg : {static_cast<std::uint32_t>(vertexInfos[i]->fetchAttribReg), static_cast<std::uint32_t>(vertexInfos[i]->fetchBufferReg)}) {
-            mask |= reg + 1u < 64u ? std::uint64_t{3} << reg : ~std::uint64_t{0};
-        }
-    }
-    stageCapture.userDataMask = mask;
+    stageCapture.userDataMask = stageUserDataMask(stageCapture, vertexInfos[i]);
     phaseTiming.Phase(DrawRowRecompile);
     return stageCapture.compiled;
 } catch (const std::exception& error) {
