@@ -2,6 +2,8 @@
 #include "prx/libc/include/HostEntropy.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
+#include "prx/libSceLibcInternal/include/Statvfs.hpp"
+#include "SceTypes.hpp"
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -156,6 +158,18 @@ int MatchPattern(const char* pattern, const char* string, int flags) {
 
 extern "C" {
 
+int APS5_VABI access_nid_postfix(const char* path, int mode);
+int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* time);
+int APS5_VABI fchown_nid_postfix(int descriptor, std::uint32_t owner, std::uint32_t group);
+char* APS5_VABI getcwd_nid_postfix(char* buffer, std::size_t size);
+char* APS5_VABI getenv_nid_postfix(const char* name);
+int APS5_VABI link_nid_postfix(const char* existing, const char* created);
+int APS5_VABI lstat_nid_postfix(const char* path, FileStat* status);
+void* APS5_VABI mmap_nid_postfix(void* address, std::size_t length, int protection, int flags, int descriptor, std::int64_t offset) noexcept;
+std::int64_t APS5_VABI readlink_nid_postfix(const char* path, char* buffer, std::size_t size);
+int APS5_VABI statvfs_nid_postfix(const char* path, LibcStatvfs* status);
+int APS5_VABI symlink_nid_postfix(const char* target, const char* created);
+
 int APS5_VABI fnmatch_nid_postfix(const char* pattern, const char* string, int flags) {
     if (pattern == nullptr || string == nullptr) throw std::invalid_argument("fnmatch: null pattern or string");
     return MatchPattern(pattern, string, flags);
@@ -195,59 +209,48 @@ int APS5_VABI pthread_setname_np_nid_postfix(Pthread thread, const char* name) {
     return 0;
 }
 
-int APS5_VABI __wrap_access() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI __wrap_access(const char* path, int mode) {
+    return access_nid_postfix(path, mode);
 }
 
-int APS5_VABI __wrap_clock_gettime() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI __wrap_clock_gettime(int clockId, KernelTimespec* time) {
+    return clock_gettime_nid_postfix(clockId, time);
 }
 
-int APS5_VABI __wrap_fchown() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI __wrap_fchown(int descriptor, std::uint32_t owner, std::uint32_t group) {
+    return fchown_nid_postfix(descriptor, owner, group);
 }
 
-int APS5_VABI __wrap_getcwd() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+char* APS5_VABI __wrap_getcwd(char* buffer, std::size_t size) {
+    return getcwd_nid_postfix(buffer, size);
 }
 
-int APS5_VABI __wrap_getenv() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+char* APS5_VABI __wrap_getenv(const char* name) {
+    return getenv_nid_postfix(name);
 }
 
-int APS5_VABI __wrap_link() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI __wrap_link(const char* existing, const char* created) {
+    return link_nid_postfix(existing, created);
 }
 
-int APS5_VABI __wrap_lstat() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI __wrap_lstat(const char* path, FileStat* status) {
+    return lstat_nid_postfix(path, status);
 }
 
-int APS5_VABI __wrap_mmap() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+void* APS5_VABI __wrap_mmap(void* address, std::size_t length, int protection, int flags, int descriptor, std::int64_t offset) {
+    return mmap_nid_postfix(address, length, protection, flags, descriptor, offset);
 }
 
-int APS5_VABI __wrap_readlink() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+std::int64_t APS5_VABI __wrap_readlink(const char* path, char* buffer, std::size_t size) {
+    return readlink_nid_postfix(path, buffer, size);
 }
 
-int APS5_VABI __wrap_statvfs() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI __wrap_statvfs(const char* path, LibcStatvfs* status) {
+    return statvfs_nid_postfix(path, status);
 }
 
-int APS5_VABI __wrap_symlink() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+int APS5_VABI __wrap_symlink(const char* target, const char* created) {
+    return symlink_nid_postfix(target, created);
 }
 
 int APS5_VABI clock_gettime_np() {
@@ -256,12 +259,6 @@ int APS5_VABI clock_gettime_np() {
 }
 
 int APS5_VABI getenv_np() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-APS5_EXPORT("dt8ermYp-Wc", scePosixForWebKit_gethostbyname_r);
-int APS5_VABI scePosixForWebKit_gethostbyname_r() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

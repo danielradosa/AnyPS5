@@ -1,4 +1,6 @@
 #include "prx/libc/include/General.hpp"
+#include "prx/libSceLibcInternal/include/Statvfs.hpp"
+#include "SceTypes.hpp"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +29,21 @@ int APS5_VABI socket_nid_postfix(int, int, int);
 std::int64_t APS5_VABI read_nid_postfix(int, void*, std::size_t);
 std::int64_t APS5_VABI write_nid_postfix(int, const void*, std::size_t);
 std::int64_t APS5_VABI lseek_nid_postfix(int, std::int64_t, int);
+int APS5_VABI munmap_nid_postfix(void*, std::size_t) noexcept;
+char* APS5_VABI getcwd_nid_postfix(char*, std::size_t);
+int APS5_VABI setenv_nid_postfix(const char*, const char*, int);
+int APS5_VABI unsetenv_nid_postfix(const char*);
+int APS5_VABI __wrap_access(const char*, int);
+int APS5_VABI __wrap_clock_gettime(int, KernelTimespec*);
+int APS5_VABI __wrap_fchown(int, std::uint32_t, std::uint32_t);
+char* APS5_VABI __wrap_getcwd(char*, std::size_t);
+char* APS5_VABI __wrap_getenv(const char*);
+int APS5_VABI __wrap_link(const char*, const char*);
+int APS5_VABI __wrap_lstat(const char*, FileStat*);
+void* APS5_VABI __wrap_mmap(void*, std::size_t, int, int, int, std::int64_t);
+std::int64_t APS5_VABI __wrap_readlink(const char*, char*, std::size_t);
+int APS5_VABI __wrap_statvfs(const char*, LibcStatvfs*);
+int APS5_VABI __wrap_symlink(const char*, const char*);
 }
 
 static void Require(bool condition, std::source_location location = std::source_location::current()) {
@@ -34,6 +51,82 @@ static void Require(bool condition, std::source_location location = std::source_
         std::fprintf(stderr, "POSIX filesystem check failed at line %u (guest errno %d)\n", location.line(), *__error_nid_postfix());
         std::abort();
     }
+}
+
+static void CheckWrappers(const std::string& file) {
+    Require(__wrap_access(file.c_str(), 0) == 0);
+    Require(__wrap_access("/anyps5-posix-test/absent", 0) == -1 && *__error_nid_postfix() == 2);
+    Require(__wrap_access(file.c_str(), 8) == -1 && *__error_nid_postfix() == 22);
+
+    std::array<char, 1024> wrapped{}, direct{};
+    Require(__wrap_getcwd(wrapped.data(), wrapped.size()) == wrapped.data());
+    Require(getcwd_nid_postfix(direct.data(), direct.size()) == direct.data());
+    Require(std::strcmp(wrapped.data(), direct.data()) == 0);
+    Require(__wrap_getcwd(wrapped.data(), 0) == nullptr && *__error_nid_postfix() == 22);
+
+    Require(setenv_nid_postfix("WEBKIT_WRAP_TEST", "wrapped value", 1) == 0);
+    const char* value = __wrap_getenv("WEBKIT_WRAP_TEST");
+    Require(value != nullptr && std::strcmp(value, "wrapped value") == 0);
+    Require(unsetenv_nid_postfix("WEBKIT_WRAP_TEST") == 0);
+    Require(__wrap_getenv("WEBKIT_WRAP_TEST") == nullptr);
+
+    KernelTimespec realtime{-1, -1}, monotonic{-1, -1};
+    Require(__wrap_clock_gettime(0, &realtime) == 0 && realtime.tv_sec > 1500000000);
+    Require(realtime.tv_nsec >= 0 && realtime.tv_nsec < 1000000000);
+    Require(__wrap_clock_gettime(4, &monotonic) == 0 && monotonic.tv_nsec >= 0 && monotonic.tv_nsec < 1000000000);
+    Require(__wrap_clock_gettime(4, nullptr) == -1 && *__error_nid_postfix() == 14);
+
+    FileStat status{};
+    Require(__wrap_lstat(file.c_str(), &status) == 0);
+    Require((status.st_mode & 0170000) == 0100000 && status.st_size == 0);
+    Require(__wrap_lstat("/anyps5-posix-test/absent", &status) == -1 && *__error_nid_postfix() == 2);
+
+    const std::string hard = "/anyps5-posix-test/wrap-hard";
+    Require(__wrap_link(file.c_str(), hard.c_str()) == 0);
+    Require(__wrap_access(hard.c_str(), 0) == 0);
+    Require(__wrap_link(file.c_str(), hard.c_str()) == -1 && *__error_nid_postfix() == 17);
+    Require(__wrap_link("/anyps5-posix-test/absent", "/anyps5-posix-test/wrap-other") == -1 && *__error_nid_postfix() == 2);
+
+    const std::string symbolic = "/anyps5-posix-test/wrap-link";
+    const int linked = __wrap_symlink("fixed", symbolic.c_str());
+#ifdef _WIN32
+    if (linked == -1 && *__error_nid_postfix() == 1) {
+        std::fputs("Windows symbolic-link privileges unavailable\n", stderr);
+    } else
+#endif
+    {
+        Require(linked == 0);
+        std::array<char, 16> target{};
+        Require(__wrap_readlink(symbolic.c_str(), target.data(), target.size()) == 5 && std::memcmp(target.data(), "fixed", 5) == 0);
+        Require(__wrap_lstat(symbolic.c_str(), &status) == 0 && (status.st_mode & 0170000) == 0120000);
+        Require(__wrap_symlink("fixed", symbolic.c_str()) == -1 && *__error_nid_postfix() == 17);
+    }
+    Require(__wrap_readlink(file.c_str(), wrapped.data(), wrapped.size()) == -1 && *__error_nid_postfix() == 22);
+    Require(__wrap_readlink("/anyps5-posix-test/absent", wrapped.data(), wrapped.size()) == -1 && *__error_nid_postfix() == 2);
+
+    std::string pattern = "/anyps5-posix-test/owned-XXXXXX";
+    const int descriptor = mkstemp_nid_postfix(pattern.data());
+    Require(descriptor >= 0);
+    Require(__wrap_fchown(descriptor, 0xFFFFFFFFu, 0xFFFFFFFFu) == 0);
+    Require(__wrap_fchown(descriptor, 0, 0) == 0);
+    Require(close_nid_postfix(descriptor) == 0);
+    Require(__wrap_fchown(descriptor, 0xFFFFFFFFu, 0xFFFFFFFFu) == -1 && *__error_nid_postfix() == 9);
+
+    LibcStatvfs volume{};
+    Require(__wrap_statvfs("/anyps5-posix-test", &volume) == 0);
+    Require(volume.f_bsize > 0 && volume.f_frsize > 0 && volume.f_blocks > 0 && volume.f_namemax > 0);
+    Require(__wrap_statvfs("/anyps5-posix-test/absent", &volume) == -1 && *__error_nid_postfix() == 2);
+
+    constexpr std::size_t Length = 16384;
+    void* const failed = reinterpret_cast<void*>(static_cast<std::uintptr_t>(-1));
+    auto* mapped = static_cast<unsigned char*>(__wrap_mmap(nullptr, Length, 3, 0x1002, -1, 0));
+    Require(mapped != failed && mapped != nullptr && mapped[0] == 0 && mapped[Length - 1] == 0);
+    mapped[0] = 0x5a;
+    mapped[Length - 1] = 0xa5;
+    Require(mapped[0] == 0x5a && mapped[Length - 1] == 0xa5);
+    Require(munmap_nid_postfix(mapped, Length) == 0);
+    Require(__wrap_mmap(nullptr, 0, 3, 0x1002, -1, 0) == failed && *__error_nid_postfix() == 22);
+    Require(__wrap_mmap(nullptr, Length, 3, 0x1002, 3, 0) == failed && *__error_nid_postfix() == 22);
 }
 
 int main() {
@@ -134,6 +227,7 @@ int main() {
     Require(isatty_nid_postfix(slave) == 1 && *__error_nid_postfix() == 123);
     Require(::close(slave) == 0 && ::close(terminal) == 0);
 #endif
+    CheckWrappers(fixed);
     RemovePathAlias_nid_no_patch("/anyps5-posix-test");
     Require(std::filesystem::remove_all(root) > 0);
 }
