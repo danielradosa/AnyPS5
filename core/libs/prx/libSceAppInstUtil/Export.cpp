@@ -1,5 +1,7 @@
 #include <cstdint>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
@@ -26,8 +28,12 @@ int APS5_VABI sceAppInstUtilAppIsInInstalling(int32_t* installing) {
     *installing = 0;
     return 0;
 }
-int APS5_VABI sceAppInstUtilAppIsInUpdating() {
-    NotImplemented_nid_no_patch(__func__);
+int APS5_VABI sceAppInstUtilAppIsInUpdating(const char* titleId, int32_t* updating) {
+    if (titleId == nullptr || updating == nullptr) APS5_INVALID_ARG_EX;
+    if (std::string_view(titleId) != GetAppTitleId_nid_postfix().value) {
+        throw std::invalid_argument(std::string(__func__) + ": no installed application has this title id");
+    }
+    *updating = 0;
     return 0;
 }
 int APS5_VABI sceAppInstUtilAppExists(const char* titleId, int32_t* exists) {
