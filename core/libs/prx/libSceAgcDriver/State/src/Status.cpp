@@ -22,6 +22,10 @@ bool APS5_VABI sceAgcDriverIsSubmitValidationEnabled(void) {
     return false;
 }
 
+int APS5_VABI sceAgcDriverSysIsGameClosed(void) {
+    return 0;
+}
+
 int APS5_VABI sceAgcDriverGetShaderDebuggingStatus(void) {
     return SHADER_DEBUGGING_STATUS;
 }

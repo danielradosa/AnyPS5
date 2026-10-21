@@ -35,11 +35,6 @@ int APS5_VABI sceAgcDriverDestroyQueue(void) {
     return 0;
 }
 
-int APS5_VABI sceAgcDriverGetPaDebugInterfaceVersion(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceAgcDriverGetRegShadowInfo(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -85,27 +80,7 @@ int APS5_VABI sceAgcDriverPatchClearState(void) {
     return 0;
 }
 
-int APS5_VABI sceAgcDriverSetFlip(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceAgcDriverSetHsOffchipParamDirect(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAgcDriverSetWorkloadComplete(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAgcDriverSetWorkloadsActive(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAgcDriverSetupAsyncGraphics(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -135,22 +110,12 @@ int APS5_VABI sceAgcDriverSuspendPointSubmit(void) {
     return 0;
 }
 
-int APS5_VABI sceAgcDriverSuspendPointSubmitDirect(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceAgcDriverSysEnableSubmitDone45Exception(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
 int APS5_VABI sceAgcDriverSysGetClientNumber(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceAgcDriverSysIsGameClosed(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

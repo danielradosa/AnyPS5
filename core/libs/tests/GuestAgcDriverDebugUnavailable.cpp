@@ -19,6 +19,8 @@ int APS5_VABI sceAgcDriverDbgReadRegister();
 int APS5_VABI sceAgcDriverDbgWriteRegister();
 int APS5_VABI sceAgcDriverGetGpuRefClks();
 int APS5_VABI sceAgcDriverIsSuspendPointInFlight();
+int APS5_VABI sceAgcDriverSuspendPointSubmitDirect();
+std::uint32_t APS5_VABI sceAgcDriverGetPaDebugInterfaceVersion();
 int APS5_VABI sceAgcDriverIsPaDebug();
 int APS5_VABI sceAgcDriverGetExceptionStatus();
 int APS5_VABI sceAgcDriverGetTraceInitiator();
@@ -63,6 +65,8 @@ int main() {
     Require(sceAgcDriverGetGpuPrintfWorkArea() == FeatureUnavailable && sceAgcDriverSetGpuPrintfEnabled() == FeatureUnavailable);
     Require(sceAgcDriverDbgReadRegister() == 0 && sceAgcDriverDbgWriteRegister() == FeatureUnavailable);
     Require(sceAgcDriverGetGpuRefClks() == FeatureUnavailable && sceAgcDriverIsSuspendPointInFlight() == FeatureUnavailable);
+    Require(sceAgcDriverSuspendPointSubmitDirect() == FeatureUnavailable);
+    Require(sceAgcDriverGetPaDebugInterfaceVersion() == 0x8A6D0001u);
     Require(sceAgcDriverIsPaDebug() == 0 && sceAgcDriverGetExceptionStatus() == 0 && sceAgcDriverGetTraceInitiator() == 0);
     Require(sceAgcDriverRegisterGpuResetCallbacks() == 0 && sceAgcDriverUnregisterGpuResetCallbacks() == 0);
     Require(sceAgdResetGpu() == static_cast<int>(0x8A6C0045));

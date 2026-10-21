@@ -68,6 +68,14 @@ int APS5_VABI sceAgcDriverIsSuspendPointInFlight() {
     return DRIVER_FEATURE_UNAVAILABLE;
 }
 
+int APS5_VABI sceAgcDriverSuspendPointSubmitDirect() {
+    return DRIVER_FEATURE_UNAVAILABLE;
+}
+
+std::uint32_t APS5_VABI sceAgcDriverGetPaDebugInterfaceVersion() {
+    return static_cast<std::uint32_t>(DRIVER_FEATURE_UNAVAILABLE);
+}
+
 int APS5_VABI sceAgcDriverIsPaDebug() {
     return 0;
 }
