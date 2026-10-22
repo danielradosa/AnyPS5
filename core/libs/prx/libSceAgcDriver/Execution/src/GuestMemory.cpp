@@ -2153,6 +2153,45 @@ const void* ThreadToken() {
 }
 
 std::atomic<std::uint64_t> gpuHoldSerial{0};
+
+// The draw committer is the pipeline's serial stage and waited ~650 ms per 10 s behind the compute
+// workers' holds (play1022o): while it waits, another thread's outermost lock() holds back (at most
+// PriorityBackoff, so a holder that needs that thread still gets it) and its try_lock() fails.
+// APS5_NO_GPU_LOCK_PRIORITY=1 off.
+thread_local bool priorityThread = false;
+std::atomic<std::uint32_t> priorityWaiters{0};
+constexpr auto PriorityBackoff = std::chrono::microseconds(200);
+
+bool gpuLockPriority() {
+    static const bool enabled = std::getenv("APS5_NO_GPU_LOCK_PRIORITY") == nullptr;
+    return enabled;
+}
+
+bool priorityWaiting() {
+    return priorityWaiters.load(std::memory_order_relaxed) != 0 && gpuLockPriority();
+}
+
+struct PriorityWait {
+    bool counted = false;
+    explicit PriorityWait(bool held) {
+        if (held) return;
+        if (priorityThread) {
+            counted = gpuLockPriority();
+            if (counted) priorityWaiters.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (!priorityWaiting()) return;
+        const auto until = std::chrono::steady_clock::now() + PriorityBackoff;
+        while (priorityWaiting() && std::chrono::steady_clock::now() < until) SpinPause();
+    }
+    ~PriorityWait() {
+        if (counted) priorityWaiters.fetch_sub(1, std::memory_order_relaxed);
+    }
+};
+}
+
+void MarkPriorityGpuLockThread() {
+    priorityThread = true;
 }
 
 void GpuMutexType::acquired() {
@@ -2161,6 +2200,7 @@ void GpuMutexType::acquired() {
 }
 
 bool GpuMutexType::try_lock() {
+    if (!priorityThread && priorityWaiting() && !HeldByThisThread()) return false;
     if (!GpuLockProfiled()) {
         if (!mutex.try_lock()) return false;
         acquired();
@@ -2224,6 +2264,7 @@ void AssertGpuLockHeld(const char* where) {
 }
 
 void GpuMutexType::lock() {
+    const PriorityWait priority(HeldByThisThread());
     if (!GpuLockProfiled()) {
         auto* trace = PerformanceTrace::Recording() ? PerformanceTrace::Thread() : nullptr;
         if (trace == nullptr) {

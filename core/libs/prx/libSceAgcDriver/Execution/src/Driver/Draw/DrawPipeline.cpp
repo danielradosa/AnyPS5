@@ -182,6 +182,7 @@ void DrawPipeline::run() {
     }
     // The committer's items (DrawPipeline.Commit) and their Graphics.Draw scopes on the APS5_TRACE_* timeline.
     if (PerformanceTrace::Configured()) PerformanceTrace::BindThread("draw committer");
+    GuestMemory::MarkPriorityGpuLockThread();
     StartCommitterSampler();
     for (;;) {
         Commit* commit = nullptr;

@@ -16,6 +16,8 @@
 #include <malloc.h>
 #endif
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -1459,6 +1461,40 @@ void CheckAdoptLatestEpoch() {
     Require(keptOwn, "adopting the newest collect epoch moved a thread off its own");
 }
 
+// A waiting priority thread (the draw committer) makes other threads back off, but only briefly:
+// every waiter still gets the mutex, and a holder's recursive lock is never held back.
+void CheckGpuLockPriority() {
+    using namespace std::chrono_literals;
+    auto& mutex = AgcDriver::GuestMemory::GpuMutex();
+    std::atomic<int> order{0};
+    int priorityTurn = 0;
+    int otherTurn = 0;
+    mutex.lock();
+    std::thread priority([&] {
+        AgcDriver::GuestMemory::MarkPriorityGpuLockThread();
+        mutex.lock();
+        priorityTurn = ++order;
+        std::this_thread::sleep_for(2ms);
+        mutex.unlock();
+    });
+    std::this_thread::sleep_for(20ms);
+    mutex.lock();
+    mutex.unlock();
+    std::thread other([&] {
+        Require(!mutex.try_lock(), "a try succeeded while the priority thread waited");
+        mutex.lock();
+        otherTurn = ++order;
+        mutex.unlock();
+    });
+    std::this_thread::sleep_for(20ms);
+    mutex.unlock();
+    priority.join();
+    other.join();
+    Require(priorityTurn != 0 && otherTurn != 0, "a waiter never got the GPU mutex");
+    Require(mutex.try_lock(), "the GPU mutex stayed taken");
+    mutex.unlock();
+}
+
 int main() {
     try {
 #ifdef _WIN32
@@ -1484,6 +1520,7 @@ int main() {
         CheckStoredAllSince();
         CheckSharedBlockProofs();
         CheckOwnStore();
+        CheckGpuLockPriority();
         CheckUnwatch();
         CheckNewestStamp();
         CheckPartlyWatchedStore();
