@@ -608,6 +608,12 @@ int APS5_VABI sceKernelGetModuleInfoInternal(KernelModule handle, ModuleInfoEx* 
     return ModuleInfoExForHandle_nid_no_patch(handle, info);
 }
 
+int APS5_VABI sceKernelGetModuleList(KernelModule* handles, std::size_t count, std::size_t* actual);
+
+int APS5_VABI sceKernelGetModuleListInternal(KernelModule* handles, std::size_t count, std::size_t* actual) {
+    return sceKernelGetModuleList(handles, count, actual);
+}
+
 int APS5_VABI sceKernelIsInSandbox(void) {
     return 1;
 }
