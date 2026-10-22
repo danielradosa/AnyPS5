@@ -113,6 +113,7 @@ struct PthreadAttrPrivate {
     int _schedpriority;
     int _schedpolicy;
     int _inheritsched;
+    bool _createSuspended = false;
     KernelCpumask _affinity = DEFAULT_THREAD_AFFINITY;
     bool _affinityExplicit = false;
     std::size_t _guardsize = 0x1000;
@@ -134,6 +135,8 @@ struct PthreadPrivate {
     std::atomic<unsigned> references{2};
     std::atomic<bool> inWait{false};
     std::atomic<int> pendingException{0};
+    std::atomic<bool> suspended{false};
+    bool createdSuspended = false;
     std::atomic<int> schedPolicy{1};
     void* wakeEvent = nullptr;
     void* stackAddress = nullptr;
@@ -185,6 +188,8 @@ void SetLiveGuestThreadsAffinity(KernelCpumask mask);
 KernelCpumask LiveGuestThreadsAffinity();
 bool GuestThreadIsLive(const PthreadPrivate* thread);
 std::unique_lock<std::mutex> LockLiveGuestThread(const PthreadPrivate* thread);
+extern "C" int ResumeGuestThread_nid_no_patch(PthreadPrivate* thread);
+extern "C" void ResumeAllGuestThreads_nid_no_patch();
 bool LiveGuestThreadExists(std::int64_t tid);
 bool SetGuestThreadAffinityIfLive(PthreadPrivate* thread, KernelCpumask mask);
 bool SetGuestThreadAffinityByTid(std::int64_t tid, KernelCpumask mask);
