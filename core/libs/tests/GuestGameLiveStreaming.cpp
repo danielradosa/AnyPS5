@@ -28,6 +28,22 @@ struct GameLiveStreamingStatus {
 };
 static_assert(sizeof(GameLiveStreamingStatus) == 72);
 
+struct GameLiveStreamingSpoilerTag {
+    char text[65];
+    std::uint8_t reserved[31];
+};
+static_assert(sizeof(GameLiveStreamingSpoilerTag) == 96);
+
+struct GameLiveStreamingPreset {
+    std::uint32_t commandId;
+    char text[65];
+    std::uint8_t reserved[31];
+};
+
+struct GameLiveStreamingCameraFrameSetting {
+    std::uint8_t bytes[64];
+};
+
 extern "C" {
 int APS5_VABI sceGameLiveStreamingInitialize(std::size_t heap_size);
 int APS5_VABI sceGameLiveStreamingTerminate(void);
@@ -38,6 +54,19 @@ int APS5_VABI sceGameLiveStreamingGetCurrentStatus(GameLiveStreamingStatus* stat
 int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessagesCount(int type, std::uint32_t* count);
 int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessages(int type, std::size_t feedbackCount, void* feedback, std::size_t* acquiredCount);
 int APS5_VABI sceGameLiveStreamingClearSocialFeedbackMessages(int type);
+int APS5_VABI sceGameLiveStreamingPermitLiveStreaming(bool);
+int APS5_VABI sceGameLiveStreamingPermitServerSideRecording(bool);
+int APS5_VABI sceGameLiveStreamingSetMaxBitrate(std::uint32_t);
+int APS5_VABI sceGameLiveStreamingEnableSocialFeedback(bool);
+int APS5_VABI sceGameLiveStreamingSetMetadata(const char*);
+int APS5_VABI sceGameLiveStreamingSetSpoilerTag(std::size_t, const GameLiveStreamingSpoilerTag*);
+int APS5_VABI sceGameLiveStreamingClearSpoilerTag(void);
+int APS5_VABI sceGameLiveStreamingSetPresetSocialFeedbackCommands(std::size_t, const GameLiveStreamingPreset*);
+int APS5_VABI sceGameLiveStreamingClearPresetSocialFeedbackCommands(void);
+int APS5_VABI sceGameLiveStreamingSetPresetSocialFeedbackCommandsDescription(const char*);
+int APS5_VABI sceGameLiveStreamingSetCameraFrameSetting(const GameLiveStreamingCameraFrameSetting*);
+int APS5_VABI sceGameLiveStreamingSetInvitationSessionId(const char*);
+int APS5_VABI sceGameLiveStreamingPostSocialMessage(const char*);
 }
 
 namespace {
@@ -46,6 +75,45 @@ void Require(bool value) { if (!value) std::abort(); }
 
 constexpr std::int32_t kInvalidUserId = -1;
 constexpr int kInvalidParam = static_cast<int>(0x80A00002);
+
+void CheckAll(int expected, bool nullArguments) {
+    GameLiveStreamingSpoilerTag tag{};
+    GameLiveStreamingPreset preset{};
+    GameLiveStreamingCameraFrameSetting camera{};
+    if (nullArguments) {
+        Require(sceGameLiveStreamingSetMetadata(nullptr) == expected);
+        Require(sceGameLiveStreamingSetSpoilerTag(1, nullptr) == expected);
+        Require(sceGameLiveStreamingSetPresetSocialFeedbackCommands(1, nullptr) == expected);
+        Require(sceGameLiveStreamingSetPresetSocialFeedbackCommandsDescription(nullptr) == expected);
+        Require(sceGameLiveStreamingSetCameraFrameSetting(nullptr) == expected);
+        Require(sceGameLiveStreamingSetInvitationSessionId(nullptr) == expected);
+        Require(sceGameLiveStreamingPostSocialMessage(nullptr) == expected);
+        return;
+    }
+    Require(sceGameLiveStreamingPermitLiveStreaming(true) == expected);
+    Require(sceGameLiveStreamingPermitLiveStreaming(false) == expected);
+    Require(sceGameLiveStreamingPermitServerSideRecording(true) == expected);
+    Require(sceGameLiveStreamingPermitServerSideRecording(false) == expected);
+    Require(sceGameLiveStreamingSetMaxBitrate(0) == expected);
+    Require(sceGameLiveStreamingSetMaxBitrate(6000) == expected);
+    Require(sceGameLiveStreamingSetMaxBitrate(0xffffffffu) == expected);
+    Require(sceGameLiveStreamingEnableSocialFeedback(true) == expected);
+    Require(sceGameLiveStreamingEnableSocialFeedback(false) == expected);
+    Require(sceGameLiveStreamingSetMetadata("") == expected);
+    Require(sceGameLiveStreamingSetMetadata("metadata") == expected);
+    Require(sceGameLiveStreamingSetSpoilerTag(1, &tag) == expected);
+    Require(sceGameLiveStreamingSetSpoilerTag(0x1000, &tag) == expected);
+    Require(sceGameLiveStreamingClearSpoilerTag() == expected);
+    Require(sceGameLiveStreamingClearSpoilerTag() == expected);
+    Require(sceGameLiveStreamingSetPresetSocialFeedbackCommands(1, &preset) == expected);
+    Require(sceGameLiveStreamingSetPresetSocialFeedbackCommands(0x1000, &preset) == expected);
+    Require(sceGameLiveStreamingClearPresetSocialFeedbackCommands() == expected);
+    Require(sceGameLiveStreamingClearPresetSocialFeedbackCommands() == expected);
+    Require(sceGameLiveStreamingSetPresetSocialFeedbackCommandsDescription("description") == expected);
+    Require(sceGameLiveStreamingSetCameraFrameSetting(&camera) == expected);
+    Require(sceGameLiveStreamingSetInvitationSessionId("session") == expected);
+    Require(sceGameLiveStreamingPostSocialMessage("message") == expected);
+}
 
 }
 
@@ -56,6 +124,8 @@ int main() {
     Require(sceGameLiveStreamingTerminate() == notInitialized);
     Require(sceGameLiveStreamingGetCurrentStatus2(nullptr) == notInitialized);
     Require(sceGameLiveStreamingGetCurrentStatus(nullptr) == notInitialized);
+    CheckAll(notInitialized, true);
+    CheckAll(notInitialized, false);
     for (const std::size_t size : {0u, 1u, 0x3fffu, 0x4001u, 0x100000u}) Require(sceGameLiveStreamingInitialize(size) == invalidArgument);
     Require(sceGameLiveStreamingInitialize(0x4000) == 0);
     Require(sceGameLiveStreamingInitialize(0) == invalidArgument);
@@ -115,6 +185,11 @@ int main() {
         Require(sceGameLiveStreamingClearSocialFeedbackMessages(type) == kInvalidParam);
     }
 
+    CheckAll(invalidArgument, true);
+    CheckAll(0, false);
+    Require(sceGameLiveStreamingSetSpoilerTag(0, nullptr) == 0);
+    Require(sceGameLiveStreamingSetPresetSocialFeedbackCommands(0, nullptr) == 0);
+
     Require(sceGameLiveStreamingGetProgramInfo(nullptr) == 0);
 
     Require(sceGameLiveStreamingTerminate() == 0);
@@ -122,4 +197,6 @@ int main() {
     Require(sceGameLiveStreamingGetCurrentStatus2(&status) == notInitialized);
     for (const auto value : std::as_bytes(std::span(&status, 1))) Require(value == std::byte{0x7f});
     Require(sceGameLiveStreamingTerminate() == notInitialized);
+    CheckAll(notInitialized, true);
+    CheckAll(notInitialized, false);
 }
