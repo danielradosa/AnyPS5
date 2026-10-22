@@ -17,6 +17,10 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graph
 std::vector<std::pair<std::uint64_t, std::uint64_t>> DispatchWriteRanges(const ShaderRecompiler::RecompileResult& compiled, bool& bounded);
 bool ExactDrawWrites();
 std::vector<std::pair<std::uint64_t, std::uint64_t>> QueuedDrawReadRanges(const Pm4::DrawParameters& draw, std::span<const Graphics::CompiledShader> stages);
+// The collect handoff's pre-walk on the queue-0 worker, before it enqueues a draw: the ranges the
+// commit will collect (GuestMemory::PrewalkCollects), so the committer's collects are memo hits.
+// Nothing without the handoff (APS5_NO_COLLECT_HANDOFF=1).
+void PrewalkDrawCollects(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages, std::span<const std::pair<std::uint64_t, std::uint64_t>> writes, std::span<const std::pair<std::uint64_t, std::uint64_t>> reads);
 
 }
 
