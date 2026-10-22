@@ -67,6 +67,7 @@ int APS5_VABI sceGameLiveStreamingSetPresetSocialFeedbackCommandsDescription(con
 int APS5_VABI sceGameLiveStreamingSetCameraFrameSetting(const GameLiveStreamingCameraFrameSetting*);
 int APS5_VABI sceGameLiveStreamingSetInvitationSessionId(const char*);
 int APS5_VABI sceGameLiveStreamingPostSocialMessage(const char*);
+int APS5_VABI sceGameLiveStreamingEnableLiveStreaming(bool isEnableLiveStreaming);
 }
 
 namespace {
@@ -75,6 +76,15 @@ void Require(bool value) { if (!value) std::abort(); }
 
 constexpr std::int32_t kInvalidUserId = -1;
 constexpr int kInvalidParam = static_cast<int>(0x80A00002);
+
+bool EnableThrowsNotInitialized(bool isEnableLiveStreaming) {
+    try {
+        sceGameLiveStreamingEnableLiveStreaming(isEnableLiveStreaming);
+    } catch (const std::logic_error&) {
+        return true;
+    }
+    return false;
+}
 
 void CheckAll(int expected, bool nullArguments) {
     GameLiveStreamingSpoilerTag tag{};
@@ -126,8 +136,10 @@ int main() {
     Require(sceGameLiveStreamingGetCurrentStatus(nullptr) == notInitialized);
     CheckAll(notInitialized, true);
     CheckAll(notInitialized, false);
+    Require(EnableThrowsNotInitialized(true));
     for (const std::size_t size : {0u, 1u, 0x3fffu, 0x4001u, 0x100000u}) Require(sceGameLiveStreamingInitialize(size) == invalidArgument);
     Require(sceGameLiveStreamingInitialize(0x4000) == 0);
+    Require(sceGameLiveStreamingEnableLiveStreaming(true) == 0);
     Require(sceGameLiveStreamingInitialize(0) == invalidArgument);
     Require(sceGameLiveStreamingInitialize(0x4000) == alreadyInitialized);
     Require(sceGameLiveStreamingGetCurrentStatus2(nullptr) == invalidArgument);
@@ -192,7 +204,9 @@ int main() {
 
     Require(sceGameLiveStreamingGetProgramInfo(nullptr) == 0);
 
+    Require(sceGameLiveStreamingEnableLiveStreaming(false) == 0);
     Require(sceGameLiveStreamingTerminate() == 0);
+    Require(EnableThrowsNotInitialized(false));
     std::memset(&status, 0x7f, sizeof(status));
     Require(sceGameLiveStreamingGetCurrentStatus2(&status) == notInitialized);
     for (const auto value : std::as_bytes(std::span(&status, 1))) Require(value == std::byte{0x7f});
