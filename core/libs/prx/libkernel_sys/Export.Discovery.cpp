@@ -2177,11 +2177,6 @@ int APS5_VABI set_phys_fmem_limit_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI setlogin_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sigreturn_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
