@@ -3897,6 +3897,7 @@ void StorageTexture::markLayersPending(std::uint32_t first, std::uint32_t count)
     }
     if (anyUnsaved && !GuestMemory::Watched(descriptor.baseAddress, static_cast<std::size_t>(guestBytes))) captureGuestBytes(&unsaved);
     for (std::uint32_t layer = first; layer < first + count; ++layer) layerPending[layer] = true;
+    if (const auto* recorder = Recorder::Active(); recorder != nullptr) resultSerial = recorder->OpenSerial();
     // New results: the content is no longer what the last store left (the eager write-back below
     // stores before the version moves).
     syncedVersion = ~std::uint64_t{0};
@@ -4006,6 +4007,48 @@ void waitForIdlePublish(const char* reason) {
 
 }
 
+// APS5_PROFILE_DRAW: the waits FlushPending makes for an address-based (or, with
+// APS5_FLUSH_WAITS_FOR_WRITERS, any) writer, as [flushwait] every 10 s: the open batch synced or an
+// in-flight one finished, for a draw's target refresh or anything else, and whether the writer is
+// older than every flushed image's newest pending result (a GPU-ordered write-back would serve it
+// without the wait), newer (or the same batch), or unknown (an image without a result serial).
+void StorageTexture::noteFlushWait(bool sync, const char* reason, const std::vector<std::shared_ptr<StorageTexture>>& flush, std::uint64_t writer, std::chrono::steady_clock::time_point start) {
+    static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    if (!profile) return;
+    const auto now = std::chrono::steady_clock::now();
+    const auto ms = std::chrono::duration<double, std::milli>(now - start).count();
+    int order = 1;
+    for (const auto& texture : flush) {
+        if (texture->resultSerial == 0) order = std::min(order, 0);
+        else if (writer >= texture->resultSerial) order = -1;
+    }
+    struct Counts {
+        std::uint64_t syncs = 0, finishes = 0, targets = 0, older = 0, newer = 0, unknown = 0;
+        double ms = 0, maxMs = 0, targetMs = 0, olderMs = 0;
+    };
+    static std::mutex mutex;
+    static auto reported = now;
+    static Counts waits;
+    std::lock_guard lock(mutex);
+    ++(sync ? waits.syncs : waits.finishes);
+    waits.ms += ms;
+    waits.maxMs = std::max(waits.maxMs, ms);
+    if (reason != nullptr && std::strncmp(reason, "storage refresh: target", 23) == 0) {
+        ++waits.targets;
+        waits.targetMs += ms;
+    }
+    if (order > 0) {
+        ++waits.older;
+        waits.olderMs += ms;
+    } else {
+        ++(order < 0 ? waits.newer : waits.unknown);
+    }
+    if (now - reported < std::chrono::seconds(10)) return;
+    std::fprintf(stderr, "[flushwait] (10 s): %llu waits %.1f ms (max %.2f): %llu open-batch syncs, %llu in-flight finishes; %llu for draw targets %.1f ms; writer older than every pending result %llu (%.1f ms), newer or same batch %llu, unknown %llu\n", static_cast<unsigned long long>(waits.syncs + waits.finishes), waits.ms, waits.maxMs, static_cast<unsigned long long>(waits.syncs), static_cast<unsigned long long>(waits.finishes), static_cast<unsigned long long>(waits.targets), waits.targetMs, static_cast<unsigned long long>(waits.older), waits.olderMs, static_cast<unsigned long long>(waits.newer), static_cast<unsigned long long>(waits.unknown));
+    reported = now;
+    waits = {};
+}
+
 bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, const StorageTexture* except, const char* reason, PublishScope scope, bool* published) {
     static_cast<void>(FlushDepthPlanes(address, bytes));
     if (published != nullptr) *published = false;
@@ -4075,10 +4118,14 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
         try {
             recorder->Reap();
             if (const auto writer = recorder->PendingWriterSerial(address, bytes, leasesOnly); writer == recorder->OpenSerial()) {
+                const auto waitStart = std::chrono::steady_clock::now();
                 Recorder::CountSync(recorder->OpenWriteOverlaps(address, bytes) ? 1 : 3);
                 recorder->Sync();
+                noteFlushWait(true, reason, flush, writer, waitStart);
             } else if (writer != 0) {
+                const auto waitStart = std::chrono::steady_clock::now();
                 recorder->FinishUpTo(writer);
+                noteFlushWait(false, reason, flush, writer, waitStart);
             }
         } catch (...) {
             for (const auto& texture : flush) texture->reconcilePending();

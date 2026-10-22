@@ -219,6 +219,8 @@ public:
     // with a pending unit inside the range are stored (APS5_NO_FLUSH_PRETEST=1 lists every
     // overlapping pending image, as before).
     static bool FlushPending(std::uint64_t address, std::size_t bytes, const StorageTexture* except = nullptr, const char* reason = "memory access", PublishScope scope = PublishScope::Whole, bool* published = nullptr);
+    // APS5_PROFILE_DRAW's [flushwait] line: one wait of FlushPending for a writer (see Texture.cpp).
+    static void noteFlushWait(bool sync, const char* reason, const std::vector<std::shared_ptr<StorageTexture>>& flush, std::uint64_t writer, std::chrono::steady_clock::time_point start);
     static void FlushAllPending(const char* reason);
     // Profile: Refresh counts the other images it stores under the innermost scope's reason on this thread
     // ([storage] write-backs by reason), so the "storage refresh" traffic splits by what refreshed.
@@ -691,6 +693,9 @@ private:
     bool dirty = false;
     std::uint64_t version = 0;
     std::uint64_t writes = 0;
+    // The active recorder's open serial when results last became pending (0: none, or no recorder):
+    // a flush can tell an address-based writer older than every pending result from a newer one.
+    std::uint64_t resultSerial = 0;
     // `original` holds the guest bytes; false after a GPU-side clear, which never read them.
     std::vector<bool> layerOriginal;
     std::map<std::uint64_t, std::uint64_t> keptAtUnwatch;
