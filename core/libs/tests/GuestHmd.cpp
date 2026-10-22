@@ -20,6 +20,10 @@ void CheckDisconnected() {
     Require(status == Hmd::DeviceStatus::NotDetected, "headset reported connected");
     Require(sceHmdInternalGetDeviceStatus(nullptr) == Hmd::ParameterNull, "null status");
     Require(sceHmdInternalMmapIsConnect() == 0, "connection reported present");
+    Require(!sceHmdInternalIsGameVr2d(), "game reported in VR2D without a headset");
+    Require(!sceHmdInternalIsMiniAppVr2d(), "mini app reported in VR2D without a headset");
+    Require(!sceHmdInternalIsCommonDlgVr2d(), "common dialog reported in VR2D without a headset");
+    Require(!sceHmdInternalIsCommonDlgMiniAppVr2d(), "common dialog mini app reported in VR2D without a headset");
 }
 
 void CheckBufferQueries() {
@@ -39,10 +43,17 @@ void CheckHandleQueries(std::int32_t expected) {
     unsigned char right[16];
     unsigned char fieldOfView[16];
     unsigned char sensor[64];
+    unsigned char descriptor[64] = {};
+    unsigned char commands[16];
     std::memset(left, 0x5a, sizeof(left));
     std::memset(right, 0x5a, sizeof(right));
     std::memset(fieldOfView, 0x5a, sizeof(fieldOfView));
     std::memset(sensor, 0x5a, sizeof(sensor));
+    std::memset(commands, 0x5a, sizeof(commands));
+    const auto* distortion = reinterpret_cast<const HmdDistortionCommandParameter*>(descriptor);
+    const auto* wideNear = reinterpret_cast<const HmdWideNearDistortionCommandParameter*>(descriptor);
+    const auto* vr2d = reinterpret_cast<const Hmd2dVrCommandParameter*>(descriptor);
+    auto* commandBuffer = reinterpret_cast<HmdCommandBuffer*>(commands);
     for (const auto handle : {0, -1, 1, 0x0f000000}) {
         Require(sceHmdGetFieldOfView(handle, nullptr) == Hmd::ParameterNull, "null field of view accepted");
         Require(sceHmdGetFieldOfView(handle, reinterpret_cast<HmdFieldOfView*>(fieldOfView)) == expected, "field of view without a headset");
@@ -50,8 +61,14 @@ void CheckHandleQueries(std::int32_t expected) {
         Require(sceHmdGet2DEyeOffset(handle, nullptr, nullptr) == expected, "eye offset with null outputs");
         Require(sceHmdGetInertialSensorData(handle, reinterpret_cast<HmdInertialSensorData*>(sensor), 1) == expected, "sensor data without a headset");
         Require(sceHmdGetInertialSensorData(handle, nullptr, 0) == expected, "sensor data with a null output");
+        Require(sceHmdGetDistortionCorrectionCommand(handle, distortion, commandBuffer) == expected, "distortion command without a headset");
+        Require(sceHmdDistortionGetCorrectionCommand(handle, distortion, commandBuffer) == expected, "aliased distortion command without a headset");
+        Require(sceHmdGetWideNearDistortionCorrectionCommand(handle, wideNear, commandBuffer) == expected, "wide-near distortion command without a headset");
+        Require(sceHmdDistortionGetWideNearCorrectionCommand(handle, wideNear, commandBuffer) == expected, "aliased wide-near distortion command without a headset");
+        Require(sceHmdGet2dVrCommand(handle, vr2d, commandBuffer) == expected, "2D VR command without a headset");
+        Require(sceHmdDistortionGet2dVrCommand(handle, vr2d, commandBuffer) == expected, "aliased 2D VR command without a headset");
     }
-    for (const auto* bytes : {left, right, fieldOfView}) {
+    for (const auto* bytes : {left, right, fieldOfView, commands}) {
         for (std::size_t index = 0; index < 16; ++index) Require(bytes[index] == 0x5a, "a refused query wrote its output");
     }
     for (const auto byte : sensor) Require(byte == 0x5a, "a refused sensor query wrote its output");
