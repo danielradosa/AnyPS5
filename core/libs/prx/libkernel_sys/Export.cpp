@@ -13,6 +13,7 @@
 #include <string_view>
 #include <system_error>
 #include <sys/stat.h>
+#include <ctime>
 #ifndef _WIN32
 #include <cerrno>
 #include <fcntl.h>
@@ -913,6 +914,16 @@ int APS5_VABI fchownat_nid_postfix(int fd, const char* path, std::uint32_t uid, 
 
 int APS5_VABI lchmod_nid_postfix(const char* path, std::uint16_t mode) {
     return fchmodat_nid_postfix(GuestAtFdcwd, path, mode, GuestAtSymlinkNofollow);
+}
+
+int APS5_VABI sched_rr_get_interval_nid_postfix(int pid, struct timespec* interval) {
+    constexpr int GuestEsrch = 3;
+    const int self = getpid_nid_postfix();
+    if (pid != 0 && pid != self) return static_cast<int>(Fail(GuestEsrch));
+    if (interval == nullptr) return static_cast<int>(Fail(GuestEfault));
+    interval->tv_sec = 0;
+    interval->tv_nsec = 94000000;
+    return 0;
 }
 
 int APS5_VABI stat_nid_postfix(const char* path, FileStat* sb);
