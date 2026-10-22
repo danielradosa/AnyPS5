@@ -1,5 +1,5 @@
 # libScePs2EmuMenuDialog technical debt
 
-### Unknown function info
+### Silent stubs
 
-- [scePs2EmuMenuDialogClose, scePs2EmuMenuDialogGetResult, scePs2EmuMenuDialogGetStatus, scePs2EmuMenuDialogInitialize, scePs2EmuMenuDialogOpen, scePs2EmuMenuDialogTerminate and scePs2EmuMenuDialogUpdateStatus](../../../core/libs/prx/libScePs2EmuMenuDialog/Export.cpp) (libScePs2EmuMenuDialog) - names and NIDs are present in the [PS5 3.20 export inventory](https://github.com/DNNDHH/PS5-3.20_Libs/blob/b2a77c09cd71c01f34c790cfbe98c751a13262ad/libScePs2EmuMenuDialog.c), but no credible prototypes were found. The declarations have no parameters solely to resolve known imports; this is not an ABI claim and callers must not call them until signatures are verified
+- [libScePs2EmuMenuDialog](../../../core/libs/prx/libScePs2EmuMenuDialog/Export.cpp) - the PS2 emulator menu dialog runs the common-dialog state machine but shows nothing and reports the user as having cancelled, as there is no host PS2 emulation UI. The result layout beyond the leading `int32_t` result code is not known, so nothing else is written.
