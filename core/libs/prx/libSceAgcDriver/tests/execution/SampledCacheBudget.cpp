@@ -1119,7 +1119,6 @@ int main(int argc, char** argv) {
             reportedBudgetTests(context);
             snapshotTests(context);
             heldTests(context);
-            idleHeldTests(context);
             releasedTests(context);
             rescanTests(context);
             viewEvictionTests(context);
@@ -1130,6 +1129,8 @@ int main(int argc, char** argv) {
             secondUseTests(context);
             earlyMissTests(context);
             collidingKeyTests(context);
+            // Last: it counts 61 presents, and rescanTests and the tests before frameTests run at present 0.
+            idleHeldTests(context);
             ClearCachedTextures(context.device);
         }
         std::puts("sampled texture cache budget tests passed");
