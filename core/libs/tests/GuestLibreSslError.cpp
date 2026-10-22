@@ -1,4 +1,5 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -16,6 +17,8 @@ std::uint64_t APS5_VABI ERR_peek_error_nid_postfix();
 void APS5_VABI ERR_clear_error_nid_postfix();
 void APS5_VABI ERR_remove_thread_state_nid_postfix(const void*);
 void APS5_VABI ERR_free_strings_nid_postfix();
+char* APS5_VABI ERR_error_string_nid_postfix(std::uint64_t, char*);
+void APS5_VABI ERR_error_string_n_nid_postfix(std::uint64_t, char*, std::size_t);
 void APS5_VABI OPENSSL_add_all_algorithms_noconf_nid_postfix();
 void APS5_VABI EVP_cleanup_nid_postfix();
 int APS5_VABI SSL_library_init_nid_postfix();
@@ -105,6 +108,42 @@ static void TestQueue() {
     Require(Throws([&] { ERR_remove_thread_state_nid_postfix(&marker); }));
 }
 
+static void ExpectString(std::uint64_t code, const char* expected) {
+    std::array<char, 256> buffer{};
+    Require(ERR_error_string_nid_postfix(code, buffer.data()) == buffer.data());
+    Require(std::strcmp(buffer.data(), expected) == 0);
+}
+
+static void TestStrings() {
+    ExpectString(0, "error:00000000:lib(0):func(0):reason(0)");
+    ExpectString(0xe1abc789, "error:E1ABC789:lib(225):func(2748):reason(1929)");
+    ExpectString(0x12345678e1abc789, "error:12345678E1ABC789:lib(225):func(2748):reason(1929)");
+    auto* shared = ERR_error_string_nid_postfix(0xe1abc789, nullptr);
+    Require(shared != nullptr);
+    Require(ERR_error_string_nid_postfix(0, nullptr) == shared);
+    Require(std::strcmp(shared, "error:00000000:lib(0):func(0):reason(0)") == 0);
+    constexpr auto expected = "error:E1ABC789:lib(225):func(2748):reason(1929)";
+    for (std::size_t size = 0; size <= std::strlen(expected) + 2; ++size) {
+        std::array<char, 260> buffer;
+        buffer.fill('#');
+        ERR_error_string_n_nid_postfix(0xe1abc789, buffer.data() + 1, size);
+        Require(buffer.front() == '#' && buffer[size + 1] == '#');
+        if (size == 0) continue;
+        const auto count = std::strlen(buffer.data() + 1);
+        Require(count < size);
+        if (size > 4 && size <= std::strlen(expected)) {
+            std::size_t colons = 0;
+            for (std::size_t index = 1; index <= count; ++index) colons += buffer[index] == ':';
+            Require(colons == 4);
+        }
+        if (size > std::strlen(expected)) Require(std::strcmp(buffer.data() + 1, expected) == 0);
+    }
+    char tiny[6]{};
+    ERR_error_string_n_nid_postfix(0xe1abc789, tiny, sizeof(tiny));
+    Require(std::strcmp(tiny, "e::::") == 0);
+    ERR_error_string_n_nid_postfix(0, nullptr, 0);
+}
+
 static void TestLibrary() {
     SSL_load_error_strings_nid_postfix();
     Require(SSL_library_init_nid_postfix() == 1);
@@ -142,6 +181,7 @@ static void TestLibrary() {
 
 int main() {
     TestQueue();
+    TestStrings();
     TestLibrary();
     return 0;
 }
