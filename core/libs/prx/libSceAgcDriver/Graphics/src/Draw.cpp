@@ -2738,7 +2738,8 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
     if (recorded) recorder->PrepareSampleSlot();
     APS5_LOG_CHARS_OUT_DEBUG("CommandBatch created");
     // The draw's [gputime] class range: from its first barrier to the download barrier.
-    const auto drawTiming = recorded ? recorder->BeginGpuTiming(std::getenv("APS5_GPU_TIME_BY_PASS") != nullptr ? 2 : Recorder::ClassKey(CommandClass::Draw)) : Recorder::NoTiming;
+    static const bool timeByPass = std::getenv("APS5_GPU_TIME_BY_PASS") != nullptr;
+    const auto drawTiming = recorded ? recorder->BeginGpuTiming(timeByPass ? 2 : Recorder::ClassKey(CommandClass::Draw)) : Recorder::NoTiming;
     if (recorded && Recorder::BarrierValidate()) {
         auto reads = resources->InPlaceReads();
         reads.insert(reads.end(), inputs.inPlaceReads.begin(), inputs.inPlaceReads.end());
