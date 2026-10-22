@@ -18,6 +18,14 @@
 #include <utility>
 #include <vector>
 #endif
+#if defined(__linux__) && defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 35))
+#define LIBC_UNWIND_FIND_OBJECT 1
+#include <dlfcn.h>
+#include <map>
+#include <mutex>
+#include <tuple>
+#include <utility>
+#endif
 #ifdef __APPLE__
 #include <dlfcn.h>
 #include <mach-o/getsect.h>
@@ -140,14 +148,21 @@ extern "C" void _Unwind_DeleteException(_Unwind_Exception*);
 #endif
 
 namespace LibcUnwind {
-_Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
 #ifdef _WIN32
-    const auto* code = reinterpret_cast<const Byte*>(personality);
+static Word ResolveImport(Word address) {
+    const auto* code = reinterpret_cast<const Byte*>(address);
     if (code[0] == 0xff && code[1] == 0x25) {
         std::int32_t displacement;
-        std::memcpy(&displacement, code + 2, 4);
-        std::memcpy(&personality, code + 6 + displacement, sizeof(personality));
+        std::memcpy(&displacement, code + 2, sizeof(displacement));
+        std::memcpy(&address, code + 6 + displacement, sizeof(address));
     }
+    return address;
+}
+#endif
+
+_Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
+#ifdef _WIN32
+    personality = ResolveImport(personality);
 #endif
     if (personality == reinterpret_cast<Word>(__gxx_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gxx_personality_v0))
         return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
@@ -156,6 +171,8 @@ _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _U
     return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
 }
 #if defined(__linux__) || defined(__APPLE__)
+void SearchHeader(const Byte* header, Lookup& query);
+
 int FindFrame(dl_phdr_info* info, std::size_t, void* argument) {
     auto& query = *static_cast<Lookup*>(argument);
     const Byte* header = nullptr;
@@ -172,10 +189,15 @@ int FindFrame(dl_phdr_info* info, std::size_t, void* argument) {
         if (ph.p_type == PT_LOAD && (ph.p_flags & PF_W)) query.data = start;
     }
     if (!contains || !header || header[0] != 1) return 0;
+    SearchHeader(header, query);
+    return 1;
+}
+
+void SearchHeader(const Byte* header, Lookup& query) {
     const Byte* p = header + 4;
     Encoded(p, header[1], Word(header));
     Word count = Encoded(p, header[2]);
-    if (header[3] == 255) return 1;
+    if (header[3] == 255) return;
     unsigned width = EncodingSize(header[3]);
     const Byte* table = p;
     Word lo = 0, hi = count;
@@ -189,8 +211,39 @@ int FindFrame(dl_phdr_info* info, std::size_t, void* argument) {
         p = table + (lo - 1) * width * 2 + width;
         query.fde = reinterpret_cast<const Byte*>(Encoded(p, header[3], Word(header)));
     }
-    return 1;
 }
+
+#ifdef LIBC_UNWIND_FIND_OBJECT
+bool FindFrameFast(Lookup& query) {
+    dl_find_object object {};
+    if (_dl_find_object(reinterpret_cast<void*>(query.pc), &object) != 0 || object.dlfo_eh_frame == nullptr) return false;
+    const auto* header = static_cast<const Byte*>(object.dlfo_eh_frame);
+    if (header[0] != 1) return false;
+    static std::mutex mutex;
+    static std::map<std::tuple<const Byte*, const void*, const void*>, std::pair<Word, Word>> bases;
+    const std::tuple key {header, static_cast<const void*>(object.dlfo_map_start), static_cast<const void*>(object.dlfo_map_end)};
+    {
+        std::lock_guard lock(mutex);
+        auto found = bases.find(key);
+        if (found != bases.end()) {
+            query.text = found->second.first;
+            query.data = found->second.second;
+            SearchHeader(header, query);
+            return true;
+        }
+    }
+    Lookup probe {query.pc};
+    dl_iterate_phdr(FindFrame, &probe);
+    {
+        std::lock_guard lock(mutex);
+        const auto found = bases.emplace(key, std::pair {probe.text, probe.data}).first;
+        query.text = found->second.first;
+        query.data = found->second.second;
+    }
+    SearchHeader(header, query);
+    return true;
+}
+#endif
 
 #endif
 
@@ -286,14 +339,20 @@ bool NearestExport(Word pc, const char*& name, Word& address) {
     return name != nullptr;
 }
 
-bool VirtualUnwind(const _Unwind_Context& context, _Unwind_Context& caller) {
+bool VirtualUnwind(_Unwind_Context& context, Frame& frame) {
     const Word pc = context.registers[16];
     const Byte* base = nullptr;
     const auto* nt = ImageHeaders(pc, base);
     if (!nt) return false;
     const auto* sections = IMAGE_FIRST_SECTION(nt);
-    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i)
-        if (std::memcmp(sections[i].Name, ".ehmeta", 8) == 0 || std::memcmp(sections[i].Name, ".ehfram", 8) == 0) return false;
+    const PEXCEPTION_ROUTINE* personalities = nullptr;
+    bool dwarf = false;
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        if (std::memcmp(sections[i].Name, ".ehmeta", 8) == 0 || std::memcmp(sections[i].Name, ".ehfram", 8) == 0) dwarf = true;
+        if (std::memcmp(sections[i].Name, ".sehgcc", 8) == 0 && sections[i].Misc.VirtualSize >= 2 * sizeof(PEXCEPTION_ROUTINE))
+            personalities = reinterpret_cast<const PEXCEPTION_ROUTINE*>(base + sections[i].VirtualAddress);
+    }
+    if (dwarf && !personalities) return false;
     DWORD64 imageBase = 0;
     auto* function = RtlLookupFunctionEntry(pc, &imageBase, nullptr);
     if (!function) return false;
@@ -304,11 +363,27 @@ bool VirtualUnwind(const _Unwind_Context& context, _Unwind_Context& caller) {
     for (unsigned i = 0; i < 16; ++i) std::memcpy(&state.FltSave.XmmRegisters[i], context.vectorRegisters[i], 16);
     void* handlerData = nullptr;
     DWORD64 establisher = 0;
-    if (RtlVirtualUnwind(UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER, imageBase, pc, function, &state, &handlerData, &establisher, nullptr)) return false;
+    const auto handler = RtlVirtualUnwind(UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER, imageBase, pc, function, &state, &handlerData, &establisher, nullptr);
+    frame.start = imageBase + function->BeginAddress;
+    if (handler) {
+        if (!personalities) return false;
+        const Word resolved = ResolveImport(reinterpret_cast<Word>(handler));
+        if (resolved == ResolveImport(reinterpret_cast<Word>(personalities[0]))) frame.personality = reinterpret_cast<Word>(__gxx_personality_v0_nid_postfix);
+        else if (resolved == ResolveImport(reinterpret_cast<Word>(personalities[1]))) frame.personality = reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix);
+        else return false;
+        frame.lsda = reinterpret_cast<Word>(handlerData);
+    }
+    auto& caller = frame.caller;
     caller = context;
     for (unsigned i = 0; i < 17; ++i) caller.registers[i] = *registers[i];
     for (unsigned i = 0; i < 16; ++i) std::memcpy(caller.vectorRegisters[i], &state.FltSave.XmmRegisters[i], 16);
     caller.signalFrame = false;
+    context.cfa = caller.registers[7];
+    context.region = frame.start;
+    context.lsda = frame.lsda;
+    context.personality = frame.personality;
+    context.textBase = imageBase;
+    context.dataBase = 0;
     return true;
 }
 #endif
@@ -316,7 +391,10 @@ bool VirtualUnwind(const _Unwind_Context& context, _Unwind_Context& caller) {
 bool DecodeFrame(_Unwind_Context& context, Frame& frame, Word pc) {
     Lookup query {pc};
 #if defined(__linux__) || defined(__APPLE__)
-    dl_iterate_phdr(FindFrame, &query);
+#ifdef LIBC_UNWIND_FIND_OBJECT
+    if (!FindFrameFast(query))
+#endif
+        dl_iterate_phdr(FindFrame, &query);
 #ifdef __APPLE__
     if (!query.fde) {
         Dl_info image {};
@@ -481,10 +559,8 @@ bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules, Word pc) {
 #ifdef _WIN32
         if (NativeRules(context, frame, rules)) return true;
         frame = {};
-        if (!VirtualUnwind(context, frame.caller)) return false;
+        if (!VirtualUnwind(context, frame)) return false;
         frame.foreign = true;
-        context.cfa = frame.caller.registers[7];
-        context.region = context.lsda = context.personality = context.textBase = context.dataBase = 0;
         context.regionEnd = context.fde = context.fdeEnd = context.argsSize = context.imageBase = 0;
         return true;
 #else

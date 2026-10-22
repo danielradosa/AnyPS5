@@ -11,29 +11,16 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
+struct UsbStorageEvent;
+struct UsbStorageDeviceInfo;
+using UsbStorageCallback = void (APS5_VABI *)(const UsbStorageEvent* event, void* userData);
+
 namespace {
 
 constexpr std::int32_t SCE_USB_STORAGE_ERROR_INVAL = static_cast<std::int32_t>(0x80F40002);
 constexpr std::int32_t SCE_USB_STORAGE_ERROR_NOT_INITIALIZED = static_cast<std::int32_t>(0x80F40003);
 constexpr std::int32_t SCE_USB_STORAGE_ERROR_NOENT = static_cast<std::int32_t>(0x80F40004);
 constexpr std::int32_t SCE_USB_STORAGE_ERROR_NOTSUP = static_cast<std::int32_t>(0x80F40005);
-
-struct SceUsbStorageDeviceInfo {
-    std::uint32_t device_id;
-    std::uint8_t pad0[12];
-    std::uint16_t unk10;
-    std::uint16_t unk12;
-    std::uint16_t unk14;
-    char vendor[256];
-    std::uint64_t capacity;
-    char product[256];
-    std::uint64_t status;
-    char mount_path[256];
-    std::uint64_t ready;
-    std::uint8_t pad1[48];
-};
-
-static_assert(sizeof(SceUsbStorageDeviceInfo) == 0x360);
 
 struct SceUsbStorageDirent {
     std::uint32_t d_fileno;
@@ -75,48 +62,49 @@ int APS5_VABI sceUsbStorageTerm(void) {
     return 0;
 }
 
-int APS5_VABI sceUsbStorageGetDeviceList(uint32_t* device_ids, uint32_t* count) {
-    if (!device_ids || !count) return SCE_USB_STORAGE_ERROR_INVAL;
+int APS5_VABI sceUsbStorageGetDeviceList(uint32_t* devices, int32_t* count) {
+    if (!devices || !count) return SCE_USB_STORAGE_ERROR_INVAL;
     if (!g_initialized.load()) return SCE_USB_STORAGE_ERROR_NOT_INITIALIZED;
     *count = 0;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageGetDeviceInfo(uint32_t device_id, SceUsbStorageDeviceInfo* info) {
-    (void)device_id;
+int APS5_VABI sceUsbStorageGetDeviceInfo(uint32_t device, UsbStorageDeviceInfo* info) {
+    (void)device;
     if (!info) return SCE_USB_STORAGE_ERROR_INVAL;
     if (!g_initialized.load()) return SCE_USB_STORAGE_ERROR_NOT_INITIALIZED;
     return SCE_USB_STORAGE_ERROR_NOENT;
 }
 
-int APS5_VABI sceUsbStorageIsExist(uint32_t device_id) {
-    (void)device_id;
+bool APS5_VABI sceUsbStorageIsExist(uint32_t device, const char* directory, std::uint8_t* exists) {
+    (void)device;
+    (void)directory;
+    (void)exists;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageGetMountPointOfShellCore(uint32_t device_id, char* mount_point, size_t max_len) {
-    if (!mount_point || max_len == 0) return SCE_USB_STORAGE_ERROR_INVAL;
-    if (device_id != 0) return SCE_USB_STORAGE_ERROR_NOENT;
+int APS5_VABI sceUsbStorageGetMountPointOfShellCore(uint32_t device, char* mountPoint) {
+    if (!mountPoint) return SCE_USB_STORAGE_ERROR_INVAL;
+    if (device != 0) return SCE_USB_STORAGE_ERROR_NOENT;
     const char default_mount[] = "/mnt/usb0";
-    if (max_len <= sizeof(default_mount)) return SCE_USB_STORAGE_ERROR_INVAL;
-    std::memcpy(mount_point, default_mount, sizeof(default_mount));
+    std::memcpy(mountPoint, default_mount, sizeof(default_mount));
     return 0;
 }
 
-int APS5_VABI sceUsbStorageGetdentsOpen(uint32_t device_id, int32_t* out_fd, uint64_t* out_bufsize) {
-    (void)device_id;
-    if (!out_fd || !out_bufsize) return SCE_USB_STORAGE_ERROR_INVAL;
+int APS5_VABI sceUsbStorageGetdentsOpen(uint32_t device, int32_t* fd, uint64_t* bufferSize) {
+    (void)device;
+    if (!fd || !bufferSize) return SCE_USB_STORAGE_ERROR_INVAL;
     if (!g_initialized.load()) return SCE_USB_STORAGE_ERROR_NOT_INITIALIZED;
     return SCE_USB_STORAGE_ERROR_NOENT;
 }
 
-int APS5_VABI sceUsbStorageGetdentsRead(int32_t fd, void* buffer, uint64_t bufsize, uint64_t* out_bytes_read) {
-    if (!buffer || !out_bytes_read) return SCE_USB_STORAGE_ERROR_INVAL;
+int APS5_VABI sceUsbStorageGetdentsRead(int32_t fd, void* buffer, uint64_t bufferSize, uint64_t* bytesRead) {
+    if (!buffer || !bytesRead) return SCE_USB_STORAGE_ERROR_INVAL;
     if (!g_initialized.load()) return SCE_USB_STORAGE_ERROR_NOT_INITIALIZED;
     std::lock_guard lock(g_getdentsMutex);
     auto it = g_getdentsTable.find(fd);
     if (it == g_getdentsTable.end()) {
-        *out_bytes_read = 0;
+        *bytesRead = 0;
         return SCE_USB_STORAGE_ERROR_INVAL;
     }
     auto& state = it->second;
@@ -125,7 +113,7 @@ int APS5_VABI sceUsbStorageGetdentsRead(int32_t fd, void* buffer, uint64_t bufsi
         const auto& item = state.items[state.current_index];
         const uint16_t namlen = static_cast<uint16_t>(std::min<size_t>(item.name.size(), 255));
         const uint16_t reclen = static_cast<uint16_t>((8 + namlen + 1 + 7) & ~7);
-        if (bytes_written + reclen > bufsize) break;
+        if (bytes_written + reclen > bufferSize) break;
         auto* entry = reinterpret_cast<SceUsbStorageDirent*>(static_cast<uint8_t*>(buffer) + bytes_written);
         std::memset(entry, 0, reclen);
         entry->d_fileno = static_cast<uint32_t>(state.current_index + 1);
@@ -137,7 +125,7 @@ int APS5_VABI sceUsbStorageGetdentsRead(int32_t fd, void* buffer, uint64_t bufsi
         bytes_written += reclen;
         state.current_index++;
     }
-    *out_bytes_read = bytes_written;
+    *bytesRead = bytes_written;
     return 0;
 }
 
@@ -147,52 +135,52 @@ int APS5_VABI sceUsbStorageGetdentsClose(int32_t fd) {
     return 0;
 }
 
-int APS5_VABI sceUsbStorageRegisterCallback(int32_t event_type, void* callback, void* arg) {
+int APS5_VABI sceUsbStorageRegisterCallback(int32_t eventType, UsbStorageCallback callback, void* arg) {
     (void)arg;
     if (!callback) return SCE_USB_STORAGE_ERROR_INVAL;
-    if (event_type != 1 && event_type != 2) return SCE_USB_STORAGE_ERROR_INVAL;
+    if (eventType != 1 && eventType != 2) return SCE_USB_STORAGE_ERROR_INVAL;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageUnregisterCallback(int32_t event_type, void* callback) {
+int APS5_VABI sceUsbStorageUnregisterCallback(int32_t eventType, UsbStorageCallback callback) {
     if (!callback) return SCE_USB_STORAGE_ERROR_INVAL;
-    if (event_type != 1 && event_type != 2) return SCE_USB_STORAGE_ERROR_INVAL;
+    if (eventType != 1 && eventType != 2) return SCE_USB_STORAGE_ERROR_INVAL;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageRegisterCallbackForMapAvailable(uint32_t device_id, const char* directory, void* callback, void* arg) {
-    (void)device_id;
+int APS5_VABI sceUsbStorageRegisterCallbackForMapAvailable(uint32_t device, const char* directory, UsbStorageCallback callback, void* arg) {
+    (void)device;
     (void)arg;
     if (!directory || !callback) return SCE_USB_STORAGE_ERROR_INVAL;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageUnregisterCallbackForMapAvailable(uint32_t device_id, const char* directory, void* callback) {
-    (void)device_id;
+int APS5_VABI sceUsbStorageUnregisterCallbackForMapAvailable(uint32_t device, const char* directory, UsbStorageCallback callback) {
+    (void)device;
     if (!directory || !callback) return SCE_USB_STORAGE_ERROR_INVAL;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageRegisterCallbackForMapUnavailable(uint32_t device_id, const char* directory, void* callback, void* arg) {
-    (void)device_id;
+int APS5_VABI sceUsbStorageRegisterCallbackForMapUnavailable(uint32_t device, const char* directory, UsbStorageCallback callback, void* arg) {
+    (void)device;
     (void)arg;
     if (!directory || !callback) return SCE_USB_STORAGE_ERROR_INVAL;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageUnregisterCallbackForMapUnavailable(uint32_t device_id, const char* directory, void* callback) {
-    (void)device_id;
+int APS5_VABI sceUsbStorageUnregisterCallbackForMapUnavailable(uint32_t device, const char* directory, UsbStorageCallback callback) {
+    (void)device;
     if (!directory || !callback) return SCE_USB_STORAGE_ERROR_INVAL;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageRequestMap(uint32_t device_id, const char* subpath, int32_t flags, int32_t unk, char* out_mount_path, int32_t* out_status) {
+int APS5_VABI sceUsbStorageRequestMap(uint32_t device, const char* directory, int32_t flags, uint64_t volumeSize, char* mountPoint, uint64_t* mountId) {
     (void)flags;
-    (void)unk;
-    if (device_id != 0) return SCE_USB_STORAGE_ERROR_NOENT;
-    std::string mount_path = "/mnt/usb" + std::to_string(device_id);
-    if (subpath && subpath[0] != '\0') {
-        std::string_view sp(subpath);
+    (void)volumeSize;
+    if (device != 0) return SCE_USB_STORAGE_ERROR_NOENT;
+    std::string mount_path = "/mnt/usb" + std::to_string(device);
+    if (directory && directory[0] != '\0') {
+        std::string_view sp(directory);
         if (sp.starts_with("/mnt/usb")) {
             mount_path = std::string(sp);
         } else if (sp.starts_with("/")) {
@@ -201,20 +189,20 @@ int APS5_VABI sceUsbStorageRequestMap(uint32_t device_id, const char* subpath, i
             mount_path += "/" + std::string(sp);
         }
     }
-    if (out_mount_path) {
-        std::strncpy(out_mount_path, mount_path.c_str(), 127);
-        out_mount_path[127] = '\0';
+    if (mountPoint) {
+        std::strncpy(mountPoint, mount_path.c_str(), 127);
+        mountPoint[127] = '\0';
     }
-    if (out_status) *out_status = 0;
+    if (mountId) *mountId = 0;
     return 0;
 }
 
-int APS5_VABI sceUsbStorageRequestMapWSB(uint32_t device_id, const char* subpath, int32_t flags, int32_t unk, char* out_mount_path, int32_t* out_status) {
-    return sceUsbStorageRequestMap(device_id, subpath, flags, unk, out_mount_path, out_status);
+int APS5_VABI sceUsbStorageRequestMapWSB(uint32_t device, const char* directory, int32_t flags, uint64_t volumeSize, char* mountPoint, uint64_t* mountId) {
+    return sceUsbStorageRequestMap(device, directory, flags, volumeSize, mountPoint, mountId);
 }
 
-int APS5_VABI sceUsbStorageRequestUnmap(uint32_t device_id, const char* directory) {
-    (void)device_id;
+int APS5_VABI sceUsbStorageRequestUnmap(uint32_t device, const char* directory) {
+    (void)device;
     if (!directory) return SCE_USB_STORAGE_ERROR_INVAL;
     return 0;
 }

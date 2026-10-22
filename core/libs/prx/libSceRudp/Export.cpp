@@ -1,10 +1,14 @@
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 
@@ -21,7 +25,15 @@ constexpr int RUDP_ERROR_MEMORY = static_cast<int>(0x80770007u);
 constexpr int RUDP_ERROR_CONN_RESET = static_cast<int>(0x80770009u);
 constexpr int RUDP_ERROR_CONN_REFUSED = static_cast<int>(0x8077000Au);
 constexpr int RUDP_ERROR_NOT_ACCEPTABLE = static_cast<int>(0x80770011u);
+constexpr int RUDP_ERROR_CANCELLED = static_cast<int>(0x80770014u);
 constexpr int RUDP_ERROR_INVALID_SOCKET = static_cast<int>(0x80770019u);
+constexpr int RUDP_ERROR_INVALID_POLL_ID = static_cast<int>(0x8077001Fu);
+constexpr int RUDP_ERROR_TOO_MANY_CONTEXTS = static_cast<int>(0x80770020u);
+
+constexpr int RUDP_POLL_OP_ADD = 1;
+constexpr int RUDP_POLL_OP_MODIFY = 2;
+constexpr int RUDP_POLL_OP_REMOVE = 3;
+constexpr uint64_t RUDP_POLL_WAIT_MAX_USEC = static_cast<uint64_t>(std::numeric_limits<int64_t>::max() / 2000);
 
 constexpr int RUDP_POOL_MIN_SIZE = 0xC58;
 constexpr std::uintptr_t RUDP_POOL_ALIGNMENT = 8;
@@ -33,9 +45,43 @@ constexpr uint16_t RUDP_MAX_SEGMENT_SIZE = 1410;
 constexpr int RUDP_OPTION_LAST_ERROR = 14;
 constexpr std::uint32_t RUDP_NET_SOCKADDR_IN_SIZE = 16;
 
+enum RudpOption {
+    RUDP_OPTION_MAX_PAYLOAD = 1,
+    RUDP_OPTION_SNDBUF = 2,
+    RUDP_OPTION_RCVBUF = 3,
+    RUDP_OPTION_NODELAY = 4,
+    RUDP_OPTION_DELIVERY_CRITICAL = 5,
+    RUDP_OPTION_ORDER_CRITICAL = 6,
+    RUDP_OPTION_NONBLOCK = 7,
+    RUDP_OPTION_STREAM = 8,
+    RUDP_OPTION_CONNECTION_TIMEOUT = 9,
+    RUDP_OPTION_CLOSE_WAIT_TIMEOUT = 10,
+    RUDP_OPTION_AGGREGATION_TIMEOUT = 11,
+    RUDP_OPTION_READ_TIMEOUT = 15,
+    RUDP_OPTION_WRITE_TIMEOUT = 16,
+    RUDP_OPTION_FLUSH_TIMEOUT = 17,
+    RUDP_OPTION_KEEP_ALIVE_INTERVAL = 18,
+    RUDP_OPTION_KEEP_ALIVE_TIMEOUT = 19,
+};
+
 const std::map<int, std::int32_t> RUDP_DEFAULT_OPTIONS = {
-    {1, 1346}, {2, 65536}, {3, 65536}, {4, 0}, {5, 1}, {6, 1}, {7, 1}, {8, 0}, {9, 60000}, {10, 0}, {11, 30},
-    {RUDP_OPTION_LAST_ERROR, 0}, {15, 0}, {16, 0}, {17, 0}, {18, 0}, {19, 0},
+    {RUDP_OPTION_MAX_PAYLOAD, 1346},
+    {RUDP_OPTION_SNDBUF, 65536},
+    {RUDP_OPTION_RCVBUF, 65536},
+    {RUDP_OPTION_NODELAY, 0},
+    {RUDP_OPTION_DELIVERY_CRITICAL, 1},
+    {RUDP_OPTION_ORDER_CRITICAL, 1},
+    {RUDP_OPTION_NONBLOCK, 1},
+    {RUDP_OPTION_STREAM, 0},
+    {RUDP_OPTION_CONNECTION_TIMEOUT, 60000},
+    {RUDP_OPTION_CLOSE_WAIT_TIMEOUT, 0},
+    {RUDP_OPTION_AGGREGATION_TIMEOUT, 30},
+    {RUDP_OPTION_LAST_ERROR, 0},
+    {RUDP_OPTION_READ_TIMEOUT, 0},
+    {RUDP_OPTION_WRITE_TIMEOUT, 0},
+    {RUDP_OPTION_FLUSH_TIMEOUT, 0},
+    {RUDP_OPTION_KEEP_ALIVE_INTERVAL, 0},
+    {RUDP_OPTION_KEEP_ALIVE_TIMEOUT, 0},
 };
 
 struct RudpContext {
@@ -43,7 +89,7 @@ struct RudpContext {
     std::map<int, std::int32_t> options = RUDP_DEFAULT_OPTIONS;
 };
 
-using GuestRudpEventHandler = void(APS5_VABI*)(int, int, int, void*);
+using GuestRudpEventHandler = RudpEventHandler;
 
 std::mutex g_mutex;
 bool g_inited = false;
@@ -53,6 +99,18 @@ GuestRudpEventHandler g_handler = nullptr;
 void* g_handler_arg = nullptr;
 std::uint64_t g_received_udp_bytes = 0;
 std::uint32_t g_received_udp_packets = 0;
+uint16_t g_max_segment_size = RUDP_MAX_SEGMENT_SIZE;
+
+struct RudpPoll {
+    std::size_t capacity;
+    std::map<int, uint16_t> entries;
+    std::uint64_t cancels = 0;
+};
+
+
+int g_next_poll = 1;
+std::map<int, RudpPoll> g_polls;
+std::condition_variable g_polls_changed;
 
 bool valid_ctx(int ctx) {
     return g_ctx.count(ctx) != 0;
@@ -67,6 +125,12 @@ int context_error(int ctx, int error) {
 int enable_internal_io_thread() {
     std::lock_guard<std::mutex> lk(g_mutex);
     return g_inited ? 0 : RUDP_ERROR_NOT_INITIALIZED;
+}
+
+void remove_ctx_from_polls(int ctx) {
+    for (auto& [id, poll] : g_polls) {
+        poll.entries.erase(ctx);
+    }
 }
 }  // namespace
 
@@ -87,8 +151,12 @@ int APS5_VABI sceRudpInit_nid_postfix(void* mem_pool, int mem_pool_size) {
     return 0;
 }
 
-int APS5_VABI sceRudpActivate() {
-    return 0;
+int APS5_VABI sceRudpActivate(std::int32_t contextId, const void* address, std::uint32_t addressLength) {
+    std::lock_guard lock(g_mutex);
+    if (!g_inited) return RUDP_ERROR_NOT_INITIALIZED;
+    if (contextId < 0 || !address) return RUDP_ERROR_INVALID_ARGUMENT;
+    static_cast<void>(addressLength);
+    throw std::runtime_error(__func__);
 }
 
 int APS5_VABI sceRudpGetStatus(void* status, std::size_t size) {
@@ -117,6 +185,8 @@ int APS5_VABI sceRudpEnd(void) {
     g_ctx.clear();
     g_received_udp_bytes = 0;
     g_received_udp_packets = 0;
+    g_polls.clear();
+    g_polls_changed.notify_all();
     return 0;
 }
 
@@ -125,7 +195,11 @@ int APS5_VABI sceRudpTerminate(int ctx_id) {
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
     }
-    return g_ctx.erase(ctx_id) != 0 ? 0 : RUDP_ERROR_INVALID_CONTEXT_ID;
+    if (g_ctx.erase(ctx_id) == 0) {
+        return RUDP_ERROR_INVALID_CONTEXT_ID;
+    }
+    remove_ctx_from_polls(ctx_id);
+    return 0;
 }
 
 int APS5_VABI sceRudpEnableInternalIOThread(uint32_t stack_size, uint32_t priority) {
@@ -148,10 +222,10 @@ int APS5_VABI sceRudpSetEventHandler(GuestRudpEventHandler handler, void* arg) {
     return 0;
 }
 
-int APS5_VABI sceRudpCreateContext(GuestRudpEventHandler handler, void* arg, int* ctx_id) {
+int APS5_VABI sceRudpCreateContext(GuestRudpEventHandler handler, void* arg, int* ctxId) {
     (void)handler;
     (void)arg;
-    if (ctx_id == nullptr) {
+    if (ctxId == nullptr) {
         return RUDP_ERROR_INVALID_ARGUMENT;
     }
     std::lock_guard<std::mutex> lk(g_mutex);
@@ -159,12 +233,12 @@ int APS5_VABI sceRudpCreateContext(GuestRudpEventHandler handler, void* arg, int
         return RUDP_ERROR_NOT_INITIALIZED;
     }
     const int id = g_next_ctx++;
-    g_ctx[id] = RudpContext{};
-    *ctx_id = id;
+    g_ctx.emplace(id, RudpContext{});
+    *ctxId = id;
     return 0;
 }
 
-int APS5_VABI sceRudpBind(int ctx_id, uint16_t vport, int transport, uint16_t port) {
+int APS5_VABI sceRudpBind(int ctxId, uint16_t vport, int transport, uint16_t port) {
     (void)vport;
     (void)transport;
     (void)port;
@@ -172,39 +246,39 @@ int APS5_VABI sceRudpBind(int ctx_id, uint16_t vport, int transport, uint16_t po
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
     }
-    if (!valid_ctx(ctx_id)) {
+    if (!valid_ctx(ctxId)) {
         return RUDP_ERROR_INVALID_CONTEXT_ID;
     }
-    g_ctx[ctx_id].bound = true;
+    g_ctx.at(ctxId).bound = true;
     return 0;
 }
 
-int APS5_VABI sceRudpSetOption(int ctx_id, int option, const void* value, std::size_t len) {
+int APS5_VABI sceRudpSetOption(int ctxId, int option, const void* value, std::size_t len) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
     }
-    if (!valid_ctx(ctx_id)) {
+    if (!valid_ctx(ctxId)) {
         return RUDP_ERROR_INVALID_CONTEXT_ID;
     }
     if (RUDP_DEFAULT_OPTIONS.count(option) == 0) {
-        return context_error(ctx_id, RUDP_ERROR_INVALID_OPTION);
+        return context_error(ctxId, RUDP_ERROR_INVALID_OPTION);
     }
     if (value == nullptr || len != sizeof(std::int32_t)) {
-        return context_error(ctx_id, RUDP_ERROR_INVALID_ARGUMENT);
+        return context_error(ctxId, RUDP_ERROR_INVALID_ARGUMENT);
     }
     std::int32_t stored = 0;
     std::memcpy(&stored, value, sizeof(stored));
-    g_ctx[ctx_id].options[option] = stored;
+    g_ctx[ctxId].options[option] = stored;
     return 0;
 }
 
-int APS5_VABI sceRudpGetOption(int ctx_id, int option, void* value, std::size_t len) {
+int APS5_VABI sceRudpGetOption(int ctxId, int option, void* value, std::size_t len) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
     }
-    const auto context = g_ctx.find(ctx_id);
+    const auto context = g_ctx.find(ctxId);
     if (context == g_ctx.end()) {
         return RUDP_ERROR_INVALID_CONTEXT_ID;
     }
@@ -247,15 +321,15 @@ int APS5_VABI sceRudpGetContextStatus(int ctx_id, void* status, uint32_t size) {
     return 0;
 }
 
-int APS5_VABI sceRudpGetRemoteInfo(int ctx_id, void* addr, uint32_t* addr_len, uint16_t* vport) {
+int APS5_VABI sceRudpGetRemoteInfo(int contextId, void* address, std::uint32_t* addressSize, std::uint16_t* virtualPort) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
     }
-    if (ctx_id < 0 || addr == nullptr || addr_len == nullptr || vport == nullptr) {
+    if (contextId < 0 || address == nullptr || addressSize == nullptr || virtualPort == nullptr) {
         return RUDP_ERROR_INVALID_ARGUMENT;
     }
-    if (!valid_ctx(ctx_id)) {
+    if (!valid_ctx(contextId)) {
         return RUDP_ERROR_INVALID_CONTEXT_ID;
     }
     return RUDP_ERROR_NOT_ACCEPTABLE;
@@ -331,23 +405,23 @@ int APS5_VABI sceRudpNetFlush(void) {
     return g_inited ? 0 : RUDP_ERROR_NOT_INITIALIZED;
 }
 
-int APS5_VABI sceRudpProcessEvents(void) {
+int APS5_VABI sceRudpProcessEvents(std::uint64_t timeout) {
     std::lock_guard<std::mutex> lk(g_mutex);
     return g_inited ? 0 : RUDP_ERROR_NOT_INITIALIZED;
 }
 
-int APS5_VABI sceRudpNetReceived(int soc, const uint8_t* data, std::size_t data_len, const void* from, uint32_t from_len) {
+int APS5_VABI sceRudpNetReceived(int socketId, const void* data, std::size_t dataSize, const void* sourceAddress, std::uint32_t sourceAddressSize) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
     }
-    if (soc < 0) {
+    if (socketId < 0) {
         return RUDP_ERROR_INVALID_SOCKET;
     }
-    if (data == nullptr || data_len == 0 || from == nullptr || from_len < RUDP_NET_SOCKADDR_IN_SIZE) {
+    if (data == nullptr || dataSize == 0 || sourceAddress == nullptr || sourceAddressSize < RUDP_NET_SOCKADDR_IN_SIZE) {
         return RUDP_ERROR_INVALID_ARGUMENT;
     }
-    g_received_udp_bytes += data_len;
+    g_received_udp_bytes += dataSize;
     ++g_received_udp_packets;
     return 0;
 }
@@ -360,7 +434,151 @@ int APS5_VABI sceRudpGetMaxSegmentSize(uint16_t* size) {
     if (size == nullptr) {
         return RUDP_ERROR_INVALID_ARGUMENT;
     }
-    *size = RUDP_MAX_SEGMENT_SIZE;
+    *size = g_max_segment_size;
+    return 0;
+}
+
+int APS5_VABI sceRudpPollCreate(std::size_t size) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (size == 0) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    if (g_next_poll == std::numeric_limits<int>::max()) {
+        throw std::runtime_error("sceRudpPollCreate: poll ids exhausted");
+    }
+    const int id = g_next_poll++;
+    g_polls[id] = RudpPoll{size, {}};
+    return id;
+}
+
+int APS5_VABI sceRudpPollControl(int pollId, int op, int ctxId, uint16_t events) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (pollId < 0 || ctxId < 0 || (op != RUDP_POLL_OP_ADD && op != RUDP_POLL_OP_MODIFY && op != RUDP_POLL_OP_REMOVE)) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    const auto poll = g_polls.find(pollId);
+    if (poll == g_polls.end()) {
+        return RUDP_ERROR_INVALID_POLL_ID;
+    }
+    if (!valid_ctx(ctxId)) {
+        return RUDP_ERROR_INVALID_CONTEXT_ID;
+    }
+    auto& entries = poll->second.entries;
+    const auto entry = entries.find(ctxId);
+    if (op == RUDP_POLL_OP_ADD) {
+        if (entries.size() >= poll->second.capacity) {
+            return RUDP_ERROR_TOO_MANY_CONTEXTS;
+        }
+        if (entry != entries.end()) {
+            return RUDP_ERROR_INVALID_CONTEXT_ID;
+        }
+        entries.emplace(ctxId, events);
+        return 0;
+    }
+    if (entry == entries.end()) {
+        return RUDP_ERROR_INVALID_CONTEXT_ID;
+    }
+    if (op == RUDP_POLL_OP_MODIFY) {
+        entry->second = events;
+    } else {
+        entries.erase(entry);
+    }
+    return 0;
+}
+
+int APS5_VABI sceRudpPollWait(int pollId, RudpPollEvent* events, std::size_t eventLen, uint64_t timeout) {
+    std::unique_lock<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (pollId < 0 || events == nullptr || eventLen == 0) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    if (g_polls.count(pollId) == 0) {
+        return RUDP_ERROR_INVALID_POLL_ID;
+    }
+    const std::uint64_t cancels = g_polls[pollId].cancels;
+    const auto woken = [pollId, cancels] {
+        if (!g_inited) return true;
+        const auto poll = g_polls.find(pollId);
+        return poll == g_polls.end() || poll->second.cancels != cancels;
+    };
+    if (timeout > RUDP_POLL_WAIT_MAX_USEC) {
+        g_polls_changed.wait(lk, woken);
+    } else if (!g_polls_changed.wait_for(lk, std::chrono::microseconds(timeout), woken)) {
+        return 0;
+    }
+    if (!g_inited) return RUDP_ERROR_NOT_INITIALIZED;
+    return g_polls.count(pollId) == 0 ? RUDP_ERROR_INVALID_POLL_ID : RUDP_ERROR_CANCELLED;
+}
+
+int APS5_VABI sceRudpPollDestroy(int pollId) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (pollId < 0) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    if (g_polls.erase(pollId) == 0) {
+        return RUDP_ERROR_INVALID_POLL_ID;
+    }
+    g_polls_changed.notify_all();
+    return 0;
+}
+
+int APS5_VABI sceRudpAccept() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceRudpFlush() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceRudpGetLocalInfo() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceRudpListen() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceRudpPollCancel(int pollId) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (pollId < 0) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    const auto poll = g_polls.find(pollId);
+    if (poll == g_polls.end()) {
+        return RUDP_ERROR_INVALID_POLL_ID;
+    }
+    ++poll->second.cancels;
+    g_polls_changed.notify_all();
+    return 0;
+}
+
+int APS5_VABI sceRudpSetMaxSegmentSize(uint16_t mss) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (!g_ctx.empty()) {
+        return RUDP_ERROR_NOT_ACCEPTABLE;
+    }
+    g_max_segment_size = mss;
     return 0;
 }
 

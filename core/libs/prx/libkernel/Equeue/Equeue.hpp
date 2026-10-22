@@ -7,6 +7,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -55,6 +56,7 @@ struct KernelFilter {
     EqueueDeleteFunc deleteEventFunc = nullptr;
     EqueuePollFunc pollFunc = nullptr;
     bool sliced = false;
+    int waitDescriptor = -1;
 };
 
 struct KernelEqueueEvent {
@@ -117,7 +119,7 @@ void EqueueDescriptorClosed(int descriptor);
 void KqueueDescriptorClosed(int descriptor);
 bool IsKqueueDescriptor(int descriptor);
 KernelEqueueRef FindKqueueDescriptor(int descriptor);
-int KqueuePendingEvents(int descriptor);
+std::optional<bool> KqueueReadable(int descriptor);
 void KqueueSignalSent(int signal);
 int MakeDescriptorEvent(int descriptor, int16_t filter, uint16_t flags, uint32_t fflags, int64_t data, void* udata, KernelEqueueEvent& event);
 void SetDescriptorWatch(KernelEqueueEvent& event, uint32_t fflags, int64_t data);
@@ -126,6 +128,16 @@ int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, uint32_t fflags,
 void VnodeOpened(int descriptor);
 void VnodeRead(int descriptor);
 void VnodeClosing(int descriptor);
+
+struct VnodeClose {
+    uint64_t volume = 0;
+    uint64_t index = 0;
+    uintptr_t ident = 0;
+    uint32_t hint = 0;
+};
+
+VnodeClose VnodeClosePending(int descriptor);
+void VnodeClosed(const VnodeClose& close);
 extern "C" {
 
 KernelEqueueRef EqueuePin_nid_postfix(KernelEqueue eq);

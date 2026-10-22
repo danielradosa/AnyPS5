@@ -35,6 +35,12 @@ static int ExecvError(const char* path, char* const* arguments) {
     return *__error_nid_postfix();
 }
 
+static int ExecveError(const char* path, char* const* arguments, char* const* environment) {
+    *__error_nid_postfix() = 0;
+    Require(execve_nid_postfix(path, arguments, environment) == -1);
+    return *__error_nid_postfix();
+}
+
 static int ExecvpError(const char* file, char* const* arguments) {
     *__error_nid_postfix() = 0;
     Require(execvp_nid_postfix(file, arguments) == -1);
@@ -69,19 +75,17 @@ int main() {
     Require(threw);
     char variable[] = "HOME=/";
     char* replacement[] = {variable, nullptr};
-    bool unsupported = false;
-    try {
-        execve_nid_postfix("/bin/sh", arguments, replacement);
-    } catch (const std::runtime_error& error) {
-        unsupported = std::string(error.what()) == "execve: executable replacement not implemented";
-    }
-    Require(unsupported);
+    Require(ExecveError("/bin/sh", arguments, replacement) == Enoent);
+    Require(ExecveError("/bin/sh", arguments, nullptr) == Enoent);
+    Require(ExecveError("/bin/sh", nullptr, replacement) == Efault);
     const std::string longPath(1024, 'a');
     Require(ExecvError(longPath.c_str(), arguments) == Enametoolong);
     std::string huge(300000, 'x');
     char* oversized[] = {huge.data(), nullptr};
     Require(ExecvError("/bin/sh", oversized) == E2big);
     Require(ExecvpError("/bin/sh", oversized) == E2big);
+    Require(ExecveError("/bin/sh", arguments, oversized) == E2big);
+    Require(ExecveError(longPath.c_str(), arguments, replacement) == Enametoolong);
 
     const auto directory = "anyps5-exec-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     Require(mkdir_nid_postfix(directory.c_str(), 0755) == 0);
@@ -93,6 +97,8 @@ int main() {
     const auto tool = directory + "/tool.exe";
     CreateFile(tool, 0755);
     Require(ExecvError(tool.c_str(), arguments) == Enoexec);
+    Require(ExecveError(plain.c_str(), arguments, replacement) == Eacces);
+    Require(ExecveError(tool.c_str(), arguments, replacement) == Enoexec);
     Require(ExecvpError(tool.c_str(), arguments) == Enoent);
 
     char** saved = environ_nid_postfix;

@@ -18,6 +18,7 @@ int APS5_VABI sceSaveDataTerminate(void);
 int APS5_VABI sceSaveDataSetupSaveDataMemory2(const SaveDataMemorySetup2*, SaveDataMemorySetupResult*);
 #ifndef SAVEDATA_NATIVE_BACKEND
 int APS5_VABI sceSaveDataSyncSaveDataMemory(const void*);
+int APS5_VABI sceSaveDataInitialize2(const void*);
 #endif
 }
 
@@ -53,6 +54,15 @@ int main() {
         Require(static_cast<bool>(file));
     }
 
+#ifndef SAVEDATA_NATIVE_BACKEND
+    constexpr int NotInitialized = static_cast<int>(0x809F0001u);
+    Require(sceSaveDataTerminate() == NotInitialized);
+    Require(sceSaveDataInitialize2(nullptr) == 0);
+    Require(sceSaveDataInitialize2(nullptr) == 0);
+    Require(sceSaveDataTerminate() == 0);
+    Require(sceSaveDataTerminate() == 0);
+    Require(sceSaveDataTerminate() == NotInitialized);
+#endif
     Require(sceSaveDataInitialize3(nullptr) == 0);
     SaveDataMemorySetup2 setup{};
     setup.user_id = userId;

@@ -152,6 +152,12 @@ bool AudioOut2HasPadPorts(const AudioOut2Context& context) {
     });
 }
 
+AudioOut2Context* AudioOut2PortContext(AudioOut2PortHandle handle) {
+    std::lock_guard lock(g_portsLock);
+    const auto* port = FromHandle(handle);
+    return port == nullptr ? nullptr : port->context;
+}
+
 void AudioOut2ReleasePorts(const AudioOut2Context& context) {
     std::lock_guard lock(g_portsLock);
     for (auto& port : g_ports) {

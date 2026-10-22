@@ -9,7 +9,6 @@
 #include <cerrno>
 #include <cstdio>
 #include <filesystem>
-#include <limits>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -19,11 +18,14 @@
 #include <utility>
 
 namespace {
-constexpr std::size_t MaxExecution = 10;
+constexpr std::int32_t MaxExecution = 10;
+constexpr int ErrorInvalidState = static_cast<int>(0x809D3002u);
+constexpr int ErrorBusy = static_cast<int>(0x809D3003u);
+constexpr int ErrorNotInitialized = static_cast<int>(0x809D3004u);
+constexpr int ErrorExecutionMax = static_cast<int>(0x809D3018u);
 std::atomic<bool> g_initialized{false};
 std::mutex g_sessionMutex;
 std::set<std::int32_t> g_sessions;
-std::int32_t g_lastSessionId = 0;
 std::uint64_t g_nextExport = 1;
 
 constexpr const char* ExportRoot = "/_ce";
@@ -178,16 +180,16 @@ int APS5_VABI sceContentExportFinish(std::int32_t expId) {
     return 0;
 }
 
-int APS5_VABI sceContentExportFromData(std::int32_t exportId, const ContentExportParam* param, std::size_t contentLength, ContentExportDataProvideFunction dataProvider, void* userData, char* path, std::size_t pathBufLen) {
+int APS5_VABI sceContentExportFromData(std::int32_t expId, const ContentExportParam* param, std::size_t contentLength, ContentExportDataCallback callback, void* userData, char* path, std::size_t pathBufferLength) {
     const std::string prefix = std::string(__func__) + ": ";
-    if (param == nullptr || dataProvider == nullptr || path == nullptr || pathBufLen == 0) throw std::invalid_argument(prefix + "invalid argument");
+    if (param == nullptr || callback == nullptr || path == nullptr || pathBufferLength == 0) throw std::invalid_argument(prefix + "invalid argument");
     if (contentLength == 0) throw std::invalid_argument(prefix + "empty content");
     std::filesystem::path directory;
     std::filesystem::path destination;
     std::string guestPath;
     {
         std::lock_guard lock(g_sessionMutex);
-        RequireSession(__func__, exportId);
+        RequireSession(__func__, expId);
         if (const int error = CheckParam(*param)) return error;
         const char* extension = ExtensionFor(param->content_type);
         directory = ResolvePath_nid_no_patch(ExportRoot);
@@ -195,7 +197,7 @@ int APS5_VABI sceContentExportFromData(std::int32_t exportId, const ContentExpor
         guestPath = std::string(ExportRoot) + "/" + name + extension;
         destination = directory / (name + extension);
     }
-    if (guestPath.size() + 1 > pathBufLen) throw std::invalid_argument(prefix + "path buffer is too small");
+    if (guestPath.size() + 1 > pathBufferLength) throw std::invalid_argument(prefix + "path buffer is too small");
     try {
         std::filesystem::create_directories(directory);
     } catch (const std::filesystem::filesystem_error& error) {
@@ -207,9 +209,9 @@ int APS5_VABI sceContentExportFromData(std::int32_t exportId, const ContentExpor
     std::uint64_t written = 0;
     for (;;) {
         const bool complete = written == contentLength;
-        void* data = nullptr;
-        std::uint64_t size = 0;
-        const std::int32_t status = dataProvider(&data, &size, userData);
+        const void* data = nullptr;
+        std::size_t size = 0;
+        const std::int32_t status = callback(&data, &size, userData);
         if (status != 0 && status != 1) throw std::runtime_error(prefix + "data provider returned " + std::to_string(status));
         if (size > contentLength - written) throw std::runtime_error(prefix + "data provider returned more than the content length");
         if (size != 0 && data == nullptr) throw std::runtime_error(prefix + "data provider returned no data");
@@ -226,38 +228,100 @@ int APS5_VABI sceContentExportFromData(std::int32_t exportId, const ContentExpor
     return 0;
 }
 
-int APS5_VABI sceContentExportFromFile(std::int32_t exportId, const ContentExportParam* param, const char* sourcePath, char* path, std::size_t pathBufLen) {
-    return ExportFile(__func__, exportId, param, sourcePath, nullptr, path, pathBufLen);
+int APS5_VABI sceContentExportFromFile(std::int32_t expId, const ContentExportParam* param, const char* sourcePath, char* path, std::size_t pathBufferLength) {
+    return ExportFile(__func__, expId, param, sourcePath, nullptr, path, pathBufferLength);
 }
 
-int APS5_VABI sceContentExportFromFileWithThumbnail(std::int32_t exportId, const ContentExportParam* param, const char* sourcePath, const char* thumbnailPath, char* path, std::size_t pathBufLen) {
+int APS5_VABI sceContentExportFromFileWithThumbnail(std::int32_t expId, const ContentExportParam* param, const char* sourcePath, const char* thumbnailPath, char* path, std::size_t pathBufferLength) {
     if (thumbnailPath == nullptr) APS5_INVALID_ARG_EX;
-    return ExportFile(__func__, exportId, param, sourcePath, thumbnailPath, path, pathBufLen);
+    return ExportFile(__func__, expId, param, sourcePath, thumbnailPath, path, pathBufferLength);
+}
+
+int APS5_VABI sceContentExportAddToFavorites(std::int64_t contentId) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportDataProvideFunction(void) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportFree(void) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportFrom(void) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportFromFileForSf(std::int32_t expId, const ContentExportParam* param, const ContentExportSfParam* sfParam, const char* sourcePath, const char* thumbnailPath, char* path, std::size_t pathBufferLength) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportFromFileWithContentIdList(std::int32_t expId, const ContentExportParam* param, const char* sourcePath, const char* thumbnailPath, const std::int64_t* contentIds, std::uint32_t contentCount, char* path, std::size_t pathBufferLength) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportFromFileWithTitleIdList(std::int32_t expId, const ContentExportParam* param, const char* sourcePath, const char* thumbnailPath, const char* titleIdList, char* path, std::size_t pathBufferLength) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportInit(const ContentExportInitParam* param) {
+    if (param == nullptr) APS5_INVALID_ARG_EX;
+    if (param->mallocFunc == nullptr || param->freeFunc == nullptr) throw std::invalid_argument(std::string(__func__) + ": missing allocator functions");
+    bool expected = false;
+    if (!g_initialized.compare_exchange_strong(expected, true)) throw std::logic_error(std::string(__func__) + ": already initialized");
+    return 0;
+}
+
+int APS5_VABI sceContentExportMalloc(void) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportRemoveFromFavorites(std::int64_t contentId) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportRenameContent(std::int64_t contentId, const char* name) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
+}
+
+int APS5_VABI sceContentExportValidateContents(const std::int64_t* contentIds, std::uint32_t count) {
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
 }
 
 int APS5_VABI sceContentExportStart(void) {
     std::lock_guard lock(g_sessionMutex);
-    if (!g_initialized.load()) throw std::logic_error(std::string(__func__) + ": not initialized");
-    if (g_sessions.size() >= MaxExecution) throw std::runtime_error(std::string(__func__) + ": behaviour beyond 10 live export sessions is unknown");
-    if (g_lastSessionId == std::numeric_limits<std::int32_t>::max()) throw std::runtime_error(std::string(__func__) + ": export session ids exhausted");
-    g_sessions.insert(++g_lastSessionId);
-    return g_lastSessionId;
+    if (!g_initialized.load()) return ErrorNotInitialized;
+    for (std::int32_t expId = 0; expId < MaxExecution; ++expId) {
+        if (g_sessions.insert(expId).second) return expId;
+    }
+    return ErrorExecutionMax;
 }
 
 int APS5_VABI sceContentExportGetProgress(std::int32_t expId) {
     std::lock_guard lock(g_sessionMutex);
     RequireSession(__func__, expId);
-    throw std::runtime_error(std::string(__func__) + ": progress of a session with no running export is unknown");
+    throw std::runtime_error(std::string(__func__) + ": progress requires the calling title SDK compatibility mode");
 }
 
 int APS5_VABI sceContentExportCancel(std::int32_t expId) {
     std::lock_guard lock(g_sessionMutex);
     RequireSession(__func__, expId);
-    throw std::runtime_error(std::string(__func__) + ": cancelling a session with no running export is unknown");
+    return ErrorInvalidState;
 }
 
-int APS5_VABI sceContentExportFromDataWithThumbnail(std::int32_t expId, const ContentExportParam* param, const ContentExportCallbackParam* contentCallbackParam,
-    const char* thumbnailType, const ContentExportCallbackParam* thumbnailCallbackParam, char* path, std::size_t pathBufferLength) {
+int APS5_VABI sceContentExportFromDataWithThumbnail(std::int32_t expId, const ContentExportParam* param, const ContentExportCallbackParam* contentCallbackParam, const char* thumbnailType, const ContentExportCallbackParam* thumbnailCallbackParam, char* path, std::size_t pathBufferLength) {
     std::lock_guard lock(g_sessionMutex);
     RequireSession(__func__, expId);
     throw std::runtime_error(std::string(__func__) + ": the host has no media library to export into");
@@ -265,9 +329,9 @@ int APS5_VABI sceContentExportFromDataWithThumbnail(std::int32_t expId, const Co
 
 int APS5_VABI sceContentExportTerm(void) {
     std::lock_guard lock(g_sessionMutex);
-    if (!g_sessions.empty()) throw std::runtime_error(std::string(__func__) + ": terminating with live export sessions is unknown");
+    if (!g_sessions.empty()) return ErrorBusy;
     bool expected = true;
-    if (!g_initialized.compare_exchange_strong(expected, false)) throw std::logic_error(std::string(__func__) + ": not initialized");
+    if (!g_initialized.compare_exchange_strong(expected, false)) return ErrorNotInitialized;
     return 0;
 }
 

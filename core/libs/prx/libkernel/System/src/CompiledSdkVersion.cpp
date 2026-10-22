@@ -1,12 +1,13 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
+#include "prx/libkernel/System/include/CompiledSdkVersion.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 
-extern "C" int APS5_VABI sceKernelGetCompiledSdkVersion_nid_postfix(std::int32_t* version) {
+int CompiledSdkVersion_nid_no_patch(std::int32_t* version) {
     if (version == nullptr) return SCE_KERNEL_ERROR_EINVAL;
     const auto* parameters = static_cast<const std::byte*>(ApplicationProcessParameters_nid_no_patch());
     std::uint64_t size;
@@ -19,4 +20,8 @@ extern "C" int APS5_VABI sceKernelGetCompiledSdkVersion_nid_postfix(std::int32_t
     const auto result = static_cast<std::uint32_t>(sdk);
     std::memcpy(version, &result, sizeof(result));
     return 0;
+}
+
+extern "C" int APS5_VABI sceKernelGetCompiledSdkVersion_nid_postfix(std::int32_t* version) {
+    return CompiledSdkVersion_nid_no_patch(version);
 }

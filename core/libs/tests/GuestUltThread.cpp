@@ -6,6 +6,10 @@
 #include <cstring>
 #include <chrono>
 #include <thread>
+#include <stdexcept>
+
+struct UltConditionVariableInfo;
+struct UltWaitingThreadInfo;
 
 extern "C" {
 int APS5_VABI sceUltInitialize();
@@ -17,18 +21,19 @@ int APS5_VABI sceUltUlthreadJoin(void*, std::int32_t*);
 int APS5_VABI sceUltUlthreadTryJoin(void*, std::int32_t*);
 int APS5_VABI sceUltUlthreadRuntimeDestroy(void*);
 int APS5_VABI _sceUltUlthreadRuntimeOptParamInitialize(void*, std::uint32_t);
-int APS5_VABI _sceUltUlthreadRuntimeCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*, std::uint32_t);
-int APS5_VABI _sceUltUlthreadCreate(void*, const char*, UltUlthreadEntry, std::uint64_t, void*, std::uint64_t, void*, const void*, std::uint32_t);
-int APS5_VABI _sceUltWaitingQueueResourcePoolCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*, std::uint32_t);
-int APS5_VABI _sceUltSemaphoreCreate(void*, const char*, std::int32_t, void*, const void*, std::uint32_t);
+int APS5_VABI _sceUltUlthreadRuntimeCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*);
+int APS5_VABI _sceUltUlthreadCreate(void*, const char*, UltUlthreadEntry, std::uint64_t, void*, std::uint64_t, void*, const void*);
+int APS5_VABI _sceUltWaitingQueueResourcePoolCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*);
+int APS5_VABI _sceUltSemaphoreCreate(void*, const char*, std::uint32_t, void*, const void*);
+int APS5_VABI sceUltSemaphoreTryAcquire(void*, std::int32_t);
 int APS5_VABI sceUltSemaphoreAcquire(void*, std::int32_t);
 int APS5_VABI sceUltSemaphoreRelease(void*, std::int32_t);
 int APS5_VABI _sceUltMutexOptParamInitialize(void*, std::uint32_t);
-int APS5_VABI _sceUltMutexCreate(void*, const char*, void*, const void*, std::uint32_t);
+int APS5_VABI _sceUltMutexCreate(void*, const char*, void*, const void*);
 int APS5_VABI sceUltMutexLock(void*);
 int APS5_VABI sceUltMutexUnlock(void*);
-int APS5_VABI _sceUltQueueDataResourcePoolCreate(void*, const char*, std::uint32_t, std::uint64_t, std::uint32_t, void*, void*, const void*, std::uint32_t);
-int APS5_VABI _sceUltQueueCreate(void*, const char*, std::uint64_t, void*, void*, const void*, std::uint32_t);
+int APS5_VABI _sceUltQueueDataResourcePoolCreate(void*, const char*, std::uint32_t, std::uint64_t, std::uint32_t, void*, void*, const void*);
+int APS5_VABI _sceUltQueueCreate(void*, const char*, std::uint64_t, void*, void*, const void*);
 int APS5_VABI sceUltQueuePush(void*, const void*);
 int APS5_VABI sceUltQueuePop(void*, void*);
 int APS5_VABI sceUltMutexDestroy(void*);
@@ -36,12 +41,23 @@ int APS5_VABI sceUltWaitingQueueResourcePoolDestroy(void*);
 int APS5_VABI sceUltSemaphoreDestroy(void*);
 int APS5_VABI sceUltQueueDestroy(void*);
 int APS5_VABI sceUltQueueDataResourcePoolDestroy(void*);
+int APS5_VABI sceUltConditionVariableDestroy(void*);
+int APS5_VABI sceUltReaderWriterLockDestroy(void*);
+int APS5_VABI sceUltGetConditionVariableInfo(void*, UltConditionVariableInfo*, UltWaitingThreadInfo*, std::uint32_t);
+int APS5_VABI sceUltUlthreadGetSelf(void**);
+int APS5_VABI sceUltUlthreadYield();
+int APS5_VABI sceUltUlthreadExit(std::int32_t);
+int APS5_VABI sceUltUlthreadOptParamInitialize(void*, std::uint32_t);
 }
 
 static constexpr int Ok = 0;
 static constexpr int Null = -2139029503;
+static constexpr int Alignment = -2139029502;
+static constexpr int Invalid = -2139029500;
+static constexpr int Permission = -2139029499;
 static constexpr int State = -2139029498;
 static constexpr int Busy = -2139029497;
+static constexpr int Again = -2139029496;
 
 static void Require(bool value, int line) {
     if (!value) {
@@ -63,6 +79,22 @@ static std::int32_t APS5_VABI Parked(std::uint64_t arg) {
 
 static std::int32_t APS5_VABI Immediate(std::uint64_t arg) {
     return static_cast<std::int32_t>(arg);
+}
+
+static std::atomic<int> gSelfResult{0};
+static std::atomic<void*> gSelf{nullptr};
+static std::atomic<int> gYieldResult{-1};
+static std::atomic<bool> gPastExit{false};
+
+static std::int32_t APS5_VABI ExitsEarly(std::uint64_t arg) {
+    void* self = nullptr;
+    CHECK(sceUltUlthreadGetSelf(nullptr) == Null);
+    gSelfResult.store(sceUltUlthreadGetSelf(&self), std::memory_order_release);
+    gSelf.store(self, std::memory_order_release);
+    gYieldResult.store(sceUltUlthreadYield(), std::memory_order_release);
+    sceUltUlthreadExit(static_cast<std::int32_t>(arg));
+    gPastExit.store(true, std::memory_order_release);
+    return -1;
 }
 
 struct alignas(8) Runtime { std::uint8_t bytes[4096]{}; };
@@ -105,27 +137,40 @@ static void Validation() {
     std::int32_t status = 0;
     CHECK(sceUltUlthreadJoin(&thread, &status) == Ok && status == 0x27);
     CHECK(sceUltFinalize() == Ok);
-    CHECK(sceUltUlthreadRuntimeGetWorkAreaSize(1, 1) == 256u + 16u * 1024u);
+    CHECK(sceUltUlthreadRuntimeGetWorkAreaSize(1, 1) == 1184);
+    CHECK(sceUltConditionVariableDestroy(nullptr) == -2139029503);
+    CHECK(sceUltReaderWriterLockDestroy(nullptr) == Null);
+    bool threwInfo = false;
+    try {
+        sceUltGetConditionVariableInfo(nullptr, nullptr, nullptr, 0);
+    } catch (const std::runtime_error&) {
+        threwInfo = true;
+    }
+    CHECK(threwInfo);
 }
 
 static void TryJoin() {
+    CHECK(sceUltUlthreadRuntimeGetWorkAreaSize(0, 0) == 384);
+    CHECK(sceUltUlthreadRuntimeGetWorkAreaSize(1, 1) == 1184);
+    CHECK(sceUltUlthreadRuntimeGetWorkAreaSize(3, 2) == 2128);
+    CHECK(sceUltUlthreadRuntimeGetWorkAreaSize(0x80000000u, 0) == 0xA00000180ull);
     Runtime runtime;
     Thread thread;
     std::uint8_t optParam[128];
     std::memset(optParam, 0xff, sizeof(optParam));
     CHECK(_sceUltUlthreadRuntimeOptParamInitialize(nullptr, 0) == Null);
     CHECK(_sceUltUlthreadRuntimeOptParamInitialize(optParam, 0) == Ok && optParam[0] == 0);
-    CHECK(_sceUltUlthreadRuntimeCreate(&runtime, "runtime", 1, 1, nullptr, nullptr, 0) == Ok);
-    CHECK(_sceUltUlthreadCreate(&thread, "parked", Parked, 0x3C, nullptr, 0, &runtime, nullptr, 0) == Ok);
+    CHECK(_sceUltUlthreadRuntimeCreate(&runtime, "runtime", 1, 1, nullptr, nullptr) == Ok);
+    CHECK(_sceUltUlthreadCreate(&thread, "parked", Parked, 0x3C, nullptr, 0, &runtime, nullptr) == Ok);
     while (!gStarted.load(std::memory_order_acquire)) std::this_thread::yield();
 
     std::int32_t status = 0;
     const int running = sceUltUlthreadTryJoin(&thread, &status);
     gRelease.store(true, std::memory_order_release);
     int joined;
-    while ((joined = sceUltUlthreadTryJoin(&thread, &status)) == Busy) std::this_thread::yield();
+    while ((joined = sceUltUlthreadTryJoin(&thread, &status)) == Again) std::this_thread::yield();
 
-    CHECK(running == Busy);
+    CHECK(running == Again);
     CHECK(joined == Ok && status == 0x3C);
     CHECK(sceUltUlthreadTryJoin(&thread, &status) == State);
     CHECK(sceUltUlthreadTryJoin(nullptr, &status) == Null);
@@ -138,16 +183,16 @@ static void Destroy() {
     Thread thread;
     CHECK(sceUltUlthreadRuntimeDestroy(nullptr) == Null);
     CHECK(sceUltUlthreadRuntimeDestroy(&runtime) == State);
-    CHECK(_sceUltUlthreadRuntimeCreate(&runtime, "runtime", 1, 1, nullptr, nullptr, 0) == Ok);
-    CHECK(_sceUltUlthreadRuntimeCreate(&other, "other", 1, 1, nullptr, nullptr, 0) == Ok);
-    CHECK(_sceUltUlthreadCreate(&thread, "thread", Immediate, 0x11, nullptr, 0, &runtime, nullptr, 0) == Ok);
+    CHECK(_sceUltUlthreadRuntimeCreate(&runtime, "runtime", 1, 1, nullptr, nullptr) == Ok);
+    CHECK(_sceUltUlthreadRuntimeCreate(&other, "other", 1, 1, nullptr, nullptr) == Ok);
+    CHECK(_sceUltUlthreadCreate(&thread, "thread", Immediate, 0x11, nullptr, 0, &runtime, nullptr) == Ok);
     CHECK(sceUltUlthreadRuntimeDestroy(&other) == Ok);
-    CHECK(sceUltUlthreadRuntimeDestroy(&runtime) == Busy);
+    CHECK(sceUltUlthreadRuntimeDestroy(&runtime) == State);
     std::int32_t status = 0;
     CHECK(sceUltUlthreadJoin(&thread, &status) == Ok && status == 0x11);
     CHECK(sceUltUlthreadRuntimeDestroy(&runtime) == Ok);
     CHECK(sceUltUlthreadRuntimeDestroy(&runtime) == State);
-    CHECK(_sceUltUlthreadCreate(&thread, "thread", Immediate, 0, nullptr, 0, &runtime, nullptr, 0) == State);
+    CHECK(_sceUltUlthreadCreate(&thread, "thread", Immediate, 0, nullptr, 0, &runtime, nullptr) == State);
     CHECK(sceUltFinalize() == Ok);
 }
 
@@ -155,31 +200,94 @@ static void UnderscoredCreate() {
     alignas(8) static std::uint8_t pool[256];
     alignas(8) static std::uint8_t semaphore[256];
     alignas(8) static std::uint8_t unknownPool[256];
-    CHECK(_sceUltWaitingQueueResourcePoolCreate(nullptr, "pool", 1, 1, nullptr, nullptr, 0) == Null);
-    CHECK(_sceUltWaitingQueueResourcePoolCreate(pool, "pool", 1, 1, nullptr, nullptr, 0) == Ok);
-    CHECK(_sceUltSemaphoreCreate(nullptr, "semaphore", 1, pool, nullptr, 0) == Null);
-    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", -1, pool, nullptr, 0) != Ok);
-    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", 2, unknownPool, nullptr, 0) != Ok);
-    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", 2, pool, nullptr, 0) == Ok);
-    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", 2, pool, nullptr, 0) == State);
+    CHECK(_sceUltWaitingQueueResourcePoolCreate(nullptr, "pool", 1, 1, nullptr, nullptr) == Null);
+    alignas(8) std::uint8_t workArea[1024]{};
+    alignas(8) std::uint32_t commonOptions[32]{};
+    commonOptions[0] = 0x6C696275;
+    commonOptions[1] = 0x6C746D61;
+    commonOptions[2] = 0x67696300;
+    CHECK(_sceUltWaitingQueueResourcePoolCreate(pool, "pool", 1, 1, nullptr, nullptr) == Null);
+    CHECK(_sceUltWaitingQueueResourcePoolCreate(pool, "pool", 1, 1, workArea + 1, nullptr) == Alignment);
+    commonOptions[31] = 1;
+    CHECK(_sceUltWaitingQueueResourcePoolCreate(pool, "pool", 1, 1, workArea, commonOptions) == Invalid);
+    commonOptions[31] = 0;
+    CHECK(_sceUltWaitingQueueResourcePoolCreate(pool, "pool", 1, 1, workArea, commonOptions) == Ok);
+    CHECK(_sceUltSemaphoreCreate(nullptr, "semaphore", 1, pool, nullptr) == Null);
+    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", UINT32_MAX, pool, nullptr) == Ok);
+    CHECK(sceUltSemaphoreTryAcquire(semaphore, 1) == Again);
+    CHECK(sceUltSemaphoreRelease(semaphore, 1) == Ok);
+    CHECK(sceUltSemaphoreTryAcquire(semaphore, 1) == Again);
+    CHECK(sceUltSemaphoreDestroy(semaphore) == Ok);
+    CHECK(sceUltSemaphoreAcquire(nullptr, 0) == Null);
+    CHECK(sceUltSemaphoreTryAcquire(nullptr, 0) == Null);
+    CHECK(sceUltSemaphoreRelease(nullptr, 0) == Null);
+    CHECK(sceUltSemaphoreAcquire(semaphore + 1, 0) == Alignment);
+    CHECK(sceUltSemaphoreTryAcquire(semaphore + 1, 0) == Alignment);
+    CHECK(sceUltSemaphoreRelease(semaphore + 1, 0) == Alignment);
+    CHECK(sceUltSemaphoreDestroy(semaphore + 1) == Alignment);
+    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", 2, unknownPool, nullptr) != Ok);
+    commonOptions[0] = 0;
+    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", 2, pool, commonOptions) == Invalid);
+    commonOptions[0] = 0x6C696275;
+    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", 2, pool, commonOptions) == Ok);
+    CHECK(_sceUltSemaphoreCreate(semaphore, "semaphore", 2, pool, nullptr) == State);
     CHECK(sceUltSemaphoreAcquire(semaphore, 2) == Ok);
     CHECK(sceUltSemaphoreRelease(semaphore, 2) == Ok);
-    alignas(8) static std::uint8_t mutexOptParam[128];
+    alignas(8) static std::uint8_t mutexOptParam[136];
     alignas(8) static std::uint8_t mutex[256];
     std::memset(mutexOptParam, 0xFF, sizeof(mutexOptParam));
     CHECK(_sceUltMutexOptParamInitialize(nullptr, 0) == Null);
+    CHECK(_sceUltMutexOptParamInitialize(mutexOptParam + 1, 0) == Alignment);
+    CHECK(mutexOptParam[0] == 0xFF && mutexOptParam[127] == 0xFF);
+    CHECK(_sceUltMutexOptParamInitialize(mutexOptParam, 0x12345678) == Ok);
+    UltMutexOptParam options{};
+    std::memcpy(&options, mutexOptParam, sizeof(options));
+    CHECK(options.header[0] == 0x6C696275 && options.header[1] == 0x6C746D61 && options.header[2] == 0x67696300);
+    CHECK(options.buildVersion == 0x12345678 && options.attribute == 0);
+    for (std::size_t index = 16; index < 128; ++index) CHECK(mutexOptParam[index] == 0);
+    for (std::size_t index = 128; index < sizeof(mutexOptParam); ++index) CHECK(mutexOptParam[index] == 0xFF);
+    CHECK(_sceUltMutexCreate(mutex, nullptr, pool, mutexOptParam) == Null);
+    CHECK(_sceUltMutexCreate(mutex, "mutex", nullptr, mutexOptParam) == Null);
+    CHECK(_sceUltMutexCreate(mutex, "mutex", pool, mutexOptParam + 1) == Alignment);
+    mutexOptParam[127] = 1;
+    CHECK(_sceUltMutexCreate(mutex, "mutex", pool, mutexOptParam) == Invalid);
+    mutexOptParam[127] = 0;
+    mutexOptParam[16] = 2;
+    CHECK(_sceUltMutexCreate(mutex, "mutex", pool, mutexOptParam) == Invalid);
+    mutexOptParam[16] = 0;
+    mutexOptParam[0] = 0;
+    CHECK(_sceUltMutexCreate(mutex, "mutex", pool, mutexOptParam) == Invalid);
     CHECK(_sceUltMutexOptParamInitialize(mutexOptParam, 0) == Ok);
-    CHECK(mutexOptParam[8] == 0 && mutexOptParam[15] == 0);
-    CHECK(_sceUltMutexCreate(nullptr, "mutex", pool, mutexOptParam, 0) == Null);
-    CHECK(_sceUltMutexCreate(mutex, "mutex", pool, mutexOptParam, 0) == Ok);
+    CHECK(_sceUltMutexCreate(nullptr, "mutex", pool, mutexOptParam) == Null);
+    CHECK(_sceUltMutexCreate(mutex, "mutex", pool, mutexOptParam) == Ok);
     CHECK(sceUltMutexLock(mutex) == Ok);
+    CHECK(sceUltMutexLock(mutex) == State);
+    std::thread foreignUnlock([&] { CHECK(sceUltMutexUnlock(mutex) == Permission); });
+    foreignUnlock.join();
+    CHECK(sceUltMutexUnlock(mutex) == Ok);
+    CHECK(sceUltMutexUnlock(mutex) == Permission);
+    CHECK(sceUltMutexDestroy(mutex) == Ok);
+    mutexOptParam[16] = 1;
+    CHECK(_sceUltMutexCreate(mutex, "mutex", pool, mutexOptParam) == Ok);
+    CHECK(sceUltMutexLock(mutex) == Ok);
+    CHECK(sceUltMutexLock(mutex) == Ok);
+    CHECK(sceUltMutexUnlock(mutex) == Ok);
+    CHECK(sceUltMutexDestroy(mutex) == State);
     CHECK(sceUltMutexUnlock(mutex) == Ok);
     alignas(8) static std::uint8_t dataPool[512];
     alignas(8) static std::uint8_t queue[512];
-    CHECK(_sceUltQueueDataResourcePoolCreate(nullptr, "data", 1, 8, 1, pool, nullptr, nullptr, 0) == Null);
-    CHECK(_sceUltQueueDataResourcePoolCreate(dataPool, "data", 1, 8, 1, pool, nullptr, nullptr, 0) == Ok);
-    CHECK(_sceUltQueueCreate(nullptr, "queue", 8, pool, dataPool, nullptr, 0) == Null);
-    CHECK(_sceUltQueueCreate(queue, "queue", 8, pool, dataPool, nullptr, 0) == Ok);
+    CHECK(_sceUltQueueDataResourcePoolCreate(nullptr, "data", 1, 8, 1, pool, nullptr, nullptr) == Null);
+    CHECK(_sceUltQueueDataResourcePoolCreate(dataPool, "data", 1, 8, 1, pool, nullptr, nullptr) == Null);
+    commonOptions[4] = 1;
+    CHECK(_sceUltQueueDataResourcePoolCreate(dataPool, "data", 1, 8, 1, pool, workArea, commonOptions) == Invalid);
+    commonOptions[4] = 0;
+    CHECK(_sceUltQueueDataResourcePoolCreate(dataPool, "data", 1, 8, 1, pool, workArea, commonOptions) == Ok);
+    CHECK(_sceUltQueueCreate(nullptr, "queue", 8, pool, dataPool, nullptr) == Null);
+    commonOptions[31] = 1;
+    CHECK(_sceUltQueueCreate(queue, "queue", 8, pool, dataPool, commonOptions) == Invalid);
+    commonOptions[31] = 0;
+    CHECK(_sceUltQueueCreate(queue, "queue", 8, pool, dataPool, reinterpret_cast<std::uint8_t*>(commonOptions) + 1) == Alignment);
+    CHECK(_sceUltQueueCreate(queue, "queue", 8, pool, dataPool, commonOptions) == Ok);
     std::uint64_t value = 0x1122334455667788ull, output = 0;
     CHECK(sceUltQueuePush(queue, &value) == Ok);
     CHECK(sceUltQueuePop(queue, &output) == Ok && output == value);
@@ -187,7 +295,7 @@ static void UnderscoredCreate() {
     CHECK(sceUltWaitingQueueResourcePoolDestroy(unknownPool) == State);
     CHECK(sceUltMutexDestroy(nullptr) == Null);
     CHECK(sceUltMutexLock(mutex) == Ok);
-    CHECK(sceUltMutexDestroy(mutex) == Busy);
+    CHECK(sceUltMutexDestroy(mutex) == State);
     std::atomic<bool> waiterStarted{false};
     std::atomic<bool> waiterAcquired{false};
     std::thread waiter([&] {
@@ -199,8 +307,8 @@ static void UnderscoredCreate() {
     while (!waiterStarted.load(std::memory_order_acquire)) std::this_thread::yield();
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     CHECK(!waiterAcquired.load(std::memory_order_acquire));
-    CHECK(sceUltMutexDestroy(mutex) == Busy);
-    CHECK(sceUltWaitingQueueResourcePoolDestroy(pool) == Busy);
+    CHECK(sceUltMutexDestroy(mutex) == State);
+    CHECK(sceUltWaitingQueueResourcePoolDestroy(pool) == State);
     CHECK(sceUltMutexUnlock(mutex) == Ok);
     waiter.join();
     CHECK(waiterAcquired.load(std::memory_order_acquire));
@@ -213,6 +321,33 @@ static void UnderscoredCreate() {
     CHECK(sceUltQueueDataResourcePoolDestroy(dataPool) == Ok);
 }
 
+static void Self() {
+    Runtime runtime;
+    Thread thread;
+    void* self = &runtime;
+    CHECK(sceUltUlthreadGetSelf(nullptr) == Null);
+    CHECK(sceUltUlthreadGetSelf(&self) == Permission && self == &runtime);
+    CHECK(sceUltUlthreadExit(0) == Permission);
+    CHECK(sceUltUlthreadYield() == Ok);
+    std::uint8_t optParam[128];
+    std::memset(optParam, 0xff, sizeof(optParam));
+    CHECK(sceUltUlthreadOptParamInitialize(optParam, 0) == Ok);
+    CHECK(sceUltUlthreadRuntimeCreate(&runtime, "runtime", 1, 1, nullptr, nullptr, 0) == Ok);
+    CHECK(sceUltUlthreadCreate(&thread, "early", ExitsEarly, 0x6E, nullptr, 0, &runtime, optParam, 0) == Ok);
+    std::int32_t status = 0;
+    int joined;
+    while ((joined = sceUltUlthreadTryJoin(&thread, &status)) == Again) std::this_thread::yield();
+    CHECK(joined == Ok && status == 0x6E);
+    CHECK(gSelfResult.load(std::memory_order_acquire) == Ok);
+    CHECK(gSelf.load(std::memory_order_acquire) == &thread);
+    CHECK(gYieldResult.load(std::memory_order_acquire) == Ok);
+    CHECK(!gPastExit.load(std::memory_order_acquire));
+    CHECK(sceUltUlthreadCreate(&thread, "early", ExitsEarly, 0x21, nullptr, 0, &runtime, nullptr, 0) == Ok);
+    CHECK(sceUltUlthreadJoin(&thread, &status) == Ok && status == 0x21);
+    CHECK(!gPastExit.load(std::memory_order_acquire));
+    CHECK(sceUltUlthreadRuntimeDestroy(&runtime) == Ok);
+}
+
 int main(int argc, char** argv) {
     CHECK(argc == 2);
     CHECK(sceUltInitialize() == Ok);
@@ -221,5 +356,6 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[1], "tryjoin") == 0) TryJoin();
     else if (std::strcmp(argv[1], "destroy") == 0) Destroy();
     else if (std::strcmp(argv[1], "underscoredcreate") == 0) UnderscoredCreate();
+    else if (std::strcmp(argv[1], "self") == 0) Self();
     else CHECK(false);
 }

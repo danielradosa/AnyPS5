@@ -20,7 +20,8 @@ using namespace ShaderRecompiler;
 constexpr std::string_view Source = R"(
   [v_readfirstlane_b32 s7, v0]
   buffer_atomic_umax v1, off, s[4:7] offset:4
-  s_endpgm)";
+  s_endpgm
+  (and the same with buffer_atomic_umax_x2 v[1:2] for the 64-bit form))";
 
 void Check(bool condition, const std::string& message) {
     if (!condition) throw std::runtime_error(message);
@@ -65,12 +66,13 @@ void Scan(std::span<const std::uint32_t> words, Compiled& compiled) {
     }
 }
 
-Compiled Compile(std::uint32_t subgroupSize, bool gpu) {
+Compiled Compile(std::uint32_t subgroupSize, bool gpu, bool wide) {
     std::vector<std::uint32_t> code;
     if (gpu) code.push_back(0x7e0e0500u);
-    code.insert(code.end(), {0xe0e00004u, 0x80010100u, 0xbf810000u});
+    code.insert(code.end(), {wide ? 0xe1600004u : 0xe0e00004u, 0x80010100u, 0xbf810000u});
     const std::array<std::uint32_t, 8> userData{0u, 0u, 0u, 0u, 0x10000000u, 0u, 0x14u, 0x30005004u};
     const std::array<std::uint32_t, 2> plain{spv::CapabilityShader, spv::CapabilityGroupNonUniform};
+    const std::array<std::uint32_t, 4> plainWide{spv::CapabilityShader, spv::CapabilityGroupNonUniform, spv::CapabilityInt64, spv::CapabilityInt64Atomics};
     const std::array<std::uint32_t, 5> addressed{spv::CapabilityShader, spv::CapabilityGroupNonUniform, spv::CapabilityInt64, spv::CapabilityPhysicalStorageBufferAddresses, spv::CapabilityStorageBuffer8BitAccess};
     const std::array<std::string_view, 1> plainExtensions{"SPV_KHR_storage_buffer_storage_class"};
     const std::array<std::string_view, 3> addressedExtensions{"SPV_KHR_storage_buffer_storage_class", "SPV_KHR_8bit_storage", "SPV_KHR_physical_storage_buffer"};
@@ -87,6 +89,9 @@ Compiled Compile(std::uint32_t subgroupSize, bool gpu) {
     if (gpu) {
         request.target.supportedCapabilities = addressed;
         request.target.supportedExtensions = addressedExtensions;
+    } else if (wide) {
+        request.target.supportedCapabilities = plainWide;
+        request.target.supportedExtensions = plainExtensions;
     } else {
         request.target.supportedCapabilities = plain;
         request.target.supportedExtensions = plainExtensions;
@@ -109,15 +114,24 @@ void Verify(std::uint32_t subgroupSize) {
     const auto lanes = " (" + std::to_string(subgroupSize) + "-lane subgroup)";
     Compiled atomic;
     try {
-        atomic = Compile(subgroupSize, false);
+        atomic = Compile(subgroupSize, false, false);
     } catch (const std::exception& error) {
         throw std::runtime_error("buffer atomic fault only: an atomic on a validated V# needs no BDA support, but the recompile failed: " + std::string(error.what()) + lanes);
     }
     Check(atomic.tableBindings == 0, "buffer atomic fault only: an atomic on a validated V# got a BDA table binding, which makes the dispatch an address-based build" + lanes);
     Check(atomic.faultBindings == 1 && atomic.bdaAbiVersion == BdaAbi::Version, "buffer atomic fault only: an atomic on a validated V# got " + std::to_string(atomic.faultBindings) + " fault buffer bindings and BDA ABI " + std::to_string(atomic.bdaAbiVersion) + lanes);
     Check(!atomic.int64 && !atomic.physical && atomic.addressing == spv::AddressingModelLogical, "buffer atomic fault only: an atomic on a validated V# declared Int64 or physical storage buffer addressing" + lanes);
-    Check(atomic.unalignedReports != 0, "buffer atomic fault only: an atomic on a validated V# lost its unaligned-address fault report" + lanes);
-    const auto gpu = Compile(subgroupSize, true);
+    Check(atomic.unalignedReports == 0, "buffer atomic fault only: a 32-bit atomic on a validated V# reported an unaligned address instead of acting on the dword that holds it" + lanes);
+    Compiled wide;
+    try {
+        wide = Compile(subgroupSize, false, true);
+    } catch (const std::exception& error) {
+        throw std::runtime_error("buffer atomic fault only: a 64-bit atomic on a validated V# needs no BDA support, but the recompile failed: " + std::string(error.what()) + lanes);
+    }
+    Check(wide.tableBindings == 0 && wide.faultBindings == 1, "buffer atomic fault only: a 64-bit atomic on a validated V# got " + std::to_string(wide.tableBindings) + " BDA table and " + std::to_string(wide.faultBindings) + " fault buffer bindings" + lanes);
+    Check(!wide.physical && wide.addressing == spv::AddressingModelLogical, "buffer atomic fault only: a 64-bit atomic on a validated V# declared physical storage buffer addressing" + lanes);
+    Check(wide.unalignedReports != 0, "buffer atomic fault only: a 64-bit atomic on a validated V# lost its unaligned-address fault report" + lanes);
+    const auto gpu = Compile(subgroupSize, true, false);
     Check(gpu.tableBindings == 1, "buffer atomic fault only: an atomic on a GPU-selected V# got " + std::to_string(gpu.tableBindings) + " BDA table bindings, expected 1" + lanes);
 }
 

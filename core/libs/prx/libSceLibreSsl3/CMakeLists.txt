@@ -1,0 +1,96 @@
+add_library(libSceLibreSsl3 SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/Export.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/Digest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Evp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/X509.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Objects.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Text.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ssl.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Keys.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/X509Ext.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Verify.cpp)
+target_include_directories(libSceLibreSsl3 PRIVATE ${LIBS_INCLUDE_DIR})
+target_link_libraries(libSceLibreSsl3 PRIVATE libSceLibreSsl)
+configure_windows_unwind(libSceLibreSsl3)
+
+if(BUILD_TESTING)
+    add_test_executable(guest_libressl3_digest_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Digest.cpp)
+    target_include_directories(guest_libressl3_digest_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_digest_tests PRIVATE libSceLibreSsl3 libc)
+    configure_windows_unwind(guest_libressl3_digest_tests)
+    add_test(NAME guest_libressl3_digest COMMAND guest_libressl3_digest_tests)
+    set_tests_properties(guest_libressl3_digest PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_digest PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+    add_test_executable(guest_libressl3_forward_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Forward.cpp)
+    target_include_directories(guest_libressl3_forward_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_forward_tests PRIVATE libSceLibreSsl3 libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl3_forward_tests)
+    add_test(NAME guest_libressl3_forward COMMAND guest_libressl3_forward_tests)
+    set_tests_properties(guest_libressl3_forward PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_forward PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+    add_test_executable(guest_libressl3_x509_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3X509.cpp)
+    target_include_directories(guest_libressl3_x509_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_x509_tests PRIVATE libSceLibreSsl3 libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl3_x509_tests)
+    add_test(NAME guest_libressl3_x509 COMMAND guest_libressl3_x509_tests)
+    set_tests_properties(guest_libressl3_x509 PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_x509 PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+    add_test_executable(guest_libressl3_objects_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Objects.cpp)
+    target_include_directories(guest_libressl3_objects_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_objects_tests PRIVATE libSceLibreSsl3 libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl3_objects_tests)
+    add_test(NAME guest_libressl3_objects COMMAND guest_libressl3_objects_tests)
+    set_tests_properties(guest_libressl3_objects PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_objects PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+    add_test_executable(guest_libressl3_text_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Text.cpp)
+    target_include_directories(guest_libressl3_text_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_text_tests PRIVATE libSceLibreSsl3 libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl3_text_tests)
+    add_test(NAME guest_libressl3_text COMMAND guest_libressl3_text_tests)
+    set_tests_properties(guest_libressl3_text PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_text PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+    add_test_executable(guest_libressl3_ssl_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Ssl.cpp)
+    target_include_directories(guest_libressl3_ssl_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_ssl_tests PRIVATE libSceLibreSsl3 libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl3_ssl_tests)
+    add_test(NAME guest_libressl3_ssl COMMAND guest_libressl3_ssl_tests)
+    set_tests_properties(guest_libressl3_ssl PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_ssl PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+    add_test_executable(guest_libressl3_keys_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Keys.cpp)
+    target_include_directories(guest_libressl3_keys_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_keys_tests PRIVATE libSceLibreSsl3 libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl3_keys_tests)
+    add_test(NAME guest_libressl3_keys COMMAND guest_libressl3_keys_tests)
+    set_tests_properties(guest_libressl3_keys PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_keys PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+    add_test_executable(guest_libressl3_verify_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSsl3Verify.cpp)
+    target_include_directories(guest_libressl3_verify_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl3_verify_tests PRIVATE libSceLibreSsl3 libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl3_verify_tests)
+    add_test(NAME guest_libressl3_verify COMMAND guest_libressl3_verify_tests)
+    set_tests_properties(guest_libressl3_verify PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(guest_libressl3_verify PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl3>")
+    endif()
+endif()

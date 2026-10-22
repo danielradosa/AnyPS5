@@ -86,9 +86,21 @@ static void validateOpenParam(const void* param) {
     }
 }
 
+static constexpr int32_t VIDEO_OUT_CURSOR_NUM_MAX = 2;
+
+static void validateCursor(const char* function, int32_t handle, int32_t index) {
+    if (!VideoOutDriver::Get().HasConfig(handle)) {
+        throw std::runtime_error(std::string(function) + ": VIDEO_OUT_ERROR_INVALID_HANDLE");
+    }
+    if (index < 0 || index >= VIDEO_OUT_CURSOR_NUM_MAX) {
+        throw std::runtime_error(std::string(function) + ": VIDEO_OUT_ERROR_INVALID_INDEX");
+    }
+}
+
 extern "C" {
 
 int APS5_VABI sceVideoOutOpen(int userId, int busType, int index, const void* param) try {
+    if (busType == VIDEO_OUT_BUS_TYPE_HMD2_MAIN) return VIDEO_OUT_ERROR_INVALID_VALUE;
     validateOpenParam(param);
     if (userId != 255 && userId != 0) {
         throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_VALUE");
@@ -183,10 +195,8 @@ int APS5_VABI sceVideoOutGetOutputStatus(int handle, VideoOutOutputStatus* statu
     if (status == nullptr) {
         throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_ADDRESS");
     }
+    if (!VideoOutDriver::Get().HasConfig(handle)) return VIDEO_OUT_ERROR_INVALID_HANDLE;
     auto cfg = VideoOutDriver::Get().GetConfig(handle);
-    if (cfg == nullptr) {
-        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_HANDLE");
-    }
     std::unique_lock lock(cfg->mutex);
     cfg->Check();
     *status = outputStatus(*cfg);
@@ -348,6 +358,48 @@ int APS5_VABI sceVideoOutAdjustColor(int handle, const VideoOutColorSettings* se
     LibcAwaitExit_nid_postfix();
 }
 
+int APS5_VABI sceVideoOutColorSpaceConversionSettingsSetDefaultSdrToHdrConversion(VideoOutColorSpaceConversionSettings* settings) {
+    if (settings == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_ADDRESS");
+    }
+    std::memset(settings, 0, sizeof(VideoOutColorSpaceConversionSettings));
+    return 0;
+}
+
+int APS5_VABI sceVideoOutColorSpaceConversionSettingsSetSdrToHdrConversion(VideoOutColorSpaceConversionSettings* settings, float lumaScale, uint32_t option) {
+    if (settings == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_ADDRESS");
+    }
+    (void)lumaScale;
+    (void)option;
+    return 0;
+}
+
+int APS5_VABI sceVideoOutAdjustColorSpaceConversion(int handle, const VideoOutColorSpaceConversionSettings* settings) try {
+    if (settings == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_ADDRESS");
+    }
+    auto cfg = VideoOutDriver::Get().GetConfig(handle);
+    if (cfg == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_HANDLE");
+    }
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutSetGlobalBlendSpace(int handle, uint32_t space, uint32_t option) try {
+    auto cfg = VideoOutDriver::Get().GetConfig(handle);
+    if (cfg == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_HANDLE");
+    }
+    (void)space;
+    (void)option;
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
 int APS5_VABI sceVideoOutVrrUnpegFromFixedRate(int handle) try {
     if (!VideoOutDriver::Get().IsOpen(handle)) {
         throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_HANDLE");
@@ -382,6 +434,51 @@ int APS5_VABI sceVideoOutClearFlipMaster(int slaveHandle) try {
 
 int APS5_VABI sceVideoOutAddVrrStatusFlagsPrivilege() {
     return 0;
+}
+
+int APS5_VABI sceVideoOutCursorEnable(int32_t handle, int32_t index, const void* address) try {
+    if (address == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_ADDRESS");
+    }
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutCursorDisable(int32_t handle, int32_t index) try {
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutCursorSetImageAddress(int32_t handle, int32_t index, const void* address) try {
+    if (address == nullptr) {
+        throw std::runtime_error(std::string(__func__) + ": VIDEO_OUT_ERROR_INVALID_ADDRESS");
+    }
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutCursorSetPosition(int32_t handle, int32_t index, uint32_t posX, uint32_t posY) try {
+    (void)posX;
+    (void)posY;
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
+}
+
+int APS5_VABI sceVideoOutCursorSetHotSpot(int32_t handle, int32_t index, uint32_t hotX, uint32_t hotY) try {
+    (void)hotX;
+    (void)hotY;
+    validateCursor(__func__, handle, index);
+    return 0;
+} catch (const ProcessShutdown&) {
+    LibcAwaitExit_nid_postfix();
 }
 
 }

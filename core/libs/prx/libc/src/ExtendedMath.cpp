@@ -5,6 +5,7 @@
 #include <cfenv>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 static_assert(sizeof(long double) == 16 && std::numeric_limits<long double>::digits == 64);
@@ -40,6 +41,14 @@ long double CheckRange_nid_no_patch(long double input, long double result) {
         }
     }
     return result;
+}
+
+bool IsNan_nid_no_patch(long double value) {
+    std::uint64_t significand;
+    std::uint16_t signAndExponent;
+    std::memcpy(&significand, &value, sizeof(significand));
+    std::memcpy(&signAndExponent, reinterpret_cast<const unsigned char*>(&value) + sizeof(significand), sizeof(signAndExponent));
+    return (signAndExponent & 0x7fff) == 0x7fff && (significand & UINT64_C(0x7fffffffffffffff)) != 0;
 }
 
 long double CheckNeighbor_nid_no_patch(long double from, long double to, long double result) {
@@ -88,71 +97,29 @@ long double APS5_VABI expm1l_nid_postfix(long double value) { return CheckRange_
 long double APS5_VABI log10l_nid_postfix(long double value) { return std::log10(value); }
 long double APS5_VABI log1pl_nid_postfix(long double value) { return std::log1p(value); }
 long double APS5_VABI log2l_nid_postfix(long double value) { return std::log2(value); }
-long double APS5_VABI logbl_nid_postfix(long double value) {
-    ErrnoGuard guard;
-    return std::logb(value);
-}
 
 long double APS5_VABI sqrtl_nid_postfix(long double value) {
     return value < 0.L ? DomainError_nid_no_patch() : std::sqrt(value);
 }
 long double APS5_VABI cbrtl_nid_postfix(long double value) { return std::cbrt(value); }
-long double APS5_VABI hypotl_nid_postfix(long double x, long double y) { return std::hypot(x, y); }
 long double APS5_VABI fabsl_nid_postfix(long double value) { return std::fabs(value); }
-long double APS5_VABI copysignl_nid_postfix(long double magnitude, long double sign) { return std::copysign(magnitude, sign); }
-long double APS5_VABI fdiml_nid_postfix(long double x, long double y) {
-    if (std::isnan(x)) return x;
-    if (std::isnan(y)) return y;
-    return x > y ? x - y : 0.0L;
-}
 long double APS5_VABI fmaxl_nid_postfix(long double x, long double y) {
+    if (IsNan_nid_no_patch(x)) return y;
+    if (IsNan_nid_no_patch(y)) return x;
     if (x == 0.L && y == 0.L) return std::signbit(x) ? y : x;
-    return std::fmax(x, y);
+    return x > y ? x : y;
 }
 long double APS5_VABI fminl_nid_postfix(long double x, long double y) {
+    if (IsNan_nid_no_patch(x)) return y;
+    if (IsNan_nid_no_patch(y)) return x;
     if (x == 0.L && y == 0.L) return std::signbit(x) ? x : y;
-    return std::fmin(x, y);
-}
-long double APS5_VABI fmal_nid_postfix(long double x, long double y, long double z) {
-    if (x == 0.0L || y == 0.0L) return x * y + z;
-    if (z == 0.0L) return x * y;
-    if (!std::isfinite(x) || !std::isfinite(y)) return x * y + z;
-    if (!std::isfinite(z)) return z;
-    int xExponent = 0, yExponent = 0, zExponent = 0;
-    std::frexp(x, &xExponent);
-    std::frexp(y, &yExponent);
-    std::frexp(z, &zExponent);
-    if (xExponent + yExponent - zExponent > 2 * std::numeric_limits<long double>::digits) return x * y;
-    ErrnoGuard guard;
-    return std::fma(x, y, z);
+    return x < y ? x : y;
 }
 
 long double APS5_VABI ceill_nid_postfix(long double value) { return std::ceil(value); }
 long double APS5_VABI floorl_nid_postfix(long double value) { return std::floor(value); }
-long double APS5_VABI roundl_nid_postfix(long double value) { return std::isfinite(value) ? std::round(value) : value; }
 long double APS5_VABI nearbyintl_nid_postfix(long double value) { return std::nearbyint(value); }
 
-long double APS5_VABI fmodl_nid_postfix(long double x, long double y) {
-    if (!std::isfinite(x) || y == 0.0L || std::isnan(y)) {
-        errno = EDOM;
-        return (x * y) / (x * y);
-    }
-    ErrnoGuard guard;
-    return std::fmod(x, y);
-}
-long double APS5_VABI remainderl_nid_postfix(long double x, long double y) { return std::remainder(x, y); }
-long double APS5_VABI remquol_nid_postfix(long double x, long double y, int* quotient) {
-    const bool domain = !std::isnan(x) && !std::isnan(y) && (std::isinf(x) || y == 0.0L);
-    int bits = 0;
-    long double result;
-    {
-        ErrnoGuard guard;
-        result = std::remquo(x, y, &bits);
-    }
-    if (domain) errno = EDOM;
-    if (!std::isnan(result)) *quotient = bits < 0 ? -(-bits & 7) : (bits & 7);
-    return result;
-}
 long double APS5_VABI nextafterl_nid_postfix(long double from, long double to) { return CheckNeighbor_nid_no_patch(from, to, std::nextafter(from, to)); }
 long double APS5_VABI nexttowardl_nid_postfix(long double from, long double to) { return CheckNeighbor_nid_no_patch(from, to, std::nexttoward(from, to)); }
 
@@ -170,10 +137,5 @@ long double APS5_VABI modfl_nid_postfix(long double value, long double* integral
     return std::modf(value, integral);
 }
 long double APS5_VABI scalbnl_nid_postfix(long double value, int exponent) { return std::scalbn(value, exponent); }
-long double APS5_VABI scalblnl_nid_postfix(long double value, std::int64_t exponent) {
-    const auto bounded = std::clamp(exponent, static_cast<std::int64_t>(std::numeric_limits<int>::min()),
-                                   static_cast<std::int64_t>(std::numeric_limits<int>::max()));
-    return std::scalbn(value, static_cast<int>(bounded));
-}
 
 }

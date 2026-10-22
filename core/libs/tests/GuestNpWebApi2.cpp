@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 
 struct NpWebApi2MemoryPoolStats {
@@ -13,18 +14,23 @@ struct NpWebApi2MemoryPoolStats {
 
 extern "C" {
 int APS5_VABI sceNpWebApi2Initialize(int, std::size_t);
+int APS5_VABI sceNpWebApi2InitializeForPresence(int, std::uint64_t);
+int APS5_VABI sceNpWebApi2IntInitialize(const NpWebApi2IntInitializeArgs*);
+int APS5_VABI sceNpWebApi2IntInitialize2(const NpWebApi2IntInitialize2Args*);
+int APS5_VABI sceNpWebApi2CreateMultipartRequest(int, const char*, const char*, const char*, std::int64_t*);
+int APS5_VABI sceNpWebApi2SendMultipartRequest(std::int64_t, int, void*, std::uint64_t, NpWebApi2ResponseInformationOption*);
 int APS5_VABI sceNpWebApi2Terminate(int);
 int APS5_VABI sceNpWebApi2GetMemoryPoolStats(int, NpWebApi2MemoryPoolStats*);
 int APS5_VABI sceNpWebApi2PushEventCreateHandle(int);
-int APS5_VABI sceNpWebApi2PushEventSetHandleTimeout(int, int, std::uint32_t);
 int APS5_VABI sceNpWebApi2PushEventAbortHandle(int, int);
 int APS5_VABI sceNpWebApi2PushEventDeleteHandle(int, int);
+int APS5_VABI sceNpWebApi2PushEventSetHandleTimeout(int, int, std::uint32_t);
 int APS5_VABI sceNpWebApi2PushEventCreateFilter(int, int, const char*, std::uint32_t, const void*, std::size_t);
 int APS5_VABI sceNpWebApi2CreateUserContext(int, int);
 int APS5_VABI sceNpWebApi2CreateRequest(int, const char*, const char*, const char*, const void*, std::int64_t*);
 int APS5_VABI sceNpWebApi2SetRequestTimeout(std::int64_t, std::uint32_t);
-int APS5_VABI sceNpWebApi2DeleteRequest(std::int64_t);
 int APS5_VABI sceNpWebApi2AddWebTraceTag(std::int64_t, const char*);
+int APS5_VABI sceNpWebApi2DeleteRequest(std::int64_t);
 }
 
 static constexpr int LibContextNotFound = static_cast<int>(0x80553404);
@@ -32,16 +38,6 @@ static constexpr int Aborted = static_cast<int>(0x80553409);
 static constexpr int HandleNotFound = static_cast<int>(0x8055340D);
 
 static void Require(bool value) { if (!value) std::abort(); }
-
-template <typename TCall>
-static bool Throws(TCall call) {
-    try {
-        call();
-    } catch (const std::exception&) {
-        return true;
-    }
-    return false;
-}
 
 static void TestPushEventAbortHandle() {
     const int context = sceNpWebApi2Initialize(1, 0x8000);
@@ -67,19 +63,100 @@ static void TestPushEventAbortHandle() {
     Require(sceNpWebApi2Terminate(other) == 0);
 }
 
+static void TestInitializeVariants() {
+    constexpr int invalidArgument = static_cast<int>(0x80553402);
+    NpWebApi2MemoryPoolStats stats{};
+    const int presence = sceNpWebApi2InitializeForPresence(1, 0x4000);
+    Require(presence > 0);
+    Require(sceNpWebApi2GetMemoryPoolStats(presence, &stats) == 0 && stats.pool_size == 0x4000 && stats.current_inuse_size == 0);
+    Require(sceNpWebApi2PushEventCreateHandle(presence) > 0);
+
+    Require(sceNpWebApi2IntInitialize(nullptr) == invalidArgument);
+    NpWebApi2IntInitializeArgs args{1, 0, 0x6000, "internal", sizeof(NpWebApi2IntInitializeArgs) + 8};
+    Require(sceNpWebApi2IntInitialize(&args) == invalidArgument);
+    args.struct_size = sizeof(NpWebApi2IntInitializeArgs);
+    const int internal = sceNpWebApi2IntInitialize(&args);
+    Require(internal > 0 && internal != presence);
+    Require(sceNpWebApi2GetMemoryPoolStats(internal, &stats) == 0 && stats.pool_size == 0x6000);
+    args.name = nullptr;
+    const int unnamed = sceNpWebApi2IntInitialize(&args);
+    Require(unnamed > 0 && unnamed != internal);
+
+    Require(sceNpWebApi2IntInitialize2(nullptr) == invalidArgument);
+    NpWebApi2IntInitialize2Args args2{1, 0, 0x7000, "internal2", 3, 0, sizeof(NpWebApi2IntInitializeArgs)};
+    Require(sceNpWebApi2IntInitialize2(&args2) == invalidArgument);
+    args2.struct_size = sizeof(NpWebApi2IntInitialize2Args);
+    const int internal2 = sceNpWebApi2IntInitialize2(&args2);
+    Require(internal2 > 0 && internal2 != unnamed);
+    Require(sceNpWebApi2GetMemoryPoolStats(internal2, &stats) == 0 && stats.pool_size == 0x7000);
+
+    for (const int context : {presence, internal, unnamed, internal2}) {
+        Require(sceNpWebApi2Terminate(context) == 0);
+        Require(sceNpWebApi2GetMemoryPoolStats(context, &stats) == LibContextNotFound);
+    }
+}
+
+static void TestMultipartRequest() {
+    constexpr int invalidArgument = static_cast<int>(0x80553402);
+    constexpr int unavailable = static_cast<int>(0x80553406);
+    const int context = sceNpWebApi2Initialize(1, 0x8000);
+    const int user = sceNpWebApi2CreateUserContext(context, 1);
+    std::int64_t request = 0;
+    Require(sceNpWebApi2CreateMultipartRequest(user, nullptr, "/v1/x", "POST", &request) == invalidArgument);
+    Require(sceNpWebApi2CreateMultipartRequest(user, "ugc", nullptr, "POST", &request) == invalidArgument);
+    Require(sceNpWebApi2CreateMultipartRequest(user, "ugc", "/v1/x", nullptr, &request) == invalidArgument);
+    Require(sceNpWebApi2CreateMultipartRequest(user, "ugc", "/v1/x", "POST", nullptr) == invalidArgument);
+    Require(request == 0);
+    Require(sceNpWebApi2CreateMultipartRequest(user, "ugc", "/v1/x", "POST", &request) == 0 && request > 0);
+    Require(sceNpWebApi2AddWebTraceTag(request, "multipart") == 0);
+
+    char part[4] = {'d', 'a', 't', 'a'};
+    NpWebApi2ResponseInformationOption response{};
+    Require(sceNpWebApi2SendMultipartRequest(request, 0, part, sizeof(part), &response) == invalidArgument);
+    Require(sceNpWebApi2SendMultipartRequest(request, -1, part, sizeof(part), &response) == invalidArgument);
+    Require(sceNpWebApi2SendMultipartRequest(request, 1, nullptr, sizeof(part), &response) == invalidArgument);
+    Require(sceNpWebApi2SendMultipartRequest(request, 1, part, 0, &response) == invalidArgument);
+    Require(sceNpWebApi2SendMultipartRequest(request, 1, part, sizeof(part), &response) == unavailable);
+    Require(sceNpWebApi2SendMultipartRequest(request, 2, part, sizeof(part), nullptr) == unavailable);
+    Require(sceNpWebApi2DeleteRequest(request) == 0);
+    Require(sceNpWebApi2AddWebTraceTag(request, "multipart") == unavailable);
+    Require(sceNpWebApi2Terminate(context) == 0);
+}
+
 int main() {
     TestPushEventAbortHandle();
+    TestInitializeVariants();
+    TestMultipartRequest();
+    constexpr int invalidContext = static_cast<int>(0x80553404);
+    constexpr int invalidHandle = static_cast<int>(0x8055340D);
     const int context = sceNpWebApi2Initialize(1, 0x20000);
     const int other = sceNpWebApi2Initialize(1, 0x8000);
     Require(context > 0 && other > 0 && context != other);
-    NpWebApi2MemoryPoolStats stats{1, 1, 1, 1};
+    NpWebApi2MemoryPoolStats stats;
+    std::memset(&stats, 0xa5, sizeof(stats));
     Require(sceNpWebApi2GetMemoryPoolStats(context, &stats) == 0);
+    const auto* statsBytes = reinterpret_cast<const unsigned char*>(&stats);
+    for (std::size_t index = sizeof(std::size_t); index < sizeof(stats); ++index) Require(statsBytes[index] == 0);
     Require(stats.pool_size == 0x20000 && stats.max_inuse_size == 0 && stats.current_inuse_size == 0 && stats.reserved == 0);
     Require(sceNpWebApi2GetMemoryPoolStats(other, &stats) == 0 && stats.pool_size == 0x8000);
-    Require(Throws([&] { sceNpWebApi2GetMemoryPoolStats(context, nullptr); }));
+    Require(sceNpWebApi2GetMemoryPoolStats(context, nullptr) == 0);
+    Require(sceNpWebApi2GetMemoryPoolStats(-1, nullptr) == invalidContext);
+    Require(sceNpWebApi2PushEventCreateHandle(-1) == invalidContext);
     const int handle = sceNpWebApi2PushEventCreateHandle(context);
     Require(handle > 0);
+    Require(sceNpWebApi2PushEventAbortHandle(context, handle) == 0);
+    Require(sceNpWebApi2PushEventAbortHandle(context, handle + 1000) == invalidHandle);
     Require(sceNpWebApi2PushEventSetHandleTimeout(context, handle, 30000) == 0);
+    Require(sceNpWebApi2PushEventAbortHandle(other, handle) == invalidHandle);
+    Require(sceNpWebApi2PushEventDeleteHandle(other, handle) == invalidHandle);
+    Require(sceNpWebApi2PushEventSetHandleTimeout(other, handle, 0) == invalidHandle);
+    Require(sceNpWebApi2PushEventSetHandleTimeout(context, handle, 0) == 0);
+    Require(sceNpWebApi2PushEventSetHandleTimeout(context, handle, UINT32_MAX) == 0);
+    Require(sceNpWebApi2PushEventDeleteHandle(context, handle) == 0);
+    Require(sceNpWebApi2PushEventDeleteHandle(context, handle) == invalidHandle);
+    Require(sceNpWebApi2PushEventAbortHandle(context, handle) == invalidHandle);
+    Require(sceNpWebApi2PushEventSetHandleTimeout(context, handle, 1) == invalidHandle);
+    const int survivingHandle = sceNpWebApi2PushEventCreateHandle(other);
     constexpr int invalidArgument = static_cast<int>(0x80553402);
     constexpr int requestNotFound = static_cast<int>(0x80553406);
     const int user = sceNpWebApi2CreateUserContext(context, 1);
@@ -94,8 +171,10 @@ int main() {
     Require(sceNpWebApi2DeleteRequest(request) == 0);
     Require(sceNpWebApi2AddWebTraceTag(request, "trace") == requestNotFound);
     Require(sceNpWebApi2Terminate(context) == 0);
-    Require(Throws([&] { sceNpWebApi2GetMemoryPoolStats(context, &stats); }));
-    Require(Throws([&] { sceNpWebApi2PushEventSetHandleTimeout(context, handle, 30000); }));
+    Require(sceNpWebApi2GetMemoryPoolStats(context, &stats) == invalidContext);
+    Require(sceNpWebApi2PushEventAbortHandle(context, handle) == invalidContext);
+    Require(sceNpWebApi2PushEventSetHandleTimeout(context, handle, 30000) == invalidContext);
+    Require(sceNpWebApi2PushEventAbortHandle(other, survivingHandle) == 0);
     Require(sceNpWebApi2Terminate(other) == 0);
     return 0;
 }

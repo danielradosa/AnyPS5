@@ -42,10 +42,10 @@ std::uint32_t* APS5_VABI sceAgcDcbSetIndexSize_0600(CommandBuffer* buf, std::uin
     return packet;
 }
 
-std::uint32_t* APS5_VABI sceAgcDcbSetIndexIndirectArgs(CommandBuffer* buf, std::uint64_t indexAddress, std::uint32_t indexCount) {
-    if (indexAddress != 0) Agc::Command::CheckAddress(indexAddress, 16, __func__);
-    Agc::Command::CheckBits(indexCount, 0xffffu, __func__);
-    return Agc::Command::Emit(buf, 0x91u, {static_cast<std::uint32_t>(indexAddress), static_cast<std::uint32_t>(indexAddress >> 32u), indexCount}, __func__);
+std::uint32_t* APS5_VABI sceAgcDcbSetIndexIndirectArgs(CommandBuffer* buf, std::uint64_t attributeAddress, std::uint32_t attributeIndex) {
+    if (attributeAddress != 0) Agc::Command::CheckAddress(attributeAddress, 16, __func__);
+    Agc::Command::CheckBits(attributeIndex, 0xffffu, __func__);
+    return Agc::Command::Emit(buf, 0x91u, {static_cast<std::uint32_t>(attributeAddress), static_cast<std::uint32_t>(attributeAddress >> 32u), attributeIndex}, __func__);
 }
 
 std::uint32_t APS5_VABI sceAgcDcbSetIndexIndirectArgsGetSize() {

@@ -20,6 +20,66 @@ void CheckDisconnected() {
     Require(status == Hmd::DeviceStatus::NotDetected, "headset reported connected");
     Require(sceHmdInternalGetDeviceStatus(nullptr) == Hmd::ParameterNull, "null status");
     Require(sceHmdInternalMmapIsConnect() == 0, "connection reported present");
+    Require(!sceHmdInternalIsGameVr2d(), "game reported in VR2D without a headset");
+    Require(!sceHmdInternalIsMiniAppVr2d(), "mini app reported in VR2D without a headset");
+    Require(!sceHmdInternalIsCommonDlgVr2d(), "common dialog reported in VR2D without a headset");
+    Require(!sceHmdInternalIsCommonDlgMiniAppVr2d(), "common dialog mini app reported in VR2D without a headset");
+}
+
+void CheckBufferQueries() {
+    Require(sceHmdDistortionGetWorkMemoryAlign() == 0x400, "distortion work memory alignment");
+    Require(sceHmdDistortionGetWorkMemorySize() == 0x20000, "distortion work memory size");
+    Require(sceHmdReprojectionQueryGarlicBuffAlign() == 0x100, "reprojection garlic buffer alignment");
+    Require(sceHmdReprojectionQueryGarlicBuffSize() == 0x100000, "reprojection garlic buffer size");
+    Require(sceHmdReprojectionQueryOnionBuffAlign() == 0x100, "reprojection onion buffer alignment");
+    Require(sceHmdReprojectionQueryOnionBuffSize() == 0x810, "reprojection onion buffer size");
+    Require(sceHmdGetDistortionWorkMemoryAlign() == 0x400, "distortion work memory alignment alias");
+    Require(sceHmdGetDistortionWorkMemorySize() == 0x20000, "distortion work memory size alias");
+    Require(sceHmdDistortionGetCompoundEyeCorrectionCommand() == Hmd::ParameterInvalid, "compound eye correction command");
+}
+
+void CheckHandleQueries(std::int32_t expected) {
+    unsigned char left[16];
+    unsigned char right[16];
+    unsigned char fieldOfView[16];
+    unsigned char sensor[64];
+    unsigned char descriptor[64] = {};
+    unsigned char commands[16];
+    std::memset(left, 0x5a, sizeof(left));
+    std::memset(right, 0x5a, sizeof(right));
+    std::memset(fieldOfView, 0x5a, sizeof(fieldOfView));
+    std::memset(sensor, 0x5a, sizeof(sensor));
+    std::memset(commands, 0x5a, sizeof(commands));
+    const auto* distortion = reinterpret_cast<const HmdDistortionCommandParameter*>(descriptor);
+    const auto* wideNear = reinterpret_cast<const HmdWideNearDistortionCommandParameter*>(descriptor);
+    const auto* vr2d = reinterpret_cast<const Hmd2dVrCommandParameter*>(descriptor);
+    auto* commandBuffer = reinterpret_cast<HmdCommandBuffer*>(commands);
+    for (const auto handle : {0, -1, 1, 0x0f000000}) {
+        Require(sceHmdGetFieldOfView(handle, nullptr) == Hmd::ParameterNull, "null field of view accepted");
+        Require(sceHmdGetFieldOfView(handle, reinterpret_cast<HmdFieldOfView*>(fieldOfView)) == expected, "field of view without a headset");
+        Require(sceHmdGet2DEyeOffset(handle, reinterpret_cast<HmdEyeOffset*>(left), reinterpret_cast<HmdEyeOffset*>(right)) == expected, "eye offset without a headset");
+        Require(sceHmdGet2DEyeOffset(handle, nullptr, nullptr) == expected, "eye offset with null outputs");
+        Require(sceHmdGetInertialSensorData(handle, reinterpret_cast<HmdInertialSensorData*>(sensor), 1) == expected, "sensor data without a headset");
+        Require(sceHmdGetInertialSensorData(handle, nullptr, 0) == expected, "sensor data with a null output");
+        Require(sceHmdGetDistortionCorrectionCommand(handle, distortion, commandBuffer) == expected, "distortion command without a headset");
+        Require(sceHmdDistortionGetCorrectionCommand(handle, distortion, commandBuffer) == expected, "aliased distortion command without a headset");
+        Require(sceHmdGetWideNearDistortionCorrectionCommand(handle, wideNear, commandBuffer) == expected, "wide-near distortion command without a headset");
+        Require(sceHmdDistortionGetWideNearCorrectionCommand(handle, wideNear, commandBuffer) == expected, "aliased wide-near distortion command without a headset");
+        Require(sceHmdGet2dVrCommand(handle, vr2d, commandBuffer) == expected, "2D VR command without a headset");
+        Require(sceHmdDistortionGet2dVrCommand(handle, vr2d, commandBuffer) == expected, "aliased 2D VR command without a headset");
+    }
+    for (const auto* bytes : {left, right, fieldOfView, commands}) {
+        for (std::size_t index = 0; index < 16; ++index) Require(bytes[index] == 0x5a, "a refused query wrote its output");
+    }
+    for (const auto byte : sensor) Require(byte == 0x5a, "a refused sensor query wrote its output");
+}
+
+void CheckAssyError(std::int32_t expected) {
+    unsigned char data[32];
+    std::memset(data, 0x5a, sizeof(data));
+    Require(sceHmdGetAssyError(nullptr) == Hmd::ParameterNull, "null assembly error output accepted");
+    Require(sceHmdGetAssyError(reinterpret_cast<HmdAssemblyError*>(data)) == expected, "assembly error query without a headset");
+    for (const auto byte : data) Require(byte == 0x5a, "a refused assembly error query wrote its output");
 }
 
 }
@@ -31,12 +91,15 @@ int main() {
     const auto untouched = info;
 
     CheckDisconnected();
+    CheckBufferQueries();
     Require(sceHmdTerminate() == Hmd::NotInitialized, "terminate before initialize");
     Require(sceHmdOpen(1, 0, 0, nullptr) == Hmd::NotInitialized, "open before initialize");
     Require(sceHmdClose(0) == Hmd::NotInitialized, "close before initialize");
     Require(sceHmdGetDeviceInformation(nullptr) == Hmd::ParameterNull, "null information");
     Require(sceHmdGetDeviceInformation(&info) == Hmd::NotInitialized, "query before initialize");
     Require(std::memcmp(&info, &untouched, sizeof(info)) == 0, "failed query modified output");
+    CheckHandleQueries(Hmd::NotInitialized);
+    CheckAssyError(Hmd::NotInitialized);
     Require(sceHmdGetDeviceInformationByHandle(0, &info) == Hmd::NotInitialized,
             "handle query before initialize");
     Require(sceHmdInitialize(nullptr) == Hmd::ParameterNull, "null initialize");
@@ -73,11 +136,16 @@ int main() {
                     "query accepted invalid handle");
             Require(std::memcmp(&info, &expected, sizeof(info)) == 0, "invalid handle modified output");
         }
+        CheckHandleQueries(Hmd::InvalidHandle);
+        CheckAssyError(Hmd::DeviceDisconnected);
         Require(sceHmdGetDeviceInformationByHandle(0, nullptr) == Hmd::InvalidHandle,
                 "null query accepted invalid handle");
+        CheckBufferQueries();
         Require(sceHmdTerminate() == 0, "terminate failed");
         Require(sceHmdTerminate() == Hmd::NotInitialized, "duplicate terminate");
         Require(sceHmdGetDeviceInformation(&info) == Hmd::NotInitialized, "query after terminate");
         CheckDisconnected();
+        CheckHandleQueries(Hmd::NotInitialized);
+        CheckAssyError(Hmd::NotInitialized);
     }
 }

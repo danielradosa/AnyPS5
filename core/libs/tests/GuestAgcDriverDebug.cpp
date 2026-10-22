@@ -14,6 +14,7 @@ int APS5_VABI sceAgcDriverGetSubmitValidationConfig(void*);
 int APS5_VABI sceAgcDriverSetValidationErrorOutputFrequency(std::uint32_t);
 bool APS5_VABI sceAgcDriverIsCaptureInProgress(void);
 bool APS5_VABI sceAgcDriverIsSubmitValidationEnabled(void);
+int APS5_VABI sceAgcDriverSysIsGameClosed(void);
 }
 
 static constexpr int DebugUnavailable = static_cast<int>(0x8A6C1000);
@@ -38,4 +39,5 @@ int main() {
     for (const auto word : config) Require(word == 0xA5A5A5A5u);
     Require(sceAgcDriverSetValidationErrorOutputFrequency(60u) == DebugUnavailable);
     Require(!sceAgcDriverIsSubmitValidationEnabled());
+    Require(sceAgcDriverSysIsGameClosed() == 0);
 }

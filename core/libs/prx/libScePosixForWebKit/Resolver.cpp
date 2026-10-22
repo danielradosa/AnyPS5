@@ -9,6 +9,7 @@
 #endif
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
+#include "prx/libc/include/general/ExportMacros.hpp"
 #include <cstdint>
 #include <algorithm>
 #include <array>
@@ -16,6 +17,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -160,8 +162,8 @@ int GuestError(int error) {
 }
 }
 
-extern "C" {
-GuestResolver::HostEntry* APS5_VABI gethostbyname_nid_postfix(const char* name) {
+namespace {
+GuestResolver::HostEntry* LookupHost(const char* name, HostLookup& lookup) {
     if (!name || !Ready()) { *sceNetErrnoLoc() = 3; return nullptr; }
     try {
         std::array<unsigned char, 4> numericAddress{};
@@ -182,9 +184,17 @@ GuestResolver::HostEntry* APS5_VABI gethostbyname_nid_postfix(const char* name) 
         int hostError = 0;
         int error = 0;
         if (!numeric) {
+#ifdef __APPLE__
+            native = ::gethostbyname(name);
+            if (native == nullptr) {
+                hostError = h_errno;
+                error = hostError == TRY_AGAIN ? EAGAIN : 0;
+            }
+#else
             buffer.resize(1024);
             while ((error = ::gethostbyname_r(name, &nativeEntry, buffer.data(), buffer.size(), &native, &hostError)) == ERANGE)
                 buffer.resize(buffer.size() * 2);
+#endif
         }
         if (error != 0 || !native) {
             *sceNetErrnoLoc() = hostError != 0 ? hostError : 3;
@@ -192,8 +202,6 @@ GuestResolver::HostEntry* APS5_VABI gethostbyname_nid_postfix(const char* name) 
             return nullptr;
         }
 #endif
-        struct LookupTag {};
-        auto& lookup = HostThreadLocal<HostLookup, LookupTag>();
         lookup.name = native->h_name;
         lookup.aliasNames.clear();
         lookup.aliases.clear();
@@ -215,6 +223,63 @@ GuestResolver::HostEntry* APS5_VABI gethostbyname_nid_postfix(const char* name) 
         errno = ENOMEM;
         return nullptr;
     }
+}
+
+std::size_t AlignPointer(const char* buffer) {
+    const auto address = reinterpret_cast<std::uintptr_t>(buffer);
+    return static_cast<std::size_t>(((address + alignof(char*) - 1) & ~std::uintptr_t{alignof(char*) - 1}) - address);
+}
+}
+
+extern "C" {
+GuestResolver::HostEntry* APS5_VABI gethostbyname_nid_postfix(const char* name) {
+    struct LookupTag {};
+    return LookupHost(name, HostThreadLocal<HostLookup, LookupTag>());
+}
+
+APS5_EXPORT("dt8ermYp-Wc", scePosixForWebKit_gethostbyname_r);
+int APS5_VABI scePosixForWebKit_gethostbyname_r(const char* name, GuestResolver::HostEntry* entry, char* buffer,
+                                                std::size_t length, GuestResolver::HostEntry** result, int* hostError) {
+    if (!entry || !result || !hostError || (!buffer && length != 0))
+        throw std::invalid_argument("gethostbyname_r: null entry, buffer, result or error pointer");
+    HostLookup lookup;
+    if (!LookupHost(name, lookup)) {
+        *hostError = *sceNetErrnoLoc();
+        return *hostError == -1 && errno != 0 ? errno : -1;
+    }
+    const std::size_t pointers = lookup.addressBytes.size() + lookup.aliasNames.size() + 2;
+    std::size_t needed = AlignPointer(buffer) + pointers * sizeof(char*) + lookup.name.size() + 1;
+    for (const auto& address : lookup.addressBytes) needed += address.size();
+    for (const auto& alias : lookup.aliasNames) needed += alias.size() + 1;
+    if (needed > length) {
+        errno = 34;
+        *sceNetErrnoLoc() = -1;
+        *hostError = -1;
+        return 34;
+    }
+    auto** pointer = reinterpret_cast<char**>(buffer + AlignPointer(buffer));
+    char* data = reinterpret_cast<char*>(pointer + pointers);
+    entry->family = lookup.entry.family;
+    entry->length = lookup.entry.length;
+    entry->addresses = pointer;
+    for (const auto& address : lookup.addressBytes) {
+        std::memcpy(data, address.data(), address.size());
+        *pointer++ = data;
+        data += address.size();
+    }
+    *pointer++ = nullptr;
+    std::memcpy(data, lookup.name.c_str(), lookup.name.size() + 1);
+    entry->name = data;
+    data += lookup.name.size() + 1;
+    entry->aliases = pointer;
+    for (const auto& alias : lookup.aliasNames) {
+        std::memcpy(data, alias.c_str(), alias.size() + 1);
+        *pointer++ = data;
+        data += alias.size() + 1;
+    }
+    *pointer = nullptr;
+    *result = entry;
+    return 0;
 }
 
 GuestResolver::ServiceEntry* APS5_VABI getservbyname_nid_postfix(const char* name, const char* protocol) {

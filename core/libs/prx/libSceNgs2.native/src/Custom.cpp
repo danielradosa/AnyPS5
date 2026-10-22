@@ -44,6 +44,7 @@ static Ngs2UserFx2SetupContext UserFxContext(Ngs2Rack& rack, std::size_t module,
 
 void Ngs2SetupUserFx(Ngs2Rack& rack, const Ngs2CustomRackOption& option) {
     rack.customModuleIds.resize(option.num_modules);
+    rack.customModules.assign(option.module, option.module + option.num_modules);
     rack.userFx.resize(option.num_modules);
     rack.userFxCommon.resize(option.num_modules);
     for (auto& voice : rack.voices) {
@@ -136,7 +137,9 @@ void Ngs2ApplyCustomParam(Ngs2Voice& voice, const Ngs2VoiceParamHeader& param) {
         filter.location = 1;
         filter.type = custom.type;
         filter.channel_mask = custom.channel_mask;
-        if (custom.type == 1) {
+        if (custom.type == 0) {
+            filter = {};
+        } else if (custom.type == 1) {
             filter.frequency = custom.param.fcq.frequency;
             filter.q = custom.param.fcq.q;
             filter.level = custom.param.fcq.level;

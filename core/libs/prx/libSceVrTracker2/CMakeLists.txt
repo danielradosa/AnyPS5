@@ -1,5 +1,6 @@
 add_library(libSceVrTracker2 SHARED EXCLUDE_FROM_ALL Export.cpp)
 target_include_directories(libSceVrTracker2 PRIVATE ${LIBS_INCLUDE_DIR})
+target_link_libraries(libSceVrTracker2 PRIVATE libc)
 configure_windows_unwind(libSceVrTracker2)
 
 if(BUILD_TESTING)

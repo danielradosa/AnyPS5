@@ -1,5 +1,6 @@
 #include "SceTypes.hpp"
 #include <cstdlib>
+#include <initializer_list>
 #include <stdexcept>
 
 extern "C" {
@@ -23,6 +24,7 @@ namespace {
 constexpr int GUEST_EINVAL = 22;
 constexpr int PROCESS_PRIVATE = 0;
 constexpr int PROCESS_SHARED = 1;
+constexpr KernelClockid MONOTONIC = 4;
 constexpr int SCE_OK = 0;
 constexpr int SCE_KERNEL_ERROR_EINVAL = static_cast<int>(0x80020016u);
 
@@ -45,7 +47,7 @@ void CheckPosixClock() {
     Require(pthread_condattr_init_nid_postfix(&attr) == 0);
     KernelClockid clockId = -1;
     Require(pthread_condattr_getclock_nid_postfix(&attr, &clockId) == 0 && clockId == 0);
-    for (const KernelClockid set : {1, 2, 0, 4}) {
+    for (const KernelClockid set : {1, 2, 0, MONOTONIC, 5, 12}) {
         Require(pthread_condattr_setclock_nid_postfix(&attr, set) == 0);
         Require(pthread_condattr_getclock_nid_postfix(&attr, &clockId) == 0 && clockId == set);
     }
@@ -63,13 +65,12 @@ void CheckPosixPshared() {
     Require(pthread_condattr_init_nid_postfix(&attr) == 0);
     int pshared = -1;
     Require(pthread_condattr_getpshared_nid_postfix(&attr, &pshared) == 0 && pshared == PROCESS_PRIVATE);
-    Require(pthread_condattr_setpshared_nid_postfix(&attr, PROCESS_SHARED) == 0);
-    Require(pthread_condattr_getpshared_nid_postfix(&attr, &pshared) == 0 && pshared == PROCESS_SHARED);
+    for (const int invalid : {PROCESS_SHARED, 2, -1}) {
+        Require(pthread_condattr_setpshared_nid_postfix(&attr, invalid) == GUEST_EINVAL);
+        pshared = -1;
+        Require(pthread_condattr_getpshared_nid_postfix(&attr, &pshared) == 0 && pshared == PROCESS_PRIVATE);
+    }
     Require(pthread_condattr_setpshared_nid_postfix(&attr, PROCESS_PRIVATE) == 0);
-    Require(pthread_condattr_getpshared_nid_postfix(&attr, &pshared) == 0 && pshared == PROCESS_PRIVATE);
-
-    Require(pthread_condattr_setpshared_nid_postfix(&attr, 2) == GUEST_EINVAL);
-    Require(pthread_condattr_setpshared_nid_postfix(&attr, -1) == GUEST_EINVAL);
     Require(pthread_condattr_getpshared_nid_postfix(&attr, &pshared) == 0 && pshared == PROCESS_PRIVATE);
 
     Require(Throws([&] { pthread_condattr_getpshared_nid_postfix(&attr, nullptr); }));
@@ -88,27 +89,29 @@ void CheckSceCondattr() {
 
     KernelClockid clockId = -1;
     Require(scePthreadCondattrGetclock(&attr, &clockId) == SCE_OK && clockId == 0);
-    Require(scePthreadCondattrSetclock(&attr, 1) == SCE_OK);
+    for (const KernelClockid set : {0, 2, MONOTONIC, 5, 12, 1}) Require(scePthreadCondattrSetclock(&attr, set) == SCE_OK);
     Require(scePthreadCondattrGetclock(&attr, &clockId) == SCE_OK && clockId == 1);
     Require(Throws([&] { scePthreadCondattrGetclock(&attr, nullptr); }));
 
     int pshared = -1;
     Require(scePthreadCondattrGetpshared(&attr, &pshared) == SCE_OK && pshared == PROCESS_PRIVATE);
-    Require(scePthreadCondattrSetpshared(&attr, PROCESS_SHARED) == SCE_OK);
-    Require(scePthreadCondattrGetpshared(&attr, &pshared) == SCE_OK && pshared == PROCESS_SHARED);
-    Require(scePthreadCondattrSetpshared(&attr, 2) == SCE_KERNEL_ERROR_EINVAL);
-    Require(scePthreadCondattrSetpshared(&attr, -1) == SCE_KERNEL_ERROR_EINVAL);
-    Require(scePthreadCondattrGetpshared(&attr, &pshared) == SCE_OK && pshared == PROCESS_SHARED);
+    for (const int invalid : {PROCESS_SHARED, 2, -1}) Require(scePthreadCondattrSetpshared(&attr, invalid) == SCE_KERNEL_ERROR_EINVAL);
+    Require(scePthreadCondattrSetpshared(&attr, PROCESS_PRIVATE) == SCE_OK);
+    Require(scePthreadCondattrGetpshared(&attr, &pshared) == SCE_OK && pshared == PROCESS_PRIVATE);
     Require(Throws([&] { scePthreadCondattrGetpshared(&attr, nullptr); }));
 
     Require(scePthreadCondattrDestroy(&attr) == SCE_OK);
     Require(attr == nullptr);
-    Require(Throws([&] { scePthreadCondattrDestroy(&attr); }));
-    Require(Throws([&] { scePthreadCondattrDestroy(nullptr); }));
+    Require(scePthreadCondattrDestroy(&attr) == SCE_KERNEL_ERROR_EINVAL);
+    Require(scePthreadCondattrDestroy(nullptr) == SCE_KERNEL_ERROR_EINVAL);
     Require(Throws([&] { scePthreadCondattrGetclock(&attr, &clockId); }));
-    Require(Throws([&] { scePthreadCondattrSetclock(&attr, 0); }));
-    Require(Throws([&] { scePthreadCondattrGetpshared(&attr, &pshared); }));
-    Require(Throws([&] { scePthreadCondattrSetpshared(&attr, 0); }));
+    Require(scePthreadCondattrSetclock(&attr, MONOTONIC) == SCE_KERNEL_ERROR_EINVAL);
+    Require(scePthreadCondattrSetclock(nullptr, MONOTONIC) == SCE_KERNEL_ERROR_EINVAL);
+    pshared = -1;
+    Require(scePthreadCondattrGetpshared(&attr, &pshared) == SCE_KERNEL_ERROR_EINVAL && pshared == -1);
+    Require(scePthreadCondattrGetpshared(nullptr, &pshared) == SCE_KERNEL_ERROR_EINVAL && pshared == -1);
+    Require(scePthreadCondattrSetpshared(&attr, PROCESS_PRIVATE) == SCE_KERNEL_ERROR_EINVAL);
+    Require(scePthreadCondattrSetpshared(nullptr, PROCESS_PRIVATE) == SCE_KERNEL_ERROR_EINVAL);
 }
 
 }

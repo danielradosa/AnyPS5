@@ -13,7 +13,11 @@
 namespace {
 
 std::uint64_t mspaceAtomicIdMask = 0;
-std::array<std::uint64_t, 64> mstateTable{};
+constexpr std::size_t MspaceTableCapacity = 65;
+std::array<std::uint64_t, MspaceTableCapacity> mstateTable{};
+
+static_assert(MspaceTableCapacity == 65);
+static_assert(mstateTable.size() == MspaceTableCapacity);
 
 constexpr std::size_t HeapNameOffset = 0x3b0;
 constexpr std::size_t HeapNameSize = 32;

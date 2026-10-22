@@ -1,11 +1,13 @@
 #include "prx/libSceVideoOut/include/DisplayWindow.hpp"
+#include "prx/libSceVideoOut/include/Telemetry.hpp"
 #include "prx/libSceAgcDriver/Execution/include/AspectFit.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
 #include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
-#include "prx/libkernel/Time/include/Time.hpp"
 #include "Decoder/Png.hpp"
 #include "SDL_vulkan.h"
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -106,22 +108,40 @@ void DisplayWindow::DrawableSize(std::uint32_t& width, std::uint32_t& height) co
 void DisplayWindow::UpdateTitle() {
     require(window != nullptr, "window must exist before updating title");
     static const AppTitle title = GetAppTitle_nid_postfix();
-    static std::uint64_t fpsStart = sceKernelGetProcessTimeCounter();
-    static std::uint64_t frameNum = 0;
+    static auto fpsStart = std::chrono::steady_clock::now();
     static std::uint64_t fpsFrames = 0;
     static double currentFps = 0.0;
-    const auto now = sceKernelGetProcessTimeCounter();
-    const auto frequency = sceKernelGetProcessTimeCounterFrequency();
+    const auto now = std::chrono::steady_clock::now();
+    // APS5_TITLE_STATS=1: frame time, GPU busy / idle per frame (with APS5_PROFILE_DRAW), VRAM and host heap
+    // use and free RAM after the FPS, refreshed with it.
+    static const bool stats = std::getenv("APS5_TITLE_STATS") != nullptr;
+    static AgcDriverTitleStats previous{};
+    static char suffix[160] = "";
     frameNum++;
     fpsFrames++;
-    if (now - fpsStart >= frequency * 2) {
-        currentFps = static_cast<double>(fpsFrames) * static_cast<double>(frequency) / static_cast<double>(now - fpsStart);
+    const double elapsed = std::chrono::duration<double>(now - fpsStart).count();
+    if (elapsed >= 2.0) {
+        currentFps = static_cast<double>(fpsFrames) / elapsed;
         fpsStart = now;
         fpsFrames = 0;
+        if (stats) {
+            AgcDriverTitleStats current{};
+            AgcDriverTitleStats_nid_postfix(&current);
+            const auto frames = current.frames - previous.frames;
+            const double perFrame = frames != 0 ? 1.0 / static_cast<double>(frames) : 0.0;
+            double freeRam = 0.0;
+#ifdef _WIN32
+            MEMORYSTATUSEX memory{sizeof(memory)};
+            if (GlobalMemoryStatusEx(&memory)) freeRam = static_cast<double>(memory.ullAvailPhys) / 1073741824.0;
+#endif
+            std::snprintf(suffix, sizeof(suffix), " | %.1f ms | GPU busy %.1f idle %.1f ms | VRAM %.2f/%.2f GB | host %.2f GB | RAM free %.2f GB", currentFps > 0.0 ? 1000.0 / currentFps : 0.0, (current.gpuBusyMs - previous.gpuBusyMs) * perFrame, (current.gpuIdleMs - previous.gpuIdleMs) * perFrame, static_cast<double>(current.deviceUsed) / 1073741824.0, static_cast<double>(current.deviceBudget) / 1073741824.0, static_cast<double>(current.hostUsed) / 1073741824.0, freeRam);
+            previous = current;
+        }
     }
-    char text[160];
-    std::snprintf(text, sizeof(text), "%s | FPS: %.2f (%llu)", title.value, currentFps, static_cast<unsigned long long>(frameNum));
+    char text[320];
+    std::snprintf(text, sizeof(text), "%s | FPS: %.2f (%llu)%s", title.value, currentFps, static_cast<unsigned long long>(frameNum), suffix);
     SDL_SetWindowTitle(window, text);
+    if (auto* telemetry = VideoOutTelemetry::Instance(); telemetry != nullptr && (frameNum == 1 || frameNum % 30 == 0)) telemetry->EmitPresent(frameNum, currentFps);
 }
 
 void DisplayWindow::installSubclass() {

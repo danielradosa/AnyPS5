@@ -252,7 +252,7 @@ SpecializeCount Driver::specializeStage(SpecializeJob& job) {
         memory.push_back({begin, std::as_bytes(std::span<const std::uint32_t>(job.words).subspan(offset, count))});
         offset += count;
     }
-    ShaderMemory shaderMemory(memory, nullptr, nullptr, nullptr, &RefuseGuestRead);
+    ShaderMemory shaderMemory(memory, nullptr, nullptr, nullptr, nullptr, &RefuseGuestRead);
     const auto capture = shaderMemory.Capture(*invocation);
     auto result = invocation->Materialize(*capture);
     if (ShaderRecompiler::DebugProbeActive()) return SpecializeFailed;

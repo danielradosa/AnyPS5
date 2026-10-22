@@ -1,5 +1,6 @@
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libkernel/File/include/DescriptorControl.hpp"
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
@@ -380,7 +381,9 @@ int OpenHostWatch(int descriptor, std::uint32_t notes, HostWatch& host) {
         throw std::runtime_error("EVFILT_VNODE: reading the watched file failed, error=" + std::to_string(error));
     }
     try {
-        host.parent = WatchParent(host.last.path);
+        if (!IsDeleted(host.last)) {
+            host.parent = WatchParent(host.last.path);
+        }
         if (host.directory) {
             host.entries = WatchContents(host.last.path, FILE_NOTIFY_CHANGE_FILE_NAME, "entries");
             host.subdirectories = WatchContents(host.last.path, FILE_NOTIFY_CHANGE_DIR_NAME, "subdirectories");
@@ -446,8 +449,11 @@ int OpenHostWatch(int descriptor, std::uint32_t, HostWatch& host) {
     if (S_ISFIFO(status.st_mode) || S_ISSOCK(status.st_mode)) {
         return GUEST_EINVAL;
     }
+    if (S_ISCHR(status.st_mode)) {
+        return descriptor > 2 ? GUEST_ENODEV : GUEST_EINVAL;
+    }
     if (!S_ISREG(status.st_mode) && !S_ISDIR(status.st_mode)) {
-        NotImplemented_nid_no_patch("EVFILT_VNODE: a descriptor that is not a file or a directory");
+        throw std::runtime_error("EVFILT_VNODE: descriptor " + std::to_string(descriptor) + " has an unsupported host type");
     }
     host.target = ::fcntl(descriptor, F_DUPFD_CLOEXEC, 0);
     if (host.target < 0) {
@@ -773,19 +779,12 @@ bool OpenedForWriting(int descriptor) {
 }
 #endif
 
-void DeliverAccess(int descriptor, std::uint32_t hint, bool skipOwn) {
-    if (g_accessWatchCount.load() == 0) {
-        return;
-    }
-    const auto identity = DescriptorIdentity(descriptor);
-    if (!identity) {
-        return;
-    }
+void DeliverAccess(const FileIdentity& identity, std::uint32_t hint, std::optional<std::uintptr_t> skip) {
     std::vector<std::shared_ptr<VnodeWatch>> targets;
     {
         std::lock_guard lock(g_accessLock);
         for (const auto& entry : g_accessWatches) {
-            if (!(entry.identity == *identity) || (skipOwn && entry.ident == static_cast<std::uintptr_t>(descriptor))) {
+            if (!(entry.identity == identity) || (skip && entry.ident == *skip)) {
                 continue;
             }
             if (auto watch = entry.watch.lock()) {
@@ -795,6 +794,15 @@ void DeliverAccess(int descriptor, std::uint32_t hint, bool skipOwn) {
     }
     for (const auto& watch : targets) {
         watch->Deliver(hint);
+    }
+}
+
+void DeliverAccess(int descriptor, std::uint32_t hint) {
+    if (g_accessWatchCount.load() == 0) {
+        return;
+    }
+    if (const auto identity = DescriptorIdentity(descriptor)) {
+        DeliverAccess(*identity, hint, std::nullopt);
     }
 }
 
@@ -886,18 +894,32 @@ int AddVnodeEvent(const KernelEqueueRef& queue, int descriptor, std::uint32_t ff
 }
 
 void VnodeOpened(int descriptor) {
-    DeliverAccess(descriptor, NOTE_OPEN, false);
+    DeliverAccess(descriptor, NOTE_OPEN);
 }
 
 void VnodeRead(int descriptor) {
-    DeliverAccess(descriptor, NOTE_READ, false);
+    DeliverAccess(descriptor, NOTE_READ);
+}
+
+VnodeClose VnodeClosePending(int descriptor) {
+    if (g_accessWatchCount.load() == 0 || !File::LastDescriptorOfOpenFile(descriptor)) {
+        return {};
+    }
+    const auto identity = DescriptorIdentity(descriptor);
+    if (!identity) {
+        return {};
+    }
+    return {identity->volume, identity->index, static_cast<std::uintptr_t>(descriptor), OpenedForWriting(descriptor) ? NOTE_CLOSE_WRITE : NOTE_CLOSE};
+}
+
+void VnodeClosed(const VnodeClose& close) {
+    if (close.hint != 0) {
+        DeliverAccess(FileIdentity{close.volume, close.index}, close.hint, close.ident);
+    }
 }
 
 void VnodeClosing(int descriptor) {
-    if (g_accessWatchCount.load() == 0) {
-        return;
-    }
-    DeliverAccess(descriptor, OpenedForWriting(descriptor) ? NOTE_CLOSE_WRITE : NOTE_CLOSE, true);
+    VnodeClosed(VnodeClosePending(descriptor));
 }
 
 extern "C" {

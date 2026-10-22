@@ -11,7 +11,9 @@
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/UnitShadow.hpp"
 #include "prx/libSceAgcDriver/Resource/include/Registration.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -60,7 +62,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
             }
             if (reason == 0 || reason == 5) {
                 const auto queueId = submission.queue;
-                interruptDeferred = localDevice->AfterRecordedWork([queueId] { AgcDriverDeliverEopInterrupt(queueId); }, submission.queue == 0);
+                interruptDeferred = localDevice->AfterRecordedWork([this, queueId] { deliverGuestEopInterrupt(queueId); }, submission.queue == 0);
                 if (interruptDeferred && workOpen) localDevice->SubmitRecorded(submission.queue == 0);
                 wroteOnGpu = true;
             } else if (reason == 1) {
@@ -117,7 +119,7 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
     }
 
     // Profile only: a DMA_DATA whose memory or GDS source has recorded GPU writes pending (its CPU read below or in
-    // Execute waits for them), by destination (memory, GDS, nowhere) and source (memory, GDS).
+    // Execute waits for them, unless a GDS readback becomes a transfer), by destination (memory, GDS, nowhere) and source (memory, GDS).
     if (profile && opcode == 0x50 && Pm4::DmaSource(packet) != 2) {
         const bool fromGds = Pm4::DmaSource(packet) == Pm4::DmaSelectGds;
         const auto source = fromGds ? Pm4::GdsAddress() + packet[2] : packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u);
@@ -128,12 +130,64 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         }
     }
 
+    if (profile) noteDmaChain(submission.queue, opcode, packet);
+
     static const bool cpuStores = std::getenv("APS5_CPU_STORES") != nullptr;
     if (!drainAll && !cpuStores && (opcode == 0x40 || opcode == 0x50 || opcode == 0x83)) {
         constexpr std::size_t gpuStoreLimit = 65536;
         bool drained = true;
         int storeReason = -1;
-        if (const auto store = Pm4::ResolveStore(packet, queue, gpuStoreLimit)) {
+        // A DMA_DATA from the GDS into memory while GDS users are still pending: first a transfer out of the GDS's host
+        // import recorded behind every GDS user recorded before it (VulkanDevice::CopyBuffer path 1, as the larger memory
+        // copies below), instead of the CPU read below whose flush hook waits for those users. With nothing pending the
+        // CPU read is immediate and its known-value store keeps later waits on the destination answerable. Debug aid:
+        // APS5_GDS_CPU_READBACKS=1 reads on the CPU.
+        static const bool gdsCpuReadbacks = std::getenv("APS5_GDS_CPU_READBACKS") != nullptr;
+        if (opcode == 0x50 && !gdsCpuReadbacks) {
+            const auto readback = Pm4::DecodeGdsReadback(packet);
+            if (readback.has_value() && GuestMemory::Accessible(reinterpret_cast<const void*>(readback->destination), readback->bytes, true)) {
+                GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Copy);
+                std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                if (const auto localDevice = device.Load(); localDevice != nullptr && localDevice->StoresPendingOver(readback->source, readback->bytes)) {
+                    recordDeferredLabels(localDevice.get(), submission.queue);
+                    // The destination's writer is foreign to the shaders' write evidence (as a CPU copy's): its readers sync.
+                    const auto outcome = localDevice->CopyBuffer(readback->destination, readback->source, readback->bytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, submission.queue, [&](std::span<const std::byte>, std::uint64_t) { noteForeignWriter(readback->destination, readback->destination + readback->bytes, submission.queue); });
+                    if (outcome.path == 1) {
+                        // The GDS stays noted as written until the transfer ran, as a GDS binding notes it: a CPU store
+                        // into it (Execute's fallback) waits for the transfer instead of landing before it reads. The
+                        // transfer is recorded work, so the submission end submits it.
+                        if (auto* recorder = Graphics::Recorder::Active()) recorder->NotePendingWrite(readback->source, readback->bytes);
+                        Graphics::Recorder::CountRecordedWork();
+                        ++gdsReadbacksOnGpu;
+                        wroteOnGpu = true;
+                        drained = false;
+                    }
+                }
+            }
+        }
+        const auto copy = opcode == 0x50 ? Pm4::DecodeMemoryCopy(packet) : std::nullopt;
+        const auto copyBehindPendingSource = [&] {
+            if (!copy.has_value() || copy->bytes > gpuStoreLimit || !GuestMemory::Accessible(reinterpret_cast<const void*>(copy->source), copy->bytes) || !GuestMemory::Accessible(reinterpret_cast<const void*>(copy->destination), copy->bytes, true)) return false;
+            const auto end = copy->source + copy->bytes;
+            const std::array<std::pair<std::uint64_t, std::uint64_t>, 1> range{{{copy->source, end}}};
+            const auto& queued = deferredLabels().labels;
+            const bool labelQueued = std::any_of(queued.begin(), queued.end(), [&](const DeferredLabel& label) { return label.address < end && copy->source < label.address + label.size; });
+            if (!labelQueued && !Graphics::Recorder::SnapshotWriteOverlaps(copy->source, copy->bytes) && !Graphics::StorageTexture::AnyPendingOverlaps(range) && !Graphics::AnyShadowedOverlaps(copy->source, copy->bytes)) return false;
+            GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Copy);
+            std::lock_guard gpuLock(GuestMemory::GpuMutex());
+            const auto localDevice = device.Load();
+            if (localDevice == nullptr) return false;
+            recordDeferredLabels(localDevice.get(), submission.queue);
+            if (!localDevice->StoresPendingOver(copy->source, copy->bytes) || !localDevice->GpuCopyPossible(copy->destination, copy->source, copy->bytes)) return false;
+            const auto outcome = localDevice->CopyBuffer(copy->destination, copy->source, copy->bytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, submission.queue, [](std::span<const std::byte>, std::uint64_t) {});
+            if (outcome.path != 1 && outcome.path != 3) throw std::runtime_error("AGC driver: a DMA_DATA copy of up to 64 KiB that GpuCopyPossible accepted took copy path " + std::to_string(outcome.path));
+            return true;
+        };
+        if (drained && copyBehindPendingSource()) {
+            ++copiesBehindPendingSources;
+            wroteOnGpu = true;
+            drained = false;
+        } else if (const auto store = drained ? Pm4::ResolveStore(packet, queue, gpuStoreLimit) : std::optional<Pm4::StoreWrite>{}) {
             const auto bytes = store->Bytes();
             if (bytes.empty()) {
 
@@ -167,7 +221,6 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
             }
         }
         if (drained && opcode == 0x50) {
-            const auto copy = Pm4::DecodeMemoryCopy(packet);
             if (copy.has_value() && copy->bytes > gpuStoreLimit && GuestMemory::Accessible(reinterpret_cast<const void*>(copy->source), copy->bytes) && GuestMemory::Accessible(reinterpret_cast<const void*>(copy->destination), copy->bytes, true)) {
                 GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Copy);
                 std::lock_guard gpuLock(GuestMemory::GpuMutex());
@@ -201,13 +254,64 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         }
         // A DMA_DATA into the emulated GDS: Pm4::Execute stores it on the CPU through GuestMemory::Write,
         // whose flush hook waits for the recorded GPU work noted over the GDS. Every GDS binding notes
-        // the whole GDS as written (ShaderResources: AddWritable), readers included, so that work is
-        // every recorded GDS user of any queue: its copy-backs land before the store and its copy-ins
+        // the whole GDS as written (ShaderResources: AddWritable), readers included, as does a GDS readback
+        // transfer (below), so that work is every recorded GDS user of any queue: its copy-backs land before the store and its copy-ins
         // read before it. Nothing else reaches the GDS (its address is the driver's own), so the device
         // drain that waited for every queue's newest batch orders nothing more. Debug aid:
         // APS5_GDS_DRAIN=1 drains as before.
         static const bool gdsDrain = std::getenv("APS5_GDS_DRAIN") != nullptr;
         const bool toGds = opcode == 0x50 && Pm4::DmaDestination(packet) == Pm4::DmaSelectGds;
+        // First as a GPU store into the GDS's host import, recorded into the open batch like a label (Recorder::
+        // RecordStore orders it after every GDS user recorded before and before every one recorded after; its note
+        // makes CPU readers of the GDS wait), never behind completions (reason 5). Debug aid: APS5_GDS_CPU_STORES=1
+        // stores every one on the CPU behind the hook.
+        static const bool gdsCpuStores = std::getenv("APS5_GDS_CPU_STORES") != nullptr;
+        // A DMA_DATA from memory into the GDS whose source still has recorded GPU writes pending (a GDS readback
+        // transferred above, a shader's result): a transfer into the GDS's host import behind them, instead of
+        // ResolveGdsStore's CPU read that waits for them. Astro's queue 0 copies GDS 0x4 -> memory -> GDS 0x24 every frame;
+        // with the readback on the GPU that read waited ~100 ms for the open batch (play1015q). The GDS is noted written
+        // by the transfer, so its users and CPU stores order behind it. Debug aid: APS5_GDS_CPU_LOADS=1 reads on the CPU.
+        static const bool gdsCpuLoads = std::getenv("APS5_GDS_CPU_LOADS") != nullptr;
+        if (drained && toGds && !gdsDrain && !gdsCpuStores && !gdsCpuLoads) {
+            const auto load = Pm4::DecodeGdsLoad(packet);
+            if (load.has_value() && GuestMemory::Accessible(reinterpret_cast<const void*>(load->source), load->bytes)) {
+                GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Copy);
+                std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                if (const auto localDevice = device.Load(); localDevice != nullptr && localDevice->StoresPendingOver(load->source, load->bytes)) {
+                    recordDeferredLabels(localDevice.get(), submission.queue);
+                    const auto outcome = localDevice->CopyBuffer(load->destination, load->source, load->bytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, submission.queue, [](std::span<const std::byte>, std::uint64_t) {});
+                    if (outcome.path == 1) {
+                        Graphics::Recorder::CountRecordedWork();
+                        ++gdsLoadsOnGpu;
+                        wroteOnGpu = true;
+                        drained = false;
+                    }
+                }
+            }
+        }
+        if (drained && toGds && !gdsDrain && !gdsCpuStores) {
+            if (const auto store = Pm4::ResolveGdsStore(packet, gpuStoreLimit)) {
+                const auto bytes = store->Bytes();
+                GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
+                std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                const auto localDevice = device.Load();
+                recordDeferredLabels(localDevice.get(), submission.queue);
+                const auto stamp = ++eventSerial;
+                const auto reason = localDevice != nullptr ? localDevice->WriteLabelOnGpu(store->address, bytes, stamp, submission.queue, true, false) : 4;
+                if (reason == 0 || reason == 1) noteLabelStore(store->address, bytes, stamp, submission.queue);
+                if (reason == 0) {
+                    ++gdsStoresOnGpu;
+                    wroteOnGpu = true;
+                    drained = false;
+                } else if (reason == 1) {
+                    GuestMemory::Write(store->address, bytes, 1);
+                    ++storesOnCpu;
+                    wroteOnGpu = true;
+                    drained = false;
+                }
+                Graphics::Recorder::CloseLabelGroup(GuestMemory::TrackerGeneration());
+            }
+        }
         if (drained && toGds && !gdsDrain) {
             orderedAlready = true;
             drained = false;
@@ -240,6 +344,36 @@ bool Driver::preparePacketMemory(const Submission& submission, QueueState& queue
         }
         queuedLabels += Pm4::SampleDumpBlocks;
         sampleDump = false;
+    }
+    // APS5_PIPELINE_SAMPLE_DUMPS=1: an occlusion counter dump behind pipelined draws is an ordered commit item (recorded
+    // after the draws whose samples it sums, as a drain would order it) instead of a drain: the hub's ~12 dumps per
+    // present each emptied the pipeline and idled the committer (play1018s: 1833 drains of 6550 per 10 s).
+    static const bool pipelineSampleDumps = std::getenv("APS5_PIPELINE_SAMPLE_DUMPS") != nullptr;
+    if (sampleDump && !drainAll && pipelineSampleDumps && DrawPipeline::Active() && DrawPipeline::Queue0().Busy()) {
+        if (deferredLabels().labels.empty()) {
+            const auto address = Pm4::SampleDumpAddress(packet);
+            const auto queueId = submission.queue;
+            DrawPipeline::Queue0().Enqueue([this, address, queueId] {
+                GuestMemory::SetCurrentPacket(0x46, queueId);
+                bool written = false;
+                {
+                    GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
+                    std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                    if (const auto localDevice = device.Load()) {
+                        recordDeferredLabels(localDevice.get(), queueId);
+                        written = localDevice->DumpSamplesOnGpu(address);
+                    }
+                }
+                if (written) Graphics::Recorder::CountRecordedWork();
+                else dumpSampleCounters(address);
+            }, {{address, address + Pm4::SampleDumpBytes}});
+            // Handled: nothing below records, stores or drains for it.
+            sampleDump = false;
+            wroteOnGpu = true;
+        } else {
+            // keepsDrawPipeline let the packet in undrained: the inline dump below must still follow the queued draws.
+            DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x46);
+        }
     }
     if (sampleDump && !drainAll) {
         GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Label);
@@ -328,6 +462,21 @@ bool Driver::enqueueDmaPacket(std::span<const std::uint32_t> packet, std::uint32
     if (!enabled || opcode != 0x50 || queue != 0 || packet.size() < 7 || !DrawPipeline::Active() || !deferredLabels().labels.empty()) return false;
     const auto source = ((packet[1] >> 29u) & 3u) | ((packet[6] >> 24u) & 4u) | ((packet[6] >> 25u) & 8u);
     constexpr std::size_t immediateLimit = std::size_t{16} << 20u;
+    constexpr std::size_t gpuStoreLimit = 65536;
+    if (source == 2 && Pm4::DmaBytes(packet) > gpuStoreLimit && Pm4::DmaDestination(packet) != Pm4::DmaSelectGds) {
+        const auto fillAddress = packet[4] | (static_cast<std::uint64_t>(packet[5]) << 32u);
+        const auto fillBytes = Pm4::DmaBytes(packet);
+        const auto pattern = packet[2];
+        if (fillAddress % 16 != 0 || fillBytes % 16 != 0 || !GuestMemory::Accessible(reinterpret_cast<const void*>(fillAddress), fillBytes, true) || !device.Load()) return false;
+        DrawPipeline::Queue0().Enqueue([this, queue, fillAddress, fillBytes, pattern] {
+            GuestMemory::SetCurrentPacket(0x50, queue);
+            if (const auto localDevice = device.Load()) {
+                storeBufferFill(queue, fillAddress, fillBytes, {pattern, pattern, pattern, pattern}, localDevice, false, false);
+                ++dmaFills;
+            }
+        }, {{fillAddress, fillAddress + fillBytes}});
+        return true;
+    }
     if (source == 2) {
         const auto store = Pm4::ResolveStore(packet, state, immediateLimit);
         if (!store.has_value() || store->Bytes().empty() || !GuestMemory::Accessible(reinterpret_cast<const void*>(store->address), store->Bytes().size(), true)) return false;
@@ -352,6 +501,7 @@ bool Driver::enqueueDmaPacket(std::span<const std::uint32_t> packet, std::uint32
     const auto copy = Pm4::DecodeMemoryCopy(packet);
     if (!copy.has_value() || copy->destination % 4 != 0 || copy->bytes % 4 != 0 || !GuestMemory::Accessible(reinterpret_cast<const void*>(copy->source), copy->bytes) || !GuestMemory::Accessible(reinterpret_cast<const void*>(copy->destination), copy->bytes, true)) return false;
     DrawPipeline::Queue0().Enqueue([this, queue, copy = *copy] {
+        DrawPipeline::Queue0().ReleaseRunningReads();
         GuestMemory::SetCurrentPacket(0x50, queue);
         constexpr std::size_t gpuStoreLimit = 65536;
         if (copy.bytes > gpuStoreLimit) {
@@ -361,12 +511,13 @@ bool Driver::enqueueDmaPacket(std::span<const std::uint32_t> packet, std::uint32
                 recordDeferredLabels(localDevice.get(), queue);
                 const auto outcome = localDevice->CopyBuffer(copy.destination, copy.source, copy.bytes, 0, std::numeric_limits<std::size_t>::max(), 0, 0, queue, [](std::span<const std::byte>, std::uint64_t) {});
                 if (outcome.path == 1 || outcome.path == 3) return;
+                if (outcome.path == 2 && !Graphics::RegisteredReadableCovers(copy.destination, copy.bytes) && !localDevice->StoresPendingOver(copy.destination, copy.bytes)) ++copiesToHostMemory;
             }
         }
         std::vector<std::byte> bytes(copy.bytes);
         GuestMemory::Read(copy.source, bytes, 1);
         commitDmaStore(queue, copy.destination, bytes);
-    }, {{copy->destination, copy->destination + copy->bytes}});
+    }, {{copy->destination, copy->destination + copy->bytes}}, 0, {}, {{copy->source, copy->source + copy->bytes}});
     return true;
 }
 
@@ -454,10 +605,10 @@ void Driver::commitLabel(std::uint32_t queue, std::uint64_t address, std::span<c
     if (endOfPipeInterrupt) {
         bool deferred = false;
         if (localDevice != nullptr && (reason == 0 || reason == 5 || reason == 6)) {
-            deferred = localDevice->AfterRecordedWork([queue] { AgcDriverDeliverEopInterrupt(queue); }, queue == 0);
+            deferred = localDevice->AfterRecordedWork([this, queue] { deliverGuestEopInterrupt(queue); }, queue == 0);
             if (deferred && workOpen) localDevice->SubmitRecorded(queue == 0);
         }
-        if (!deferred) AgcDriverDeliverEopInterrupt(queue);
+        if (!deferred) deliverGuestEopInterrupt(queue);
     }
     submitDueAfterCommit(localDevice.get());
 }

@@ -7,6 +7,8 @@
 #include <atomic>
 #include <deque>
 #include <mutex>
+#include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -24,6 +26,7 @@ struct Http2Handle {
     Http2Kind kind;
     int owner;
     std::size_t poolSize;
+    std::shared_ptr<std::byte[]> cookieMemory;
 };
 
 static std::atomic<int> g_nextHandle{1};
@@ -67,6 +70,21 @@ struct Http2MemoryPoolStats {
     int32_t reserved;
 };
 
+struct Http2CookieStats {
+    size_t current_inuse_size;
+    uint32_t current_inuse_num;
+    size_t max_inuse_size;
+    uint32_t max_inuse_num;
+    uint32_t removed_num;
+    int32_t reserved;
+};
+static_assert(sizeof(Http2CookieStats) == 40);
+
+static bool CookieBoxIsLive(int id) {
+    std::lock_guard lock(g_handlesMutex);
+    return FindHandle(id, Http2Kind::CookieBox) != nullptr;
+}
+
 static std::mutex g_completionsMutex;
 static std::unordered_map<int, std::deque<Http2AsyncResult>> g_completions;
 
@@ -100,6 +118,11 @@ static int CompleteAsync(const char* function, int req_id, int result, const Htt
     }
     return 0;
 }
+
+using Http2WebSocketTextCallback = void (APS5_VABI*)(std::int32_t requestId, const char* text, std::uint32_t flags, void* userData);
+using Http2WebSocketDataCallback = void (APS5_VABI*)(std::int32_t requestId, const void* data, std::size_t dataSize, std::uint32_t flags, void* userData);
+using Http2WebSocketCloseCallback = void (APS5_VABI*)(std::int32_t requestId, const std::uint16_t* status, const char* reason, std::uint32_t flags, void* userData);
+using Http2WebSocketErrorCallback = void (APS5_VABI*)(std::int32_t requestId, std::int32_t error, void* userData);
 
 extern "C" {
 
@@ -351,11 +374,14 @@ int APS5_VABI sceHttp2CookieFlush(int id) {
     return 0;
 }
 
-int APS5_VABI sceHttp2CreateCookieBox(int lib_http2_ctx_id) {
+int APS5_VABI sceHttp2CreateCookieBox(std::size_t poolSize) {
+    if (poolSize < 0x10000) return static_cast<int>(0x817b121du);
+    if (poolSize > std::numeric_limits<std::size_t>::max() - 0x3fff) throw std::overflow_error("sceHttp2CreateCookieBox: pool size overflow");
+    const auto allocationSize = (poolSize + 0x3fff) & ~std::size_t{0x3fff};
+    auto memory = std::make_shared<std::byte[]>(allocationSize);
     std::lock_guard lock(g_handlesMutex);
-    if (FindHandle(lib_http2_ctx_id, Http2Kind::Context) == nullptr) return ERROR_INVALID_ID;
     const int id = g_nextHandle.fetch_add(1, std::memory_order_relaxed);
-    g_handles[id] = {Http2Kind::CookieBox, lib_http2_ctx_id, 0};
+    g_handles[id] = {Http2Kind::CookieBox, 0, poolSize, std::move(memory)};
     return id;
 }
 
@@ -384,33 +410,133 @@ int APS5_VABI sceHttp2SetResolveRetry(int id, int32_t retry) {
     return 0;
 }
 
-int APS5_VABI sceHttp2WebSocketCreateRequest() {
+int APS5_VABI sceHttp2WebSocketCreateRequest(std::int32_t templateId, const char* url, Http2WebSocketTextCallback textCallback, Http2WebSocketDataCallback dataCallback, Http2WebSocketCloseCallback closeCallback, Http2WebSocketErrorCallback errorCallback, void* receiveBuffer, std::size_t receiveBufferSize, void* userData, const void* option) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI sceHttp2WebSocketCloseAsync() {
+int APS5_VABI sceHttp2WebSocketCloseAsync(std::int32_t requestId, const std::uint16_t* status, const char* reason, std::uint8_t flags, const Http2AsyncOption* asyncOption, const void* option) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI sceHttp2WebSocketSendTextMessageAsync() {
+int APS5_VABI sceHttp2WebSocketSendTextMessageAsync(std::int32_t requestId, const char* text, std::uint8_t flags, const Http2AsyncOption* asyncOption, const void* option) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI sceHttp2WebSocketSendDataMessageAsync() {
+int APS5_VABI sceHttp2WebSocketSendDataMessageAsync(std::int32_t requestId, const void* data, std::size_t dataSize, std::uint8_t flags, const Http2AsyncOption* asyncOption, const void* option) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI sceHttp2WebSocketSetPingInterval() {
+int APS5_VABI sceHttp2WebSocketSetPingInterval(std::int32_t requestId, std::uint32_t intervalMicroseconds) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-int APS5_VABI sceHttp2WebSocketSetPingTimeout() {
+int APS5_VABI sceHttp2WebSocketSetPingTimeout(std::int32_t requestId, std::uint32_t timeoutMicroseconds) {
     NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+int APS5_VABI sceHttp2AddCookie(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceHttp2AuthCacheFlush(int lib_http2_ctx_id) {
+    std::lock_guard lock(g_handlesMutex);
+    return FindHandle(lib_http2_ctx_id, Http2Kind::Context) != nullptr ? 0 : ERROR_INVALID_ID;
+}
+
+int APS5_VABI sceHttp2CookieExport(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceHttp2CookieImport(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceHttp2GetAuthEnabled(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceHttp2GetAutoRedirect(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceHttp2GetCookie(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceHttp2GetCookieBox(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceHttp2GetCookieStats(int cookie_box_id, Http2CookieStats* stats) {
+    if (stats == nullptr) return ERROR_NULL_POINTER;
+    std::lock_guard lock(g_handlesMutex);
+    if (FindHandle(cookie_box_id, Http2Kind::CookieBox) == nullptr) return ERROR_INVALID_ID;
+    *stats = {};
+    return 0;
+}
+
+int APS5_VABI sceHttp2RedirectCacheFlush(int lib_http2_ctx_id) {
+    std::lock_guard lock(g_handlesMutex);
+    return FindHandle(lib_http2_ctx_id, Http2Kind::Context) != nullptr ? 0 : ERROR_INVALID_ID;
+}
+
+int APS5_VABI sceHttp2RemoveRequestHeader(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceHttp2SetAuthInfoCallback(int id, void* cb_func, void* user_arg) {
+    (void)id;
+    (void)cb_func;
+    (void)user_arg;
+    return 0;
+}
+
+int APS5_VABI sceHttp2SetCookieMaxNum(int cookie_box_id, uint32_t num) {
+    (void)num;
+    return CookieBoxIsLive(cookie_box_id) ? 0 : ERROR_INVALID_ID;
+}
+
+int APS5_VABI sceHttp2SetCookieMaxNumPerDomain(int cookie_box_id, uint32_t num) {
+    (void)num;
+    return CookieBoxIsLive(cookie_box_id) ? 0 : ERROR_INVALID_ID;
+}
+
+int APS5_VABI sceHttp2SetCookieMaxSize(int cookie_box_id, uint32_t size) {
+    (void)size;
+    return CookieBoxIsLive(cookie_box_id) ? 0 : ERROR_INVALID_ID;
+}
+
+int APS5_VABI sceHttp2SetCookieRecvCallback(int id, void* cb_func, void* user_arg) {
+    (void)id;
+    (void)cb_func;
+    (void)user_arg;
+    return 0;
+}
+
+int APS5_VABI sceHttp2SetCookieSendCallback(int id, void* cb_func, void* user_arg) {
+    (void)id;
+    (void)cb_func;
+    (void)user_arg;
+    return 0;
+}
+
+int APS5_VABI sceHttp2SetPreSendCallback(int tmpl_id, void* cb_func, void* user_arg) {
+    (void)tmpl_id;
+    (void)cb_func;
+    (void)user_arg;
     return 0;
 }
 

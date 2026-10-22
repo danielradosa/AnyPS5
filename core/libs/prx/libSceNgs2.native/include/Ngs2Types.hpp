@@ -9,11 +9,14 @@
 static constexpr int SCE_NGS2_OK = 0;
 static constexpr int SCE_NGS2_ERROR_INVALID_OUT_ADDRESS = static_cast<int>(0x804A8010);
 static constexpr int SCE_NGS2_ERROR_INVALID_OUT_SIZE = static_cast<int>(0x804A8011);
-static constexpr int SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE = static_cast<int>(0x804A0230);
-static constexpr int SCE_NGS2_ERROR_INVALID_RACK_HANDLE = static_cast<int>(0x804A0261);
+static constexpr int SCE_NGS2_ERROR_INVALID_SYSTEM_HANDLE = static_cast<int>(0x804A8201);
+static constexpr int SCE_NGS2_ERROR_INVALID_RACK_HANDLE = static_cast<int>(0x804A8202);
+static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_INDEX = static_cast<int>(0x804A8305);
 static constexpr int SCE_NGS2_ERROR_INVALID_WAVEFORM_DATA = static_cast<int>(0x804A8430);
 static constexpr int SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT = static_cast<int>(0x804A8431);
 static constexpr int SCE_NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT = static_cast<int>(0x804A8432);
+static constexpr int SCE_NGS2_ERROR_INVALID_VOICE_HANDLE = static_cast<int>(0x804A8203);
+static constexpr int SCE_NGS2_ERROR_NULL_PARAM_LIST = static_cast<int>(0x804A8360);
 
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_SAMPLER = 0x1000;
 static constexpr std::uint32_t SCE_NGS2_RACK_ID_SUBMIXER = 0x2000;
@@ -267,6 +270,18 @@ struct Ngs2CustomRackModuleInfo {
     std::uint32_t reserved2;
 };
 static_assert(sizeof(Ngs2CustomRackModuleInfo) == 40);
+
+struct Ngs2CustomModuleInfo {
+    std::uint32_t module_id;
+    std::uint32_t source_buffer_id;
+    std::uint32_t extra_buffer_id;
+    std::uint32_t dest_buffer_id;
+    std::uint32_t state_offset;
+    std::uint32_t state_size;
+    std::uint32_t reserved;
+    std::uint32_t reserved2;
+};
+static_assert(sizeof(Ngs2CustomModuleInfo) == 32);
 
 struct Ngs2CustomRackPortInfo {
     std::uint32_t source_buffer_id;
@@ -604,6 +619,12 @@ struct Ngs2VoicePortInfo {
 };
 static_assert(sizeof(Ngs2VoicePortInfo) == 24);
 
+struct Ngs2VoiceMatrixInfo {
+    std::uint32_t num_levels;
+    float levels[64];
+};
+static_assert(sizeof(Ngs2VoiceMatrixInfo) == 260);
+
 struct Ngs2VoiceState {
     std::uint32_t state_flags;
     std::int32_t error_code;
@@ -656,6 +677,8 @@ struct Ngs2WaveformInfo {
     Ngs2WaveformBlock block[4];
 };
 static_assert(sizeof(Ngs2WaveformInfo) == 232);
+
+using Ngs2ParseReadHandler = std::int32_t (APS5_VABI *)(std::uintptr_t, std::uint32_t, void*, std::size_t);
 
 struct Ngs2PanParam {
     float angle;

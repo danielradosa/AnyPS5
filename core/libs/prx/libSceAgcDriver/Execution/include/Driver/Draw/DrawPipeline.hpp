@@ -30,14 +30,18 @@ public:
     static bool& Active();
     static std::atomic<std::uint64_t>& EpochToken();
     static void FollowEpoch(std::uint64_t token);
+    static unsigned Committers();
 
-    void Enqueue(Commit commit, std::vector<Range> writes, std::uint64_t labelAddress = 0, std::vector<std::byte> labelBytes = {});
+    void Enqueue(Commit commit, std::vector<Range> writes, std::uint64_t labelAddress = 0, std::vector<std::byte> labelBytes = {}, std::vector<Range> reads = {});
     void Drain(DrainReason reason, std::uint32_t opcode = 0x100);
+    void Stop();
     static std::uint64_t DrainRequestsByOpcode(std::uint32_t opcode);
     bool Busy() const { return outstanding.load(std::memory_order_acquire) != 0; }
     std::size_t Outstanding() const { return outstanding.load(std::memory_order_acquire); }
     bool Overlaps(std::uint64_t address, std::size_t bytes);
     std::optional<std::uint64_t> PendingLabel(std::uint64_t address, std::size_t bytes);
+    static bool HeldReads(std::uint64_t address, std::size_t bytes);
+    void ReleaseRunningReads();
 
 private:
     struct Item {
@@ -45,6 +49,7 @@ private:
         std::vector<Range> writes;
         std::uint64_t labelAddress = 0;
         std::vector<std::byte> labelBytes;
+        std::vector<Range> reads;
     };
     DrawPipeline() = default;
     void run();
@@ -60,6 +65,7 @@ private:
     std::uint32_t idleWaiters = 0;
     bool committerWaiting = false;
     bool stopped = false;
+    bool closing = false;
     std::thread thread;
     std::uint64_t commits = 0;
     std::uint64_t commitNs = 0;
@@ -71,6 +77,14 @@ private:
     std::array<std::uint64_t, 257> drainOpcodes{};
     std::array<std::atomic<std::uint64_t>, 257> drainRequests{};
     std::uint64_t depthSum = 0;
+    // Label store items ([draw] report): how many follow another label item directly, and how many store to the
+    // same address as the label item before them.
+    std::uint64_t labelItems = 0;
+    std::uint64_t labelsAfterLabel = 0;
+    std::uint64_t labelsSameAddress = 0;
+    std::uint64_t mergedLabels = 0;
+    bool lastWasLabel = false;
+    std::uint64_t lastLabelAddress = 0;
     std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
 };
 

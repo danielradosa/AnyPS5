@@ -12,25 +12,19 @@
 
 extern "C" {
 
-std::uint32_t* APS5_VABI sceAgcDcbAtomicGds_0900(CommandBuffer* buf, std::uint32_t engine, std::uint32_t operation, std::uint32_t completion, std::uint32_t dataMode, std::uint32_t autoIncrementBytes, std::uint16_t base, std::uint16_t size, std::uint32_t offsets, std::uint32_t destination, std::uint64_t source0, std::uint64_t source1) {
-    const std::uint32_t waitForCompletion = completion == 1u && (operation & 0x20u) == 0 ? 1u : 0u;
-    auto* packet = Agc::Command::Allocate(buf, 11, __func__);
-    packet[0] = Agc::Command::Header(0x1du, 11);
-    packet[1] = ((engine & 3u) << 30u) | (operation & 0xffu) | ((operation << 7u) & 0x10000u) | (waitForCompletion << 17u) | ((operation & 0x20u) << 13u) | ((operation & 0x40u) << 14u);
-    packet[2] = (autoIncrementBytes & 0x3fu) | ((dataMode & 1u) << 8u);
-    packet[3] = base;
-    packet[4] = size;
-    packet[5] = offsets & 0x00ff00ffu;
-    packet[6] = destination;
-    packet[7] = static_cast<std::uint32_t>(source0);
-    packet[8] = static_cast<std::uint32_t>(source0 >> 32u);
-    packet[9] = static_cast<std::uint32_t>(source1);
-    packet[10] = static_cast<std::uint32_t>(source1 >> 32u);
-    return packet;
+std::uint32_t* APS5_VABI sceAgcDcbAtomicGds_0900(CommandBuffer* buf, std::uint32_t engine, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData) {
+    const auto operation = (control & 0xffu) | ((control & 0x200u) << 7u) |
+        ((control & 0x20u) << 13u) | ((control & 0x40u) << 14u) |
+        ((control & 0x20u) == 0 && mode == 1 ? 0x20000u : 0u) | ((engine & 3u) << 30u);
+    return Agc::Command::Emit(buf, 0x1du, {
+        operation, ((gdsOp & 1u) << 8u) | (src & 0x3fu), offset, index,
+        mask & 0x00ff00ffu, data, static_cast<std::uint32_t>(compareData),
+        static_cast<std::uint32_t>(compareData >> 32u), static_cast<std::uint32_t>(extraData),
+        static_cast<std::uint32_t>(extraData >> 32u)}, __func__);
 }
 
-std::uint32_t* APS5_VABI sceAgcDcbAtomicGds(CommandBuffer* buf, std::uint32_t engine, std::uint32_t operation, std::uint32_t completion, std::uint32_t dataMode, std::uint32_t autoIncrementBytes, std::uint16_t base, std::uint16_t size, std::uint32_t offsets, std::uint32_t destination, std::uint64_t source0, std::uint64_t source1) {
-    return sceAgcDcbAtomicGds_0900(buf, engine, operation, completion, dataMode, autoIncrementBytes, base, size, offsets, destination, source0, source1);
+std::uint32_t* APS5_VABI sceAgcDcbAtomicGds(CommandBuffer* buf, std::uint32_t engine, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData) {
+    return sceAgcDcbAtomicGds_0900(buf, engine, control & ~0x80u, mode, gdsOp, src, offset, index, mask, data, compareData, extraData);
 }
 
 uint32_t* APS5_VABI sceAgcDcbJump(CommandBuffer* buf, uint8_t mode, uint8_t cache_policy, const uint32_t* target, uint32_t size_in_dwords) {

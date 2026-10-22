@@ -169,6 +169,8 @@ std::u16string FormatWide(const char16_t* format, VaList* source, bool secure = 
                 if (length == "h") value = static_cast<unsigned short>(value);
                 if (length == "hh") value = static_cast<unsigned char>(value);
             } else value = args.Next<unsigned long long>();
+            if (conversion == u'o' && value == 0 && precision == 0 && spec.find('#') != std::string::npos)
+                spec = spec.substr(0, spec.find('.')) + ".1";
             AppendNumber(out, spec + "ll" + static_cast<char>(conversion), value);
         } else if (In(conversion, "aAeEfFgG")) {
             if (length == "L") AppendNumber(out, spec + "L" + static_cast<char>(conversion), args.Next<long double>());
@@ -481,31 +483,33 @@ int APS5_VABI vsnwprintf_s_nid_postfix(char16_t* buffer, std::size_t size, const
     return result;
 }
 
+int APS5_VABI vswscanf_s_nid_postfix(const char16_t* buffer, const char16_t* format, VaList* args) {
+    if (buffer == nullptr || format == nullptr) return EOF;
+    LibcDetail::FormatArguments arguments(args);
+    return ScanWide(buffer, format, [&] { return arguments.Next<void*>(); }, [&] { return arguments.Next<unsigned int>(); });
+}
+
 int APS5_VABI swscanf_s_nid_postfix(const char16_t* buffer, const char16_t* format, ...) {
     APS5_VA_BEGIN(format);
-#ifdef _WIN32
-    const int result = ScanWide(buffer, format, [&] { return __builtin_va_arg(args, void*); },
-        [&] { return __builtin_va_arg(args, unsigned int); });
-#else
-    const int result = ScanWide(buffer, format, [&] { return va_arg(args, void*); }, [&] { return va_arg(args, unsigned int); });
-#endif
+    const int result = vswscanf_s_nid_postfix(buffer, format, reinterpret_cast<VaList*>(args));
     APS5_VA_END();
     return result;
 }
 
-int APS5_VABI swscanf_nid_postfix(const char16_t* buffer, const char16_t* format, ...) {
+int APS5_VABI vswscanf_nid_postfix(const char16_t* buffer, const char16_t* format, VaList* args) {
     if (buffer == nullptr || format == nullptr) throw std::invalid_argument("swscanf: null buffer or format");
-    APS5_VA_BEGIN(format);
+    LibcDetail::FormatArguments arguments(args);
     const auto nextPointer = [&] {
-#ifdef _WIN32
-        void* const target = __builtin_va_arg(args, void*);
-#else
-        void* const target = va_arg(args, void*);
-#endif
+        void* const target = arguments.Next<void*>();
         if (target == nullptr) throw std::invalid_argument("swscanf: null receiving pointer");
         return target;
     };
-    const int result = ScanWide(buffer, format, nextPointer, [] { return std::size_t{SIZE_MAX}; });
+    return ScanWide(buffer, format, nextPointer, [] { return std::size_t{SIZE_MAX}; });
+}
+
+int APS5_VABI swscanf_nid_postfix(const char16_t* buffer, const char16_t* format, ...) {
+    APS5_VA_BEGIN(format);
+    const int result = vswscanf_nid_postfix(buffer, format, reinterpret_cast<VaList*>(args));
     APS5_VA_END();
     return result;
 }
@@ -516,12 +520,38 @@ int APS5_VABI wprintf_nid_postfix(const char16_t* format, ...) {
     try {
         const std::u16string text = FormatWide(format, reinterpret_cast<VaList*>(args));
         const std::string bytes = ToUtf8(text);
-        if (std::fwrite(bytes.data(), 1, bytes.size(), stdout) == bytes.size()) result = static_cast<int>(text.size());
+        if (std::fwrite(bytes.data(), 1, bytes.size(), GetNativeStream(__stdoutp_nid_postfix)) == bytes.size()) result = static_cast<int>(text.size());
     } catch (const std::exception&) {
         errno = 22;
     }
     APS5_VA_END();
     return result;
+}
+
+int APS5_VABI vfwprintf_nid_postfix(FileStream* stream, const char16_t* format, VaList* args) {
+    if (stream == nullptr || format == nullptr) { errno = 22; return -1; }
+    if (!stream->IsOpen()) { errno = 9; return -1; }
+    int result = -1;
+    try {
+        const std::u16string text = FormatWide(format, args);
+        const std::string bytes = ToUtf8(text);
+        if (std::fwrite(bytes.data(), 1, bytes.size(), GetNativeStream(stream)) == bytes.size()) result = static_cast<int>(text.size());
+    } catch (const std::exception&) {
+        errno = 22;
+    }
+    stream->SyncStatus();
+    return result;
+}
+
+int APS5_VABI fwprintf_nid_postfix(FileStream* stream, const char16_t* format, ...) {
+    APS5_VA_BEGIN(format);
+    const int result = vfwprintf_nid_postfix(stream, format, reinterpret_cast<VaList*>(args));
+    APS5_VA_END();
+    return result;
+}
+
+int APS5_VABI vwprintf_nid_postfix(const char16_t* format, VaList* args) {
+    return vfwprintf_nid_postfix(__stdoutp_nid_postfix, format, args);
 }
 
 int APS5_VABI fputwc_nid_postfix(char16_t value, FileStream* stream) {

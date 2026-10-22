@@ -13,15 +13,28 @@ void Submit(const Packet* packet, std::uint32_t queue);
 }
 
 extern "C" void AgcDriverWaitIdle_nid_postfix();
+// For the window title (APS5_TITLE_STATS): frames presented or dropped, their GPU busy and idle-gap time
+// (counted under APS5_PROFILE_DRAW only), and VK_EXT_memory_budget's device-local heap use / budget and
+// host heap use (0 without the extension).
+struct AgcDriverTitleStats {
+    std::uint64_t frames;
+    double gpuBusyMs, gpuIdleMs;
+    std::uint64_t deviceUsed, deviceBudget, hostUsed;
+};
+extern "C" void AgcDriverTitleStats_nid_postfix(AgcDriverTitleStats* stats);
+extern "C" void AgcDriverSubmitGraphics_nid_postfix(std::uint32_t* commands, std::uint32_t dwords);
+extern "C" void AgcDriverUseGcnShaders_nid_postfix();
 extern "C" void AgcDriverRaiseWorkerThreadPriority_nid_postfix(const char* role);
 extern "C" void AgcDriverLockVulkanLoader_nid_postfix();
 extern "C" void AgcDriverUnlockVulkanLoader_nid_postfix();
 extern "C" void AgcDriverShutdown_nid_postfix();
+extern "C" void AgcDriverRequestScreenshot_nid_postfix();
 extern "C" void AgcDriverSuspendPoint_nid_postfix();
 extern "C" std::uint64_t AgcDriverDispatchesAdoptedAhead_nid_postfix();
 extern "C" void AgcDriverRegisterShader_nid_postfix(const Shader* shader);
 extern "C" void AgcDriverResolveShaderAbi_nid_postfix(const Shader* shader, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive);
 extern "C" void AgcDriverResolveGraphicsStagesAbi_nid_postfix(std::span<const Shader* const> stages, std::span<const ShaderRegister> context, std::span<const ShaderRegister> primitive);
 extern "C" void AgcDriverResolveGraphicsAbi_nid_postfix(const Shader* vertex, const Shader* pixel, std::uint32_t primitiveType);
+extern "C" void* AgcDriverStaticTable_nid_postfix();
 
 #endif

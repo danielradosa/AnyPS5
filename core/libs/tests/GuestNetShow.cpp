@@ -24,6 +24,10 @@ int APS5_VABI sceNetAccept(int, void*, std::uint32_t*);
 int APS5_VABI sceNetSocketClose(int);
 int APS5_VABI sceNetShowIfconfig(void);
 int APS5_VABI sceNetShowNetstat(void);
+int APS5_VABI sceNetShowIfconfigWithMemory(int);
+int APS5_VABI sceNetPoolCreate(const char*, int, int);
+int APS5_VABI sceNetPoolDestroy(int);
+int* APS5_VABI sceNetErrnoLoc(void);
 }
 
 namespace {
@@ -92,6 +96,12 @@ std::string Capture(int (APS5_VABI* show)(void)) {
     return text;
 }
 
+int g_pool = -1;
+
+int APS5_VABI ShowIfconfigInPool(void) {
+    return sceNetShowIfconfigWithMemory(g_pool);
+}
+
 std::array<std::uint8_t, 16> Loopback(std::uint16_t port) {
     std::array<std::uint8_t, 16> address{};
     address[0] = 16;
@@ -130,6 +140,13 @@ int main() {
     CHECK(ifconfig.find("\tether 02:50:53:35:00:01\n") != std::string::npos);
     CHECK(ifconfig.find("\tstatus: active\n") != std::string::npos || ifconfig.find("\tstatus: no carrier\n") != std::string::npos);
     CHECK(ifconfig.find("inet 127.0.0.1\n") == std::string::npos);
+    g_pool = sceNetPoolCreate("net-show", 16 * 1024, 0);
+    CHECK(g_pool >= 0);
+    const auto pooled = Capture(ShowIfconfigInPool);
+    CHECK(pooled.find("lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 16384\n") == 0);
+    CHECK(pooled.find("\tether 02:50:53:35:00:01\n") != std::string::npos);
+    CHECK(sceNetPoolDestroy(g_pool) == 0);
+    CHECK(sceNetShowIfconfigWithMemory(g_pool) == static_cast<int>(0x80410109) && *sceNetErrnoLoc() == 9);
 
     const int listener = sceNetSocket("listener", 2, 1, 0);
     if (listener < 0) return 77;

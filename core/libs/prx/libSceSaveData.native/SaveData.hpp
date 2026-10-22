@@ -32,7 +32,7 @@ constexpr std::uint32_t SAVE_DATA_MOUNT_MODE_CREATE2 = 32;
 constexpr std::uint32_t SAVE_DATA_PREPARE_MODE_ENABLE_CANCEL = 2;
 constexpr std::uint32_t SAVE_DATA_PREPARE_MODE_DEBUG_IGNORE_CANCEL_ON_HOST = 4;
 
-constexpr std::uint64_t SAVE_DATA_BLOCKS_MAX = 32768;
+constexpr std::uint64_t SAVE_DATA_BLOCKS_MAX = 16384;
 constexpr std::uint32_t SAVE_DATA_PARAM_TYPE_ALL = 0;
 constexpr std::uint32_t SAVE_DATA_PARAM_TYPE_TITLE = 1;
 constexpr std::uint32_t SAVE_DATA_PARAM_TYPE_SUB_TITLE = 2;

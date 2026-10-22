@@ -6,7 +6,8 @@
 
 extern "C" {
 std::int32_t APS5_VABI sceDiscMapIsRequestOnHDD(const char* path, std::int64_t offset, std::int64_t size, std::int32_t* result);
-std::int32_t APS5_VABI sceDiscMapUnknown_ioKMruft1ek(const char* path, std::int64_t offset, std::int64_t size, void* flags, void* out1, void* out2);
+std::int32_t APS5_VABI sceDiscMapUnknown_ioKMruft1ek(const char* path, std::int64_t offset, std::int64_t size, std::uint64_t* flags, std::uint64_t* out1, std::uint64_t* out2);
+int APS5_VABI sceDiscMapGetPackageSize(std::int64_t fflags, int* ret1, int* ret2);
 }
 
 namespace {
@@ -31,6 +32,11 @@ int main() {
     std::uint64_t out2 = ~0ull;
     Require(sceDiscMapUnknown_ioKMruft1ek("/app0/data.bin", 0x8000, 0x10000, &flags, &out1, &out2) == noBitmapInfo, "ioKMruft1ek did not report the missing bitmap");
     Require(flags == ~0ull && out1 == ~0ull && out2 == ~0ull, "ioKMruft1ek wrote an output");
+    int size1 = 0x5a5a5a5a;
+    int size2 = 0x5a5a5a5a;
+    Require(sceDiscMapGetPackageSize(0, &size1, &size2) == noBitmapInfo, "sceDiscMapGetPackageSize did not report the missing bitmap");
+    Require(sceDiscMapGetPackageSize(1, &size1, &size2) == noBitmapInfo, "sceDiscMapGetPackageSize did not report the missing bitmap for other flags");
+    Require(size1 == 0x5a5a5a5a && size2 == 0x5a5a5a5a, "sceDiscMapGetPackageSize wrote an output");
     std::puts("DiscMap tests passed");
     return 0;
 }

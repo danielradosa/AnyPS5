@@ -29,6 +29,7 @@ struct DispatchVariant {
 
     std::vector<std::pair<std::uint64_t, std::uint64_t>> runs;
     std::vector<std::uint32_t> words;
+    std::vector<SharedWords> shared;
     std::uint64_t forgetSerial = 0;
     std::shared_ptr<const ShaderRecompiler::RecompileResult> compiled;
     std::shared_ptr<const ShaderRecompiler::RecompileResult> registration;
@@ -47,6 +48,7 @@ struct DispatchVariant {
     std::vector<std::int8_t> runBases;
     std::uint64_t relocatableWords = 0;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> shaderDataPatches;
+    std::uint64_t userDataMask = ~std::uint64_t{0};
     std::shared_ptr<const ShaderRecompiler::ShaderVertexStageInfo> vertexInfo;
     std::vector<std::uint32_t> userData;
 

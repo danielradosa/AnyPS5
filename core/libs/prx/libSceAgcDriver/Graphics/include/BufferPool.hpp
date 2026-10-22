@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -27,6 +28,7 @@ struct BufferAllocation {
     VkDeviceSize offset = 0;
     bool slab = false;
     std::size_t bufferBytes = 0;
+    std::uint32_t memoryType = 0;
 };
 
 struct SlabSlot {
@@ -57,7 +59,8 @@ struct SlabSlot {
 class BufferPool {
 public:
     explicit BufferPool(const Context& context);
-    static VkDeviceSize DeviceBudget(const VkPhysicalDeviceMemoryProperties& memory);
+    static VkDeviceSize DeviceBudget(const VkPhysicalDeviceMemoryProperties& memory, const VkPhysicalDeviceMemoryBudgetPropertiesEXT* reported = nullptr);
+    static VkDeviceSize ReclaimTarget(VkDeviceSize bytes);
     // How many bytes of idle device buffers the device tier may hold while the device-local heap uses `usage` of its
     // VK_EXT_memory_budget `budget`: what it holds now plus the room left below `budget - margin` (less when the
     // heap is over that line). Past the budget Windows moves allocations to system memory, and every GPU access to
@@ -76,7 +79,11 @@ public:
     // The size a buffer for `bytes` is created with: its size class, or `bytes` itself when large.
     static std::size_t Capacity(std::size_t bytes, VkMemoryPropertyFlags properties);
     static VkBufferUsageFlags Usage(VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
-    VkDeviceMemory AllocateMemory(const VkMemoryAllocateInfo& allocation, const char* operation);
+    VkDeviceMemory AllocateMemory(const VkMemoryAllocateInfo& allocation, const char* operation, std::optional<std::uint32_t> hostType = std::nullopt, std::uint32_t* allocatedType = nullptr);
+    static VkDeviceSize ImageBudget(VkDeviceSize deviceBudget);
+    VkDeviceMemory TakeImageMemory(const VkMemoryAllocateInfo& allocation, const char* operation, std::optional<std::uint32_t> hostType = std::nullopt, std::uint32_t* allocatedType = nullptr);
+    void PutImageMemory(VkDeviceMemory memory, VkDeviceSize bytes, std::uint32_t memoryType) noexcept;
+    std::size_t RetainedImages();
     std::optional<BufferAllocation> Take(std::size_t bytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     void Put(const BufferAllocation& allocation) noexcept;
     static bool SlabEligible(std::size_t capacity, VkDeviceSize alignment, VkDeviceSize size, VkDeviceSize atom);
@@ -96,6 +103,7 @@ private:
     };
     struct Slab {
         std::vector<SlabBlock*> available;
+        std::size_t blocks = 0;
         std::size_t emptyBlocks = 0;
     };
     static std::uint64_t SlabKey(std::uint32_t memoryType, std::size_t capacity, bool addressable);
@@ -103,16 +111,18 @@ private:
     struct Slot {
         BufferAllocation allocation;
         std::uint64_t lastUse;
+        std::list<Slot*>::iterator order;
     };
     struct SlotKey {
         std::size_t bytes;
         VkBufferUsageFlags usage;
         VkMemoryPropertyFlags properties;
+        std::uint32_t memoryType = 0;
         bool operator==(const SlotKey&) const = default;
     };
     struct SlotKeyHash {
         std::size_t operator()(const SlotKey& key) const noexcept {
-            return std::hash<std::size_t>{}(key.bytes) ^ (static_cast<std::size_t>(key.usage) << 32u) ^ (static_cast<std::size_t>(key.properties) << 48u);
+            return std::hash<std::size_t>{}(key.bytes) ^ (static_cast<std::size_t>(key.usage) << 32u) ^ (static_cast<std::size_t>(key.properties) << 48u) ^ (static_cast<std::size_t>(key.memoryType) << 56u);
         }
     };
     // One retention tier: its slots by key (each list oldest first), their count and bytes, the
@@ -131,6 +141,7 @@ private:
     // when shared; the device tier for device-local memory while it has a budget).
     Tier& tierFor(std::size_t capacity, VkMemoryPropertyFlags properties);
     static bool DeviceTierEnabled();
+    static VkDeviceSize deviceBudget(const Context& context);
     static bool DeviceTiered(VkMemoryPropertyFlags properties);
     static std::size_t NextCapacity(std::size_t capacity);
     VkDeviceSize destroy(const BufferAllocation& allocation) noexcept;
@@ -142,23 +153,37 @@ private:
     // caller destroys those after releasing the mutex, so builds taking buffers on other threads
     // do not wait behind the Vulkan destroy calls. Nothing changes when the vector cannot grow.
     void evictOldest(Tier& tier, std::vector<BufferAllocation>& evicted);
+    bool evictOldestImage(std::vector<BufferAllocation>& evicted);
+    bool imagePooled(VkDeviceSize bytes, std::uint32_t memoryType) const;
+    bool heapOverBudget();
     // The retained-slot bound of each tier (APS5_BUFFER_POOL_SLOTS, default `defaultSlots`), read once.
     static std::size_t MaxSlots();
     std::size_t maxSlots;
+    VkDeviceSize (*cacheReclaim)(VkDeviceSize bytes);
     VkDevice device;
     PFN_vkUnmapMemory unmap;
     PFN_vkDestroyBuffer destroyBuffer;
     PFN_vkFreeMemory freeMemory;
     PFN_vkAllocateMemory allocateMemory;
     PFN_vkMapMemory mapMemory;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    PFN_vkGetPhysicalDeviceMemoryProperties2 memoryProperties2 = nullptr;
     std::mutex mutex;
     // Not `small`/`large`: <rpcndr.h> (via <windows.h>) defines `small` as a macro.
     Tier smallTier;
     Tier largeTier;
     Tier deviceTier;
+    std::chrono::steady_clock::time_point heapRead{};
+    bool heapOver = false;
+    VkDeviceSize imageBudget = 0;
+    VkDeviceSize imageBytes = 0;
+    std::size_t imageSlots = 0;
+    std::uint64_t imageHits = 0;
+    std::uint64_t imageMisses = 0;
+    std::uint64_t imageEvictions = 0;
+    std::list<Slot*> imageOrder;
     std::uint64_t clock = 0;
-    VkPhysicalDevice physical = VK_NULL_HANDLE;
-    PFN_vkGetPhysicalDeviceMemoryProperties2 memoryProperties2 = nullptr;
     std::optional<std::uint32_t> deviceHeap;
     std::chrono::steady_clock::time_point allowanceChecked{};
     VkDeviceSize deviceAllowance = std::numeric_limits<VkDeviceSize>::max();
@@ -176,6 +201,8 @@ private:
 };
 
 std::shared_ptr<BufferPool> GetBufferPool(const Context& context);
+VkDeviceMemory AllocateImageMemory(const Context& context, const VkMemoryAllocateInfo& allocation, std::uint32_t mask, const char* operation, std::uint32_t* allocatedType = nullptr);
+void ReleaseImageMemory(const Context& context, VkDeviceMemory memory, VkDeviceSize bytes, std::uint32_t memoryType) noexcept;
 
 }
 

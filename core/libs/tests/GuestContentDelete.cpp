@@ -10,9 +10,9 @@
 #include <string>
 
 extern "C" {
-int APS5_VABI sceContentDeleteInitialize(const ContentDeleteInitParam* init_param);
-int APS5_VABI sceContentDeleteByPath(const char* content_path);
-int APS5_VABI sceContentDeleteById(std::int64_t content_id);
+int APS5_VABI sceContentDeleteInitialize(const ContentDeleteInitParam* initParam);
+int APS5_VABI sceContentDeleteByPath(const char* contentPath);
+int APS5_VABI sceContentDeleteById(std::int64_t contentId);
 int APS5_VABI sceContentDeleteTerminate(void);
 int APS5_VABI sceContentExportInit2(const ContentExportInitParam2* init_param);
 int APS5_VABI sceContentExportTerm(void);
@@ -40,6 +40,16 @@ bool Throws(TAction action) {
     return false;
 }
 
+template <typename TAction>
+bool ThrowsContaining(TAction action, const std::string& part) {
+    try {
+        action();
+    } catch (const std::logic_error& error) {
+        return std::string(error.what()).find(part) != std::string::npos;
+    }
+    return false;
+}
+
 void WriteAll(const std::filesystem::path& path, const char* content) {
     std::ofstream(path, std::ios::binary) << content;
 }
@@ -54,6 +64,15 @@ ContentExportParam MakeParam(const char* contentType) {
 }
 
 int main() {
+    constexpr int invalidArgument = static_cast<int>(0x809D5001u);
+    constexpr int notInitialized = static_cast<int>(0x809D5002u);
+    constexpr int alreadyInitialized = static_cast<int>(0x809D5003u);
+    Require(sceContentDeleteTerminate() == notInitialized, "termination before initialization");
+    Require(sceContentDeleteInitialize(nullptr) == invalidArgument, "a null initialization parameter");
+    Require(sceContentDeleteById(1) == notInitialized, "deleting an id before initialization");
+    Require(sceContentDeleteByPath("/user/av_contents/photo/a.png") == notInitialized, "deleting a path before initialization");
+    Require(sceContentDeleteByPath(nullptr) == notInitialized, "a null path before initialization");
+
     WriteAll(ResolvePath_nid_no_patch("/content_delete_source.bin"), "payload");
     WriteAll(ResolvePath_nid_no_patch("/content_delete_thumbnail.png"), "thumb");
     int allocator = 0;
@@ -62,7 +81,7 @@ int main() {
     exportInit.free_func = &allocator;
     Require(sceContentExportInit2(&exportInit) == 0, "content export initializes");
     const int session = sceContentExportStart();
-    Require(session > 0, "an export session starts");
+    Require(session >= 0, "an export session starts");
     const ContentExportParam image = MakeParam("image/png");
     const ContentExportParam video = MakeParam("video/mp4");
     char picture[64];
@@ -80,15 +99,20 @@ int main() {
     clipThumbnail.replace_extension(".thumbnail.png");
     Require(std::filesystem::exists(clipThumbnail), "the clip's thumbnail is in the library");
 
-    Require(Throws<std::logic_error>([&] { sceContentDeleteByPath(picture); }), "deleting before initialization");
-    Require(Throws<std::runtime_error>([] { sceContentDeleteById(1); }), "deleting an id is not implemented");
-    Require(Throws<std::invalid_argument>([] { sceContentDeleteInitialize(nullptr); }), "a null initialization parameter");
+    Require(sceContentDeleteByPath(picture) == notInitialized, "deleting an exported picture before initialization");
     ContentDeleteInitParam init{};
     init.heap_size = 0x10000;
+    Require(sceContentDeleteInitialize(&init) == invalidArgument, "a heap size other than 16 KiB");
+    init.heap_size = 0x4000;
     Require(sceContentDeleteInitialize(&init) == 0, "content delete initializes");
-    Require(Throws<std::logic_error>([&] { sceContentDeleteInitialize(&init); }), "a second initialization");
+    Require(sceContentDeleteInitialize(&init) == alreadyInitialized, "a second initialization");
+    Require(sceContentDeleteInitialize(nullptr) == invalidArgument, "a null initialization parameter after initialization");
+    Require(sceContentDeleteByPath("") == invalidArgument, "an empty path");
 
     Require(Throws<std::invalid_argument>([] { sceContentDeleteByPath(nullptr); }), "a null path");
+    Require(ThrowsContaining([] { sceContentDeleteByPath("/user/av_contents/photo/a.png"); }, "sceContentDeleteByPath: /user/av_contents/photo/a.png is not in the host content library"), "a path outside the library");
+    Require(ThrowsContaining([] { sceContentDeleteById(0x123456789); }, "sceContentDeleteById: content id 4886718345 is not in the host content library"), "a content id");
+    Require(ThrowsContaining([] { sceContentDeleteById(-1); }, "sceContentDeleteById: content id -1 is not in the host content library"), "a negative content id");
     Require(sceContentDeleteByPath(picture) == 0, "the picture is deleted");
     Require(!std::filesystem::exists(picturePath), "the picture file is gone");
     Require(std::filesystem::exists(otherPath), "the other picture stays");
@@ -100,12 +124,12 @@ int main() {
     Require(Throws<std::logic_error>([] { sceContentDeleteByPath("/content_delete_source.bin"); }), "a file outside the library");
     Require(Throws<std::logic_error>([] { sceContentDeleteByPath("/_ce/../content_delete_source.bin"); }), "a path leaving the library");
     Require(Throws<std::logic_error>([] { sceContentDeleteByPath("/_ce/"); }), "the library itself");
-    Require(Throws<std::runtime_error>([] { sceContentDeleteById(1); }), "deleting an id is not implemented");
     Require(std::filesystem::exists(ResolvePath_nid_no_patch("/content_delete_source.bin")), "the source file stays");
     Require(std::filesystem::exists(otherPath), "the other picture still stays");
 
     Require(sceContentDeleteTerminate() == 0, "content delete terminates");
-    Require(Throws<std::logic_error>([] { sceContentDeleteTerminate(); }), "a second termination");
+    Require(sceContentDeleteTerminate() == notInitialized, "a second termination");
+    Require(sceContentDeleteById(1) == notInitialized, "deleting an id after termination");
     std::filesystem::remove(otherPath);
     std::puts("content delete tests passed");
     return 0;

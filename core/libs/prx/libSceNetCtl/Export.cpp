@@ -15,7 +15,11 @@
 #ifdef __linux__
 #include <netpacket/packet.h>
 #endif
+#ifdef __APPLE__
+#include <sys/sysctl.h>
 #endif
+#endif
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
@@ -31,6 +35,20 @@
 #include <vector>
 
 // Network-control state reflects host interface addressing, not PSN sign-in status.
+union NetCtlInfoV6;
+struct NetCtlConnectionConfiguration;
+struct NetCtlScanOptions;
+struct NetCtlScanBssidList;
+struct NetCtlScanInfo;
+struct NetCtlNatInfoInternal;
+struct NetCtlBandwidthInfo;
+struct NetCtlNetEvConfiguration;
+struct NetBweInfo;
+struct NetCtlWifiInfo;
+
+static constexpr int SCE_NET_CTL_ERROR_NOT_INITIALIZED = static_cast<int>(0x80412101);
+static constexpr int SCE_NET_CTL_ERROR_ID_NOT_FOUND = static_cast<int>(0x80412104);
+static constexpr int SCE_NET_CTL_ERROR_INVALID_SIZE = static_cast<int>(0x80412111);
 static constexpr int SCE_NET_CTL_ERROR_CALLBACK_MAX = static_cast<int>(0x80412103);
 static constexpr int SCE_NET_CTL_ERROR_INVALID_ID = static_cast<int>(0x80412105);
 static constexpr int SCE_NET_CTL_ERROR_INVALID_CODE = static_cast<int>(0x80412106);
@@ -38,17 +56,28 @@ static constexpr int SCE_NET_CTL_ERROR_INVALID_ADDR = static_cast<int>(0x8041210
 static constexpr int SCE_NET_CTL_ERROR_NOT_CONNECTED = static_cast<int>(0x80412108);
 static constexpr int NET_CTL_STATE_DISCONNECTED = 0;
 static constexpr int NET_CTL_STATE_IPOBTAINED = 3;
+static constexpr int NET_CTL_EVENT_DISCONNECTED = 1;
+static constexpr int NET_CTL_EVENT_IPOBTAINED = 3;
 static constexpr int NET_CTL_INFO_DEVICE = 1;
 static constexpr int NET_CTL_INFO_ETHER_ADDR = 2;
 static constexpr int NET_CTL_INFO_MTU = 3;
 static constexpr int NET_CTL_INFO_LINK = 4;
+static constexpr int NET_CTL_INFO_BSSID = 5;
+static constexpr int NET_CTL_INFO_SSID = 6;
+static constexpr int NET_CTL_INFO_WIFI_SECURITY = 7;
+static constexpr int NET_CTL_INFO_RSSI_DBM = 8;
+static constexpr int NET_CTL_INFO_RSSI_PERCENTAGE = 9;
+static constexpr int NET_CTL_INFO_CHANNEL = 10;
 static constexpr int NET_CTL_INFO_IP_CONFIG = 11;
+static constexpr int NET_CTL_INFO_DHCP_HOSTNAME = 12;
+static constexpr int NET_CTL_INFO_PPPOE_AUTH_NAME = 13;
 static constexpr int NET_CTL_INFO_IP_ADDRESS = 14;
 static constexpr int NET_CTL_INFO_NETMASK = 15;
 static constexpr int NET_CTL_INFO_DEFAULT_ROUTE = 16;
 static constexpr int NET_CTL_INFO_PRIMARY_DNS = 17;
 static constexpr int NET_CTL_INFO_SECONDARY_DNS = 18;
 static constexpr int NET_CTL_INFO_HTTP_PROXY_CONFIG = 19;
+static constexpr int NET_CTL_INFO_HTTP_PROXY_SERVER = 20;
 static constexpr int NET_CTL_INFO_HTTP_PROXY_PORT = 21;
 static constexpr std::uint32_t NET_CTL_DEVICE_WIRED = 0;
 static constexpr std::uint32_t NET_CTL_LINK_CONNECTED = 1;
@@ -56,18 +85,31 @@ static constexpr std::uint32_t NET_CTL_IP_DHCP = 0;
 static constexpr std::uint32_t NET_CTL_HTTP_PROXY_OFF = 0;
 static constexpr std::uint8_t NET_CTL_ETHER_ADDR[6] = {0x02, 0x50, 0x53, 0x35, 0x00, 0x01};
 static constexpr std::size_t NET_CTL_IPV4_ADDR_STR_LEN = 16;
+static constexpr int NET_CTL_INFO_V6_IP_ADDRESS = 1;
+static constexpr int NET_CTL_INFO_V6_LINK_LOCAL_ADDRESS = 2;
+static constexpr int NET_CTL_INFO_V6_SECONDARY_DNS = 5;
+static constexpr std::size_t NET_CTL_IPV6_ADDR_STR_LEN = 46;
 static constexpr int MAX_CALLBACKS = 8;
 
-static std::mutex g_callbackLock;
-static NetCtlCallback g_callbacks[MAX_CALLBACKS] = {};
-static NetCtlCallback g_callbacksV6[MAX_CALLBACKS] = {};
+struct CallbackSlot {
+    NetCtlCallback func = nullptr;
+    void* arg = nullptr;
+    int lastEvent = 0;
+};
 
-static int RegisterCallback(NetCtlCallback (&callbacks)[MAX_CALLBACKS], NetCtlCallback func, int* cid) {
+static std::atomic_bool g_initialized{true};
+static std::mutex g_callbackLock;
+static CallbackSlot g_callbacks[MAX_CALLBACKS] = {};
+static CallbackSlot g_callbacksV6[MAX_CALLBACKS] = {};
+static CallbackSlot g_callbacksNpToolkit[MAX_CALLBACKS] = {};
+
+static int RegisterCallback(CallbackSlot (&callbacks)[MAX_CALLBACKS], NetCtlCallback func, void* arg, int* cid) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
     if (!func || !cid) return SCE_NET_CTL_ERROR_INVALID_ADDR;
     std::lock_guard lock(g_callbackLock);
     for (int index = 0; index < MAX_CALLBACKS; ++index) {
-        if (!callbacks[index]) {
-            callbacks[index] = func;
+        if (!callbacks[index].func) {
+            callbacks[index] = {func, arg, 0};
             *cid = index;
             return 0;
         }
@@ -75,11 +117,21 @@ static int RegisterCallback(NetCtlCallback (&callbacks)[MAX_CALLBACKS], NetCtlCa
     return SCE_NET_CTL_ERROR_CALLBACK_MAX;
 }
 
-static int UnregisterCallback(NetCtlCallback (&callbacks)[MAX_CALLBACKS], int cid) {
+static int UnregisterCallback(CallbackSlot (&callbacks)[MAX_CALLBACKS], int cid) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
     if (cid < 0 || cid >= MAX_CALLBACKS) return SCE_NET_CTL_ERROR_INVALID_ID;
     std::lock_guard lock(g_callbackLock);
-    callbacks[cid] = nullptr;
+    if (!callbacks[cid].func) return SCE_NET_CTL_ERROR_ID_NOT_FOUND;
+    callbacks[cid] = {};
     return 0;
+}
+
+static bool HasCallback(const CallbackSlot (&callbacks)[MAX_CALLBACKS]) {
+    std::lock_guard lock(g_callbackLock);
+    for (const auto& slot : callbacks) {
+        if (slot.func) return true;
+    }
+    return false;
 }
 
 static bool HostHasAddress(int family) {
@@ -105,7 +157,7 @@ static bool HostHasAddress(int family) {
                 if (host != 0 && (host >> 24) != 127) return true;
             } else if (address->Address.lpSockaddr->sa_family == AF_INET6) {
                 const auto* v6 = reinterpret_cast<const sockaddr_in6*>(address->Address.lpSockaddr);
-                if (!IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr) && !IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr)) return true;
+                if (!IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr) && !IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr) && !IN6_IS_ADDR_LINKLOCAL(&v6->sin6_addr)) return true;
             }
         }
     }
@@ -123,7 +175,7 @@ static bool HostHasAddress(int family) {
             found = host != 0 && (host >> 24) != 127;
         } else if ((family == AF_UNSPEC || family == address_family) && address_family == AF_INET6) {
             const auto* v6 = reinterpret_cast<const sockaddr_in6*>(item->ifa_addr);
-            found = !IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr) && !IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr);
+            found = !IN6_IS_ADDR_UNSPECIFIED(&v6->sin6_addr) && !IN6_IS_ADDR_LOOPBACK(&v6->sin6_addr) && !IN6_IS_ADDR_LINKLOCAL(&v6->sin6_addr);
         }
     }
     freeifaddrs(interfaces);
@@ -161,6 +213,56 @@ struct HostDefaultRoute {
     unsigned long metric = 0;
 };
 
+#ifdef __APPLE__
+struct NetCtlDefaultRoute {
+    char name[IF_NAMESIZE];
+    in_addr gateway;
+    std::uint32_t metric;
+};
+
+extern "C" std::size_t NetCtlDefaultRoutes_nid_no_patch(const char* table, std::size_t size, NetCtlDefaultRoute* routes, std::size_t capacity) {
+    std::size_t count = 0;
+    for (std::size_t offset = 0; offset + sizeof(rt_msghdr) <= size;) {
+        const auto* header = reinterpret_cast<const rt_msghdr*>(table + offset);
+        if (header->rtm_msglen < sizeof(rt_msghdr) || header->rtm_msglen > size - offset) break;
+        const sockaddr* addresses[RTAX_MAX] = {};
+        const std::size_t end = offset + header->rtm_msglen;
+        std::size_t field = offset + sizeof(rt_msghdr);
+        for (int index = 0; index < RTAX_MAX && field + sizeof(sockaddr) <= end; ++index) {
+            if (!(header->rtm_addrs & (1 << index))) continue;
+            const auto* address = reinterpret_cast<const sockaddr*>(table + field);
+            addresses[index] = address;
+            field += address->sa_len ? (address->sa_len + sizeof(std::uint32_t) - 1) & ~(sizeof(std::uint32_t) - 1) : sizeof(std::uint32_t);
+        }
+        offset = end;
+        const auto* destination = addresses[RTAX_DST];
+        const auto* gateway = addresses[RTAX_GATEWAY];
+        if (!destination || destination->sa_family != AF_INET || !gateway || gateway->sa_family != AF_INET) continue;
+        if (reinterpret_cast<const sockaddr_in*>(destination)->sin_addr.s_addr != 0) continue;
+        if (!(header->rtm_flags & RTF_UP) || (header->rtm_flags & (RTF_REJECT | RTF_HOST))) continue;
+        NetCtlDefaultRoute route{};
+        if (!if_indextoname(header->rtm_index, route.name)) continue;
+        route.gateway = reinterpret_cast<const sockaddr_in*>(gateway)->sin_addr;
+        route.metric = (header->rtm_flags & RTF_IFSCOPE) ? 1 : 0;
+        if (count < capacity) routes[count] = route;
+        ++count;
+    }
+    return count;
+}
+
+static std::vector<HostDefaultRoute> HostDefaultRoutes() {
+    int name[] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_GATEWAY};
+    std::size_t size = 0;
+    if (sysctl(name, 6, nullptr, &size, nullptr, 0) != 0) throw std::runtime_error("sceNetCtlGetInfo: the host routing table is unavailable");
+    std::vector<char> table(size);
+    if (sysctl(name, 6, table.data(), &size, nullptr, 0) != 0) throw std::runtime_error("sceNetCtlGetInfo: the host routing table is unavailable");
+    std::vector<NetCtlDefaultRoute> found(NetCtlDefaultRoutes_nid_no_patch(table.data(), size, nullptr, 0));
+    found.resize(NetCtlDefaultRoutes_nid_no_patch(table.data(), size, found.data(), found.size()));
+    std::vector<HostDefaultRoute> routes;
+    for (const auto& entry : found) routes.push_back({entry.name, entry.gateway, entry.metric});
+    return routes;
+}
+#else
 static std::vector<HostDefaultRoute> HostDefaultRoutes() {
     std::ifstream table("/proc/net/route");
     if (!table) throw std::runtime_error("sceNetCtlGetInfo: the host routing table is unavailable");
@@ -183,6 +285,7 @@ static std::vector<HostDefaultRoute> HostDefaultRoutes() {
     }
     return routes;
 }
+#endif
 
 static std::uint32_t HostInterfaceMtu(const char* name) {
     const int descriptor = socket(AF_INET, SOCK_DGRAM, 0);
@@ -271,6 +374,110 @@ static bool FindHostIpv4Interface(HostIpv4Interface& found) {
 #endif
 }
 
+struct HostIpv6Address {
+    in6_addr address{};
+    unsigned prefix = 0;
+};
+
+struct HostIpv6Interface {
+    HostIpv6Address global;
+    HostIpv6Address linkLocal;
+    bool hasLinkLocal = false;
+};
+
+static bool UsableIpv6(const in6_addr& address) {
+    return !IN6_IS_ADDR_UNSPECIFIED(&address) && !IN6_IS_ADDR_LOOPBACK(&address);
+}
+
+static bool FindHostIpv6Interface(HostIpv6Interface& found) {
+#ifdef _WIN32
+    ULONG size = 0;
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    if (GetAdaptersAddresses(AF_INET6, flags, nullptr, nullptr, &size) != ERROR_BUFFER_OVERFLOW) return false;
+    std::vector<std::uint8_t> storage(size);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+    if (GetAdaptersAddresses(AF_INET6, flags, nullptr, adapters, &size) != NO_ERROR) return false;
+    for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
+        if (adapter->OperStatus != IfOperStatusUp || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        HostIpv6Interface candidate;
+        bool hasGlobal = false;
+        for (auto* unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next) {
+            const auto* socketAddress = unicast->Address.lpSockaddr;
+            if (!socketAddress || socketAddress->sa_family != AF_INET6) continue;
+            const auto& address = reinterpret_cast<const sockaddr_in6*>(socketAddress)->sin6_addr;
+            if (!UsableIpv6(address)) continue;
+            if (IN6_IS_ADDR_LINKLOCAL(&address)) {
+                if (candidate.hasLinkLocal) continue;
+                candidate.linkLocal = {address, unicast->OnLinkPrefixLength};
+                candidate.hasLinkLocal = true;
+            } else if (!hasGlobal) {
+                candidate.global = {address, unicast->OnLinkPrefixLength};
+                hasGlobal = true;
+            }
+        }
+        if (!hasGlobal) continue;
+        found = candidate;
+        return true;
+    }
+    return false;
+#else
+    ifaddrs* list = nullptr;
+    if (getifaddrs(&list) != 0) return false;
+    const std::unique_ptr<ifaddrs, void (*)(ifaddrs*)> interfaces(list, freeifaddrs);
+    const auto prefixOf = [](const ifaddrs* item) {
+        unsigned prefix = 0;
+        if (!item->ifa_netmask) return prefix;
+        const auto& mask = reinterpret_cast<const sockaddr_in6*>(item->ifa_netmask)->sin6_addr;
+        for (const std::uint8_t byte : mask.s6_addr) {
+            for (unsigned bit = 0x80; bit != 0 && (byte & bit); bit >>= 1) ++prefix;
+        }
+        return prefix;
+    };
+    const auto usable = [](const ifaddrs* item) {
+        return item->ifa_addr && item->ifa_addr->sa_family == AF_INET6 && (item->ifa_flags & IFF_UP) && !(item->ifa_flags & IFF_LOOPBACK) &&
+            UsableIpv6(reinterpret_cast<const sockaddr_in6*>(item->ifa_addr)->sin6_addr);
+    };
+    for (auto* item = list; item; item = item->ifa_next) {
+        if (!usable(item)) continue;
+        const auto& address = reinterpret_cast<const sockaddr_in6*>(item->ifa_addr)->sin6_addr;
+        if (IN6_IS_ADDR_LINKLOCAL(&address)) continue;
+        found = {};
+        found.global = {address, prefixOf(item)};
+        for (auto* other = list; other; other = other->ifa_next) {
+            if (!usable(other) || std::strcmp(other->ifa_name, item->ifa_name) != 0) continue;
+            const auto& linkLocal = reinterpret_cast<const sockaddr_in6*>(other->ifa_addr)->sin6_addr;
+            if (!IN6_IS_ADDR_LINKLOCAL(&linkLocal)) continue;
+            found.linkLocal = {linkLocal, prefixOf(other)};
+            found.hasLinkLocal = true;
+            break;
+        }
+        return true;
+    }
+    return false;
+#endif
+}
+
+static void WriteInfoIpv6Address(NetCtlInfo* info, const HostIpv6Address& address) {
+    char text[NET_CTL_IPV6_ADDR_STR_LEN] = {};
+    if (!inet_ntop(AF_INET6, &address.address, text, sizeof(text))) throw std::runtime_error("sceNetCtlGetInfoV6: the host IPv6 address cannot be formatted");
+    std::memcpy(info->opaque, text, sizeof(text));
+    info->opaque[NET_CTL_IPV6_ADDR_STR_LEN] = static_cast<std::uint8_t>(address.prefix);
+}
+
+extern "C" std::size_t NetCtlHostDnsServers_nid_no_patch(std::uint32_t* servers, std::size_t capacity) {
+    HostIpv4Interface host;
+    if (!FindHostIpv4Interface(host)) return 0;
+    for (std::size_t index = 0; index < host.dns.size() && index < capacity; ++index) servers[index] = host.dns[index].s_addr;
+    return host.dns.size();
+}
+
+extern "C" bool NetCtlHostIpv4Gateway_nid_no_patch(std::uint32_t* gateway) {
+    HostIpv4Interface host;
+    if (!FindHostIpv4Interface(host) || host.gateway.s_addr == 0) return false;
+    *gateway = host.gateway.s_addr;
+    return true;
+}
+
 static void WriteInfoWord(NetCtlInfo* info, std::uint32_t value) {
     std::memcpy(info->opaque, &value, sizeof(value));
 }
@@ -318,13 +525,32 @@ static void HostTraffic(std::uint64_t& sent, std::uint64_t& received) {
 #endif
 }
 
-extern "C" {
-
-int APS5_VABI sceNetCtlCheckCallback(void) {
+static int CheckCallbacks(CallbackSlot (&callbacks)[MAX_CALLBACKS]) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
+    if (!HasCallback(callbacks)) return 0;
+    const int event = HostHasAddress(AF_UNSPEC) ? NET_CTL_EVENT_IPOBTAINED : NET_CTL_EVENT_DISCONNECTED;
+    CallbackSlot due[MAX_CALLBACKS];
+    int count = 0;
+    {
+        std::lock_guard lock(g_callbackLock);
+        for (auto& slot : callbacks) {
+            if (!slot.func || slot.lastEvent == event) continue;
+            slot.lastEvent = event;
+            due[count++] = slot;
+        }
+    }
+    for (int index = 0; index < count; ++index) due[index].func(event, due[index].arg);
     return 0;
 }
 
+extern "C" {
+
+int APS5_VABI sceNetCtlCheckCallback(void) {
+    return CheckCallbacks(g_callbacks);
+}
+
 int APS5_VABI sceNetCtlGetIfStat(NetCtlIfStat* stat) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
     if (!stat) return SCE_NET_CTL_ERROR_INVALID_ADDR;
     if (!HostHasAddress(AF_UNSPEC)) return SCE_NET_CTL_ERROR_NOT_CONNECTED;
     *stat = {};
@@ -333,6 +559,7 @@ int APS5_VABI sceNetCtlGetIfStat(NetCtlIfStat* stat) {
 }
 
 int APS5_VABI sceNetCtlGetInfo(int code, NetCtlInfo* info) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
     if (!info) return SCE_NET_CTL_ERROR_INVALID_ADDR;
     if (code < NET_CTL_INFO_DEVICE || code > NET_CTL_INFO_HTTP_PROXY_PORT) return SCE_NET_CTL_ERROR_INVALID_CODE;
     HostIpv4Interface host;
@@ -349,45 +576,75 @@ int APS5_VABI sceNetCtlGetInfo(int code, NetCtlInfo* info) {
         case NET_CTL_INFO_PRIMARY_DNS: WriteInfoAddress(info, host.dns.size() > 0 ? host.dns[0] : in_addr{}); break;
         case NET_CTL_INFO_SECONDARY_DNS: WriteInfoAddress(info, host.dns.size() > 1 ? host.dns[1] : in_addr{}); break;
         case NET_CTL_INFO_HTTP_PROXY_CONFIG: WriteInfoWord(info, NET_CTL_HTTP_PROXY_OFF); break;
+        case NET_CTL_INFO_BSSID:
+        case NET_CTL_INFO_SSID:
+        case NET_CTL_INFO_DHCP_HOSTNAME:
+        case NET_CTL_INFO_PPPOE_AUTH_NAME:
+        case NET_CTL_INFO_HTTP_PROXY_SERVER: std::memset(info->opaque, 0, sizeof(info->opaque)); break;
+        case NET_CTL_INFO_WIFI_SECURITY:
+        case NET_CTL_INFO_RSSI_DBM:
+        case NET_CTL_INFO_RSSI_PERCENTAGE:
+        case NET_CTL_INFO_CHANNEL:
+        case NET_CTL_INFO_HTTP_PROXY_PORT: WriteInfoWord(info, 0); break;
         default: throw std::runtime_error("sceNetCtlGetInfo: info code " + std::to_string(code) + " is not implemented");
     }
     return 0;
 }
 
-int APS5_VABI sceNetCtlGetNatInfo(NetCtlNatInfo* nat_info) {
-    (void)nat_info;
-    return SCE_NET_CTL_ERROR_NOT_CONNECTED;
-}
-
-int APS5_VABI sceNetCtlGetResult(int event_type, int* error_code) {
-    (void)event_type;
-    if (!error_code) return SCE_NET_CTL_ERROR_INVALID_ADDR;
-    *error_code = 0;
+int APS5_VABI sceNetCtlGetInfoV6(std::uint32_t code, NetCtlInfoV6* info) {
+    if (!info) return SCE_NET_CTL_ERROR_INVALID_ADDR;
+    if (code < NET_CTL_INFO_V6_IP_ADDRESS || code > NET_CTL_INFO_V6_SECONDARY_DNS) return SCE_NET_CTL_ERROR_INVALID_CODE;
+    HostIpv6Interface host;
+    if (!FindHostIpv6Interface(host)) return SCE_NET_CTL_ERROR_NOT_CONNECTED;
+    switch (code) {
+        case NET_CTL_INFO_V6_IP_ADDRESS: WriteInfoIpv6Address(reinterpret_cast<NetCtlInfo*>(info), host.global); break;
+        case NET_CTL_INFO_V6_LINK_LOCAL_ADDRESS:
+            if (!host.hasLinkLocal) throw std::runtime_error("sceNetCtlGetInfoV6: the host interface has no link-local address");
+            WriteInfoIpv6Address(reinterpret_cast<NetCtlInfo*>(info), host.linkLocal);
+            break;
+        default: throw std::runtime_error("sceNetCtlGetInfoV6: info code " + std::to_string(code) + " is not implemented");
+    }
     return 0;
 }
 
+int APS5_VABI sceNetCtlGetNatInfo(NetCtlNatInfo* info) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
+    if (!info) return SCE_NET_CTL_ERROR_INVALID_ADDR;
+    if (info->size != sizeof(NetCtlNatInfo)) return SCE_NET_CTL_ERROR_INVALID_SIZE;
+    throw std::logic_error("sceNetCtlGetNatInfo: NAT discovery is not implemented");
+}
+
+int APS5_VABI sceNetCtlGetResult(int event, int* result) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
+    if (!result) return SCE_NET_CTL_ERROR_INVALID_ADDR;
+    throw std::logic_error("sceNetCtlGetResult: service event results are not implemented");
+}
+
 int APS5_VABI sceNetCtlGetState(int* state) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
     if (!state) return SCE_NET_CTL_ERROR_INVALID_ADDR;
     *state = HostHasAddress(AF_UNSPEC) ? NET_CTL_STATE_IPOBTAINED : NET_CTL_STATE_DISCONNECTED;
     return 0;
 }
 
 int APS5_VABI sceNetCtlGetStateV6(int* state) {
+    if (!g_initialized.load()) return SCE_NET_CTL_ERROR_NOT_INITIALIZED;
     if (!state) return SCE_NET_CTL_ERROR_INVALID_ADDR;
     *state = HostHasAddress(AF_INET6) ? NET_CTL_STATE_IPOBTAINED : NET_CTL_STATE_DISCONNECTED;
     return 0;
 }
 
 int APS5_VABI sceNetCtlInit(void) {
+    g_initialized.store(true);
     return 0;
 }
 
 int APS5_VABI sceNetCtlRegisterCallback(NetCtlCallback func, void* arg, int* cid) {
-    return RegisterCallback(g_callbacks, func, cid);
+    return RegisterCallback(g_callbacks, func, arg, cid);
 }
 
 int APS5_VABI sceNetCtlRegisterCallbackV6(NetCtlCallback func, void* arg, int* cid) {
-    return RegisterCallback(g_callbacksV6, func, cid);
+    return RegisterCallback(g_callbacksV6, func, arg, cid);
 }
 
 void APS5_VABI sceNetCtlTerm(void) {
@@ -399,6 +656,351 @@ int APS5_VABI sceNetCtlUnregisterCallback(int cid) {
 
 int APS5_VABI sceNetCtlUnregisterCallbackV6(int cid) {
     return UnregisterCallback(g_callbacksV6, cid);
+}
+
+int APS5_VABI sceNetCtlRegisterCallbackForNpToolkit(NetCtlCallback callback, void* argument, int* callbackId) {
+    return RegisterCallback(g_callbacksNpToolkit, callback, argument, callbackId);
+}
+
+int APS5_VABI sceNetCtlRegisterCallbackIpcInt(NetCtlCallback callback, void* argument, int* callbackId) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlRegisterCallbackForLibIpcInt(NetCtlCallback callback, void* argument, int* callbackId) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlUnregisterCallbackForNpToolkit(int callbackId) {
+    return UnregisterCallback(g_callbacksNpToolkit, callbackId);
+}
+
+int APS5_VABI sceNetCtlUnregisterCallbackIpcInt(int callbackId) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlUnregisterCallbackForLibIpcInt(int callbackId) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlCheckCallbackForNpToolkit(void) {
+    return CheckCallbacks(g_callbacksNpToolkit);
+}
+
+int APS5_VABI sceNetCtlCheckCallbackForLibIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlClearEventIpcInt(int event) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlClearEventForNpToolkit(int event) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlClearEventForLibIpcInt(int event) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetResultIpcInt(int event, int* result) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetStateIpcInt(int* state) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetState2IpcInt(int* state) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetInfoIpcInt(std::uint32_t code, NetCtlInfo* info) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetEtherLinkMode(int* mode) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetWifiType(int* type) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlConnectIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlConnectWithRetryIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlConnectConfIpcInt(const NetCtlConnectionConfiguration* configuration) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlDisconnectIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlScanIpcInt(const char* const* ssids, std::uint32_t count, const NetCtlScanOptions* options) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetScanInfoBssidIpcInt(NetCtlScanBssidList* bssids, std::uint32_t capacity) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetScanInfoByBssidIpcInt(const std::uint8_t* bssid, NetCtlScanInfo* info, void* buffer, std::size_t* size) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetScanInfoForSsidScanIpcInt(NetCtlScanInfo* info, void* buffer, std::size_t* size) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetScanInfoBssidForSsidListScanIpcInt(NetCtlScanBssidList* bssids, std::uint32_t capacity) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetScanInfoForSsidListScanIpcInt(const std::uint8_t* bssid, NetCtlScanInfo* info, void* buffer, std::size_t* size) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlSetErrorNotificationEnabledIpcInt(int enabled) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlRegisterCallbackV6IpcInt(NetCtlCallback callback, void* argument, int* callbackId) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlUnregisterCallbackV6IpcInt(int callbackId) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetResultV6(int event_type, int* error_code) {
+    if (!error_code) return SCE_NET_CTL_ERROR_INVALID_ADDR;
+    if (event_type < NET_CTL_EVENT_DISCONNECTED || event_type > NET_CTL_EVENT_IPOBTAINED) {
+        throw std::runtime_error("sceNetCtlGetResultV6: event type " + std::to_string(event_type) + " is not implemented");
+    }
+    *error_code = 0;
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetResultV6IpcInt(int event, int* result) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetStateV6IpcInt(int* state) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetInfoV6IpcInt(std::uint32_t code, NetCtlInfoV6* info) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetNatInfoIpcInt(NetCtlNatInfoInternal* info) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlSetStunWithPaddingFlagIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlUnsetStunWithPaddingFlagIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlIsBandwidthManagementEnabledIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlDisableBandwidthManagementIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlEnableBandwidthManagementIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetBandwidthInfoIpcInt(NetCtlBandwidthInfo* info) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetNetEvConfigInfoIpcInt(NetCtlNetEvConfiguration* configuration) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetConnectionElapsedTimeIpcInt(std::uint64_t* elapsedTime) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpCheckCallback(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpClearEvent(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpRegisterCallback(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpUnregisterCallback(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpGetResult(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpGetState(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpGetInfo(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpStart(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApCpStart(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApAppStartWithRetryPid(std::int32_t processId, const char* passcode) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApAppStartWithRetry(const char* passcode) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpStartWithRetry(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpStartConf(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRpStop(void) {
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApCpStop(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApAppInitWpaKey(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApAppInitWpaKeyForQa(std::uint8_t mode) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlApRestart(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweCheckCallbackIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweClearEventIpcInt(int event) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweRegisterCallbackIpcInt(NetCtlCallback callback, void* argument, int* callbackId) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweUnregisterCallbackIpcInt(int callbackId) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweGetInfoIpcInt(NetBweInfo* info) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweStartInternetConnectionTestIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweFinishInternetConnectionTestIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweStartInternetConnectionTestBandwidthTestIpcInt(void) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetBweSetInternetConnectionTestResultIpcInt(std::int32_t firstResult, std::int32_t secondResult) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNetCtlGetWifiInfoIpcInt(NetCtlWifiInfo* info) {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
 }
 
 }

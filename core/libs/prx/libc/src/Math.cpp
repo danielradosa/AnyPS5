@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cerrno>
 #include <cfenv>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
@@ -126,6 +127,23 @@ struct ExtendedParts {
     std::uint16_t signExponent;
 };
 
+template <typename TValue, typename THypot>
+TValue Hypot3(TValue x, TValue y, TValue z, THypot hypot) {
+    if (std::isnan(x)) return x;
+    if (std::isnan(y)) return y;
+    if (std::isnan(z)) return z;
+    if (std::isinf(x) || std::isinf(y) || std::isinf(z)) return std::numeric_limits<TValue>::infinity();
+    if (x == 0) return hypot(y, z);
+    if (y == 0) return hypot(x, z);
+    if (z == 0) return hypot(x, y);
+    x = std::fabs(x);
+    y = std::fabs(y);
+    z = std::fabs(z);
+    if (z >= x && z >= y) return hypot(z, hypot(x, y));
+    if (y >= x && y >= z) return hypot(y, hypot(x, z));
+    return hypot(x, hypot(y, z));
+}
+
 ExtendedParts SplitExtended(long double value) {
     unsigned char bytes[sizeof(long double)];
     std::memcpy(bytes, &value, sizeof(value));
@@ -165,10 +183,46 @@ long double AsinDenominator(long double t) {
     return 1.0L + t * (q[0] + t * (q[1] + t * (q[2] + t * (q[3] + t * q[4]))));
 }
 
+float GuestBesselSecondKindZero() {
+    std::feraiseexcept(FE_DIVBYZERO);
+    return -std::numeric_limits<float>::infinity();
+}
+
+float ScaledHyperbolic(float x, float y, bool sine) {
+    const auto xBits = std::bit_cast<std::uint32_t>(x);
+    const auto xMagnitude = xBits & 0x7fffffffu;
+    const auto yMagnitude = std::bit_cast<std::uint32_t>(y) & 0x7fffffffu;
+    constexpr std::uint32_t infinity = 0x7f800000u;
+    if (xMagnitude > infinity) return x;
+    if (yMagnitude > infinity) return y;
+    if ((xMagnitude == infinity && yMagnitude == 0) || (sine && xMagnitude == 0 && yMagnitude == infinity)) {
+        errno = EDOM;
+        std::feraiseexcept(FE_INVALID);
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    if (xMagnitude == infinity) return sine ? x * y : std::copysign(std::numeric_limits<float>::infinity(), y);
+    if (xMagnitude == 0 || yMagnitude == 0 || yMagnitude == infinity) return sine ? x * y : y;
+    constexpr double limit = 2.0 * std::numeric_limits<float>::max_exponent;
+    const float magnitude = std::bit_cast<float>(xMagnitude);
+    const double argument = magnitude < limit ? static_cast<double>(magnitude) : limit;
+    const double value = static_cast<double>(y) * (sine ? std::sinh(argument) : std::cosh(argument));
+    const bool exponential = magnitude >= (sine ? 7.7f : 8.675f);
+    float result;
+    if (exponential && std::fabs(value) >= 0x1p128) {
+        result = std::copysign(std::numeric_limits<float>::infinity(), y);
+    } else {
+        result = static_cast<float>(value);
+    }
+    if (exponential && std::isinf(result)) {
+        errno = ERANGE;
+        std::feraiseexcept(FE_OVERFLOW | FE_INEXACT);
+    }
+    return sine && (xBits & 0x80000000u) != 0 ? -result : result;
+}
+
 }
 
 extern "C" {
-float APS5_VABI tgammaf_nid_postfix(float x) { return std::tgamma(x); }
 
 std::lldiv_t APS5_VABI lldiv_nid_postfix(long long numerator, long long denominator) {
     return std::lldiv(numerator, denominator);
@@ -176,6 +230,22 @@ std::lldiv_t APS5_VABI lldiv_nid_postfix(long long numerator, long long denomina
 
 std::lldiv_t APS5_VABI ldiv_nid_postfix(std::int64_t numerator, std::int64_t denominator) {
     return std::lldiv(numerator, denominator);
+}
+
+std::lldiv_t APS5_VABI imaxdiv_nid_postfix(std::int64_t numerator, std::int64_t denominator) {
+    return std::lldiv(numerator, denominator);
+}
+
+std::int64_t APS5_VABI labs_nid_postfix(std::int64_t x) {
+    return x < 0 ? static_cast<std::int64_t>(0u - static_cast<std::uint64_t>(x)) : x;
+}
+
+std::int64_t APS5_VABI llabs_nid_postfix(std::int64_t x) {
+    return labs_nid_postfix(x);
+}
+
+std::int64_t APS5_VABI imaxabs_nid_postfix(std::int64_t x) {
+    return labs_nid_postfix(x);
 }
 
 float APS5_VABI fmodf_nid_postfix(float x, float y) { return std::fmod(x, y); }
@@ -221,12 +291,13 @@ double APS5_VABI exp2_nid_postfix(double x) {
 double APS5_VABI ldexp_nid_postfix(double x, int exponent) { return std::ldexp(x, exponent); }
 double APS5_VABI scalbn_nid_postfix(double x, int exponent) { return std::scalbn(x, exponent); }
 float APS5_VABI scalbnf_nid_postfix(float x, int exponent) { return std::scalbn(x, exponent); }
+float APS5_VABI significandf_nid_postfix(float x) { return x == 0.0f || !std::isfinite(x) ? x : std::scalbn(x, -std::ilogb(x)); }
+double APS5_VABI significand_nid_postfix(double x) { return x == 0.0 || !std::isfinite(x) ? x : std::scalbn(x, -std::ilogb(x)); }
 double APS5_VABI frexp_nid_postfix(double x, int* exponent) { return std::frexp(x, exponent); }
 float APS5_VABI frexpf_nid_postfix(float x, int* exponent) { return std::frexp(x, exponent); }
 // Guest long is 64-bit, including on Windows where native long is 32-bit.
 std::int64_t APS5_VABI lround_nid_postfix(double x) { return RoundToInt64(x); }
 std::int64_t APS5_VABI lroundf_nid_postfix(float x) { return RoundToInt64(x); }
-std::int64_t APS5_VABI lroundl_nid_postfix(long double x) { return RoundToInt64(x); }
 std::int64_t APS5_VABI llround_nid_postfix(double x) { return RoundToInt64(x); }
 std::int64_t APS5_VABI llroundf_nid_postfix(float x) { return RoundToInt64(x); }
 std::int64_t APS5_VABI llroundl_nid_postfix(long double x) { return RoundToInt64(x); }
@@ -255,6 +326,25 @@ float APS5_VABI truncf_nid_postfix(float x) { return std::trunc(x); }
 float APS5_VABI ceilf_nid_postfix(float x) { return std::ceil(x); }
 float APS5_VABI floorf_nid_postfix(float x) { return std::floor(x); }
 double APS5_VABI fma_nid_postfix(double x, double y, double z) { return std::fma(x, y, z); }
+long double APS5_VABI erfl_nid_postfix(long double x) { return std::erf(x); }
+long double APS5_VABI erfcl_nid_postfix(long double x) { return std::erfc(x); }
+long double APS5_VABI lgammal_nid_postfix(long double x) { return std::lgamma(x); }
+long double APS5_VABI tgammal_nid_postfix(long double x) { return std::tgamma(x); }
+float APS5_VABI tgammaf_nid_postfix(float x) { return static_cast<float>(std::tgamma(static_cast<double>(x))); }
+double APS5_VABI tgamma_nid_postfix(double x) { return std::tgamma(x); }
+long double APS5_VABI hypotl_nid_postfix(long double x, long double y) {
+    if (std::isinf(x) || std::isinf(y)) return std::numeric_limits<long double>::infinity();
+    return std::hypot(x, y);
+}
+float APS5_VABI hypot3f_nid_postfix(float x, float y, float z) { return Hypot3(x, y, z, hypotf_nid_postfix); }
+double APS5_VABI hypot3_nid_postfix(double x, double y, double z) { return Hypot3(x, y, z, hypot_nid_postfix); }
+long double APS5_VABI hypot3l_nid_postfix(long double x, long double y, long double z) { return Hypot3(x, y, z, hypotl_nid_postfix); }
+float APS5_VABI j0f_nid_postfix(float x) { return static_cast<float>(::j0(x)); }
+float APS5_VABI j1f_nid_postfix(float x) { return static_cast<float>(::j1(x)); }
+float APS5_VABI jnf_nid_postfix(int order, float x) { return static_cast<float>(::jn(order, x)); }
+float APS5_VABI y0f_nid_postfix(float x) { return x == 0.0f ? GuestBesselSecondKindZero() : static_cast<float>(::y0(x)); }
+float APS5_VABI y1f_nid_postfix(float x) { return x == 0.0f ? GuestBesselSecondKindZero() : static_cast<float>(::y1(x)); }
+float APS5_VABI ynf_nid_postfix(int order, float x) { return x == 0.0f ? GuestBesselSecondKindZero() : static_cast<float>(::yn(order, x)); }
 
 long double APS5_VABI asinl_nid_postfix(long double x) {
     const ExtendedParts parts = SplitExtended(x);
@@ -299,13 +389,46 @@ float APS5_VABI erff_nid_postfix(float x) { return std::erf(x); }
 double APS5_VABI erf_nid_postfix(double x) { return std::erf(x); }
 double APS5_VABI erfc_nid_postfix(double x) { return std::erfc(x); }
 float APS5_VABI erfcf_nid_postfix(float x) { return std::erfc(x); }
-double APS5_VABI lgamma_nid_postfix(double x) {
+int signgam_nid_postfix = 0;
+
+double APS5_VABI lgamma_r_nid_postfix(double x, int* signgamp) {
+    const double whole = std::floor(x);
+    if (signgamp) {
+        if (x == 0) *signgamp = std::signbit(x) ? -1 : 1;
+        else *signgamp = x < 0 && whole != x && std::fmod(whole, 2.0) != 0 ? -1 : 1;
+    }
     const std::uint64_t magnitude = std::bit_cast<std::uint64_t>(x) & 0x7fffffffffffffffull;
     if (magnitude != 0 && magnitude < 0x3c70000000000000ull) return -std::log(std::fabs(x));
     return std::lgamma(x);
 }
-float APS5_VABI lgammaf_nid_postfix(float x) { return std::lgamma(x); }
-double APS5_VABI tgamma_nid_postfix(double x) { return std::tgamma(x); }
+
+double APS5_VABI lgamma_nid_postfix(double x) {
+    return lgamma_r_nid_postfix(x, &signgam_nid_postfix);
+}
+
+float APS5_VABI lgammaf_r_nid_postfix(float x, int* signgamp) {
+    return static_cast<float>(lgamma_r_nid_postfix(static_cast<double>(x), signgamp));
+}
+
+float APS5_VABI lgammaf_nid_postfix(float x) {
+    return lgammaf_r_nid_postfix(x, &signgam_nid_postfix);
+}
+
+double APS5_VABI gamma_nid_postfix(double x) {
+    return lgamma_nid_postfix(x);
+}
+
+float APS5_VABI gammaf_nid_postfix(float x) {
+    return lgammaf_nid_postfix(x);
+}
+
+double APS5_VABI gamma_r_nid_postfix(double x, int* signgamp) {
+    return lgamma_r_nid_postfix(x, signgamp);
+}
+
+float APS5_VABI gammaf_r_nid_postfix(float x, int* signgamp) {
+    return lgammaf_r_nid_postfix(x, signgamp);
+}
 
 float APS5_VABI sinf_nid_postfix(float x) { return std::sin(x); }
 float APS5_VABI cosf_nid_postfix(float x) { return std::cos(x); }
@@ -442,11 +565,19 @@ long double APS5_VABI logl_nid_postfix(long double x) { return std::log(x); }
 long double APS5_VABI powl_nid_postfix(long double base, long double exp) { return std::pow(base, exp); }
 long double APS5_VABI truncl_nid_postfix(long double x) { return std::trunc(x); }
 double APS5_VABI logb_nid_postfix(double x) { return std::logb(x); }
-int APS5_VABI ilogb_nid_postfix(double x) { return std::ilogb(x); }
-int APS5_VABI ilogbf_nid_postfix(float x) { return std::ilogb(x); }
+int APS5_VABI ilogb_nid_postfix(double x) {
+    if (x == 0.0) {
+        return INT_MIN;
+    }
+    if (!std::isfinite(x)) {
+        return INT_MAX;
+    }
+    return std::ilogb(x);
+}
+int APS5_VABI ilogbf_nid_postfix(float x) { return ilogb_nid_postfix(static_cast<double>(x)); }
 double APS5_VABI remainder_nid_postfix(double x, double y) { return std::remainder(x, y); }
-float APS5_VABI _FSinh_nid_postfix(float x, float y) { return y * std::sinh(x); }
-float APS5_VABI _FCosh_nid_postfix(float x, float y) { return y * std::cosh(x); }
+float APS5_VABI _FSinh_nid_postfix(float x, float y) { return ScaledHyperbolic(x, y, true); }
+float APS5_VABI _FCosh_nid_postfix(float x, float y) { return ScaledHyperbolic(x, y, false); }
 
 struct alignas(16) LibcFloatConstant { std::uint32_t bits[4]; };
 LibcFloatConstant _FInf_nid_postfix {{0x7f800000u, 0, 0, 0}};
@@ -510,6 +641,26 @@ int APS5_VABI __isfinitel_nid_postfix(long double x) {
     std::memcpy(&exponent, reinterpret_cast<const std::uint8_t*>(&x) + 8, sizeof(exponent));
     return (exponent & 0x7fffu) != 0x7fffu;
 }
+
+struct DinkumwareFloatCharacteristics {
+    int digits;
+    int mantissaDigits;
+    int maxExponent10;
+    int maxExponent;
+    int minExponent10;
+    int minExponent;
+    alignas(16) std::uint16_t epsilon[8];
+    alignas(16) std::uint16_t max[8];
+    alignas(16) std::uint16_t min[8];
+};
+static_assert(sizeof(DinkumwareFloatCharacteristics) == 80 && offsetof(DinkumwareFloatCharacteristics, epsilon) == 32);
+
+DinkumwareFloatCharacteristics _Flt_nid_postfix {6, 24, 38, 128, -37, -125,
+    {0, 0x3400}, {0xffff, 0x7f7f}, {0, 0x0080}};
+DinkumwareFloatCharacteristics _Dbl_nid_postfix {15, 53, 308, 1024, -307, -1021,
+    {0, 0, 0, 0x3cb0}, {0xffff, 0xffff, 0xffff, 0x7fef}, {0, 0, 0, 0x0010}};
+DinkumwareFloatCharacteristics _Ldbl_nid_postfix {18, 64, 4932, 16384, -4931, -16381,
+    {0, 0, 0, 0x8000, 0x3fc0}, {0xffff, 0xffff, 0xffff, 0xffff, 0x7ffe}, {0, 0, 0, 0x8000, 0x0001}};
 
 static std::mutex g_randLock;
 static std::uint32_t g_randState = 1;
@@ -577,4 +728,14 @@ union SonyDconst {
 
 static_assert(std::endian::native == std::endian::little);
 SonyDconst _Inf_nid_postfix {{0, 0, 0, 0x7ff0, 0, 0, 0, 0}};
+SonyDconst _Denorm_nid_postfix {{1, 0, 0, 0, 0, 0, 0, 0}};
+SonyDconst _Hugeval_nid_postfix {{0, 0, 0, 0x7ff0, 0, 0, 0, 0}};
+SonyDconst _Nan_nid_postfix {{0, 0, 0, 0x7ff8, 0, 0, 0, 0}};
+SonyDconst _Snan_nid_postfix {{1, 0, 0, 0x7ff0, 0, 0, 0, 0}};
+LibcFloatConstant _FDenorm_nid_postfix {{0x00000001u, 0, 0, 0}};
+LibcFloatConstant _FSnan_nid_postfix {{0x7f800001u, 0, 0, 0}};
+SonyDconst _LDenorm_nid_postfix {{1, 0, 0, 0, 0, 0, 0, 0}};
+SonyDconst _LInf_nid_postfix {{0, 0, 0, 0x8000, 0x7fff, 0, 0, 0}};
+SonyDconst _LNan_nid_postfix {{0, 0, 0, 0xc000, 0x7fff, 0, 0, 0}};
+SonyDconst _LSnan_nid_postfix {{1, 0, 0, 0x8000, 0x7fff, 0, 0, 0}};
 }

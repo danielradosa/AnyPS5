@@ -91,4 +91,8 @@ uint32_t* APS5_VABI sceAgcAcbSetMarkerSpan(CommandBuffer* buf, const char* str, 
     return Agc::Marker::Write(buf, str, length, color, false, __func__);
 }
 
+std::uint32_t* APS5_VABI sceAgcAcbAtomicGds(CommandBuffer* buf, std::uint32_t control, std::uint32_t mode, std::uint32_t gdsOp, std::uint32_t src, std::uint16_t offset, std::uint16_t index, std::uint32_t mask, std::uint32_t data, std::uint64_t compareData, std::uint64_t extraData) {
+    return sceAgcAcbAtomicGds_0900(buf, control & ~0x80u, mode, gdsOp, src, offset, index, mask, data, compareData, extraData);
+}
+
 }

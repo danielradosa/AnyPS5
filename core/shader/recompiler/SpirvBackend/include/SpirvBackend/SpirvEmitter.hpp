@@ -5,6 +5,7 @@
 #include "Optimization/BindingAllocator.hpp"
 #include "Optimization/ShaderStageInputInfo.hpp"
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 #include <span>
 #include <string_view>
@@ -21,16 +22,37 @@ struct SpirvTargetOptions {
     bool nonConstantImageOffsets = false;
     bool narrowSubgroupClock = false;
     bool float64DenormPreserve = false;
+    bool depthRangeRemap = false;
     bool registrationModules = false;
     bool fragmentDescriptorSet = false;
     bool float16DenormPreserve = false;
     bool robustBuffers = false;
+    bool spannedWaves = false;
+    bool robustBufferAccess2 = false;
+    bool float32FlushToZero = false;
+    bool float32DenormPreserve = false;
+    bool meshBarycentricPixel = false;
+    bool meshBarycentricVertex = false;
+    std::uint32_t barycentricSmoothLocation = 0xffffffffu;
+    std::uint32_t barycentricLinearLocation = 0xffffffffu;
+    std::uint32_t barycentricPositionsLocation = 0xffffffffu;
+    std::vector<std::uint32_t> meshExportedLocations;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> meshPerVertexLocations;
+    bool waveLdsMemoryBarriers = false;
+};
+
+struct SpirvEmitInfo {
+    bool fullSubgroups = false;
+};
+
+struct SpannedWaveUnsupported : std::runtime_error {
+    using std::runtime_error::runtime_error;
 };
 
 class SpirvEmitter {
 public:
     [[nodiscard]] std::vector<std::uint32_t> Emit(const IrProgram& program, const CompiledBindingLayout& bindings, const SpirvTargetOptions& target) const;
-    [[nodiscard]] std::vector<std::uint32_t> Emit(const IrProgram& program, const ShaderStageInputInfo& inputInfo, const CompiledBindingLayout& bindings, const SpirvTargetOptions& target) const;
+    [[nodiscard]] std::vector<std::uint32_t> Emit(const IrProgram& program, const ShaderStageInputInfo& inputInfo, const CompiledBindingLayout& bindings, const SpirvTargetOptions& target, SpirvEmitInfo* info = nullptr) const;
 
 };
 

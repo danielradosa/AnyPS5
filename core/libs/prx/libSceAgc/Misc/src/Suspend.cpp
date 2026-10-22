@@ -2,6 +2,8 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <cstddef>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
@@ -14,7 +16,7 @@ int APS5_VABI sceAgcSuspendPoint(void) {
 }
 
 int APS5_VABI sceAgcSetSubmitMode(std::uint32_t mode) {
-    if (mode != 0) NotImplemented_nid_no_patch(__func__);
+    if (mode != 0) throw std::runtime_error(std::string(__func__) + ": submit mode other than 0");
     return 0;
 }
 

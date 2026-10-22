@@ -5,11 +5,6 @@
 #include <stdexcept>
 #include <vector>
 
-extern "C" {
-int APS5_VABI sceNgs2ReportRegisterHandler(std::uint32_t reportType, Ngs2ReportHandler handler, std::uintptr_t userData, Ngs2Handle* outHandle);
-int APS5_VABI sceNgs2ReportUnregisterHandler(Ngs2Handle reportHandle);
-}
-
 namespace {
 
 template <typename TException, typename TCall>

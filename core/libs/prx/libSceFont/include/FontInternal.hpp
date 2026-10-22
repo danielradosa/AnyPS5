@@ -27,13 +27,20 @@ constexpr std::uint8_t STYLE_FRAME_FLAG_SLANT = 0x02;
 constexpr std::uint8_t STYLE_FRAME_FLAG_WEIGHT = 0x04;
 constexpr float POINTS_PER_INCH = 72.0f;
 
+struct FallbackFace {
+    std::shared_ptr<const std::vector<unsigned char>> data;
+    FT_Face face = nullptr;
+    std::uint32_t subFontIndex = 0;
+};
+
 struct FontState {
     std::shared_ptr<const std::vector<unsigned char>> faceData;
     FT_Face face = nullptr;
+    std::vector<FallbackFace> fallbacks;
     float scaleW = 16.0f;
     float scaleH = 16.0f;
     std::map<int, int> scriptLanguages;
-    std::map<int, int> typographicFeatures;
+    int attribute = 0;
 
     FontState() = default;
     FontState(const FontState&) = delete;
@@ -66,6 +73,7 @@ struct GeneratedGlyph {
     bool hasUnsupportedEffects = false;
     bool metricsInitialized = false;
     bool outlineInitialized = false;
+    int attribute = 0;
 };
 
 struct SystemFontFile {
@@ -102,11 +110,15 @@ FontState* TryGetState(FontHandle handle);
 FontState& ResetState(FontHandle handle);
 void RemoveState(FontHandle handle);
 void LoadStateFace(FontState& state, std::shared_ptr<const std::vector<unsigned char>> bytes, std::uint32_t subFontIndex);
+void AddStateFallbackFace(FontState& state, std::shared_ptr<const std::vector<unsigned char>> bytes, std::uint32_t subFontIndex);
+FT_Face FallbackFaceForCode(const FontState& state, std::uint32_t code, FT_UInt* glyphIndex);
+FT_Face FaceForCode(const FontState& state, std::uint32_t code, FT_UInt* glyphIndex);
 
 bool IsSystemFontSet(std::uint32_t fontSetType);
 std::vector<SystemFontFile> SystemFontCandidates(std::uint32_t fontSetType);
 std::filesystem::path SystemFontDirectory();
 std::optional<SystemFontFile> FindSystemFontFile(std::uint32_t fontSetType);
+std::vector<SystemFontFile> FindSystemFontFallbackFiles(std::uint32_t fontSetType);
 
 int CaptureGeneratedGlyph(GeneratedGlyph& glyph, FontHandle handle, const FontState& state);
 int RenderGeneratedGlyph(FontGlyph glyph, const FontStyleFrame* frame, FontRenderer renderer, FontRenderSurface* surface, float x, float y, FontGlyphMetrics* metrics, FontRenderOutput* output, int direction);
