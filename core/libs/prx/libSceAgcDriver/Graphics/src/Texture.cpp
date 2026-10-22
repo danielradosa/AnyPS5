@@ -4068,7 +4068,9 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
         for (const auto& texture : flush) std::fprintf(stderr, "[flush] image 0x%llx+0x%llx for %s 0x%llx+0x%zx\n", static_cast<unsigned long long>(texture->descriptor.baseAddress), static_cast<unsigned long long>(texture->guestBytes), reason, static_cast<unsigned long long>(address), bytes);
     }
     std::lock_guard gpu(GuestMemory::GpuMutex());
-    static const bool leasesOnly = std::getenv("APS5_FLUSH_WAITS_FOR_LEASES") != nullptr;
+    // The flush waits only for address-based leases over its range (recorded writes are stamped at
+    // record time); APS5_FLUSH_WAITS_FOR_WRITERS=1 also waits for every recorded writer, as upstream does.
+    static const bool leasesOnly = std::getenv("APS5_FLUSH_WAITS_FOR_WRITERS") == nullptr;
     if (auto* recorder = Recorder::Active(); recorder != nullptr && !Recorder::InCompletion() && recorder->PendingWriterSerial(address, bytes, leasesOnly) != 0) {
         try {
             recorder->Reap();
