@@ -1692,12 +1692,14 @@ bool AdoptCollectEpoch(std::uint64_t epoch) {
 
 void PrewalkCollects(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges) {
     if (collectShare != CollectShare::Worker || threadCollectEpoch == 0 || ranges.empty()) return;
-    // A range above the cap is left to its collector (a buffer descriptor spanning a heap is rarely
-    // collected whole); the gaps are walked in chunks, so the tracker mutex, which the committer's
-    // stamp checks take too, is never held for a long walk. APS5_COLLECT_PREWALK_MAX_MIB (default 128).
+    // A range of the cap or more is left to its collector: a buffer descriptor spanning a heap is
+    // rarely collected whole, and the draw write ranges stand 64 MiB in for a size they do not know
+    // (a 4K target of 8-byte texels is 63.3 MiB). The gaps are walked in chunks, so the tracker
+    // mutex, which the committer's stamp checks take too, is never held for a long walk.
+    // APS5_COLLECT_PREWALK_MAX_MIB (default 64; 0 turns the pre-walk off).
     static const std::uint64_t cap = [] {
         const char* text = std::getenv("APS5_COLLECT_PREWALK_MAX_MIB");
-        return (text != nullptr ? std::strtoull(text, nullptr, 10) : 128ull) << 20u;
+        return (text != nullptr ? std::strtoull(text, nullptr, 10) : 64ull) << 20u;
     }();
     constexpr std::uint64_t page = 4096;
     constexpr std::uint64_t chunk = std::uint64_t{4} << 20u;
@@ -1715,7 +1717,7 @@ void PrewalkCollects(std::span<const std::pair<std::uint64_t, std::uint64_t>> ra
         auto* slot = store.find(epoch);
         if (slot != nullptr) slot->use(epoch, unwatched, mapping);
         for (const auto& [begin, end] : ranges) {
-            if (begin == 0 || end <= begin || end - begin > cap) continue;
+            if (begin == 0 || end <= begin || end - begin >= cap) continue;
             const auto first = begin & ~(page - 1);
             const auto stop = (end + page - 1) & ~(page - 1);
             if (stop <= first) continue;

@@ -123,8 +123,8 @@ std::uint64_t HandOffCollectEpoch();
 // Runs the calling thread (the committer) in a handed-off epoch; false when the handoff is off.
 bool AdoptCollectEpoch(std::uint64_t epoch);
 // CollectWrites of every [begin, end) range on the handing-off thread (nothing elsewhere), walking only
-// what no walk of its epoch covered; a range above APS5_COLLECT_PREWALK_MAX_MIB (128 by default, 0
-// turns the pre-walk off) is left to its collector.
+// what no walk of its epoch covered; a range of APS5_COLLECT_PREWALK_MAX_MIB or more (64 by default,
+// 0 turns the pre-walk off) is left to its collector.
 void PrewalkCollects(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges);
 // Cumulative ([guestmem] line under APS5_PROFILE_DRAW): the committer's memoized collects served by the
 // memo vs walked, the bytes it walked, and the worker's pre-walked ranges, their bytes and the bytes
