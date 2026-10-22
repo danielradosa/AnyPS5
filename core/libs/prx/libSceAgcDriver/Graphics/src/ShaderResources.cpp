@@ -5866,8 +5866,13 @@ void ShaderResources::WriteBack() {
 void ShaderResources::MarkGpuWrites(Recorder& recorder) {
     // The ranges this use reads in place through their host imports (read-only and written elements
     // alike, and an address-based build's whole leased heaps), before the writes: a CPU store into
-    // one of them (the copy HLE) must not land before the recorded work read it.
-    const auto kind = guestMemory.HoldsLease() ? Recorder::ReadKind::AddressBased : Recorder::ReadKind::DispatchElement;
+    // one of them (the copy HLE) must not land before the recorded work read it. The heaps of a
+    // build whose shaders store through no address (BdaReadOnly) are reads only, which a storage
+    // flush need not wait for: its GPU write-back is recorded after them (the Astro hub's draw
+    // targets waited ~6 ms per frame on such builds, [flushwait] in play1022h).
+    // APS5_FLUSH_WAITS_FOR_READ_ONLY_LEASES=1 notes them as possible writers again.
+    static const bool readOnlyLeasesWait = std::getenv("APS5_FLUSH_WAITS_FOR_READ_ONLY_LEASES") != nullptr;
+    const auto kind = !guestMemory.HoldsLease() ? Recorder::ReadKind::DispatchElement : BdaReadOnly() && !readOnlyLeasesWait ? Recorder::ReadKind::AddressRead : Recorder::ReadKind::AddressBased;
     if (auto split = guestMemory.SplitInPlaceReads()) {
         recorder.NotePendingReadList(std::move(split->space), kind);
         recorder.NotePendingReads(split->own, kind);

@@ -859,6 +859,13 @@ void readTrackingTests(const Device& device, Recorder& recorder) {
     const auto batch = recorder.DescribePendingRead(0x30008, 4);
     Require(batch.has_value() && batch->kind == Kind::AddressBased && batch->open, "a noted range has the wrong reader kind");
     Require(Recorder::ReadCounts().hits[static_cast<std::size_t>(Kind::AddressBased)] >= 2, "address-based hits are not counted");
+    // A storage flush waits for an address-based build (its shaders may store into the leased
+    // heaps), not for one whose shaders store through no address: that one only reads.
+    Require(recorder.PendingWriterSerial(0x30000, 16, true) == recorder.OpenSerial(), "an address-based build's leased range is no possible writer to a storage flush");
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>> readOnly{{0x50000, 0x51000}};
+    recorder.NotePendingReads(readOnly, Kind::AddressRead);
+    Require(recorder.PendingReadOverlaps(0x50800, 16), "a read-only address-based build's leased range is not seen as read");
+    Require(recorder.PendingWriterSerial(0x50800, 16, true) == 0, "a read-only address-based build's leased range is taken for a writer by a storage flush");
     recorder.Sync();
     Require(recorder.Idle() && !recorder.PendingReadOverlaps(0x20000, 0x1000, false), "noted ranges outlived their batch");
 }

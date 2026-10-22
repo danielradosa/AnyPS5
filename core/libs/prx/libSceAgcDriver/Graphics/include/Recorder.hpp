@@ -177,8 +177,10 @@ public:
     // seen by the reader early (WAR); VulkanDevice::CopyBuffer refuses its CPU path on a hit. Noted
     // on the open batch, no snapshot: the only reader holds the mutex. `kind` names the reader for
     // the [recorder] hit counters. APS5_COPY_READ_TRACKING=0 notes nothing (ReadTracking() is then
-    // false and the CPU copy falls back to Idle()).
-    enum class ReadKind : std::uint8_t { DispatchElement = 0, GpuCopy, AddressBased, Indirect, StorageUpload, CopySource, DrawInput, Count };
+    // false and the CPU copy falls back to Idle()). AddressBased: an address-based build's leased
+    // heaps, which its shaders may also store into (a storage flush waits for it, see
+    // PendingWriterSerial); AddressRead: the same for a build whose shaders store through no address.
+    enum class ReadKind : std::uint8_t { DispatchElement = 0, GpuCopy, AddressBased, Indirect, StorageUpload, CopySource, DrawInput, AddressRead, Count };
     static bool ReadTracking();
     void NotePendingRead(std::uint64_t address, std::size_t bytes, ReadKind kind);
     void NotePendingReads(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges, ReadKind kind);
