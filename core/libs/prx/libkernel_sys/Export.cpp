@@ -352,10 +352,10 @@ int LinkPaths(const std::filesystem::path& source, const std::filesystem::path& 
     if (!follow && IsNativeLink(source))
         throw std::runtime_error("linkat: a hard link to the symbolic link " + source.string() + " itself is not supported");
     const auto status = std::filesystem::status(source, error);
-    if (!std::filesystem::exists(status)) return GuestEnoent;
+    if (!std::filesystem::exists(status)) return HasNonDirectoryPrefix(source) ? GuestEnotdir : GuestEnoent;
     if (std::filesystem::is_directory(status)) return GuestEperm;
     if (std::filesystem::exists(std::filesystem::symlink_status(destination, error))) return GuestEexist;
-    if (!std::filesystem::is_directory(destination.parent_path(), error)) return GuestEnoent;
+    if (!std::filesystem::is_directory(destination.parent_path(), error)) return HasNonDirectoryPrefix(destination) ? GuestEnotdir : GuestEnoent;
     const auto target = std::filesystem::is_symlink(source, error) ? std::filesystem::canonical(source, error) : source;
     if (!error) std::filesystem::create_hard_link(target, destination, error);
     if (error == std::errc::cross_device_link) return GuestExdev;
