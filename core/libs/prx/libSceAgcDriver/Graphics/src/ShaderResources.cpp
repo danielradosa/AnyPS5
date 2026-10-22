@@ -168,6 +168,9 @@ struct TextureCache {
     VkPhysicalDevice budgetDevice = VK_NULL_HANDLE;
     std::chrono::steady_clock::time_point budgetRead{};
     std::uint64_t budget = 0;
+    // The budgets of the last reads (one per second), for sampledBudget's hold.
+    std::array<std::uint64_t, 10> recentBudgets{};
+    std::size_t recentNext = 0;
     std::uint64_t reportedBudget = 0;
     std::uint64_t reportedStorage = 0;
     std::chrono::steady_clock::time_point reportedAt{};
@@ -692,10 +695,18 @@ std::uint64_t sampledBudget(const Context& context, TextureCache& cache) {
         cache.reportedStorage = storageLimit;
         cache.reportedAt = now;
     }
+    // The reported heap usage swings by a few hundred MiB from one second to the next (work in
+    // flight), and the budget with it: the cache holds the highest budget of the last 10 s, so a
+    // dip does not evict a working set the next second admits again (play1022i: the hub's heavy
+    // scene arrived during a 950 MiB dip and thrashed for 40 s). The heap's 1/8 headroom in
+    // SampledTextureBudget absorbs the difference; a lasting rise in other usage lowers it in 10 s.
+    if (fresh) cache.recentBudgets.fill(0);
+    cache.recentBudgets[cache.recentNext++ % cache.recentBudgets.size()] = budget;
+    const auto held = *std::max_element(cache.recentBudgets.begin(), cache.recentBudgets.end());
     cache.budgetDevice = context.physical;
     cache.budgetRead = now;
-    cache.budget = budget;
-    return budget;
+    cache.budget = held;
+    return held;
 }
 
 // An overflow entry looked up again takes a place in the budget when the cache can make room as for
