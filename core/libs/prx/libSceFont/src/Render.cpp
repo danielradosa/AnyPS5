@@ -438,7 +438,7 @@ int APS5_VABI sceFontDeleteGlyph(const FontMemory* memory, FontGlyph* pGlyph) {
 }
 
 int APS5_VABI sceFontGlyphDefineAttribute(FontGlyph glyph, std::int32_t attribute, std::int32_t* previousAttribute) {
-    if (!glyph || glyph->magic != GLYPH_MAGIC) {
+    if (!TryGetGeneratedGlyph(glyph)) {
         if (previousAttribute) *previousAttribute = 0;
         return SCE_FONT_ERROR_INVALID_GLYPH;
     }
