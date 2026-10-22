@@ -10,6 +10,7 @@
 #include <psapi.h>
 #else
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 #ifdef __GLIBC__
@@ -17,7 +18,9 @@
 #endif
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -25,6 +28,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1459,7 +1463,198 @@ void CheckAdoptLatestEpoch() {
     Require(keptOwn, "adopting the newest collect epoch moved a thread off its own");
 }
 
-int main() {
+// Runs `body` on a thread of its own (a collect epoch and a handoff role are per thread) and
+// rethrows its failure here.
+template<typename TBody>
+void OnThread(TBody&& body) {
+    std::exception_ptr failure;
+    std::thread([&] {
+        try {
+            body();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }).join();
+    if (failure != nullptr) std::rethrow_exception(failure);
+}
+
+constexpr char HandoffOffMode[] = "--no-collect-handoff";
+
+// The collect handoff (HandOffCollectEpoch): the draw committer running the queue-0 worker's epoch
+// is served by the worker's walks (here its pre-walk), still sees the driver's stores, walks again
+// in another epoch, and a thread outside the pair keeps its own memo.
+void CheckCollectHandoff() {
+    constexpr std::size_t bytes = 2 * Block;
+    constexpr std::size_t page = 4096;
+    auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
+    struct Cleanup {
+        void* memory;
+        ~Cleanup() {
+#ifdef _WIN32
+            GuestArena::GuestArenaRelease_nid_postfix(memory, bytes);
+#else
+            Unwatch(reinterpret_cast<std::uint64_t>(memory), bytes);
+            munmap(memory, bytes);
+#endif
+        }
+    } cleanup{memory};
+    const auto base = reinterpret_cast<std::uint64_t>(memory);
+    std::memset(memory, 17, bytes);
+    const std::array whole{std::pair<std::uint64_t, std::uint64_t>{base, base + bytes}};
+    std::uint64_t epoch = 0;
+    std::uint64_t walked = 0;
+    OnThread([&] {
+        BumpCollectEpoch();
+        epoch = HandOffCollectEpoch();
+        Require(epoch != 0 && epoch == CollectEpoch(), "the worker handed off no collect epoch");
+        const auto before = CollectHandoffStatistics();
+        PrewalkCollects(whole);
+        const auto after = CollectHandoffStatistics();
+        Require(after.prewalkRanges == before.prewalkRanges + 1 && after.prewalkBytes == before.prewalkBytes + bytes && after.prewalkUncoveredBytes == before.prewalkUncoveredBytes + bytes, "the pre-walk did not count its range");
+        walked = TrackerGeneration();
+        Require(CollectWrites(base, bytes) == walked && TrackerGeneration() == walked, "the worker walked its pre-walked range again");
+    });
+    // A CPU store after the worker's walk, in its epoch: seen in the queue's next epoch.
+    memory[5] ^= 1;
+    OnThread([&] {
+        Require(AdoptCollectEpoch(epoch) && CollectEpoch() == epoch, "the committer did not adopt the worker's collect epoch");
+        const auto before = CollectHandoffStatistics();
+        const auto generation = TrackerGeneration();
+        Require(CollectWrites(base + page, Block) == generation && TrackerGeneration() == generation, "the committer walked a range the worker walked in the adopted epoch");
+        const auto after = CollectHandoffStatistics();
+        Require(after.committerHits == before.committerHits + 1 && after.committerWalks == before.committerWalks, "the committer's memo hit was not counted as one");
+        Require(UnchangedSince(base, Block, walked), "a CPU store inside the adopted epoch was walked before the epoch ended");
+        const auto stored = MarkWritten(base + Block + 100, 1);
+        Require(stored > walked && CollectWrites(base, bytes) >= stored, "a memo hit in the adopted epoch returned an older generation than a driver store");
+        Require(!UnchangedSince(base + Block, Block, walked) && UnchangedSince(base, Block, walked), "a memo hit in the adopted epoch hid a driver store");
+        const auto uncached = TrackerGeneration();
+        Require(CollectWritesUncached(base, Block) > uncached && !UnchangedSince(base, Block, walked), "an uncached collect in the adopted epoch reused the worker's walk");
+    });
+    memory[Block + 7] ^= 1;
+    std::uint64_t next = 0;
+    OnThread([&] {
+        BumpCollectEpoch();
+        next = HandOffCollectEpoch();
+    });
+    Require(next > epoch, "the worker's next epoch was not handed off");
+    OnThread([&] {
+        Require(AdoptCollectEpoch(next), "the committer did not adopt the worker's next epoch");
+        const auto before = CollectHandoffStatistics();
+        const auto generation = TrackerGeneration();
+        Require(CollectWrites(base, bytes) > generation && !UnchangedSince(base + Block, Block, generation), "a committer in the next epoch reused the last epoch's walk");
+        const auto after = CollectHandoffStatistics();
+        Require(after.committerWalks == before.committerWalks + 1 && after.committerWalkedBytes >= before.committerWalkedBytes + bytes, "the committer's walk was not counted");
+    });
+    // The pair's walks serve each other whichever thread made them.
+    OnThread([&] {
+        Require(AdoptCollectEpoch(next), "a second committer did not adopt the epoch");
+        const auto generation = TrackerGeneration();
+        Require(CollectWrites(base, bytes) == generation && TrackerGeneration() == generation, "the pair's walk in the epoch was walked again");
+    });
+    // A thread holding the epoch's value without taking part (the presenter adopts the newest bumped
+    // epoch) keeps its own memo.
+    OnThread([&] {
+        AdoptLatestCollectEpoch();
+        Require(CollectEpoch() == next, "the newest bumped epoch is not the worker's");
+        const auto generation = TrackerGeneration();
+        Require(CollectWrites(base, bytes) > generation, "a thread outside the handoff hit the pair's memo");
+    });
+    // An epoch the store dropped (the worker moved on by more epochs than it keeps) falls back to the
+    // committer's own memo: walked once, then a hit.
+    OnThread([&] {
+        for (int bump = 0; bump < 16; ++bump) {
+            BumpCollectEpoch();
+            Require(HandOffCollectEpoch() != 0 && CollectWrites(base, page) != 0, "a later worker epoch did not collect");
+        }
+    });
+    OnThread([&] {
+        Require(AdoptCollectEpoch(epoch), "the committer did not adopt a dropped epoch");
+        const auto generation = TrackerGeneration();
+        Require(CollectWrites(base, bytes) > generation, "a dropped epoch's walk was reused");
+        const auto again = TrackerGeneration();
+        Require(CollectWrites(base, bytes) == again && TrackerGeneration() == again, "the committer's own memo did not serve a dropped epoch");
+    });
+}
+
+// APS5_NO_COLLECT_HANDOFF=1 (set for a child process: the switch is read once): no epoch is handed
+// off or adopted, the pre-walk walks nothing, and a thread holding the worker's epoch value walks
+// what the worker walked.
+void CheckCollectHandoffOff() {
+    constexpr std::size_t bytes = 2 * Block;
+    auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
+    const auto base = reinterpret_cast<std::uint64_t>(memory);
+    std::memset(memory, 17, bytes);
+    const std::array whole{std::pair<std::uint64_t, std::uint64_t>{base, base + bytes}};
+    std::uint64_t worker = 0;
+    std::uint64_t handed = 1;
+    OnThread([&] {
+        BumpCollectEpoch();
+        worker = CollectEpoch();
+        handed = HandOffCollectEpoch();
+        const auto generation = TrackerGeneration();
+        PrewalkCollects(whole);
+        Require(TrackerGeneration() == generation, "the pre-walk walked with the handoff off");
+        Require(CollectWrites(base, bytes) > generation, "the worker did not collect its range");
+    });
+    Require(worker != 0 && handed == 0, "an epoch was handed off with the handoff off");
+    OnThread([&] {
+        Require(!AdoptCollectEpoch(worker), "an epoch was adopted with the handoff off");
+        AdoptLatestCollectEpoch();
+        Require(CollectEpoch() == worker, "the newest bumped epoch is not the worker's");
+        const auto generation = TrackerGeneration();
+        Require(CollectWrites(base, bytes) > generation, "a thread reused the worker's walk with the handoff off");
+    });
+    const auto counts = CollectHandoffStatistics();
+    Require(counts.committerHits == 0 && counts.committerWalks == 0 && counts.prewalkRanges == 0 && counts.prewalkBytes == 0, "the handoff counted with the handoff off");
+}
+
+void CheckCollectHandoffOffInChild() {
+#ifdef _WIN32
+    std::array<wchar_t, 32768> executable{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    Require(length != 0 && length < executable.size(), "cannot name the test executable");
+    const std::string_view mode(HandoffOffMode);
+    const std::wstring command = L"\"" + std::wstring(executable.data(), length) + L"\" " + std::wstring(mode.begin(), mode.end());
+    std::vector<wchar_t> commandLine(command.begin(), command.end());
+    commandLine.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION process{};
+    // The child inherits this process's environment block (this process read the switch already).
+    Require(SetEnvironmentVariableW(L"APS5_NO_COLLECT_HANDOFF", L"1") != 0, "cannot set the handoff switch for the child");
+    const bool created = CreateProcessW(executable.data(), commandLine.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != 0;
+    SetEnvironmentVariableW(L"APS5_NO_COLLECT_HANDOFF", nullptr);
+    Require(created, "cannot create the handoff-off child");
+    const bool exited = WaitForSingleObject(process.hProcess, 60000) == WAIT_OBJECT_0;
+    if (!exited) {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, INFINITE);
+    }
+    DWORD exitCode = 1;
+    const bool reported = GetExitCodeProcess(process.hProcess, &exitCode) != 0;
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    Require(exited, "the handoff-off child did not exit");
+    Require(reported && exitCode == 0, "the handoff-off child failed");
+#else
+    const pid_t child = fork();
+    Require(child >= 0, "cannot fork the handoff-off child");
+    if (child == 0) {
+        setenv("APS5_NO_COLLECT_HANDOFF", "1", 1);
+        execl("/proc/self/exe", "/proc/self/exe", HandoffOffMode, static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    int status = 0;
+    Require(waitpid(child, &status, 0) == child, "cannot wait for the handoff-off child");
+    Require(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the handoff-off child failed");
+#endif
+}
+
+int main(int argc, char** argv) {
     try {
 #ifdef _WIN32
         if (std::wstring_view(GetCommandLineW()).ends_with(L"--metadata-commit")) {
@@ -1469,6 +1664,10 @@ int main() {
         if (!WriteWatched()) {
             std::cout << "no write watching: skipped\n";
             return 77;
+        }
+        if (argc > 1 && std::string_view(argv[argc - 1]) == HandoffOffMode) {
+            CheckCollectHandoffOff();
+            return 0;
         }
 #ifdef _WIN32
         if (std::wstring_view(GetCommandLineW()).ends_with(HostHoleMode)) {
@@ -1513,6 +1712,8 @@ int main() {
         CheckUnwatchedImport();
         CheckCommittedRanges();
         CheckAdoptLatestEpoch();
+        CheckCollectHandoff();
+        CheckCollectHandoffOffInChild();
     } catch (const std::exception& error) {
         std::cerr << "write tracking test failed: " << error.what() << "\n";
         return 1;
