@@ -63,6 +63,12 @@ ConsoleTimeZone HostTimeZone() {
     return {static_cast<int>(offset.count()) - summerMinutes, summer};
 }
 
+int WriteStatus(bool* status, bool value, const char* function) {
+    if (status == nullptr) NotImplemented_nid_no_patch((std::string(function) + " with a null output").c_str());
+    *status = value;
+    return SYSTEM_SERVICE_OK;
+}
+
 constexpr char MainExecutable[] = "/app0/eboot.bin";
 constexpr char ApplicationRoot[] = "/app0/";
 constexpr char MainExecutableVariable[] = "APS5_EBOOT";
@@ -309,6 +315,75 @@ int APS5_VABI sceSystemServiceGetStatus(SystemServiceStatus* status) {
  }
  *status = SystemServiceStatus{};
  return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceLncUtilEnableSuspendNotification() {
+    return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceLncUtilDisableSuspendNotification() {
+    return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceEnableSuspendNotification() {
+    return sceLncUtilEnableSuspendNotification();
+}
+
+int APS5_VABI sceSystemServiceDisableSuspendNotification() {
+    return sceLncUtilDisableSuspendNotification();
+}
+
+int APS5_VABI sceShellCoreUtilGetRemotePlayStatus(bool* active) {
+    return WriteStatus(active, false, __func__);
+}
+
+int APS5_VABI sceSystemServiceGetRemoteplayStatus(bool* active) {
+    if (active == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
+    return sceShellCoreUtilGetRemotePlayStatus(active);
+}
+
+bool APS5_VABI sceShellCoreUtilIsGameLiveStreamingOnAir() {
+    return false;
+}
+
+bool APS5_VABI sceSystemServiceIsGameLiveStreamingOnAir() {
+    return sceShellCoreUtilIsGameLiveStreamingOnAir();
+}
+
+bool APS5_VABI sceLncUtilIsShellUiFgAndGameBgCpuMode() {
+    return false;
+}
+
+bool APS5_VABI sceSystemServiceIsShellUiFgAndGameBgCpuMode() {
+    return sceLncUtilIsShellUiFgAndGameBgCpuMode();
+}
+
+bool APS5_VABI sceShellCoreUtilIsImposeScreenOverlaid() {
+    return false;
+}
+
+bool APS5_VABI sceShellCoreUtilIsScreenSaverOn() {
+    return false;
+}
+
+bool APS5_VABI sceSystemServiceIsScreenSaverOn() {
+    return sceShellCoreUtilIsScreenSaverOn();
+}
+
+bool APS5_VABI sceSystemStateMgrIsShellUIShutdownInProgress() {
+    return false;
+}
+
+bool APS5_VABI sceSystemStateMgrIsBdDriveReady() {
+    return false;
+}
+
+bool APS5_VABI sceShellCoreUtilIsUsbMassStorageMounted(std::uint32_t) {
+    return false;
+}
+
+bool APS5_VABI sceShellCoreUtilIsExternalStorageAppMoveInProgress() {
+    return false;
 }
 
 int APS5_VABI sceSystemServiceHideSplashScreen(void) {
