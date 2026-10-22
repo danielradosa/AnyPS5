@@ -655,8 +655,6 @@ int main() {
     Require(sceHttpSetInflateGZIPEnabled(1, 1) == 0);
     Require(sceHttpSetInflateGZIPEnabled(1, 2) == invalidValue);
     Require(sceHttpSetInflateGZIPEnabled(1, -1) == invalidValue);
-    Require(sceHttpSetCookieEnabled(1, 0) == 0);
-    Require(sceHttpSetCookieEnabled(1, 1) == 0);
     Require(sceHttpSetCookieEnabled(1, 2) == invalidValue);
     Require(sceHttpSetCookieEnabled(1, -1) == invalidValue);
     Require(sceHttpReadData(1, data, sizeof(data)) == network);

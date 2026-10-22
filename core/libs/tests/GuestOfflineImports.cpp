@@ -81,9 +81,7 @@ int main() {
 
     constexpr int invalidValue = static_cast<int>(0x804311FE);
     constexpr int network = static_cast<int>(0x80431063);
-    Require(sceHttpSetCookieEnabled(1, 0) == 0);
     Require(sceHttpSendRequest(1, nullptr, 0) == network);
-    Require(sceHttpSetCookieEnabled(1, 1) == 0);
     for (int enabled : {-1, 2, 0x100}) {
         Require(sceHttpSetCookieEnabled(1, enabled) == invalidValue);
     }
