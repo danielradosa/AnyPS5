@@ -283,7 +283,7 @@ static void TryLock() {
     CHECK(sceUltMutexUnlock(&mutex) == 0);
     CHECK(std::async(std::launch::async, [&] { return sceUltMutexTryLock(&mutex); }).get() == Busy);
     CHECK(sceUltMutexUnlock(&mutex) == 0);
-    CHECK(sceUltMutexUnlock(&mutex) == State);
+    CHECK(sceUltMutexUnlock(&mutex) == Permission);
     std::atomic<int> locked = 0;
     std::atomic<bool> release = false;
     auto holder = std::async(std::launch::async, [&] {
@@ -294,7 +294,7 @@ static void TryLock() {
     });
     Await(locked, 1);
     CHECK(sceUltMutexTryLock(&mutex) == Busy);
-    CHECK(sceUltMutexDestroy(&mutex) == Busy);
+    CHECK(sceUltMutexDestroy(&mutex) == State);
     release = true;
     CHECK(holder.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
     holder.get();
