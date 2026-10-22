@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,11 @@ extern "C" int APS5_VABI sceSaveDataMount2(const SaveDataMount2*, SaveDataMountR
 extern "C" int APS5_VABI sceSaveDataUmount2(std::uint32_t, const SaveDataMountPoint*);
 
 static_assert(offsetof(SaveDataMount2, dir_name) == 8 && offsetof(SaveDataMount2, blocks) == 16 && offsetof(SaveDataMount2, mount_mode) == 24 && sizeof(SaveDataMount2) == 64, "SaveDataMount2 has the PS4 layout");
+extern "C" int APS5_VABI sceSaveDataInitialize(const void*);
+extern "C" int APS5_VABI sceSaveDataTerminate();
+extern "C" int APS5_VABI sceSaveDataSetupSaveDataMemory(std::int32_t, std::size_t, const SaveDataParam*);
+extern "C" int APS5_VABI sceSaveDataSetSaveDataMemory(std::int32_t, void*, std::size_t, std::int64_t);
+extern "C" int APS5_VABI sceSaveDataGetSaveDataMemory(std::int32_t, void*, std::size_t, std::int64_t);
 
 namespace {
 
@@ -23,6 +29,7 @@ constexpr int SaveDataErrorNotFound = -2137063416;
 constexpr int SaveDataErrorBusy = -2137063421;
 constexpr std::uint32_t MountReadWrite = 2;
 constexpr std::uint32_t MountCreate2 = 32;
+constexpr int SaveDataErrorNotInitialized = -2137063423;
 
 int failures = 0;
 
@@ -115,6 +122,22 @@ void TestMount2() {
     Check(ThrowsRuntimeError([&] { sceSaveDataMount2(nullptr, &result); }), "null mount throws");
 }
 
+void TestSaveDataMemoryV1() {
+    Check(sceSaveDataSetupSaveDataMemory(7, 0x1000, nullptr) == SaveDataErrorNotInitialized, "v1 SetupSaveDataMemory before v1 Initialize");
+    Check(sceSaveDataInitialize(nullptr) == 0, "v1 Initialize");
+    Check(sceSaveDataSetupSaveDataMemory(7, 0x1000, nullptr) == 0, "v1 SetupSaveDataMemory");
+    char written[16] = "settings-v1";
+    Check(sceSaveDataSetSaveDataMemory(7, written, sizeof(written), 0x100) == 0, "v1 SetSaveDataMemory at an offset");
+    char read[16] = {};
+    Check(sceSaveDataGetSaveDataMemory(7, read, sizeof(read), 0x100) == 0, "v1 GetSaveDataMemory");
+    Check(std::memcmp(read, written, sizeof(read)) == 0, "v1 GetSaveDataMemory returns the bytes v1 set");
+    std::ifstream slot("_sd_mem/u7/slot0.bin", std::ios::binary);
+    slot.seekg(0x100);
+    char stored[16] = {};
+    Check(static_cast<bool>(slot.read(stored, sizeof(stored))) && std::memcmp(stored, written, sizeof(stored)) == 0, "v1 SetSaveDataMemory stores into slot 0 of the user");
+    Check(sceSaveDataTerminate() == 0, "Terminate after v1 Initialize");
+}
+
 }
 
 int main() {
@@ -125,6 +148,7 @@ int main() {
 
     TestTransferringMountPs4();
     TestDirNameSearchPs4();
+    TestSaveDataMemoryV1();
     TestMount2();
 
     std::filesystem::current_path(previous);

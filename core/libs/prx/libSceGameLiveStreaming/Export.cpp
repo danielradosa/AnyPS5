@@ -4,6 +4,15 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceUserService/UserService.hpp"
 #include <cstring>
+#include <mutex>
+
+static std::mutex g_mutex;
+static bool g_initialized = false;
+static constexpr int ErrorInvalidArgument = static_cast<int>(0x80A00002);
+static constexpr int ErrorAlreadyInitialized = static_cast<int>(0x80A00003);
+static constexpr int ErrorNotInitialized = static_cast<int>(0x80A00004);
+
+struct GameLiveStreamingProgramInfo;
 
 struct GameLiveStreamingStatus2 {
     std::int32_t userId;
@@ -26,31 +35,38 @@ struct GameLiveStreamingStatus {
 };
 static_assert(sizeof(GameLiveStreamingStatus) == 72 && offsetof(GameLiveStreamingStatus, userId) == 8);
 
-static constexpr int GAME_LIVE_STREAMING_ERROR_INVALID_PARAM = static_cast<int>(0x80A00002);
-
 static bool IsSocialFeedbackMessageType(int type) {
     return type >= 1 && type <= 3;
 }
 
 extern "C" {
 
-int APS5_VABI sceGameLiveStreamingInitialize(size_t heap_size) {
-    if (heap_size == 0) APS5_INVALID_ARG_EX;
+int APS5_VABI sceGameLiveStreamingInitialize(size_t heapSize) {
+    if (heapSize != 0x4000) return ErrorInvalidArgument;
+    std::lock_guard lock(g_mutex);
+    if (g_initialized) return ErrorAlreadyInitialized;
+    g_initialized = true;
     return 0;
 }
 
 int APS5_VABI sceGameLiveStreamingTerminate(void) {
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return ErrorNotInitialized;
+    g_initialized = false;
     return 0;
 }
 
 int APS5_VABI sceGameLiveStreamingGetCurrentStatus2(GameLiveStreamingStatus2* status) {
-    if (status == nullptr) APS5_INVALID_ARG_EX;
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return ErrorNotInitialized;
+    if (status == nullptr) return ErrorInvalidArgument;
     std::memset(status, 0, sizeof(*status));
     status->userId = USER_SERVICE_USER_ID_INVALID;
     return 0;
 }
 
-int APS5_VABI sceGameLiveStreamingGetProgramInfo() {
+int APS5_VABI sceGameLiveStreamingGetProgramInfo(GameLiveStreamingProgramInfo* info) {
+    (void)info;
     return 0;
 }
 
@@ -100,7 +116,9 @@ int APS5_VABI sceGameLiveStreamingSetMaxBitrate(void) {
 }
 
 int APS5_VABI sceGameLiveStreamingGetCurrentStatus(GameLiveStreamingStatus* status) {
-    if (status == nullptr) APS5_INVALID_ARG_EX;
+    std::lock_guard lock(g_mutex);
+    if (!g_initialized) return ErrorNotInitialized;
+    if (status == nullptr) return ErrorInvalidArgument;
     std::memset(status, 0, sizeof(*status));
     status->userId = USER_SERVICE_USER_ID_INVALID;
     return 0;
@@ -112,7 +130,7 @@ int APS5_VABI sceGameLiveStreamingEnableSocialFeedback(void) {
 }
 
 int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessagesCount(int type, std::uint32_t* count) {
-    if (!IsSocialFeedbackMessageType(type) || count == nullptr) return GAME_LIVE_STREAMING_ERROR_INVALID_PARAM;
+    if (!IsSocialFeedbackMessageType(type) || count == nullptr) return ErrorInvalidArgument;
     *count = 0;
     return 0;
 }
@@ -120,7 +138,7 @@ int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessagesCount(int type, std::
 int APS5_VABI sceGameLiveStreamingGetSocialFeedbackMessages(int type, size_t feedbackCount, void* feedback, size_t* acquiredCount) {
     (void)feedbackCount;
     (void)feedback;
-    if (!IsSocialFeedbackMessageType(type) || acquiredCount == nullptr) return GAME_LIVE_STREAMING_ERROR_INVALID_PARAM;
+    if (!IsSocialFeedbackMessageType(type) || acquiredCount == nullptr) return ErrorInvalidArgument;
     *acquiredCount = 0;
     return 0;
 }
@@ -161,7 +179,7 @@ int APS5_VABI sceGameLiveStreamingSetPresetSocialFeedbackCommandsDescription(voi
 }
 
 int APS5_VABI sceGameLiveStreamingClearSocialFeedbackMessages(int type) {
-    if (!IsSocialFeedbackMessageType(type)) return GAME_LIVE_STREAMING_ERROR_INVALID_PARAM;
+    if (!IsSocialFeedbackMessageType(type)) return ErrorInvalidArgument;
     return 0;
 }
 

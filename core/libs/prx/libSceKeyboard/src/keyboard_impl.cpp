@@ -78,6 +78,12 @@ bool updateKey(std::uint16_t keyCode, bool pressed) {
     return true;
 }
 
+std::uint16_t character(bool jis, std::uint32_t ledState, std::uint32_t modifierKey, std::uint16_t keyCode) {
+    const bool shift = (modifierKey & (KEYBOARD_MOD_LEFT_SHIFT | KEYBOARD_MOD_RIGHT_SHIFT)) != 0;
+    if (!jis && (keyCode == 0x32 || keyCode == 0x64)) return shift ? '|' : '\\';
+    if (jis && keyCode == 0x89) return shift ? '|' : 0x00A5;
+    return Keyboard::Character(jis, ledState, modifierKey, keyCode);
+}
 }
 
 namespace Keyboard {
@@ -153,7 +159,7 @@ int GetKey2Char(Client client, std::int32_t handle, std::int32_t arrange, std::u
         return KEYBOARD_ERROR_INVALID_ARG;
     }
     *charData = {};
-    charData->char_code = Character(arrange == KEYBOARD_ARRANGEMENT_106, ledState, modifierKey, keyCode);
+    charData->char_code = character(arrange == KEYBOARD_ARRANGEMENT_106, ledState, modifierKey, keyCode);
     charData->processed = charData->char_code != 0;
     charData->length = charData->processed ? 1 : 0;
     return KEYBOARD_OK;

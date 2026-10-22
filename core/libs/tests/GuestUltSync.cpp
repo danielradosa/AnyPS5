@@ -16,7 +16,7 @@ int APS5_VABI sceUltQueueOptParamInitialize(void*, std::uint32_t);
 int APS5_VABI sceUltQueueDataResourcePoolOptParamInitialize(void*, std::uint32_t);
 int APS5_VABI sceUltWaitingQueueResourcePoolOptParamInitialize(void*, std::uint32_t);
 int APS5_VABI sceUltUlthreadOptParamInitialize(void*, std::uint32_t);
-int APS5_VABI _sceUltWaitingQueueResourcePoolCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*, std::uint32_t);
+int APS5_VABI _sceUltWaitingQueueResourcePoolCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*);
 int APS5_VABI sceUltWaitingQueueResourcePoolDestroy(void*);
 int APS5_VABI sceUltReaderWriterLockOptParamInitialize(void*, std::uint32_t);
 int APS5_VABI sceUltReaderWriterLockCreate(void*, const char*, void*, const void*, std::uint32_t);
@@ -168,7 +168,7 @@ void ReaderWriterPool() {
     Object pool{};
     Object rwlock{};
     std::uint8_t workArea[2048];
-    CHECK(_sceUltWaitingQueueResourcePoolCreate(&pool, "pool", 2, 2, workArea, nullptr, 0) == Ok);
+    CHECK(_sceUltWaitingQueueResourcePoolCreate(&pool, "pool", 2, 2, workArea, nullptr) == Ok);
     CHECK(sceUltReaderWriterLockCreate(&rwlock, "pooled", &pool, nullptr, 0) == Ok);
     CHECK(sceUltReaderWriterLockLockWrite(&rwlock) == Ok);
     std::atomic<bool> started{false};

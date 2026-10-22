@@ -89,7 +89,7 @@ struct RudpContext {
     std::map<int, std::int32_t> options = RUDP_DEFAULT_OPTIONS;
 };
 
-using GuestRudpEventHandler = void(APS5_VABI*)(int, int, int, void*);
+using GuestRudpEventHandler = RudpEventHandler;
 
 std::mutex g_mutex;
 bool g_inited = false;
@@ -102,17 +102,11 @@ std::uint32_t g_received_udp_packets = 0;
 uint16_t g_max_segment_size = RUDP_MAX_SEGMENT_SIZE;
 
 struct RudpPoll {
-    uint32_t capacity;
+    std::size_t capacity;
     std::map<int, uint16_t> entries;
     std::uint64_t cancels = 0;
 };
 
-struct RudpPollEvent {
-    int ctxId;
-    uint16_t reqEvents;
-    uint16_t rtnEvents;
-};
-static_assert(sizeof(RudpPollEvent) == 8);
 
 int g_next_poll = 1;
 std::map<int, RudpPoll> g_polls;
@@ -157,8 +151,12 @@ int APS5_VABI sceRudpInit_nid_postfix(void* mem_pool, int mem_pool_size) {
     return 0;
 }
 
-int APS5_VABI sceRudpActivate() {
-    return 0;
+int APS5_VABI sceRudpActivate(std::int32_t contextId, const void* address, std::uint32_t addressLength) {
+    std::lock_guard lock(g_mutex);
+    if (!g_inited) return RUDP_ERROR_NOT_INITIALIZED;
+    if (contextId < 0 || !address) return RUDP_ERROR_INVALID_ARGUMENT;
+    static_cast<void>(addressLength);
+    throw std::runtime_error(__func__);
 }
 
 int APS5_VABI sceRudpGetStatus(void* status, std::size_t size) {
@@ -323,15 +321,15 @@ int APS5_VABI sceRudpGetContextStatus(int ctx_id, void* status, uint32_t size) {
     return 0;
 }
 
-int APS5_VABI sceRudpGetRemoteInfo(int ctx_id, void* addr, uint32_t* addr_len, uint16_t* vport) {
+int APS5_VABI sceRudpGetRemoteInfo(int contextId, void* address, std::uint32_t* addressSize, std::uint16_t* virtualPort) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
     }
-    if (ctx_id < 0 || addr == nullptr || addr_len == nullptr || vport == nullptr) {
+    if (contextId < 0 || address == nullptr || addressSize == nullptr || virtualPort == nullptr) {
         return RUDP_ERROR_INVALID_ARGUMENT;
     }
-    if (!valid_ctx(ctx_id)) {
+    if (!valid_ctx(contextId)) {
         return RUDP_ERROR_INVALID_CONTEXT_ID;
     }
     return RUDP_ERROR_NOT_ACCEPTABLE;
@@ -407,23 +405,23 @@ int APS5_VABI sceRudpNetFlush(void) {
     return g_inited ? 0 : RUDP_ERROR_NOT_INITIALIZED;
 }
 
-int APS5_VABI sceRudpProcessEvents(void) {
+int APS5_VABI sceRudpProcessEvents(std::uint64_t timeout) {
     std::lock_guard<std::mutex> lk(g_mutex);
     return g_inited ? 0 : RUDP_ERROR_NOT_INITIALIZED;
 }
 
-int APS5_VABI sceRudpNetReceived(int soc, const uint8_t* data, std::size_t data_len, const void* from, uint32_t from_len) {
+int APS5_VABI sceRudpNetReceived(int socketId, const void* data, std::size_t dataSize, const void* sourceAddress, std::uint32_t sourceAddressSize) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
     }
-    if (soc < 0) {
+    if (socketId < 0) {
         return RUDP_ERROR_INVALID_SOCKET;
     }
-    if (data == nullptr || data_len == 0 || from == nullptr || from_len < RUDP_NET_SOCKADDR_IN_SIZE) {
+    if (data == nullptr || dataSize == 0 || sourceAddress == nullptr || sourceAddressSize < RUDP_NET_SOCKADDR_IN_SIZE) {
         return RUDP_ERROR_INVALID_ARGUMENT;
     }
-    g_received_udp_bytes += data_len;
+    g_received_udp_bytes += dataSize;
     ++g_received_udp_packets;
     return 0;
 }
@@ -440,7 +438,7 @@ int APS5_VABI sceRudpGetMaxSegmentSize(uint16_t* size) {
     return 0;
 }
 
-int APS5_VABI sceRudpPollCreate(uint32_t size) {
+int APS5_VABI sceRudpPollCreate(std::size_t size) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;
@@ -494,7 +492,7 @@ int APS5_VABI sceRudpPollControl(int pollId, int op, int ctxId, uint16_t events)
     return 0;
 }
 
-int APS5_VABI sceRudpPollWait(int pollId, RudpPollEvent* events, uint32_t eventLen, uint64_t timeout) {
+int APS5_VABI sceRudpPollWait(int pollId, RudpPollEvent* events, std::size_t eventLen, uint64_t timeout) {
     std::unique_lock<std::mutex> lk(g_mutex);
     if (!g_inited) {
         return RUDP_ERROR_NOT_INITIALIZED;

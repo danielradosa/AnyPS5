@@ -10,7 +10,7 @@ int APS5_VABI sceAppInstUtilInitialize(void);
 int APS5_VABI sceAppInstUtilTerminate(void);
 int APS5_VABI sceAppInstUtilAppIsInInstalling(std::int32_t* installing);
 int APS5_VABI sceAppInstUtilAppExists(const char* titleId, std::int32_t* exists);
-int APS5_VABI sceAppInstUtilAppIsInUpdating(const char* titleId, std::int32_t* updating);
+int APS5_VABI sceAppInstUtilAppIsInUpdating(const char* titleId, bool* updating);
 }
 
 namespace {
@@ -52,8 +52,8 @@ int main() {
     std::int32_t installing = 7;
     Require(sceAppInstUtilAppIsInInstalling(&installing) == 0 && installing == 0, "an install pass was reported");
     Require(RejectsArgument([] { sceAppInstUtilAppIsInInstalling(nullptr); }), "a null install state was accepted");
-    std::int32_t updating = 7;
-    Require(sceAppInstUtilAppIsInUpdating("PPSA00000", &updating) == 0 && updating == 0, "an update of the running title was reported");
+    bool updating = true;
+    Require(sceAppInstUtilAppIsInUpdating("PPSA00000", &updating) == 0 && !updating, "an update of the running title was reported");
     Require(RejectsArgument([&] { sceAppInstUtilAppIsInUpdating("PPSA99109", &updating); }), "an update state of a title that is not installed was reported");
     Require(RejectsArgument([&] { sceAppInstUtilAppIsInUpdating(nullptr, &updating); }), "a null title id was accepted for the update state");
     Require(RejectsArgument([] { sceAppInstUtilAppIsInUpdating("PPSA00000", nullptr); }), "a null update state was accepted");

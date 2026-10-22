@@ -437,13 +437,18 @@ int APS5_VABI sceFontDeleteGlyph(const FontMemory* memory, FontGlyph* pGlyph) {
     return SCE_FONT_OK;
 }
 
-int APS5_VABI sceFontGlyphDefineAttribute(FontGlyph glyph, int attribute, int* oldAttribute) {
-    if (oldAttribute) *oldAttribute = 0;
-    auto* generated = TryGetGeneratedGlyph(glyph);
-    if (!generated) return SCE_FONT_ERROR_INVALID_GLYPH;
-    if (attribute != 0x40 && attribute != 0x41) return SCE_FONT_OK;
-    const bool previous = generated->defaultVertical.exchange(attribute == 0x41, std::memory_order_relaxed);
-    if (oldAttribute) *oldAttribute = previous ? 0x41 : 0x40;
+int APS5_VABI sceFontGlyphDefineAttribute(FontGlyph glyph, std::int32_t attribute, std::int32_t* previousAttribute) {
+    if (!glyph || glyph->magic != GLYPH_MAGIC) {
+        if (previousAttribute) *previousAttribute = 0;
+        return SCE_FONT_ERROR_INVALID_GLYPH;
+    }
+    if (attribute != 0x10 && attribute != 0x11) {
+        if (previousAttribute) *previousAttribute = 0;
+        return SCE_FONT_ERROR_INVALID_PARAMETER;
+    }
+    const std::int32_t previous = (glyph->flags & 2) ? 0x11 : 0x10;
+    glyph->flags = static_cast<std::uint16_t>((glyph->flags & ~2u) | ((attribute - 0x10) << 1));
+    if (previousAttribute) *previousAttribute = previous;
     return SCE_FONT_OK;
 }
 
@@ -452,8 +457,7 @@ int APS5_VABI sceFontGlyphGetAttribute(FontGlyph glyph, int attribute, int* nowA
     *nowAttribute = 0;
     const auto* generated = TryGetGeneratedGlyph(glyph);
     if (!generated) return SCE_FONT_ERROR_INVALID_GLYPH;
-    if (attribute != 0x40 && attribute != 0x41) return SCE_FONT_ERROR_NO_SUPPORT_FUNCTION;
-    *nowAttribute = generated->defaultVertical.load(std::memory_order_relaxed) ? 0x41 : 0x40;
+    *nowAttribute = (glyph->flags & 2) ? 0x11 : 0x10;
     return SCE_FONT_OK;
 }
 

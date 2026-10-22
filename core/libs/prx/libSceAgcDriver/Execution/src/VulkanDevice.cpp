@@ -18,7 +18,6 @@
 #include "prx/libSceAgcDriver/Execution/include/Float32FlushControl.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PipelineLinkOptimization.hpp"
 #include "prx/libSceAgcDriver/Execution/include/DrawInputsInPlace.hpp"
-#include "prx/libSceAgcDriver/Execution/include/RobustBufferAccess.hpp"
 #include "prx/libSceAgcDriver/Execution/include/SubgroupBarrier.hpp"
 #include "prx/libSceAgcDriver/Execution/include/SubgroupClock.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ShaderDeviceProfile.hpp"
@@ -159,20 +158,22 @@ public:
             std::lock_guard lock(mutex);
             stopping = true;
         }
-        changed.notify_one();
+        changed.notify_all();
         if (worker.joinable()) worker.join();
     }
 
     void Enqueue(int index, std::uint32_t width, std::uint32_t height, std::uint32_t scale, bool screenshot, std::vector<std::byte> pixels) {
-        std::lock_guard lock(mutex);
+        std::unique_lock lock(mutex);
         require(!stopping, "frame dump writer has stopped");
-        require(pixels.size() <= maxBytes - queuedBytes, "frame dump queue exceeded 64 MiB");
         if (!screenshot && !frameDumpOutput.Enabled_nid_no_patch()) return;
+        require(pixels.size() <= maxBytes, "a frame dump exceeds the 64 MiB queue");
+        changed.wait(lock, [&] { return stopping || pixels.size() <= maxBytes - queuedBytes; });
+        require(!stopping, "frame dump writer has stopped");
         if (!worker.joinable()) worker = std::thread([this] { run(); });
         const auto bytes = pixels.size();
         pending.push_back({index, width, height, scale, screenshot, std::move(pixels)});
         queuedBytes += bytes;
-        changed.notify_one();
+        changed.notify_all();
     }
 
     bool Idle() {
@@ -205,6 +206,7 @@ private:
                     else WriteFrameBmp(frame.index, frame.width, frame.height, frame.pixels, frame.scale);
                     std::lock_guard lock(mutex);
                     queuedBytes -= frame.pixels.size();
+                    changed.notify_all();
                 }
             }
         } catch (const std::exception& error) {
@@ -536,6 +538,7 @@ struct VulkanDevice::State {
     bool geometryShader = false;
     bool sampleRateShading = false;
     bool storageImageMultisample = false;
+    bool storageImageWriteWithoutFormat = false;
     bool shaderClipDistance = false;
     bool shaderCullDistance = false;
     bool shaderClock = false;
@@ -1937,6 +1940,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
     if (enabled.shaderStorageImageMultisample) state->capabilities.push_back(spv::CapabilityStorageImageMultisample);
     state->capabilities.push_back(spv::CapabilityImageMSArray);
     enabled.shaderStorageImageWriteWithoutFormat = available.shaderStorageImageWriteWithoutFormat;
+    state->storageImageWriteWithoutFormat = enabled.shaderStorageImageWriteWithoutFormat == VK_TRUE;
     enabled.shaderStorageImageReadWithoutFormat = available.shaderStorageImageReadWithoutFormat;
     // Gathers with non-constant offsets (ImageGatherExtended).
     enabled.shaderImageGatherExtended = available.shaderImageGatherExtended;
@@ -2187,14 +2191,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window, bool compileOnly) :
         VkPhysicalDeviceFeatures2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &robustness2};
         state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2")(selected, &queried);
     }
-    VkDriverId robustnessDriver = VK_DRIVER_ID_MAX_ENUM;
-    if (hasExtension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME)) {
-        VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-        VkPhysicalDeviceProperties2 driverProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver};
-        state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &driverProperties);
-        robustnessDriver = driver.driverID;
-    }
-    state->robustBufferAccess2 = robustness2.robustBufferAccess2 == VK_TRUE && enabled.robustBufferAccess == VK_TRUE && RobustBufferAccess2Usable(robustnessDriver);
+    state->robustBufferAccess2 = robustness2.robustBufferAccess2 == VK_TRUE && enabled.robustBufferAccess == VK_TRUE;
     // robustBufferAccess2 (with robustBufferAccess, enabled above) at a 4-byte storage alignment: the hardware
     // bounds-checks guest buffer views in whole dwords, so the recompiler drops its own host bounds checks
     // (SpirvTarget::robustBuffers). APS5_NO_ROBUST_BUFFERS=1 keeps the shader checks as before.
@@ -3507,8 +3504,9 @@ bool VulkanDevice::PresentDisplayBuffer(const DisplayBuffer& buffer) {
             static const bool noAdopt = std::getenv("APS5_NO_PRESENT_EPOCH") != nullptr;
             if (!noAdopt) GuestMemory::AdoptLatestCollectEpoch();
             GuestMemory::CollectWritesUncached(buffer.address, bytes);
-            if (!GuestMemory::UnchangedSince(buffer.address, bytes, resident->Generation()) || (buffer.dccAddress != 0 && ResidentKeysMoved(*resident))) {
-                resident->Refresh();
+            if (!GuestMemory::UnchangedSince(buffer.address, bytes, resident->GenerationFor(buffer.address, bytes)) || (buffer.dccAddress != 0 && ResidentKeysMoved(*resident))) {
+                if (resident->ImageLayers() > 1) resident->RefreshLayers(layer, 1);
+                else resident->Refresh();
                 ++refreshedPresents;
             }
             ++residentPresents;
@@ -3992,6 +3990,12 @@ std::uint32_t VulkanDevice::VendorId() const {
     return state->properties.vendorID;
 }
 
+bool VulkanDevice::SupportsImageFormat(VkFormat format, VkImageUsageFlags usage) const {
+    VkImageFormatProperties properties{};
+    const auto query = state->InstanceFunction<PFN_vkGetPhysicalDeviceImageFormatProperties>("vkGetPhysicalDeviceImageFormatProperties");
+    return query(state->physical, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, usage, 0, &properties) == VK_SUCCESS;
+}
+
 ShaderRecompiler::SpirvTarget VulkanDevice::Target() const {
     require(state->shaderProfile != nullptr, "shader device profile is unavailable");
     auto target = state->shaderProfile->Target();
@@ -4156,6 +4160,7 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.fillModeNonSolid = state->fillModeNonSolid;
     context.maintenance5 = state->maintenance5;
     context.storageImageMultisample = state->storageImageMultisample;
+    context.storageImageWriteWithoutFormat = state->storageImageWriteWithoutFormat;
     context.shaderClipDistance = state->shaderClipDistance;
     context.shaderCullDistance = state->shaderCullDistance;
     context.shaderTerminateInvocation = state->shaderTerminateInvocation;
@@ -5068,6 +5073,14 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
     auto& resources = *record.resources;
     const auto arguments = record.arguments;
     const auto* argumentImport = record.argumentImport;
+    const auto* limit = state->properties.limits.maxComputeWorkGroupCount;
+    if (argumentImport == nullptr && record.shader->program->workgroupMemoryDwords != 0 && (record.x > limit[0] || record.y > limit[1] || record.z > limit[2])) {
+        char counted[128] = "";
+        if (record.cpuArguments != 0) std::snprintf(counted, sizeof(counted), " (read on the CPU from the indirect arguments at 0x%llx, cpuReason %d)", static_cast<unsigned long long>(record.cpuArguments), record.cpuReason);
+        char text[384];
+        std::snprintf(text, sizeof(text), "Vulkan dispatch: workgroup count %ux%ux%u%s exceeds device limits %ux%ux%u and a split aliases the device-memory LDS slots, whose base is computed from gl_NumWorkGroups of a single chunk", record.x, record.y, record.z, counted, limit[0], limit[1], limit[2]);
+        throw std::runtime_error(text);
+    }
     // The record phase split (APS5_PROFILE_DRAW, rows "record: ..." of the [dispatch] totals):
     // opening the batch, the keeps, the data refresh, the barriers with the bind and the dispatch
     // itself, the pending-write notes and marks (MarkGpuWrites), and the completion registration.
@@ -5202,17 +5215,11 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
     if (argumentImport != nullptr) {
         context.Resolved(&Graphics::DeviceFunctions::cmdDispatchIndirect, "vkCmdDispatchIndirect")(commands, indirectBuffer, indirectOffset);
     } else {
-        const auto* limit = state->properties.limits.maxComputeWorkGroupCount;
         if (record.x <= limit[0] && record.y <= limit[1] && record.z <= limit[2]) {
             context.Resolved(&Graphics::DeviceFunctions::cmdDispatch, "vkCmdDispatch")(commands, record.x, record.y, record.z);
         } else {
             char counted[128] = "";
             if (record.cpuArguments != 0) std::snprintf(counted, sizeof(counted), " (read on the CPU from the indirect arguments at 0x%llx, cpuReason %d)", static_cast<unsigned long long>(record.cpuArguments), record.cpuReason);
-            if (record.shader->program->workgroupMemoryDwords != 0) {
-                char text[384];
-                std::snprintf(text, sizeof(text), "Vulkan dispatch: workgroup count %ux%ux%u%s exceeds device limits %ux%ux%u and a split aliases the device-memory LDS slots, whose base is computed from gl_NumWorkGroups of a single chunk", record.x, record.y, record.z, counted, limit[0], limit[1], limit[2]);
-                throw std::runtime_error(text);
-            }
             const auto offsets = std::ranges::count_if(record.shader->program->specialization, [](const auto& constant) { return ShaderRecompiler::PipelineSpecialization::IsWorkgroupOffset(constant.id); });
             if (offsets != ShaderRecompiler::PipelineSpecialization::WorkgroupOffsetWords) {
                 char text[320];

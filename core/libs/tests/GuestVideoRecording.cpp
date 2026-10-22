@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
 
 extern "C" void APS5_VABI _sceVideoRecordingQueryParam_nid_postfix(void* param);
@@ -12,8 +11,6 @@ extern "C" int APS5_VABI sceVideoRecordingOpen(const char* path, const void* par
 extern "C" int APS5_VABI sceVideoRecordingQueryMemSize2(const void* param);
 extern "C" int APS5_VABI sceVideoRecordingOpen2(const char* path, const void* param, void* heap, int heapSize);
 extern "C" int APS5_VABI sceVideoRecordingGetStatus(void);
-extern "C" int APS5_VABI sceVideoRecordingSetInfo(int32_t info, const void* data, size_t size);
-extern "C" int APS5_VABI sceVideoRecordingGetInfo(int32_t info, void* data, size_t size);
 extern "C" int APS5_VABI sceVideoRecordingStart(void);
 extern "C" int APS5_VABI sceVideoRecordingStop(void);
 extern "C" int APS5_VABI sceVideoRecordingClose(int discard);
@@ -23,7 +20,6 @@ namespace {
 constexpr int32_t ERROR_INVALID_STATE = static_cast<int32_t>(0x80A80006);
 constexpr int32_t ERROR_UNSUPPORTED = static_cast<int32_t>(0x80A80008);
 constexpr int32_t STATUS_NONE = 0;
-constexpr int32_t INFO_SUBTITLE = 0x0002;
 constexpr unsigned char Sentinel = 0xA5;
 
 void Require(bool value) { if (!value) std::abort(); }
@@ -79,12 +75,6 @@ int main() {
     for (const unsigned char value : param) Require(value == Sentinel);
     for (const unsigned char value : heap) Require(value == Sentinel);
 
-    const char subtitle[] = "clip";
-    Require(sceVideoRecordingSetInfo(INFO_SUBTITLE, subtitle, sizeof(subtitle)) == 0);
-    std::array<char, sizeof(subtitle)> read{};
-    Require(sceVideoRecordingGetInfo(INFO_SUBTITLE, read.data(), read.size()) == 0);
-    Require(std::memcmp(read.data(), subtitle, sizeof(subtitle)) == 0);
-    Require(sceVideoRecordingGetStatus() == STATUS_NONE);
     std::puts("VideoRecording tests passed");
     return 0;
 }

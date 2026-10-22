@@ -537,8 +537,8 @@ std::int64_t APS5_VABI pathconf_nid_postfix(const char* path, int name) {
     if (const int error = ResolvePathError_nid_no_patch(path, native)) return Fail(error);
     std::error_code error;
     const auto status = std::filesystem::status(native, error);
-    if (error) return Fail(GuestError(error));
-    if (!std::filesystem::exists(status)) return Fail(GuestEnoent);
+    if (error) return Fail(error == std::errc::no_such_file_or_directory && HasNonDirectoryPrefix(native) ? GuestEnotdir : GuestError(error));
+    if (!std::filesystem::exists(status)) return Fail(HasNonDirectoryPrefix(native) ? GuestEnotdir : GuestEnoent);
     return PathConfigurationValue(name, "pathconf");
 }
 
@@ -865,9 +865,9 @@ int APS5_VABI fchmodat_nid_postfix(int fd, const char* path, int mode, int flag)
     }
     }
 #ifdef _WIN32
-    if (::_wchmod(native.wstring().c_str(), mode & 07777) != 0) return static_cast<int>(Fail(GuestFileError(errno)));
+    if (::_wchmod(native.wstring().c_str(), mode & 07777) != 0) return static_cast<int>(Fail(errno == ENOENT && HasNonDirectoryPrefix(native) ? GuestEnotdir : GuestFileError(errno)));
 #else
-    if (::chmod(native.c_str(), static_cast<mode_t>(mode & 07777)) != 0) return static_cast<int>(Fail(GuestFileError(errno)));
+    if (::chmod(native.c_str(), static_cast<mode_t>(mode & 07777)) != 0) return static_cast<int>(Fail(errno == ENOENT && HasNonDirectoryPrefix(native) ? GuestEnotdir : GuestFileError(errno)));
 #endif
     RecordWrittenPath_nid_no_patch(native);
     return 0;
@@ -1069,6 +1069,22 @@ int APS5_VABI sceKernelTitleWorkaroundIsEnabled(const KernelTitleWorkaround* wor
 int APS5_VABI sceKernelGetProcessType(int pid) {
     if (pid != getpid_nid_postfix() && pid != -1 && pid != 0) return static_cast<int>(0x80020003);
     return 0;
+}
+
+
+bool SetDefaultStackSize_nid_no_patch(std::size_t size);
+void APS5_VABI pthread_set_name_np_nid_postfix(void* thread, const char* name);
+
+int APS5_VABI pthread_set_defaultstacksize_np_nid_postfix(std::size_t size) {
+    return SetDefaultStackSize_nid_no_patch(size) ? 0 : GuestEinval;
+}
+
+int APS5_VABI scePthreadSetDefaultstacksize(std::size_t size) {
+    return SetDefaultStackSize_nid_no_patch(size) ? 0 : SceKernelError(GuestEinval);
+}
+
+void APS5_VABI scePthreadSetName(void* thread, const char* name) {
+    pthread_set_name_np_nid_postfix(thread, name);
 }
 
 }

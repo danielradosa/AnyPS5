@@ -7,4 +7,6 @@
 ### Unknown function info
 
 - [sceNpCommerceDialogInitializeInternal](../../../core/libs/prx/libSceNpCommerce/Export.cpp) (libSceNpCommerce) - declared without parameters and forwarded to `sceNpCommerceDialogInitialize`, sharing its state and errors; the name comes from the firmware export database (upstream PR #6361), and whether the internal variant takes arguments or differs on the console is unknown
-- [sceNpCommerceDialogOpen2](../../../core/libs/prx/libSceNpCommerce/Export.cpp) (libSceNpCommerce) - declared without parameters; follows [prosper](https://github.com/mattias800/prosper/blob/73413cb445b0364bb49c4d2478e9ee1614b9f7d9/prosper/src/hle/np/np.cpp#L500-L504), which serves it with its `sceNpCommerceDialogOpen` handler: every argument is ignored, nothing is validated, it returns 0 and the dialog finishes at once, so `sceNpCommerceDialogGetResult` reports it cancelled. The parameters and the console's error results are unknown. PPSA34501 calls it at Zombies > Online
+- [sceNpCommerceDialogOpen2](../../../core/libs/prx/libSceNpCommerce/Export.cpp): extended content combinations outside content mode 0 and content mode 1 with dialog mode 1 throw when otherwise valid. The native restriction reads process sysctl field 68; its relation to host process metadata is unresolved. Mode-specific meanings of the option and 64-bit argument remain unresolved.
+
+- [sceNpCommerceDialogOpen](../../../core/libs/prx/libSceNpCommerce/Export.cpp): Product copying and service submission remain part of the cancelled UI stub.

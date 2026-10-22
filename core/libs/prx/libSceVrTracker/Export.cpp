@@ -63,11 +63,6 @@ struct InitParam {
     std::int32_t gpuQueueId;
 };
 
-struct GpuWaitParam {
-    std::uint32_t size;
-    std::uint32_t reserved[7];
-};
-
 struct QueryMemoryParam {
     std::uint32_t size;
     std::uint32_t profile;
@@ -95,7 +90,6 @@ struct RecalibrateParam {
 
 static_assert(sizeof(CalibrationSettings) == 0x20);
 static_assert(sizeof(InitParam) == 0x80 && offsetof(InitParam, calibrationSettings) == 0x28 && offsetof(InitParam, directMemoryOnion) == 0x48 && offsetof(InitParam, gpuPipeId) == 0x78);
-static_assert(sizeof(GpuWaitParam) == 0x20);
 static_assert(sizeof(QueryMemoryParam) == 0x40 && offsetof(QueryMemoryParam, calibrationSettings) == 0x20);
 static_assert(sizeof(QueryMemoryResult) == 0x40);
 static_assert(sizeof(RecalibrateParam) == 0x20);
@@ -137,33 +131,104 @@ bool ValidInit(const InitParam* param) {
 
 }
 
+struct VrTrackerMemoryBlock {
+    void* address;
+    std::uint32_t size;
+    std::uint32_t alignment;
+};
+
+struct VrTrackerInitConfig {
+    std::uint32_t type;
+    std::uint32_t option;
+    std::uint32_t mode;
+    std::uint32_t parameter;
+    std::uint32_t reserved[4];
+};
+
+struct VrTrackerInitParam {
+    std::uint32_t size;
+    std::int32_t mode;
+    std::uint32_t reserved[6];
+    VrTrackerInitConfig config;
+    VrTrackerMemoryBlock memory[3];
+    std::uint32_t option112;
+    std::uint32_t option116;
+    std::uint32_t reservedTail[6];
+};
+
+static_assert(sizeof(VrTrackerMemoryBlock) == 16);
+static_assert(sizeof(VrTrackerInitConfig) == 32);
+static_assert(sizeof(VrTrackerInitParam) == 144);
+static_assert(offsetof(VrTrackerInitParam, config) == 32);
+static_assert(offsetof(VrTrackerInitParam, memory) == 64);
+static_assert(offsetof(VrTrackerInitParam, option112) == 112);
+struct VrTrackerGpuSubmitParam;
+struct VrTrackerResult;
+
+struct VrTrackerCpuProcessParam {
+    std::uint32_t size;
+    std::uint32_t mode;
+    std::uint32_t argument;
+    std::uint32_t reserved[5];
+};
+
+struct VrTrackerGpuWaitParam {
+    std::uint32_t size;
+    std::byte payload[28];
+};
+
+struct VrTrackerGetResultParam {
+    std::uint32_t size;
+    std::int32_t handle;
+    std::uint32_t mode;
+    std::uint32_t extendedResult;
+    std::uint64_t time;
+    std::uint32_t statusMode;
+    std::uint32_t reserved0;
+    std::uint32_t option32;
+    std::byte outputValue[4];
+    std::uint32_t option40;
+    std::uint32_t reserved1[2];
+    std::byte unused[4];
+};
+
+static_assert(sizeof(VrTrackerCpuProcessParam) == 32);
+static_assert(offsetof(VrTrackerCpuProcessParam, mode) == 4);
+static_assert(offsetof(VrTrackerCpuProcessParam, argument) == 8);
+static_assert(sizeof(VrTrackerGpuWaitParam) == 32);
+static_assert(sizeof(VrTrackerGetResultParam) == 56);
+static_assert(offsetof(VrTrackerGetResultParam, time) == 16);
+static_assert(offsetof(VrTrackerGetResultParam, statusMode) == 24);
+static_assert(offsetof(VrTrackerGetResultParam, outputValue) == 36);
+static_assert(offsetof(VrTrackerGetResultParam, reserved1) == 44);
+
 extern "C" {
 
-int APS5_VABI sceVrTrackerCpuProcess() {
+int APS5_VABI sceVrTrackerCpuProcess(const VrTrackerCpuProcessParam* param) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-int APS5_VABI sceVrTrackerGetResult() {
+int APS5_VABI sceVrTrackerGetResult(const VrTrackerGetResultParam* param, VrTrackerResult* result) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
-std::int32_t APS5_VABI sceVrTrackerGetTime(std::uint64_t* time) {
+int APS5_VABI sceVrTrackerGetTime(std::uint64_t* time) {
     if (!Initialized()) return VR_TRACKER_ERROR_NOT_INIT;
     if (time == nullptr) return VR_TRACKER_ERROR_ARGUMENT_INVALID;
     *time = sceKernelGetProcessTime();
     return 0;
 }
 
-std::int32_t APS5_VABI sceVrTrackerGpuSubmit(const void* param) {
+int APS5_VABI sceVrTrackerGpuSubmit(const VrTrackerGpuSubmitParam* param) {
     (void)param;
     if (!Initialized()) return VR_TRACKER_ERROR_NOT_INIT;
     return VR_TRACKER_ERROR_ARGUMENT_INVALID;
 }
 
-std::int32_t APS5_VABI sceVrTrackerGpuWait(const GpuWaitParam* param) {
+int APS5_VABI sceVrTrackerGpuWait(const VrTrackerGpuWaitParam* param) {
     if (!Initialized()) return VR_TRACKER_ERROR_NOT_INIT;
-    if (param == nullptr || param->size != sizeof(GpuWaitParam)) return VR_TRACKER_ERROR_ARGUMENT_INVALID;
+    if (param == nullptr || param->size != sizeof(VrTrackerGpuWaitParam)) return VR_TRACKER_ERROR_ARGUMENT_INVALID;
     return VR_TRACKER_ERROR_NOT_EXECUTE_GPU_SUBMIT;
 }
 

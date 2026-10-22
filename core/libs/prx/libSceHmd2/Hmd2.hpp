@@ -81,33 +81,41 @@ struct ReprojectionState {
 struct SizeAlign {
     std::uint64_t size;
     std::uint64_t align;
+
+    constexpr SizeAlign(std::uint64_t size = 0, std::uint64_t align = 0) noexcept : size(size), align(align) {}
 };
 
-struct ReprojectionInitializeParam {
-    void* reprojectionBuffer;
-    void* displayBuffer;
+struct ReprojectionInitializeParameter {
+    void* workMemory;
+    void* displayMemory;
     std::int32_t threadPriority;
-    std::int32_t cpuAffinityMask;
-    std::uint32_t pipeId;
-    std::uint32_t queueId;
-    std::uint32_t type;
-    void* seeThroughBuffer;
-    std::int32_t reprojectionTiming;
-    std::int32_t reserved[5];
+    std::uint32_t threadAffinity;
+    std::uint32_t queueParameter24;
+    std::uint32_t queueParameter28;
+    std::uint32_t renderingMode;
+    std::uint32_t reserved36;
+    void* auxiliaryMemory;
+    std::uint32_t timingInterval;
+    std::uint32_t reserved52[5];
 };
+
+struct ReprojectionStatus;
+struct MirroringOption;
 
 static_assert(sizeof(ReprojectionState) == 16);
 static_assert(alignof(ReprojectionState) == 8);
 static_assert(offsetof(ReprojectionState, timingUs) == 8);
 static_assert(sizeof(SizeAlign) == 16);
 static_assert(alignof(SizeAlign) == 8);
-static_assert(sizeof(ReprojectionInitializeParam) == 72);
-static_assert(alignof(ReprojectionInitializeParam) == 8);
-static_assert(offsetof(ReprojectionInitializeParam, threadPriority) == 16);
-static_assert(offsetof(ReprojectionInitializeParam, type) == 32);
-static_assert(offsetof(ReprojectionInitializeParam, seeThroughBuffer) == 40);
-static_assert(offsetof(ReprojectionInitializeParam, reprojectionTiming) == 48);
-static_assert(offsetof(ReprojectionInitializeParam, reserved) == 52);
+static_assert(offsetof(SizeAlign, size) == 0);
+static_assert(offsetof(SizeAlign, align) == 8);
+static_assert(sizeof(ReprojectionInitializeParameter) == 72);
+static_assert(alignof(ReprojectionInitializeParameter) == 8);
+static_assert(offsetof(ReprojectionInitializeParameter, threadPriority) == 16);
+static_assert(offsetof(ReprojectionInitializeParameter, threadAffinity) == 20);
+static_assert(offsetof(ReprojectionInitializeParameter, renderingMode) == 32);
+static_assert(offsetof(ReprojectionInitializeParameter, auxiliaryMemory) == 40);
+static_assert(offsetof(ReprojectionInitializeParameter, timingInterval) == 48);
 
 }
 
@@ -121,16 +129,16 @@ std::int32_t APS5_VABI sceHmd2GetDeviceInformationByHandle(std::int32_t handle, 
 std::int32_t APS5_VABI sceHmd2GetFieldOfView(std::int32_t handle, Hmd2::FieldOfView* fieldOfView);
 std::int32_t APS5_VABI sceHmd2GetFieldOfViewWithoutHandle(Hmd2::FieldOfView* fieldOfView);
 std::int32_t APS5_VABI sceHmd2SetVibration(std::int32_t handle, std::uint32_t level);
-std::int32_t APS5_VABI sceHmd2ReprojectionInitialize(const Hmd2::ReprojectionInitializeParam* param);
+std::int32_t APS5_VABI sceHmd2ReprojectionInitialize(const Hmd2::ReprojectionInitializeParameter* parameter, const void* reserved);
 Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQueryBufferSizeAlign();
-std::int32_t APS5_VABI sceHmd2ReprojectionSetAllowPositionalReprojection(std::int32_t mode, std::uint64_t param, std::int32_t flags);
+std::int32_t APS5_VABI sceHmd2ReprojectionSetAllowPositionalReprojection(std::uint8_t mode);
 std::int32_t APS5_VABI sceHmd2ReprojectionSetTiming(std::int32_t timing);
-std::int32_t APS5_VABI sceHmd2ReprojectionEnableVrMode(std::uint64_t outputMode);
-std::int32_t APS5_VABI sceHmd2ReprojectionBeginFrame(std::int64_t flipArg);
+std::int32_t APS5_VABI sceHmd2ReprojectionEnableVrMode(std::uint64_t mode);
+std::int32_t APS5_VABI sceHmd2ReprojectionBeginFrame(std::uint64_t frameId);
 std::int32_t APS5_VABI sceHmd2ReprojectionDisableMirroring();
 std::int32_t APS5_VABI sceHmd2ReprojectionDisableVrMode();
-std::int32_t APS5_VABI sceHmd2ReprojectionGetStatus();
-std::int32_t APS5_VABI sceHmd2ReprojectionSetMirroringOption(const void* option);
+std::int32_t APS5_VABI sceHmd2ReprojectionGetStatus(Hmd2::ReprojectionStatus* status);
+std::int32_t APS5_VABI sceHmd2ReprojectionSetMirroringOption(const Hmd2::MirroringOption* option);
 Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQueryDisplayBufferSizeAlign();
 Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionQuerySeeThroughBufferSizeAlign();
 Hmd2::SizeAlign APS5_VABI sceHmd2ReprojectionGetMirroringDisplayBufferSizeAlign();

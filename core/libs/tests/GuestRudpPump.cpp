@@ -8,13 +8,13 @@
 extern "C" {
 int APS5_VABI sceRudpInit_nid_postfix(void*, int);
 int APS5_VABI sceRudpEnd();
-int APS5_VABI sceRudpProcessEvents();
+int APS5_VABI sceRudpProcessEvents(std::uint64_t timeout);
 int APS5_VABI sceRudpNetFlush();
 int APS5_VABI sceRudpGetMaxSegmentSize(std::uint16_t*);
 int APS5_VABI sceRudpSetMaxSegmentSize(std::uint16_t);
 int APS5_VABI sceRudpCreateContext(void (APS5_VABI*)(int, int, int, void*), void*, int*);
 int APS5_VABI sceRudpTerminate(int);
-int APS5_VABI sceRudpNetReceived(int, const std::uint8_t*, std::size_t, const void*, std::uint32_t);
+int APS5_VABI sceRudpNetReceived(int socketId, const void* data, std::size_t dataSize, const void* sourceAddress, std::uint32_t sourceAddressSize);
 }
 
 static void Require(bool value, int line) {
@@ -29,7 +29,7 @@ int main() {
     constexpr int notInitialized = static_cast<int>(0x80770001);
     constexpr int invalidArgument = static_cast<int>(0x80770004);
     std::uint16_t segmentSize = 0x5a5a;
-    CHECK(sceRudpProcessEvents() == notInitialized);
+    CHECK(sceRudpProcessEvents(0) == notInitialized);
     CHECK(sceRudpNetFlush() == notInitialized);
     CHECK(sceRudpGetMaxSegmentSize(&segmentSize) == notInitialized);
     CHECK(segmentSize == 0x5a5a);
@@ -37,7 +37,7 @@ int main() {
 
     alignas(8) static unsigned char pool[0xC58];
     CHECK(sceRudpInit_nid_postfix(pool, sizeof(pool)) == 0);
-    CHECK(sceRudpProcessEvents() == 0);
+    CHECK(sceRudpProcessEvents(0) == 0);
     CHECK(sceRudpNetFlush() == 0);
     CHECK(sceRudpGetMaxSegmentSize(nullptr) == invalidArgument);
     CHECK(sceRudpGetMaxSegmentSize(&segmentSize) == 0);

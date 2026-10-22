@@ -92,6 +92,7 @@ void testRegistrationRejections() {
 }
 
 void testRegistration() {
+    std::fill(memory(), memory() + memoryBytes, std::uint8_t{0x77});
     const auto before = snapshot();
     check(sceAgcSetAmmSemaphoreMemory(memory(), memoryBytes) == 0, "registering the AMM semaphore memory failed");
     check(std::all_of(memory(), memory() + memoryBytes, [](std::uint8_t byte) { return byte == 0; }), "registration did not clear the whole semaphore memory");

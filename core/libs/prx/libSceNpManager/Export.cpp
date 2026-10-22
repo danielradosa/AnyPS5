@@ -358,10 +358,9 @@ int APS5_VABI sceNpIntRegisterGamePresenceCallback(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-int APS5_VABI sceNpIsPlusMember(int userId, bool* isPlusMember) {
-    (void)userId;
-    if (!isPlusMember) return SCE_NP_ERROR_INVALID_ARGUMENT;
-    *isPlusMember = false;
+int APS5_VABI sceNpIsPlusMember(int, bool* isMember) {
+    if (!isMember) return SCE_NP_ERROR_INVALID_ARGUMENT;
+    *isMember = false;
     return 0;
 }
 int APS5_VABI sceNpManagerIntAbortRequest(void) {
@@ -695,9 +694,9 @@ int APS5_VABI sceNpCheckCallback(void) {
     return 0;
 }
 
-int APS5_VABI sceNpCheckNpAvailability(int req_id, const NpOnlineId* online_id) {
- (void)req_id;
- if (!online_id) return SCE_NP_ERROR_INVALID_ARGUMENT;
+int APS5_VABI sceNpCheckNpAvailability(std::int32_t requestId, const NpOnlineId* onlineId, std::uint8_t* available) {
+ if (requestId == 0 || onlineId == nullptr) return SCE_NP_ERROR_INVALID_ARGUMENT;
+ if (available != nullptr) *available = 0;
  return SCE_NP_ERROR_USER_NOT_FOUND;
 }
 
@@ -883,10 +882,18 @@ int APS5_VABI sceNpRegisterStateCallback(NpStateCallback callback, void* userdat
 }
 
 int APS5_VABI sceNpSetContentRestriction(const NpContentRestriction* restriction) {
+    struct Fields {
+        std::uint64_t size;
+        std::int8_t defaultAgeRestriction;
+        std::uint8_t padding[3];
+        std::int32_t ageRestrictionCount;
+        const void* ageRestrictions;
+    };
     if (!restriction) return SCE_NP_ERROR_INVALID_ARGUMENT;
-    if (restriction->size != sizeof(NpContentRestriction)) return SCE_NP_ERROR_INVALID_SIZE;
-    if (restriction->default_age_restriction < 0 || restriction->age_restriction_count > 0x100) return SCE_NP_ERROR_INVALID_ARGUMENT;
-    if (restriction->age_restriction_count > 0 && !restriction->age_restriction) return SCE_NP_ERROR_INVALID_ARGUMENT;
+    const auto* fields = reinterpret_cast<const Fields*>(restriction);
+    if (fields->size != sizeof(Fields)) return SCE_NP_ERROR_INVALID_SIZE;
+    if (fields->defaultAgeRestriction < 0 || fields->ageRestrictionCount > 0x100) return SCE_NP_ERROR_INVALID_ARGUMENT;
+    if (fields->ageRestrictionCount > 0 && !fields->ageRestrictions) return SCE_NP_ERROR_INVALID_ARGUMENT;
     return 0;
 }
 
@@ -975,7 +982,7 @@ int APS5_VABI sceNpGetSandboxInfo(void* sandbox_info) {
 }
 
 APS5_EXPORT("8weiQyIdI3A", sceNpUnknown_8weiQyIdI3A);
-int APS5_VABI sceNpUnknown_8weiQyIdI3A(int userId, void* buffer) {
+int APS5_VABI sceNpUnknown_8weiQyIdI3A(int userId, const NpOnlineId* buffer) {
     (void)userId;
     (void)buffer;
     NotImplemented_nid_no_patch(__func__);
@@ -991,6 +998,55 @@ int APS5_VABI sceNpUnknown_WxLcN76q19o(void) {
 
 int APS5_VABI sceNpCheckCallbackForLib() {
     return sceNpCheckCallback();
+}
+
+}
+
+extern "C" {
+
+int APS5_VABI sceNpInGameMessageCreateHandle() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpInGameMessageDeleteHandle() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpInGameMessageInitialize() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpInGameMessagePrepare() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpInGameMessageSendData() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpInGameMessageTerminate() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpSnsFacebookCreateRequest() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpSnsFacebookDeleteRequest() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceNpSnsFacebookGetAccessToken() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
 }
 
 }

@@ -1,4 +1,6 @@
 #include "SceTypes.hpp"
+#include "ProcessParametersFixture.hpp"
+#include <array>
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <atomic>
 #include <chrono>
@@ -47,17 +49,16 @@ int APS5_VABI sceHttpSetAuthInfoCallback(int, HttpAuthInfoCallback, void*);
 int APS5_VABI sceHttpParseStatusLine(const char*, std::size_t, std::int32_t*, std::int32_t*, std::int32_t*, const char**, std::size_t*);
 struct HttpMemoryPoolStats {
     std::uint64_t poolSize;
-    std::uint64_t maxInuseSize;
-    std::uint64_t currentInuseSize;
-    std::int32_t reserved;
+    std::uint64_t peakUsedSize;
+    std::uint64_t usedSize;
 };
 struct HttpCookieStats {
-    std::uint64_t currentInuseSize;
-    std::uint32_t currentInuseNum;
-    std::uint64_t maxInuseSize;
-    std::uint32_t maxInuseNum;
-    std::uint32_t removedNum;
-    std::int32_t reserved;
+    std::uint64_t usedBytes;
+    std::uint32_t cookieCount;
+    std::uint32_t reserved;
+    std::uint64_t peakUsedBytes;
+    std::uint32_t peakCookieCount;
+    std::uint32_t evictedCookieCount;
 };
 int APS5_VABI sceHttpCreateTemplate(int, const char*, int, int);
 int APS5_VABI sceHttpCreateConnectionWithURL(int, const char*, int);
@@ -84,7 +85,7 @@ int APS5_VABI sceHttpSetCookieMaxNum(int, std::uint32_t);
 int APS5_VABI sceHttpSetCookieMaxNumPerDomain(int, std::uint32_t);
 int APS5_VABI sceHttpSetCookieMaxSize(int, std::uint32_t);
 int APS5_VABI sceHttpSetCookieTotalMaxSize(int, std::uint32_t);
-int APS5_VABI sceHttpSetCookieSendCallback(int, int (*)(int, const char*, const char*, void*), void*);
+int APS5_VABI sceHttpSetCookieSendCallback(int, int (APS5_VABI *)(int, const char*, const char*, void*), void*);
 int APS5_VABI sceHttpSetHttp09Enabled(int, int);
 int APS5_VABI sceHttpSetDelayBuildRequestEnabled(int, int);
 int APS5_VABI sceHttpCacheRedirectedConnectionEnabled(int, int);
@@ -95,6 +96,8 @@ int APS5_VABI sceHttpAbortRequestForce(int);
 int APS5_VABI sceHttpAddRequestHeader(int, const char*, const char*, std::uint32_t);
 int APS5_VABI sceHttpRemoveRequestHeader(int, const char*);
 }
+
+alignas(16) static std::array<std::byte, 0x40> processParameters{};
 
 static void Require(bool value) { if (!value) std::abort(); }
 
@@ -142,13 +145,13 @@ static void CheckUriEscapeBytes() {
     }
 }
 
-static int AuthInfo(int, int, const char*, char*, char*, int, std::uint8_t**, std::uint64_t*, int*, void*) { std::abort(); }
+static int APS5_VABI AuthInfo(int, int, const char*, char*, char*, int, std::uint8_t**, std::uint64_t*, int*, void*) { std::abort(); }
 
 static void APS5_VABI RequestStatusCallback(int, int, void* argument) {
     ++*static_cast<int*>(argument);
 }
 
-static int CookieSend(int, const char*, const char*, void*) { std::abort(); }
+static int APS5_VABI CookieSend(int, const char*, const char*, void*) { std::abort(); }
 
 static int Flag(int (APS5_VABI *get)(int, int*), int id) {
     int value = -1;
@@ -191,7 +194,7 @@ static void CheckSettings() {
     Require(sceHttpGetMemoryPoolStats(context, nullptr) == invalidValue);
     std::memset(&pool, 0x5a, sizeof(pool));
     Require(sceHttpGetMemoryPoolStats(context, &pool) == 0);
-    Require(pool.poolSize == 0x24000 && pool.maxInuseSize == 0 && pool.currentInuseSize == 0 && pool.reserved == 0);
+    Require(pool.poolSize == 0x24000 && pool.peakUsedSize == 0 && pool.usedSize == 0);
     Require(sceHttpGetCookieStats(-1, &cookies) == invalidId);
     Require(sceHttpGetCookieStats(context, nullptr) == invalidValue);
     std::memset(&cookies, 0x5a, sizeof(cookies));
@@ -305,6 +308,28 @@ static void CheckSettings() {
 }
 
 int main() {
+    const std::uint64_t processSize = processParameters.size();
+    const std::uint32_t processMagic = 0x4942524f;
+    std::uint32_t sdkVersion = 0x1000000;
+    std::memcpy(processParameters.data(), &processSize, sizeof(processSize));
+    std::memcpy(processParameters.data() + 8, &processMagic, sizeof(processMagic));
+    std::memcpy(processParameters.data() + 16, &sdkVersion, sizeof(sdkVersion));
+    Require(ProcessParametersFixture::Install(processParameters.data(), processParameters.size()));
+    for (const std::uint32_t version : {0u, 0xffffffu, 0x1000000u}) {
+        std::memcpy(processParameters.data() + 16, &version, sizeof(version));
+        for (unsigned value = 1; value < 256; ++value) {
+            if (value == '%') continue;
+            const char input[]{static_cast<char>(value), 0};
+            char output[]{'x', 'x'};
+            std::size_t required = 123;
+            const bool allowed = version >= 0x1000000 || (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '*' || value == '-' || value == '.' || value == '_' || value == '+';
+            Require(sceHttpUriUnescape(output, &required, sizeof(output), input) == (allowed ? 0 : static_cast<int>(0x80433060)));
+            Require(allowed ? output[0] == input[0] && output[1] == 0 && required == 2 : output[0] == 'x' && output[1] == 'x' && required == 123);
+        }
+        char output[2]{};
+        Require(sceHttpUriUnescape(output, nullptr, sizeof(output), "%7E") == 0 && output[0] == '~');
+    }
+    std::memcpy(processParameters.data() + 16, &sdkVersion, sizeof(sdkVersion));
     CheckSettings();
     int callbackCount = 0;
     const auto request = sceHttpCreateRequest2(1, "GET", "/", 0);
@@ -361,7 +386,7 @@ int main() {
     Require(sceHttpUriParse(&element, "http://[::1]:8080/index.html", pool, nullptr, sizeof(pool)) == 0);
     Require(Equal(element.hostname, "::1") && element.port == 8080 && Equal(element.path, "/index.html"));
     Require(sceHttpUriBuild(built, nullptr, sizeof(built), &element, buildAll) == 0);
-    Require(Equal(built, "http://[::1]:8080/index.html"));
+    Require(Equal(built, "http://::1:8080/index.html"));
 
     Require(sceHttpUriParse(&element, "mailto:someone@example.com", pool, nullptr, sizeof(pool)) == 0);
     Require(element.opaque != 0 && element.port == 0);
@@ -384,6 +409,30 @@ int main() {
     Require(sceHttpUriParse(nullptr, "http://bad host/", nullptr, &required, 0) == invalidUrl);
     Require(sceHttpUriBuild(built, nullptr, sizeof(built), nullptr, buildAll) == invalidUrl);
     Require(sceHttpUriBuild(nullptr, nullptr, 0, &element, buildAll) == invalidValue);
+
+    {
+        SceHttpUriElement bounded{};
+        bounded.opaque = 2;
+        char scheme[33];
+        char hostname[256];
+        std::memset(scheme, 's', sizeof(scheme));
+        std::memset(hostname, 'h', sizeof(hostname));
+        bounded.scheme = scheme;
+        bounded.hostname = hostname;
+        char output[512];
+        Require(sceHttpUriBuild(output, &required, sizeof(output), &bounded, 3) == 0);
+        Require(required == 32 + 1 + 2 + 255 + 1);
+        Require(output[32] == ':' && output[33] == '/' && output[34] == '/');
+        Require(output[required - 1] == '\0');
+        scheme[0] = '\0';
+        Require(sceHttpUriBuild(output, &required, sizeof(output), &bounded, 1) == 0);
+        Require(required == 4 && Equal(output, "//"));
+        char prefix[] = "HTTPS-extra";
+        bounded.scheme = prefix;
+        bounded.port = 443;
+        Require(sceHttpUriBuild(output, &required, sizeof(output), &bounded, 4) == 0);
+        Require(required == 3 && Equal(output, "//"));
+    }
 
     char escaped[64];
     Require(sceHttpUriEscape(nullptr, &required, 0, "a b/~\xC3\xA9") == 0);
@@ -417,9 +466,9 @@ int main() {
         const std::size_t size = std::strlen(row[1]) + 1;
         Require(sceHttpUriUnescape(nullptr, &required, 0, row[0]) == 0 && required == size);
         std::memset(escaped, 'Z', sizeof(escaped));
-        required = 77;
-        Require(sceHttpUriUnescape(escaped, &required, size - 1, row[0]) == outOfMemory && required == 77);
-        Require(std::string_view(escaped, size - 1) == row[1] && escaped[size - 1] == 'Z');
+        required = 123;
+        Require(sceHttpUriUnescape(escaped, &required, size - 1, row[0]) == outOfMemory && required == 123);
+        Require(std::memcmp(escaped, row[1], size - 1) == 0 && escaped[size - 1] == 'Z');
         Require(sceHttpUriUnescape(escaped, nullptr, size, row[0]) == 0);
         Require(Equal(escaped, row[1]) && escaped[size] == 'Z');
     }
@@ -438,6 +487,17 @@ int main() {
     required = 123;
     Require(sceHttpUriUnescape(escaped, &required, sizeof(escaped), nullptr) == invalidValue);
     Require(required == 123 && Equal(escaped, "A/%20"));
+
+    for (const char* malformed : {"%", "%1", "%1g", "%gg", "%+1", "%-1", "prefix%4", "prefix%xy"}) {
+        std::memset(escaped, 'Z', sizeof(escaped));
+        required = 123;
+        Require(sceHttpUriUnescape(escaped, &required, sizeof(escaped), malformed) == static_cast<int>(0x80433060));
+        Require(required == 123);
+        for (char value : escaped) Require(value == 'Z');
+    }
+    std::memset(escaped, 'Z', sizeof(escaped));
+    Require(sceHttpUriUnescape(escaped, &required, 2, "a%20b") == outOfMemory);
+    Require(required == 123 && escaped[0] == 'a' && escaped[1] == ' ' && escaped[2] == 'Z');
 
     char bytes[256], encodedBytes[766], decodedBytes[256];
     for (std::size_t i = 1; i < 256; ++i) bytes[i - 1] = static_cast<char>(i);

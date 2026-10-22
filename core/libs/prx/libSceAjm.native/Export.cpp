@@ -9,22 +9,6 @@
 #include <stdexcept>
 #include <string>
 
-struct AjmDecWVorbisHeaderPacketParam {
-    std::uint64_t size;
-    std::uint32_t channels;
-    std::uint32_t sampleRate;
-    std::int32_t bytesPerSecond;
-    std::int32_t blockSize0Log2;
-    std::int32_t blockSize1Log2;
-    std::uint32_t reserved;
-    const std::uint8_t* setupPacket;
-    std::uint64_t setupPacketSize;
-    std::uint8_t* output;
-    std::uint64_t outputSize;
-    std::uint64_t writtenSize;
-};
-static_assert(sizeof(AjmDecWVorbisHeaderPacketParam) == 0x48);
-
 namespace {
 
 constexpr int AJM_WVORBIS_ERROR_INVALID_PARAMETER = static_cast<int>(0x8A6E0001);
@@ -56,6 +40,37 @@ std::uint8_t* PutVorbisHeaderStart(std::uint8_t* out, std::uint8_t type) {
 }
 
 }
+
+struct WVorbisHeaderPacketParameter {
+    std::size_t size;
+    std::int32_t channels;
+    std::uint32_t sampleRate;
+    std::int32_t bytesPerSecond;
+    std::int32_t shortBlockExponent;
+    std::int32_t longBlockExponent;
+    std::uint32_t reserved;
+    const void* setupPacket;
+    std::size_t setupPacketSize;
+    void* output;
+    std::size_t outputCapacity;
+    std::size_t outputSize;
+};
+
+struct WVorbisSetupPacketParameter {
+    std::size_t size;
+    std::int32_t channels;
+    std::uint32_t reserved;
+    const void* input;
+    std::size_t inputSize;
+    void* output;
+    std::size_t outputCapacity;
+    std::size_t outputSize;
+};
+
+static_assert(sizeof(WVorbisHeaderPacketParameter) == 72);
+static_assert(offsetof(WVorbisHeaderPacketParameter, setupPacket) == 32);
+static_assert(sizeof(WVorbisSetupPacketParameter) == 56);
+static_assert(offsetof(WVorbisSetupPacketParameter, input) == 16);
 
 extern "C" {
 
@@ -95,36 +110,36 @@ const char* APS5_VABI sceAjmStrError(int error) {
  return ErrorNames[code - FirstError];
 }
 
-int APS5_VABI sceAjmDecWVorbisCreateHeaderPacket(AjmDecWVorbisHeaderPacketParam* param) {
-    if (param == nullptr) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
-    if (param->size != sizeof(AjmDecWVorbisHeaderPacketParam)) return AJM_WVORBIS_ERROR_INVALID_SIZE;
-    if (param->bytesPerSecond < 0) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
-    if (WVorbisBlockSize(param->blockSize0Log2) < VORBIS_BLOCK_SIZE_MIN) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
-    if (param->blockSize1Log2 < param->blockSize0Log2 || WVorbisBlockSize(param->blockSize1Log2) > VORBIS_BLOCK_SIZE_MAX)
+int APS5_VABI sceAjmDecWVorbisCreateHeaderPacket(WVorbisHeaderPacketParameter* parameter) {
+    if (parameter == nullptr) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
+    if (parameter->size != sizeof(WVorbisHeaderPacketParameter)) return AJM_WVORBIS_ERROR_INVALID_SIZE;
+    if (parameter->bytesPerSecond < 0) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
+    if (WVorbisBlockSize(parameter->shortBlockExponent) < VORBIS_BLOCK_SIZE_MIN) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
+    if (parameter->longBlockExponent < parameter->shortBlockExponent || WVorbisBlockSize(parameter->longBlockExponent) > VORBIS_BLOCK_SIZE_MAX)
         return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
-    if (param->setupPacket == nullptr) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
-    if (param->setupPacketSize < WVORBIS_SETUP_MIN_SIZE) return AJM_WVORBIS_ERROR_INVALID_SETUP;
-    if (param->output == nullptr) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
+    if (parameter->setupPacket == nullptr) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
+    if (parameter->setupPacketSize < WVORBIS_SETUP_MIN_SIZE) return AJM_WVORBIS_ERROR_INVALID_SETUP;
+    if (parameter->output == nullptr) return AJM_WVORBIS_ERROR_INVALID_PARAMETER;
     constexpr std::size_t headers = WVORBIS_LENGTH_TABLE_SIZE + VORBIS_IDENTIFICATION_SIZE + VORBIS_COMMENT_SIZE;
-    if (param->outputSize < headers || param->setupPacketSize > param->outputSize - headers) return AJM_WVORBIS_ERROR_OUTPUT_TOO_SMALL;
+    if (parameter->outputCapacity < headers || parameter->setupPacketSize > parameter->outputCapacity - headers) return AJM_WVORBIS_ERROR_OUTPUT_TOO_SMALL;
 
-    const std::uint8_t* setup = param->setupPacket;
+    const auto* setup = static_cast<const std::uint8_t*>(parameter->setupPacket);
     const auto part1 = static_cast<std::uint16_t>(setup[WVORBIS_SETUP_PART1_LENGTH_OFFSET] | setup[WVORBIS_SETUP_PART1_LENGTH_OFFSET + 1] << 8);
-    std::uint8_t* out = param->output;
+    auto* out = static_cast<std::uint8_t*>(parameter->output);
     out = PutLittle(out, 0, 2);
     out = PutLittle(out, VORBIS_IDENTIFICATION_SIZE, 2);
     out = PutLittle(out, VORBIS_COMMENT_SIZE, 2);
     out = PutLittle(out, part1, 2);
-    out = PutLittle(out, static_cast<std::uint16_t>(param->setupPacketSize) - part1, 2);
+    out = PutLittle(out, static_cast<std::uint16_t>(parameter->setupPacketSize) - part1, 2);
 
     out = PutVorbisHeaderStart(out, 1);
     out = PutLittle(out, 0, 4);
-    out = PutLittle(out, param->channels, 1);
-    out = PutLittle(out, param->sampleRate, 4);
+    out = PutLittle(out, static_cast<std::uint32_t>(parameter->channels), 1);
+    out = PutLittle(out, parameter->sampleRate, 4);
     out = PutLittle(out, 0, 4);
-    out = PutLittle(out, static_cast<std::uint32_t>(param->bytesPerSecond) * 8u, 4);
+    out = PutLittle(out, static_cast<std::uint32_t>(parameter->bytesPerSecond) * 8u, 4);
     out = PutLittle(out, 0, 4);
-    *out++ = static_cast<std::uint8_t>((param->blockSize0Log2 & 0xF) | (param->blockSize1Log2 & 0xF) << 4);
+    *out++ = static_cast<std::uint8_t>((parameter->shortBlockExponent & 0xF) | (parameter->longBlockExponent & 0xF) << 4);
     *out++ = 1;
 
     out = PutVorbisHeaderStart(out, 3);
@@ -132,12 +147,12 @@ int APS5_VABI sceAjmDecWVorbisCreateHeaderPacket(AjmDecWVorbisHeaderPacketParam*
     out = PutLittle(out, 0, 4);
     *out++ = 1;
 
-    std::memcpy(out, setup, param->setupPacketSize);
-    param->writtenSize = headers + param->setupPacketSize;
+    std::memcpy(out, setup, parameter->setupPacketSize);
+    parameter->outputSize = headers + parameter->setupPacketSize;
     return 0;
 }
 
-int APS5_VABI sceAjmDecWVorbisCreateSetupPacket(void) {
+int APS5_VABI sceAjmDecWVorbisCreateSetupPacket(WVorbisSetupPacketParameter* parameter) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

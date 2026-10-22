@@ -28,6 +28,7 @@ int APS5_VABI sceUltMutexTryLock(void*);
 
 constexpr int Null = -2139029503;
 constexpr int Invalid = -2139029500;
+constexpr int Permission = -2139029499;
 constexpr int State = -2139029498;
 constexpr int Busy = -2139029497;
 
@@ -46,8 +47,10 @@ struct Fixture {
     Object mutex;
     Object condition;
 
-    Fixture() {
-        CHECK(sceUltMutexCreate(&mutex, "mutex", nullptr, nullptr, 0x12000000) == 0);
+    explicit Fixture(bool recursive = false) {
+        UltMutexOptParam options{};
+        options.attribute = recursive ? 1 : 0;
+        CHECK(sceUltMutexCreate(&mutex, "mutex", nullptr, &options, 0x12000000) == 0);
         CHECK(_sceUltConditionVariableCreate(&condition, "condition", &mutex, nullptr, 0x12000000) == 0);
     }
 
@@ -63,7 +66,7 @@ struct Fixture {
 };
 
 static void Validation() {
-    Fixture f;
+    Fixture f(true);
     Object unused;
     CHECK(sceUltMutexDestroy(nullptr) == Null);
     CHECK(sceUltMutexDestroy(&unused) == State);
@@ -78,16 +81,16 @@ static void Validation() {
     CHECK(sceUltConditionVariableWait(&unused) == State);
     CHECK(_sceUltConditionVariableCreate(&unused, nullptr, nullptr, nullptr, 0) == Null);
     CHECK(sceUltConditionVariableWait(&f.condition) == State);
-    CHECK(sceUltMutexUnlock(&f.mutex) == State);
+    CHECK(sceUltMutexUnlock(&f.mutex) == Permission);
     bool unsupported = false;
     try { _sceUltConditionVariableCreate(&unused, nullptr, &f.mutex, &unused, 0); }
     catch (const std::runtime_error&) { unsupported = true; }
     CHECK(unsupported);
     f.Lock();
-    CHECK(sceUltMutexDestroy(&f.mutex) == Busy);
+    CHECK(sceUltMutexDestroy(&f.mutex) == State);
     CHECK(sceUltMutexCreate(&f.mutex, nullptr, nullptr, nullptr, 0) == State);
     auto other = std::async(std::launch::async, [&] {
-        CHECK(sceUltMutexUnlock(&f.mutex) == State);
+        CHECK(sceUltMutexUnlock(&f.mutex) == Permission);
         CHECK(sceUltConditionVariableWait(&f.condition) == State);
     });
     other.get();
@@ -96,9 +99,9 @@ static void Validation() {
     try { f.Wait(); } catch (const std::runtime_error&) { unsupported = true; }
     CHECK(unsupported);
     f.Unlock();
-    CHECK(sceUltMutexDestroy(&f.mutex) == Busy);
+    CHECK(sceUltMutexDestroy(&f.mutex) == State);
     f.Unlock();
-    CHECK(sceUltMutexDestroy(&f.mutex) == Busy);
+    CHECK(sceUltMutexDestroy(&f.mutex) == State);
     CHECK(sceUltConditionVariableDestroy(&f.condition) == 0);
     CHECK(sceUltMutexDestroy(&f.mutex) == 0);
     CHECK(sceUltMutexLock(&f.mutex) == State);
@@ -126,13 +129,13 @@ static void Handoff() {
         entered = 1;
         f.Wait();
         CHECK(payload == 42);
-        CHECK(sceUltMutexDestroy(&f.mutex) == Busy);
+        CHECK(sceUltMutexDestroy(&f.mutex) == State);
         f.Unlock();
     });
     Await(entered, 1);
     f.Lock();
     CHECK(sceUltConditionVariableDestroy(&f.condition) == Busy);
-    CHECK(sceUltMutexDestroy(&f.mutex) == Busy);
+    CHECK(sceUltMutexDestroy(&f.mutex) == State);
     CHECK(waiter.wait_for(std::chrono::milliseconds(30)) == std::future_status::timeout);
     f.Unlock();
     f.Lock();

@@ -12,6 +12,10 @@
 #include <limits>
 #include <stdexcept>
 
+namespace Hmd2 {
+struct ReprojectionOutput;
+}
+
 extern "C" {
 std::int32_t APS5_VABI sceHmd2GazeGetResult(const void* param, void* result);
 std::int32_t APS5_VABI sceHmd2GazeGetResultForFoveatedRendering();
@@ -67,6 +71,9 @@ std::int32_t APS5_VABI Hmd2BeforeInitializeError1003();
 std::int32_t APS5_VABI Hmd2BeforeInitializeMinusOne();
 std::int32_t APS5_VABI Hmd2BeforeInitializeValue0400();
 std::int32_t APS5_VABI Hmd2BeforeInitializeValue20000();
+int APS5_VABI sceHmd2GazeActivateGazeTracking(std::int32_t mode);
+int APS5_VABI sceHmd2ReprojectionGetCurrentOutput(Hmd2::ReprojectionOutput* output);
+int APS5_VABI sceHmd2SetFieldOfView(const Hmd2::FieldOfView* fieldOfView);
 }
 
 namespace {
@@ -116,8 +123,8 @@ void TestReprojectionWithoutSession() {
     for (int call = 0; call < 2; ++call) {
         Require(sceHmd2ReprojectionDisableMirroring() == Hmd2::ReprojectionNotInitialized, "disable mirroring without a reprojection session");
         Require(sceHmd2ReprojectionDisableVrMode() == Hmd2::ReprojectionNotInitialized, "disable VR mode without a reprojection session");
-        Require(sceHmd2ReprojectionGetStatus() == Hmd2::ReprojectionNotInitialized, "status without a reprojection session");
-        Require(sceHmd2ReprojectionSetMirroringOption(call == 0 ? nullptr : option) == Hmd2::ReprojectionNotInitialized,
+        Require(sceHmd2ReprojectionGetStatus(nullptr) == Hmd2::ReprojectionNotInitialized, "status without a reprojection session");
+        Require(sceHmd2ReprojectionSetMirroringOption(call == 0 ? nullptr : reinterpret_cast<const Hmd2::MirroringOption*>(option)) == Hmd2::ReprojectionNotInitialized,
                 "mirroring option without a reprojection session");
     }
 }
@@ -339,26 +346,26 @@ void TestReprojection() {
     alignas(Hmd2::ReprojectionBufferAlign) static std::uint8_t work[Hmd2::ReprojectionBufferSize]{};
     std::uint8_t display[64]{};
     std::uint8_t seeThrough[64]{};
-    Hmd2::ReprojectionInitializeParam initParam{};
-    Require(sceHmd2ReprojectionInitialize(nullptr) == Hmd2::ParameterNull, "initialization without a param");
-    Require(sceHmd2ReprojectionInitialize(&initParam) == Hmd2::ParameterNull, "initialization without buffers");
-    initParam.reprojectionBuffer = work;
-    Require(sceHmd2ReprojectionInitialize(&initParam) == Hmd2::ParameterNull, "initialization without a display buffer");
-    initParam.displayBuffer = display;
-    initParam.seeThroughBuffer = seeThrough;
+    Hmd2::ReprojectionInitializeParameter initParam{};
+    Require(sceHmd2ReprojectionInitialize(nullptr, nullptr) == Hmd2::ParameterNull, "initialization without a param");
+    Require(sceHmd2ReprojectionInitialize(&initParam, nullptr) == Hmd2::ParameterNull, "initialization without buffers");
+    initParam.workMemory = work;
+    Require(sceHmd2ReprojectionInitialize(&initParam, nullptr) == Hmd2::ParameterNull, "initialization without a display buffer");
+    initParam.displayMemory = display;
+    initParam.auxiliaryMemory = seeThrough;
     bool threw = false;
     try {
-        sceHmd2ReprojectionInitialize(&initParam);
+        sceHmd2ReprojectionInitialize(&initParam, nullptr);
     } catch (const std::runtime_error&) {
         threw = true;
     }
     Require(threw, "initialization with a see-through buffer did not throw");
-    initParam.seeThroughBuffer = nullptr;
-    initParam.reprojectionTiming = 0;
-    Require(sceHmd2ReprojectionInitialize(&initParam) == 0, "initialization did not succeed");
+    initParam.auxiliaryMemory = nullptr;
+    initParam.timingInterval = 0;
+    Require(sceHmd2ReprojectionInitialize(&initParam, nullptr) == 0, "initialization did not succeed");
     const auto* state = reinterpret_cast<const Hmd2::ReprojectionState*>(work);
     Require(state->outputMode == 0 && state->timingUs == 3000, "the initial state did not carry the default timing");
-    Require(sceHmd2ReprojectionInitialize(&initParam) == Hmd2::ReprojectionAlreadyInitialized, "a second initialization");
+    Require(sceHmd2ReprojectionInitialize(&initParam, nullptr) == Hmd2::ReprojectionAlreadyInitialized, "a second initialization");
     Require(sceHmd2ReprojectionSetTiming(2500) == 0, "setting the timing did not succeed");
     Require(state->timingUs == 2500, "the timing was not recorded in the work buffer");
     Require(sceHmd2ReprojectionSetTiming(2001) == 0 && state->timingUs == 2100, "the timing was not rounded up to hundreds");
@@ -380,32 +387,32 @@ void TestReprojection() {
     Require(sceHmd2ReprojectionEnableVrMode(0x2000F) == Hmd2::VideoOutNoDevice, "enabling the second VR mode did not report no device");
     Require(sceHmd2ReprojectionEnableVrMode(0) == Hmd2::VideoOutInvalidValue, "an unknown output mode did not report invalid value");
     Require(state->outputMode == 0, "the output mode changed without a VR runtime");
-    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(6, 0x100000001, 1) == Hmd2::ParameterInvalid,
+    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(6) == Hmd2::ParameterInvalid,
             "a positional setting above the range did not report invalid parameter");
-    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(-1, 0x100000001, 1) == Hmd2::ParameterInvalid,
-            "a negative positional setting did not report invalid parameter");
+    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(std::numeric_limits<std::uint8_t>::max()) == Hmd2::ParameterInvalid,
+            "the largest positional setting did not report invalid parameter");
     Hmd2::SizeAlign positional = sceHmd2ReprojectionQueryBufferSizeAlign();
     Require(positional.size == Hmd2::ReprojectionBufferSize && positional.align == Hmd2::ReprojectionBufferAlign,
             "a rejected positional setting changed the work-size answer");
-    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(2, 0x100000001, 1) == 0,
+    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(2) == 0,
             "the positional setting did not succeed");
     positional = sceHmd2ReprojectionQueryBufferSizeAlign();
     Require(positional.size == Hmd2::ReprojectionPositionalBufferSize + 2 * Hmd2::ReprojectionPositionalBufferSizeStep
                 && positional.align == Hmd2::ReprojectionPositionalBufferAlign,
             "the positional work size did not follow the setting");
-    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(1, 0, 0) == 0,
+    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(1) == 0,
             "the lowest positional setting did not succeed");
     positional = sceHmd2ReprojectionQueryBufferSizeAlign();
     Require(positional.size == Hmd2::ReprojectionPositionalBufferSize + Hmd2::ReprojectionPositionalBufferSizeStep
                 && positional.align == Hmd2::ReprojectionPositionalBufferAlign,
             "the lowest positional work size did not answer the console's requirement");
-    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(5, 0, 0) == 0,
+    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(5) == 0,
             "the highest positional setting did not succeed");
     positional = sceHmd2ReprojectionQueryBufferSizeAlign();
     Require(positional.size == Hmd2::ReprojectionPositionalBufferSize + 5 * Hmd2::ReprojectionPositionalBufferSizeStep
                 && positional.align == Hmd2::ReprojectionPositionalBufferAlign,
             "the highest positional work size did not answer the console's requirement");
-    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(0, 0x100000001, 1) == 0,
+    Require(sceHmd2ReprojectionSetAllowPositionalReprojection(0) == 0,
             "clearing the positional setting did not succeed");
     const Hmd2::SizeAlign cleared = sceHmd2ReprojectionQueryBufferSizeAlign();
     Require(cleared.size == Hmd2::ReprojectionBufferSize && cleared.align == Hmd2::ReprojectionBufferAlign,
@@ -441,7 +448,8 @@ void UnmeasuredWithReprojectionSession() {
     RequireRuntimeError([] { sceHmd2ReprojectionBeginFrame(1); }, "begin frame with a session did not throw");
     RequireRuntimeError([] { sceHmd2ReprojectionDisableMirroring(); }, "disable mirroring with a session did not throw");
     RequireRuntimeError([] { sceHmd2ReprojectionDisableVrMode(); }, "disable VR mode with a session did not throw");
-    RequireRuntimeError([] { sceHmd2ReprojectionGetStatus(); }, "reprojection status with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionGetStatus(nullptr); }, "reprojection status with a session did not throw");
+    RequireRuntimeError([] { sceHmd2ReprojectionGetCurrentOutput(nullptr); }, "current output with a session did not throw");
     RequireRuntimeError([] { sceHmd2ReprojectionSetMirroringOption(nullptr); }, "mirroring option with a session did not throw");
     Require(Hmd2BeforeInitializeZero() == 0, "an answer without a session check depends on the reprojection session");
 }
@@ -454,6 +462,9 @@ int main() {
     TestReprojectionWithoutSession();
     TestBeforeInitialize();
     TestWithoutHeadset();
+    Require(sceHmd2GazeActivateGazeTracking(0) == 0, "gaze activation before initialization");
+    Require(sceHmd2ReprojectionGetCurrentOutput(nullptr) == Hmd2::ReprojectionNotInitialized, "reprojection before initialization");
+    Require(sceHmd2SetFieldOfView(nullptr) == Hmd2::ParameterNull, "null field of view");
     CheckUninitialized();
     TestReprojectionWithoutSession();
     TestReprojection();
