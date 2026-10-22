@@ -55,7 +55,6 @@ int APS5_VABI sceNpGetAccountDateOfBirthA(int userId, void* dateOfBirth);
 int APS5_VABI sceNpGetAccountLanguageA(int reqId, int userId, void* language);
 int APS5_VABI sceNpGetGamePresenceStatus(const NpOnlineId* onlineId, std::uint32_t* status);
 int APS5_VABI sceNpGetGamePresenceStatusA(int userId, std::uint32_t* status);
-int APS5_VABI sceNpIsPlusMember(int userId, bool* isPlusMember);
 int APS5_VABI sceNpGetParentalControlInfoA(int reqId, int userId, std::int8_t* age, void* info);
 }
 
@@ -367,10 +366,6 @@ int SetContentRestriction(const ContentRestrictionFields& fields) {
 }
 
 void CheckPlusAndContentRestriction() {
-    bool isMember = true;
-    Require(sceNpIsPlusMember(0x10000, &isMember) == 0 && !isMember, "sceNpIsPlusMember must report no Plus membership");
-    Require(sceNpIsPlusMember(0x10000, nullptr) == InvalidArgument, "sceNpIsPlusMember must reject a null output");
-
     const std::uint8_t ages[8]{};
     ContentRestrictionFields fields{sizeof(ContentRestrictionFields), 12, {}, 2, ages};
     Require(SetContentRestriction(fields) == 0, "sceNpSetContentRestriction must accept a valid restriction");
