@@ -2847,16 +2847,49 @@ void Recorder::NoteUnwrittenDrawSnapshot(std::uint64_t address, std::size_t byte
     unwrittenBytes += bytes;
 }
 
+// APS5_PROFILE_DRAW: what ReusableDrawSnapshot's lookups found, as [snapshots] every 10 s: no entry, unchanged since
+// its generation, refreshed by comparing the changed 64 KiB blocks (refreshDrawSnapshot: blocks and bytes compared,
+// bytes copied in), or dropped. Only the committer looks these up; plain counters under the GPU mutex.
+namespace {
+
+struct SnapshotReuse {
+    std::uint64_t lookups = 0, missing = 0, unchanged = 0, refreshed = 0, dropped = 0, blocks = 0, compared = 0, copied = 0;
+};
+SnapshotReuse snapshotReuse;
+std::chrono::steady_clock::time_point snapshotReuseReported = std::chrono::steady_clock::now();
+
+void reportSnapshotReuse() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - snapshotReuseReported < std::chrono::seconds(10)) return;
+    snapshotReuseReported = now;
+    const auto r = std::exchange(snapshotReuse, {});
+    std::fprintf(stderr, "[snapshots] (10 s): %llu reuse lookups: %llu without an entry, %llu unchanged, %llu refreshed (%llu blocks, %.1f MiB compared, %.1f MiB copied in), %llu dropped\n", static_cast<unsigned long long>(r.lookups), static_cast<unsigned long long>(r.missing), static_cast<unsigned long long>(r.unchanged), static_cast<unsigned long long>(r.refreshed), static_cast<unsigned long long>(r.blocks), r.compared / 1048576.0, r.copied / 1048576.0, static_cast<unsigned long long>(r.dropped));
+}
+
+}
+
 std::shared_ptr<Buffer> Recorder::ReusableDrawSnapshot(std::uint64_t address, std::size_t bytes, SnapshotUse use, std::uint32_t* derived, std::uint64_t generation) {
+    const bool profile = DrawProfiled();
+    if (profile) {
+        ++snapshotReuse.lookups;
+        reportSnapshotReuse();
+    }
     auto found = use == SnapshotUse::Vertex ? drawSnapshots.lower_bound({address, use, bytes}) : drawSnapshots.find({address, use, bytes});
-    if (found == drawSnapshots.end() || std::get<0>(found->first) != address || std::get<1>(found->first) != use) return {};
+    if (found == drawSnapshots.end() || std::get<0>(found->first) != address || std::get<1>(found->first) != use) {
+        if (profile) ++snapshotReuse.missing;
+        return {};
+    }
     const bool sameRegistry = found->second.registryGeneration == GuestAllocations::GuestAllocationsGeneration_nid_postfix();
     if (!sameRegistry || !GuestMemory::UnchangedSince(address, bytes, found->second.generation)) {
         if (!sameRegistry || generation == 0 || use != SnapshotUse::Storage || !refreshDrawSnapshot(found->second, address, bytes)) {
+            if (profile) ++snapshotReuse.dropped;
             eraseDrawSnapshot(found);
             return {};
         }
+        if (profile) ++snapshotReuse.refreshed;
         found->second.generation = generation;
+    } else if (profile) {
+        ++snapshotReuse.unchanged;
     }
     auto& recency = drawSnapshotPools[SnapshotPool(use)].recency;
     recency.splice(recency.end(), recency, found->second.recent);
@@ -2899,6 +2932,11 @@ bool Recorder::refreshDrawSnapshot(DrawSnapshot& entry, std::uint64_t address, s
     }
     equal.assign(spans.size(), 0);
     CompareSpans(spans, equal);
+    if (DrawProfiled()) {
+        snapshotReuse.blocks += spans.size();
+        for (const auto& span : spans) snapshotReuse.compared += span.bytes;
+        for (std::size_t k = 0; k < spans.size(); ++k) snapshotReuse.copied += equal[k] != 0 ? 0u : spans[k].bytes;
+    }
     for (std::size_t k = 0; k < spans.size(); ++k) {
         if (equal[k] != 0) continue;
         const auto offset = static_cast<std::size_t>(static_cast<const std::byte*>(spans[k].first) - held.data());
