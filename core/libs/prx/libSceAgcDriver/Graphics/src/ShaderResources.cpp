@@ -152,6 +152,7 @@ struct TextureCache {
         std::uint64_t evicted = 0;
         std::uint64_t passed = 0;
         std::uint64_t stale = 0;
+        std::uint64_t idleHeld = 0;
     } counts;
     std::chrono::steady_clock::time_point countsReported = std::chrono::steady_clock::now();
     VkPhysicalDevice budgetDevice = VK_NULL_HANDLE;
@@ -297,7 +298,12 @@ bool admitTexture(TextureCache& cache, const TextureKey& key, std::uint64_t inco
             ++cache.counts.uncached;
             return false;
         }
-        const bool keep = back->accounted == 0 || (!over && back->texture.use_count() > 1);
+        // A held entry counts as in use only while something used it in the last HeldIdlePresents
+        // presents: idle resource-cache entries hold old sets (title, intro) forever, and kept
+        // under the ceiling they left a new working set nothing but uncached re-reads every frame.
+        constexpr std::uint64_t HeldIdlePresents = 60;
+        const bool held = back->texture.use_count() > 1 && std::max(back->present, back->texture->LastBound()) + HeldIdlePresents >= present;
+        const bool keep = back->accounted == 0 || (!over && held);
         if (keep && cache.passed < cache.entries.size()) {
             cache.entries.splice(cache.entries.begin(), cache.entries, back);
             ++cache.passed;
@@ -305,6 +311,7 @@ bool admitTexture(TextureCache& cache, const TextureKey& key, std::uint64_t inco
         } else if (keep && !over) {
             break;
         } else {
+            if (!over && back->texture.use_count() > 1) ++cache.counts.idleHeld;
             eraseTexture(cache, back);
             ++cache.counts.evicted;
         }
@@ -319,7 +326,7 @@ void reportCacheCounts(TextureCache& cache, std::uint64_t budget) {
     if (now - cache.countsReported < std::chrono::seconds(10)) return;
     cache.countsReported = now;
     const auto counts = std::exchange(cache.counts, {});
-    AgcDriver::ProfilePrint_nid_no_patch("[texture-cache] (10 s): %llu textures cached, %llu used uncached (first use this frame with the least recently used entry used this frame or the last, or a later use with it used this frame), %llu evicted, %llu held ones passed over, %llu found changed; %llu MiB in %zu entries, budget %llu MiB, frame %llu\n", static_cast<unsigned long long>(counts.inserted), static_cast<unsigned long long>(counts.uncached), static_cast<unsigned long long>(counts.evicted), static_cast<unsigned long long>(counts.passed), static_cast<unsigned long long>(counts.stale), static_cast<unsigned long long>(cache.bytes >> 20u), cache.entries.size(), static_cast<unsigned long long>(budget >> 20u), static_cast<unsigned long long>(Recorder::Presents()));
+    AgcDriver::ProfilePrint_nid_no_patch("[texture-cache] (10 s): %llu textures cached, %llu used uncached (first use this frame with the least recently used entry used this frame or the last, or a later use with it used this frame), %llu evicted (%llu of them held but idle), %llu held ones passed over, %llu found changed; %llu MiB in %zu entries, budget %llu MiB, frame %llu\n", static_cast<unsigned long long>(counts.inserted), static_cast<unsigned long long>(counts.uncached), static_cast<unsigned long long>(counts.evicted), static_cast<unsigned long long>(counts.idleHeld), static_cast<unsigned long long>(counts.passed), static_cast<unsigned long long>(counts.stale), static_cast<unsigned long long>(cache.bytes >> 20u), cache.entries.size(), static_cast<unsigned long long>(budget >> 20u), static_cast<unsigned long long>(Recorder::Presents()));
 }
 
 struct ImageMemoEntry {
@@ -3763,6 +3770,15 @@ bool chargeShaderKey(ChurnCounts& profile, const ResourceCache::Key& key, std::s
     return false;
 }
 
+// A hit binds the set's sampled textures without a sampled-cache lookup: stamp them so the cache
+// does not take them for idle.
+void markBound(const ShaderResources& resources) {
+    const auto present = Recorder::Presents();
+    for (const auto& texture : resources.SampledTextures()) {
+        if (texture != nullptr) texture->MarkBound(present);
+    }
+}
+
 }
 
 std::shared_ptr<ShaderResources> ResourceCache::Find(const Key& key) {
@@ -3776,6 +3792,7 @@ std::shared_ptr<ShaderResources> ResourceCache::Find(const Key& key) {
     }
     entries.splice(entries.begin(), entries, found->second);
     noteUse(key);
+    markBound(*found->second->second);
     return found->second->second;
 }
 
@@ -4028,6 +4045,7 @@ bool ResourceCache::Touch(const Key& key) {
     if (found == index.end()) return false;
     entries.splice(entries.begin(), entries, found->second);
     noteUse(key);
+    markBound(*found->second->second);
     return true;
 }
 

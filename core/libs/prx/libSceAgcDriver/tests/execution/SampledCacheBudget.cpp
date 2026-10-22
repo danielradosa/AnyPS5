@@ -697,6 +697,38 @@ void heldTests(const Context& context) {
     Require(TextureCacheUsage().sampledEntries == capacity && TextureCacheUsage().sampledBytes <= Budget, "released textures were not evicted down to the budget");
 }
 
+// A held texture nothing used for 60 presents is idle (its holder is an idle resource-cache entry):
+// the cache evicts it under the ceiling, but not one a resource-cache hit bound this frame.
+void idleHeldTests(Context context) {
+    PlaceholderImages placeholders(context);
+    context.placeholderImages = &placeholders;
+    TextureCache textures(context);
+    context.textureCache = &textures;
+    ClearCachedTextures(context.device);
+    auto& cache = SharedResourceCache();
+    cache.Clear();
+    Block block(context);
+    auto bound = ImageResources(context, block, 0, 1, true);
+    const auto boundTexture = bound->SampledTextures().front();
+    cache.Insert({1}, bound);
+    const auto bytes = TextureCacheUsage().sampledBytes;
+    const auto capacity = static_cast<std::size_t>(Budget / bytes);
+    Require(capacity >= 2u && capacity < Surfaces, "a snapshot of the 256 KiB surface counts " + std::to_string(bytes) + " bytes, which the test's budget does not fit as planned");
+    std::vector<std::shared_ptr<Texture>> held;
+    for (std::size_t surface = 1; surface < capacity; ++surface) held.push_back(Sampled(context, block.Surface(surface)));
+    for (int present = 0; present <= 60; ++present) Recorder::CountPresent();
+    Require(cache.Find({1}) == bound && boundTexture->LastBound() == Recorder::Presents(), "a resource-cache hit did not stamp its sampled texture as bound this frame");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    const auto fresh = Sampled(context, block.Surface(capacity));
+    Require(!boundTexture->Released(), "the sampled texture cache evicted a texture a resource-cache hit bound this frame");
+    Require(held.front()->Released(), "a held texture nothing used for 60 presents stayed cached in place of a new one");
+    Require(Sampled(context, block.Surface(capacity)) == fresh && TextureCacheUsage().sampledBytes <= Budget, "the new texture was not cached within the budget after the idle held one left");
+    held.clear();
+    bound.reset();
+    cache.Clear();
+    ClearCachedTextures(context.device);
+}
+
 void releasedTests(Context context) {
     PlaceholderImages placeholders(context);
     context.placeholderImages = &placeholders;
@@ -1087,6 +1119,7 @@ int main(int argc, char** argv) {
             reportedBudgetTests(context);
             snapshotTests(context);
             heldTests(context);
+            idleHeldTests(context);
             releasedTests(context);
             rescanTests(context);
             viewEvictionTests(context);

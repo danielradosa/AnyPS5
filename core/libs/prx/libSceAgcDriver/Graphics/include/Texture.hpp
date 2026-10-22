@@ -119,6 +119,10 @@ public:
     void MarkRefreshedPerUse() { perUseCopy = PerUseCopy::RemadePerUse; }
     bool Released() const { return released.load(std::memory_order_acquire); }
     void MarkReleased() { released.store(true, std::memory_order_release); }
+    // The present of the last resource-cache hit that bound the texture (such a hit skips the
+    // sampled cache's lookup, so the cache entry's own present misses it).
+    std::uint64_t LastBound() const { return lastBound.load(std::memory_order_relaxed); }
+    void MarkBound(std::uint64_t present) { lastBound.store(present, std::memory_order_relaxed); }
 
 private:
     void release() noexcept;
@@ -154,6 +158,7 @@ private:
     std::unique_ptr<CommandBatch> upload;
     PerUseCopy perUseCopy = PerUseCopy::None;
     std::atomic<bool> released{false};
+    std::atomic<std::uint64_t> lastBound{0};
     bool copiedOnce = false;
     bool srgbExpand = false;
     GuestTextureResource sourceDescriptor{};
