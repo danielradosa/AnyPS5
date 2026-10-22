@@ -1,5 +1,6 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/DrawWriteRanges.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/VertexInput.hpp"
 #include "Recompiler.hpp"
 #include <algorithm>
 #include <cstdint>
@@ -129,6 +130,66 @@ void CheckWriters(const std::vector<Graphics::CompiledShader>& stages, const Sha
     Require(Graphics::PreparedWriters(prepared.get(), stages) == nullptr, "a list that was never collected was noted");
 }
 
+// `stages` has a vertex attribute; the made-up device has no limits, so its layout does not build.
+void CheckInputs(const std::vector<Graphics::CompiledShader>& stages, const ShaderRecompiler::RecompileResult& twin) {
+    Graphics::Context deviceA{};
+    deviceA.device = MadeUpDevice(0x1000);
+    Graphics::VertexInputCache cache(deviceA);
+    deviceA.vertexInputs = &cache;
+    auto deviceB = deviceA;
+    deviceB.device = MadeUpDevice(0x2000);
+    auto otherCache = deviceA;
+    otherCache.vertexInputs = nullptr;
+    Graphics::State state{};
+    state.colors.resize(1);
+    auto prepared = Graphics::PrepareDraw(deviceA, state, stages, true);
+    if (!Graphics::PreparedDrawInputs()) {
+        Require(prepared == nullptr || (!prepared->outputsPrepared && prepared->vertexInput == nullptr), "APS5_NO_PREPARED_DRAW_INPUTS=1 still prepared inputs");
+        Graphics::PreparedDraw made;
+        made.device = deviceA.device;
+        made.shaders = stages;
+        made.state = &state;
+        made.vertexInputs = &cache;
+        made.outputsPrepared = true;
+        Require(Graphics::PreparedInputs(&made, deviceA, state, stages) == nullptr, "APS5_NO_PREPARED_DRAW_INPUTS=1 still used prepared inputs");
+        return;
+    }
+    Require(prepared != nullptr && prepared->state == &state && prepared->vertexInputs == &cache, "the inputs were not prepared for this state and vertex input cache");
+    // The worker only reads the validation memo, which has never seen these stages: the committer validates.
+    Require(!prepared->outputsPrepared, "the worker answered fragment outputs the validation memo does not hold");
+    // The layout's build throws on the worker: left to the committer, whose own lookup throws as before.
+    Require(prepared->vertexInput == nullptr, "a vertex input layout that does not build was prepared");
+    bool thrown = false;
+    try {
+        static_cast<void>(cache.TryGet(stages.front().program->variantId, stages.front().program->vertexAttributes));
+    } catch (const std::exception&) {
+        thrown = true;
+    }
+    Require(thrown, "the committer's own vertex input lookup no longer fails for the made-up device");
+    Require(Graphics::PreparedInputs(prepared.get(), deviceA, state, stages) == nullptr, "inputs that were not prepared were used");
+
+    // A memo hit, as the worker records one.
+    prepared->outputsPrepared = true;
+    prepared->fragmentOutputs = 0x5;
+    Require(Graphics::PreparedInputs(nullptr, deviceA, state, stages) == nullptr, "inputs were used from no prepared draw");
+    Require(Graphics::PreparedInputs(prepared.get(), deviceB, state, stages) == nullptr, "inputs prepared for one device served another (a replaced device)");
+    Require(Graphics::PreparedInputs(prepared.get(), otherCache, state, stages) == nullptr, "inputs prepared with one vertex input cache served another");
+    const Graphics::State copy = state;
+    Require(Graphics::PreparedInputs(prepared.get(), deviceA, copy, stages) == nullptr, "inputs prepared for one state object served another");
+    auto other = stages;
+    other[0].program = &twin;
+    Require(Graphics::PreparedInputs(prepared.get(), deviceA, state, other) == nullptr, "inputs prepared for one program object served an equal copy");
+    other = stages;
+    other[1].pushConstantOffset += 16;
+    Require(Graphics::PreparedInputs(prepared.get(), deviceA, state, other) == nullptr, "inputs prepared for one push constant offset served another (the validation key names it)");
+    Require(Graphics::PreparedInputs(prepared.get(), deviceA, state, stages) == prepared.get(), "inputs prepared for this draw were not used");
+    // A prepared layout alone is used under the same checks.
+    prepared->outputsPrepared = false;
+    prepared->vertexInput = std::make_shared<const Graphics::VertexInputLayout>();
+    Require(Graphics::PreparedInputs(prepared.get(), deviceA, state, stages) == prepared.get(), "a prepared vertex input layout alone was not used");
+    Require(Graphics::PreparedInputs(prepared.get(), deviceB, state, stages) == nullptr, "a vertex input layout prepared for one device served another");
+}
+
 void CheckScope() {
     Graphics::PreparedDraw outer;
     Require(Graphics::PreparedDrawScope::Active() == nullptr, "a prepared draw is current outside any commit");
@@ -154,6 +215,14 @@ int main() {
         const std::vector<Graphics::CompiledShader> stages{{Stage::Vertex, &vertex, 0}, {Stage::Fragment, &pixel, 16}};
         CheckKeys(stages, twin);
         CheckWriters(stages, twin);
+        auto fetching = vertex;
+        ShaderRecompiler::VertexAttribute attribute{};
+        attribute.location = 0;
+        attribute.components = 4;
+        attribute.resource.fields = {0x10000u, 16u << 16u, 64u, 0u};
+        fetching.vertexAttributes.push_back(attribute);
+        const auto fetchingTwin = fetching;
+        CheckInputs({{Stage::Vertex, &fetching, 0}, {Stage::Fragment, &pixel, 16}}, fetchingTwin);
         CheckScope();
         std::puts("prepared draw tests passed");
         return 0;

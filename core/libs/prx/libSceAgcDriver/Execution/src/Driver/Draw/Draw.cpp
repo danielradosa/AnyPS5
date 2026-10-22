@@ -661,8 +661,9 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     }
     if (pipelined && !drawParameters.indirect && deferredLabels().labels.empty()) {
         phaseTiming.Phase(DrawRowVectors);
-        // Commit work done here, off the committer, and checked there (Graphics::PreparedDraw).
-        auto prepared = localDevice->PrepareDraw(graphics, stages, recipe == nullptr);
+        // Commit work done here, off the committer, and checked there (Graphics::PreparedDraw), for
+        // the state object the commit passes (a patched decode copy is not `graphics`' object).
+        auto prepared = localDevice->PrepareDraw(decode->state, stages, recipe == nullptr);
         auto writes = drawWriteRanges(graphics, stages, prepared.get());
         const auto commitQueue = submission.queue;
         const auto commitPacket = (packet[0] >> 8u) & 0xffu;

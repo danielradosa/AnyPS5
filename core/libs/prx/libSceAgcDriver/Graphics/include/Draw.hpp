@@ -13,6 +13,8 @@
 namespace AgcDriver::Graphics {
 
 struct HostImport;
+class VertexInputCache;
+struct VertexInputLayout;
 
 // `recipe`, when given, receives the DrawRecipe a recorded, cacheable, reusable, non-indirect draw
 // built for its draw-cache entry (design_cpu_final M8; null otherwise, and always under
@@ -28,7 +30,8 @@ std::uint64_t DrawRenderPassKey(const Context& context, const State& state, std:
 // PrepareDraw (VulkanDevice::PrepareDraw), the queued commit makes it current with
 // PreparedDrawScope, and only that commit's Draw (and the driver's noteDrawWriters) reads it. Pieces,
 // each with its own switch (read once; =1 restores the old path): the resource content key
-// (APS5_NO_PREPARED_DRAW_KEY) and the written guest buffer list (APS5_NO_PREPARED_DRAW_WRITERS).
+// (APS5_NO_PREPARED_DRAW_KEY), the written guest buffer list (APS5_NO_PREPARED_DRAW_WRITERS) and
+// the draw-only inputs (APS5_NO_PREPARED_DRAW_INPUTS).
 struct PreparedDraw {
     // What it was computed for. The stages' programs are owned by the queued item and do not change
     // after the enqueue, so equal pointers mean equal contents.
@@ -43,11 +46,23 @@ struct PreparedDraw {
     // collected by the worker's DrawWriteRanges walk (Driver::drawWriteRanges sets them).
     bool writersPrepared = false;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> writers;
+    // prepareDrawInputs' draw-only parts: the fragment outputs from the validation memo (a hit only:
+    // a validation that has not run yet, or that fails, stays on the committer) with the pipeline
+    // stages, and the vertex input layout from the device's VertexInputCache (null when the worker
+    // got none). They depend on the device's features, the state's fields (`state`: the immutable
+    // object the queued item owns) and the stages.
+    const State* state = nullptr;
+    const VertexInputCache* vertexInputs = nullptr;
+    bool outputsPrepared = false;
+    std::uint32_t fragmentOutputs = 0;
+    VkPipelineStageFlags shaderStages = 0;
+    std::shared_ptr<const VertexInputLayout> vertexInput;
 
     bool SameStages(std::span<const CompiledShader> other) const;
 };
 bool PreparedDrawKeys();
 bool PreparedDrawWriters();
+bool PreparedDrawInputs();
 // Null when every piece is switched off or a stage has no program. `resources` is false when the
 // draw has a recipe (DrawWithRecipe needs neither the key nor the inputs).
 std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& state, std::span<const CompiledShader> shaders, bool resources);
@@ -57,6 +72,9 @@ bool TakePreparedKey(PreparedDraw* prepared, const Context& context, const State
 // The prepared written buffer list when it was collected for these stages (it depends on nothing
 // else), null otherwise; counted as used or rejected on the [rescache] line.
 const std::vector<std::pair<std::uint64_t, std::uint64_t>>* PreparedWriters(const PreparedDraw* prepared, std::span<const CompiledShader> shaders);
+// The prepared inputs when they were made for this device (handle and vertex input cache), this state
+// object and these stages, null otherwise; counted as used or rejected on the [rescache] line.
+const PreparedDraw* PreparedInputs(const PreparedDraw* prepared, const Context& context, const State& state, std::span<const CompiledShader> shaders);
 // The calling thread's current prepared draw while a queued commit runs (nested scopes restore the
 // outer one).
 class PreparedDrawScope {

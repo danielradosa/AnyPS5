@@ -418,6 +418,7 @@ constexpr std::array<const char*, KindCount> DrawKindNames{"recipe hit", "templa
 // counted under APS5_PROFILE_DRAW only.
 std::atomic<std::uint64_t> preparedKeysUsed{0}, preparedKeysRejected{0};
 std::atomic<std::uint64_t> preparedWritersUsed{0}, preparedWritersRejected{0};
+std::atomic<std::uint64_t> preparedInputsUsed{0}, preparedInputsRejected{0};
 
 void countPrepared(std::atomic<std::uint64_t>& counter) {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
@@ -601,7 +602,7 @@ void reportDraw(const std::array<double, PhaseCount>& us, const ShaderResources:
         n += std::snprintf(line + n, sizeof(line) - static_cast<std::size_t>(n), " %s %llu", DrawRecipeMissName(static_cast<DrawRecipeMiss>(i)), static_cast<unsigned long long>(profile.recipeMisses[i]));
     }
     std::fprintf(stderr, "%s\n", line);
-    std::fprintf(stderr, "[rescache] draws: %llu hits, %llu misses, %llu invalidated, %llu uncacheable; validation memo %llu hits / %llu misses (which key words the misses differ in: the miss churn line); prepared keys %llu used / %llu rejected, writers %llu / %llu\n", static_cast<unsigned long long>(profile.cacheHits), static_cast<unsigned long long>(profile.cacheMisses), static_cast<unsigned long long>(profile.cacheInvalidated), static_cast<unsigned long long>(profile.uncacheable), static_cast<unsigned long long>(profile.validateHits), static_cast<unsigned long long>(profile.validateMisses), static_cast<unsigned long long>(preparedKeysUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedKeysRejected.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedWritersUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedWritersRejected.exchange(0, std::memory_order_relaxed)));
+    std::fprintf(stderr, "[rescache] draws: %llu hits, %llu misses, %llu invalidated, %llu uncacheable; validation memo %llu hits / %llu misses (which key words the misses differ in: the miss churn line); prepared keys %llu used / %llu rejected, writers %llu / %llu, inputs %llu / %llu\n", static_cast<unsigned long long>(profile.cacheHits), static_cast<unsigned long long>(profile.cacheMisses), static_cast<unsigned long long>(profile.cacheInvalidated), static_cast<unsigned long long>(profile.uncacheable), static_cast<unsigned long long>(profile.validateHits), static_cast<unsigned long long>(profile.validateMisses), static_cast<unsigned long long>(preparedKeysUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedKeysRejected.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedWritersUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedWritersRejected.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedInputsUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedInputsRejected.exchange(0, std::memory_order_relaxed)));
     profile.totalsUs.fill(0);
     profile.maxUs.fill(0);
     profile.maxDrawUs = profile.hookWaitUs = profile.maxHookWaitUs = profile.ownSyncUs = 0;
@@ -739,12 +740,18 @@ std::vector<std::uint64_t>& validationKeyScratch() {
     return key;
 }
 
+// Read and written under validationMutex.
+std::map<std::vector<std::uint64_t>, std::uint32_t>& fragmentOutputsMemo() {
+    static std::map<std::vector<std::uint64_t>, std::uint32_t> memo;
+    return memo;
+}
+
 std::uint32_t CachedFragmentOutputs(const Context& context, std::span<const CompiledShader> shaders, const State& state, bool& memoized, bool& hit) {
     memoized = false;
     hit = false;
     auto& key = validationKeyScratch();
     const bool keyed = ValidationKey(context, shaders, state, key);
-    static std::map<std::vector<std::uint64_t>, std::uint32_t> memo;
+    auto& memo = fragmentOutputsMemo();
     if (keyed) {
         memoized = true;
         std::lock_guard lock(validationMutex());
@@ -775,6 +782,18 @@ std::uint32_t CachedFragmentOutputs(const Context& context, std::span<const Comp
         memo.emplace(key, outputs);
     }
     return outputs;
+}
+
+// The memo's answer alone, for the queue-0 worker (PrepareDraw). A miss validates nothing here: the
+// committer's CachedFragmentOutputs validates (and raises a failure) as before. A memo entry is a
+// function of its key, so the worker's hit is what the committer would get.
+std::optional<std::uint32_t> MemoizedFragmentOutputs(const Context& context, std::span<const CompiledShader> shaders, const State& state) {
+    auto& key = validationKeyScratch();
+    if (!ValidationKey(context, shaders, state, key)) return std::nullopt;
+    std::lock_guard lock(validationMutex());
+    const auto& memo = fragmentOutputsMemo();
+    if (const auto found = memo.find(key); found != memo.end()) return found->second;
+    return std::nullopt;
 }
 
 // The resource cache key of a recorded draw: a marker no compute key starts with (those begin with
@@ -883,9 +902,20 @@ bool PreparedDrawWriters() {
     return enabled;
 }
 
+// prepareDrawInputs' draw-only parts on the queue-0 worker: the validation memo lookup (its key
+// building and map search under the memo's mutex) and the vertex input cache lookup, both behind
+// their own mutexes and pure in what they return. The validation itself, the index and vertex reads
+// and the fetch planning (sized by the index buffer's highest index, read at commit) stay on the
+// committer. APS5_NO_PREPARED_DRAW_INPUTS=1 looks both up at commit as before.
+bool PreparedDrawInputs() {
+    static const bool enabled = std::getenv("APS5_NO_PREPARED_DRAW_INPUTS") == nullptr;
+    return enabled;
+}
+
 std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& state, std::span<const CompiledShader> shaders, bool resources) {
     const bool key = resources && PreparedDrawKeys() && DrawKeyTrim();
-    if (!(key || PreparedDrawWriters()) || std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program == nullptr; })) return nullptr;
+    const bool inputs = resources && PreparedDrawInputs();
+    if (!(key || inputs || PreparedDrawWriters()) || std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program == nullptr; })) return nullptr;
     auto prepared = std::make_shared<PreparedDraw>();
     prepared->device = context.device;
     prepared->shaders.assign(shaders.begin(), shaders.end());
@@ -897,6 +927,26 @@ std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& s
             prepared->trimmedKey = true;
         } catch (const std::exception&) {
             prepared->contentKey.clear();
+        }
+    }
+    if (inputs) {
+        prepared->state = &state;
+        prepared->vertexInputs = context.vertexInputs;
+        try {
+            if (const auto outputs = MemoizedFragmentOutputs(context, shaders, state)) {
+                prepared->fragmentOutputs = *outputs;
+                prepared->shaderStages = PipelineStages(shaders);
+                prepared->outputsPrepared = true;
+            }
+        } catch (const std::exception&) {
+            prepared->outputsPrepared = false;
+        }
+        // The lookup the committer makes (a miss builds and inserts the layout, as it would at
+        // commit); one that throws is left to the committer's own lookup.
+        try {
+            if (context.vertexInputs != nullptr && !shaders.empty() && !shaders.front().program->vertexAttributes.empty()) prepared->vertexInput = context.vertexInputs->TryGet(shaders.front().program->variantId, shaders.front().program->vertexAttributes);
+        } catch (const std::exception&) {
+            prepared->vertexInput = nullptr;
         }
     }
     return prepared;
@@ -925,6 +975,19 @@ const std::vector<std::pair<std::uint64_t, std::uint64_t>>* PreparedWriters(cons
     }
     countPrepared(preparedWritersUsed);
     return &prepared->writers;
+}
+
+const PreparedDraw* PreparedInputs(const PreparedDraw* prepared, const Context& context, const State& state, std::span<const CompiledShader> shaders) {
+    if (prepared == nullptr || (!prepared->outputsPrepared && prepared->vertexInput == nullptr)) return nullptr;
+    // The outputs and the layout follow from the device's features and limits (a replaced device has
+    // another handle and another vertex input cache), the state's fields (the same object, which no
+    // one changes after the enqueue) and the stages.
+    if (!PreparedDrawInputs() || prepared->device != context.device || prepared->vertexInputs != context.vertexInputs || prepared->state != &state || !prepared->SameStages(shaders)) {
+        countPrepared(preparedInputsRejected);
+        return nullptr;
+    }
+    countPrepared(preparedInputsUsed);
+    return prepared;
 }
 
 PreparedDrawScope::PreparedDrawScope(PreparedDraw* prepared) : previous(activePreparedDraw) {
@@ -1264,9 +1327,15 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
     Require(!draw.indexed || !state.hasColorTarget || draw.indexAddress + indexBytes <= state.color.address || state.color.address + state.color.bytes <= draw.indexAddress, "index buffer aliases the render target");
     if (draw.indexed) RequireNoMultisampleTarget(draw.indexAddress, static_cast<std::size_t>(indexBytes), "an index buffer read");
     APS5_LOG_CHARS_OUT_DEBUG("ValidateShaders");
+    // A queued draw's memo hit and vertex layout, looked up by the queue-0 worker (PreparedInputs).
+    const auto* prepared = recipe == nullptr ? PreparedInputs(PreparedDrawScope::Active(), context, state, shaders) : nullptr;
     if (recipe != nullptr) {
         inputs.fragmentOutputs = recipe->fragmentOutputs;
         inputs.shaderStages = recipe->shaderStages;
+    } else if (prepared != nullptr && prepared->outputsPrepared) {
+        inputs.fragmentOutputs = prepared->fragmentOutputs;
+        inputs.shaderStages = prepared->shaderStages;
+        outcome.validateMemoized = outcome.validateHit = true;
     } else {
         inputs.fragmentOutputs = CachedFragmentOutputs(context, shaders, state, outcome.validateMemoized, outcome.validateHit);
         inputs.shaderStages = PipelineStages(shaders);
@@ -1445,7 +1514,8 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
     if (recipe != nullptr) {
         inputs.vertexInput = recipe->vertexInput;
     } else if (!attributes.empty()) {
-        if (context.vertexInputs != nullptr) inputs.retainedVertexInput = context.vertexInputs->TryGet(shaders.front().program->variantId, attributes);
+        if (prepared != nullptr && prepared->vertexInput != nullptr) inputs.retainedVertexInput = prepared->vertexInput;
+        else if (context.vertexInputs != nullptr) inputs.retainedVertexInput = context.vertexInputs->TryGet(shaders.front().program->variantId, attributes);
         if (inputs.retainedVertexInput == nullptr) inputs.vertexInput = BuildVertexInputLayout(context, attributes);
     }
     inputs.vertexOffsets.assign(attributes.size(), 0);
