@@ -2585,7 +2585,7 @@ int APS5_VABI sceNetGetInterfaceStats(NetInterfaceStats* stats, std::uint32_t fl
 
 int APS5_VABI sceNetSetDnsInfo(const NetDnsInfo* info, std::uint32_t flags) {
     NetDnsInfo servers{};
-    if (info && !GuestSockets::ReadGuest(&servers, info, sizeof(servers))) return fail(NET_EFAULT);
+    if (info && !GuestSocketReadGuest_nid_no_patch(&servers, info, sizeof(servers))) return fail(NET_EFAULT);
     if (flags != 0 || (info && servers.primaryAddress == 0)) return fail(NET_EINVAL);
     std::lock_guard lock(g_dnsLock);
     g_dnsOverridden = info != nullptr;
@@ -2647,7 +2647,7 @@ int APS5_VABI sceNetGetSockInfo6(std::int32_t socket, NetSockInfo6* info, std::u
 
 int APS5_VABI sceNetSetDns6Info(const NetDns6Info* info, std::uint32_t flags) {
     NetDns6Info servers{};
-    if (info && !GuestSockets::ReadGuest(&servers, info, sizeof(servers))) return fail(NET_EFAULT);
+    if (info && !GuestSocketReadGuest_nid_no_patch(&servers, info, sizeof(servers))) return fail(NET_EFAULT);
     if (flags != 0 || (info && IsZeroAddress(servers.primaryAddress))) return fail(NET_EINVAL);
     std::lock_guard lock(g_dnsLock);
     g_dns6Override = servers;
