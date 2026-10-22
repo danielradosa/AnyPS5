@@ -2338,7 +2338,7 @@ bool StorageTexture::refresh(std::uint32_t firstLayer, std::uint32_t lastLayer) 
     static const bool traceUpload = std::getenv("APS5_TRACE_UPLOAD") != nullptr;
     if (traceUpload) {
         const auto keys = TextureClearKeys(descriptor, guestBytes);
-        std::fprintf(stderr, "[upload] 0x%llx+0x%llx %ux%u mips %u: %s (keys %s -> %s, originalValid %d, dirty %d)\n", static_cast<unsigned long long>(descriptor.baseAddress), static_cast<unsigned long long>(guestBytes), descriptor.width, descriptor.height, descriptor.mipCount, keys != uploadedKeys ? "DCC keys changed" : "guest memory changed", DccKeysName(uploadedKeys), DccKeysName(keys), originalHolds(descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) ? 1 : 0, dirty ? 1 : 0);
+        std::fprintf(stderr, "[upload] 0x%llx+0x%llx %ux%u mips %u format %u tile %d %s: %s (keys %s -> %s, originalValid %d, dirty %d)\n", static_cast<unsigned long long>(descriptor.baseAddress), static_cast<unsigned long long>(guestBytes), descriptor.width, descriptor.height, descriptor.mipCount, descriptor.format, static_cast<int>(descriptor.tileMode), flushed ? "flushed" : "not flushed", keys != uploadedKeys ? "DCC keys changed" : "guest memory changed", DccKeysName(uploadedKeys), DccKeysName(keys), originalHolds(descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) ? 1 : 0, dirty ? 1 : 0);
     }
     // Changed layers with results pending: the CPU wrote this memory while GPU results were
     // pending, so as with an immediate write-back followed by the CPU write, its blocks win and the
@@ -4065,7 +4065,7 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
     // Debug aid: APS5_TRACE_FLUSH names what forces pending results to guest memory.
     static const bool trace = std::getenv("APS5_TRACE_FLUSH") != nullptr;
     if (trace) {
-        for (const auto& texture : flush) std::fprintf(stderr, "[flush] image 0x%llx+0x%llx for %s 0x%llx+0x%zx\n", static_cast<unsigned long long>(texture->descriptor.baseAddress), static_cast<unsigned long long>(texture->guestBytes), reason, static_cast<unsigned long long>(address), bytes);
+        for (const auto& texture : flush) std::fprintf(stderr, "[flush] image 0x%llx+0x%llx %ux%u depth/last layer %u mips %u format %u tile %d dim %d for %s 0x%llx+0x%zx\n", static_cast<unsigned long long>(texture->descriptor.baseAddress), static_cast<unsigned long long>(texture->guestBytes), texture->descriptor.width, texture->descriptor.height, texture->descriptor.depthOrLastArray, texture->descriptor.mipCount, texture->descriptor.format, static_cast<int>(texture->descriptor.tileMode), static_cast<int>(texture->descriptor.dimension), reason, static_cast<unsigned long long>(address), bytes);
     }
     std::lock_guard gpu(GuestMemory::GpuMutex());
     // The flush waits only for address-based leases over its range (recorded writes are stamped at
