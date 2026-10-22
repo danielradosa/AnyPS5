@@ -663,7 +663,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         phaseTiming.Phase(DrawRowVectors);
         // Commit work done here, off the committer, and checked there (Graphics::PreparedDraw).
         auto prepared = localDevice->PrepareDraw(graphics, stages, recipe == nullptr);
-        auto writes = drawWriteRanges(graphics, stages);
+        auto writes = drawWriteRanges(graphics, stages, prepared.get());
         const auto commitQueue = submission.queue;
         const auto commitPacket = (packet[0] >> 8u) & 0xffu;
         const auto epoch = DrawPipeline::EpochToken().load(std::memory_order_relaxed);

@@ -2813,7 +2813,7 @@ if(BUILD_TESTING)
     endif()
     # The prepared draw's switches restore the old path: nothing prepared, nothing taken.
     add_test(NAME agc_driver_prepared_draw_off COMMAND agc_driver_prepared_draw_tests)
-    set_tests_properties(agc_driver_prepared_draw_off PROPERTIES ENVIRONMENT "APS5_NO_PREPARED_DRAW_KEY=1" SKIP_RETURN_CODE 77)
+    set_tests_properties(agc_driver_prepared_draw_off PROPERTIES ENVIRONMENT "APS5_NO_PREPARED_DRAW_KEY=1;APS5_NO_PREPARED_DRAW_WRITERS=1" SKIP_RETURN_CODE 77)
     if(WIN32)
         set_tests_properties(agc_driver_prepared_draw_off PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")

@@ -1,5 +1,7 @@
+#include "prx/libSceAgcDriver/Execution/include/Driver/Memory/DrawWriteRanges.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "Recompiler.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -94,6 +96,39 @@ void CheckKeys(const std::vector<Graphics::CompiledShader>& stages, const Shader
     Require(!Graphics::TakePreparedKey(prepared.get(), deviceA, another, stages, again) && again.empty(), "a prepared key was taken twice");
 }
 
+void CheckWriters(const std::vector<Graphics::CompiledShader>& stages, const ShaderRecompiler::RecompileResult& twin) {
+    using Range = std::pair<std::uint64_t, std::uint64_t>;
+    Graphics::Context device{};
+    device.device = MadeUpDevice(0x1000);
+    Graphics::State state{};
+    state.colors.resize(1);
+    // A draw with a recipe prepares no key, but its commit still notes its writers.
+    auto prepared = Graphics::PrepareDraw(device, state, stages, false);
+    if (!Graphics::PreparedDrawWriters()) {
+        Require(prepared == nullptr || !prepared->writersPrepared, "APS5_NO_PREPARED_DRAW_WRITERS=1 still prepared the writers");
+        Graphics::PreparedDraw collected;
+        collected.shaders = stages;
+        collected.writersPrepared = true;
+        Require(Graphics::PreparedWriters(&collected, stages) == nullptr, "APS5_NO_PREPARED_DRAW_WRITERS=1 still noted a prepared list");
+        return;
+    }
+    Require(prepared != nullptr && !prepared->writersPrepared, "a draw with a recipe has no prepared draw for its writers");
+    // Driver::drawWriteRanges on the worker: the pipeline item's write ranges and the list, one walk.
+    const auto ranges = AgcDriver::DriverDetail::DrawWriteRanges(state, stages, true, &prepared->writers);
+    prepared->writersPrepared = true;
+    const std::vector<Range> expected{{0x100000000ull, 0x100001000ull}, {0x300000000ull, 0x300001000ull}};
+    Require(prepared->writers == expected, "the prepared list is not the stages' written buffers in stage order (read-only ones left out)");
+    for (const auto& range : expected) Require(std::find(ranges.begin(), ranges.end(), range) != ranges.end(), "a written buffer left the pipeline item's write ranges");
+    Require(Graphics::PreparedWriters(nullptr, stages) == nullptr, "a list was noted from no prepared draw");
+    auto other = stages;
+    other[0].program = &twin;
+    Require(Graphics::PreparedWriters(prepared.get(), other) == nullptr, "a list collected for one program object served an equal copy");
+    Require(Graphics::PreparedWriters(prepared.get(), std::span(stages).first(1)) == nullptr, "a list collected for two stages served one");
+    Require(Graphics::PreparedWriters(prepared.get(), stages) == &prepared->writers, "a list collected for these stages was not noted");
+    prepared->writersPrepared = false;
+    Require(Graphics::PreparedWriters(prepared.get(), stages) == nullptr, "a list that was never collected was noted");
+}
+
 void CheckScope() {
     Graphics::PreparedDraw outer;
     Require(Graphics::PreparedDrawScope::Active() == nullptr, "a prepared draw is current outside any commit");
@@ -118,6 +153,7 @@ int main() {
         const auto twin = vertex;
         const std::vector<Graphics::CompiledShader> stages{{Stage::Vertex, &vertex, 0}, {Stage::Fragment, &pixel, 16}};
         CheckKeys(stages, twin);
+        CheckWriters(stages, twin);
         CheckScope();
         std::puts("prepared draw tests passed");
         return 0;

@@ -417,6 +417,7 @@ constexpr std::array<const char*, KindCount> DrawKindNames{"recipe hit", "templa
 // as before), for the [rescache] line: whether the queue-0 worker's preparation engaged. Relaxed,
 // counted under APS5_PROFILE_DRAW only.
 std::atomic<std::uint64_t> preparedKeysUsed{0}, preparedKeysRejected{0};
+std::atomic<std::uint64_t> preparedWritersUsed{0}, preparedWritersRejected{0};
 
 void countPrepared(std::atomic<std::uint64_t>& counter) {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
@@ -600,7 +601,7 @@ void reportDraw(const std::array<double, PhaseCount>& us, const ShaderResources:
         n += std::snprintf(line + n, sizeof(line) - static_cast<std::size_t>(n), " %s %llu", DrawRecipeMissName(static_cast<DrawRecipeMiss>(i)), static_cast<unsigned long long>(profile.recipeMisses[i]));
     }
     std::fprintf(stderr, "%s\n", line);
-    std::fprintf(stderr, "[rescache] draws: %llu hits, %llu misses, %llu invalidated, %llu uncacheable; validation memo %llu hits / %llu misses (which key words the misses differ in: the miss churn line); prepared keys %llu used / %llu rejected\n", static_cast<unsigned long long>(profile.cacheHits), static_cast<unsigned long long>(profile.cacheMisses), static_cast<unsigned long long>(profile.cacheInvalidated), static_cast<unsigned long long>(profile.uncacheable), static_cast<unsigned long long>(profile.validateHits), static_cast<unsigned long long>(profile.validateMisses), static_cast<unsigned long long>(preparedKeysUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedKeysRejected.exchange(0, std::memory_order_relaxed)));
+    std::fprintf(stderr, "[rescache] draws: %llu hits, %llu misses, %llu invalidated, %llu uncacheable; validation memo %llu hits / %llu misses (which key words the misses differ in: the miss churn line); prepared keys %llu used / %llu rejected, writers %llu / %llu\n", static_cast<unsigned long long>(profile.cacheHits), static_cast<unsigned long long>(profile.cacheMisses), static_cast<unsigned long long>(profile.cacheInvalidated), static_cast<unsigned long long>(profile.uncacheable), static_cast<unsigned long long>(profile.validateHits), static_cast<unsigned long long>(profile.validateMisses), static_cast<unsigned long long>(preparedKeysUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedKeysRejected.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedWritersUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedWritersRejected.exchange(0, std::memory_order_relaxed)));
     profile.totalsUs.fill(0);
     profile.maxUs.fill(0);
     profile.maxDrawUs = profile.hookWaitUs = profile.maxHookWaitUs = profile.ownSyncUs = 0;
@@ -874,9 +875,17 @@ bool PreparedDrawKeys() {
     return enabled;
 }
 
+// The written guest buffer list noteDrawWriters notes at commit, from the binding walk the worker's
+// DrawWriteRanges already makes for the pipeline item (the committer walked every binding again).
+// APS5_NO_PREPARED_DRAW_WRITERS=1 walks them at commit as before.
+bool PreparedDrawWriters() {
+    static const bool enabled = std::getenv("APS5_NO_PREPARED_DRAW_WRITERS") == nullptr;
+    return enabled;
+}
+
 std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& state, std::span<const CompiledShader> shaders, bool resources) {
     const bool key = resources && PreparedDrawKeys() && DrawKeyTrim();
-    if (!key || std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program == nullptr; })) return nullptr;
+    if (!(key || PreparedDrawWriters()) || std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program == nullptr; })) return nullptr;
     auto prepared = std::make_shared<PreparedDraw>();
     prepared->device = context.device;
     prepared->shaders.assign(shaders.begin(), shaders.end());
@@ -906,6 +915,16 @@ bool TakePreparedKey(PreparedDraw* prepared, const Context& context, const State
     prepared->contentKey.clear();
     countPrepared(preparedKeysUsed);
     return true;
+}
+
+const std::vector<std::pair<std::uint64_t, std::uint64_t>>* PreparedWriters(const PreparedDraw* prepared, std::span<const CompiledShader> shaders) {
+    if (prepared == nullptr || !prepared->writersPrepared) return nullptr;
+    if (!PreparedDrawWriters() || !prepared->SameStages(shaders)) {
+        countPrepared(preparedWritersRejected);
+        return nullptr;
+    }
+    countPrepared(preparedWritersUsed);
+    return &prepared->writers;
 }
 
 PreparedDrawScope::PreparedDrawScope(PreparedDraw* prepared) : previous(activePreparedDraw) {

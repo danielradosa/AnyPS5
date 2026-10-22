@@ -26,8 +26,9 @@ std::uint64_t DrawRenderPassKey(const Context& context, const State& state, std:
 // committer takes a piece only when its check passes (the device handle, the stages field for field,
 // and what the piece depends on), else it computes the piece as before. The worker builds it with
 // PrepareDraw (VulkanDevice::PrepareDraw), the queued commit makes it current with
-// PreparedDrawScope, and only that commit's Draw reads it. Pieces, each with its own switch (read
-// once; =1 restores the old path): the resource content key (APS5_NO_PREPARED_DRAW_KEY).
+// PreparedDrawScope, and only that commit's Draw (and the driver's noteDrawWriters) reads it. Pieces,
+// each with its own switch (read once; =1 restores the old path): the resource content key
+// (APS5_NO_PREPARED_DRAW_KEY) and the written guest buffer list (APS5_NO_PREPARED_DRAW_WRITERS).
 struct PreparedDraw {
     // What it was computed for. The stages' programs are owned by the queued item and do not change
     // after the enqueue, so equal pointers mean equal contents.
@@ -38,16 +39,24 @@ struct PreparedDraw {
     ResourceCache::Key contentKey;
     std::uint32_t colorAttachments = 0;
     bool trimmedKey = false;
+    // The stages' written guest buffer ranges in the order the driver's noteDrawWriters notes them,
+    // collected by the worker's DrawWriteRanges walk (Driver::drawWriteRanges sets them).
+    bool writersPrepared = false;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> writers;
 
     bool SameStages(std::span<const CompiledShader> other) const;
 };
 bool PreparedDrawKeys();
+bool PreparedDrawWriters();
 // Null when every piece is switched off or a stage has no program. `resources` is false when the
 // draw has a recipe (DrawWithRecipe needs neither the key nor the inputs).
 std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& state, std::span<const CompiledShader> shaders, bool resources);
 // Moves the prepared key into `key` when it was made for this device, these stages, this attachment
 // count and the current trim mode; counted as used or rejected on the [rescache] line.
 bool TakePreparedKey(PreparedDraw* prepared, const Context& context, const State& state, std::span<const CompiledShader> shaders, ResourceCache::Key& key);
+// The prepared written buffer list when it was collected for these stages (it depends on nothing
+// else), null otherwise; counted as used or rejected on the [rescache] line.
+const std::vector<std::pair<std::uint64_t, std::uint64_t>>* PreparedWriters(const PreparedDraw* prepared, std::span<const CompiledShader> shaders);
 // The calling thread's current prepared draw while a queued commit runs (nested scopes restore the
 // outer one).
 class PreparedDrawScope {

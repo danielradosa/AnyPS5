@@ -87,6 +87,11 @@ void Driver::noteForeignWriter(std::uint64_t begin, std::uint64_t end, std::uint
 }
 
 void Driver::noteDrawWriters(std::span<const Graphics::CompiledShader> stages, std::uint32_t queue) {
+    // A queued commit notes the list its worker collected for these stages (Graphics::PreparedWriters).
+    if (const auto* writers = Graphics::PreparedWriters(Graphics::PreparedDrawScope::Active(), stages)) {
+        for (const auto& [begin, end] : *writers) noteForeignWriter(begin, end, queue);
+        return;
+    }
     for (const auto& stage : stages) {
         forEachWrittenBuffer(*stage.program, [&](std::uint32_t, std::uint64_t begin, std::uint64_t end, bool) { noteForeignWriter(begin, end, queue); });
     }
@@ -97,7 +102,7 @@ bool ExactDrawWrites() {
     return exact;
 }
 
-std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages, bool exact) {
+std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages, bool exact, std::vector<std::pair<std::uint64_t, std::uint64_t>>* writtenBuffers) {
     constexpr std::uint64_t Slack = 64 * 1024;
     constexpr std::uint64_t UnknownBytes = 64ull * 1024 * 1024;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
@@ -106,7 +111,10 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graph
     };
     for (const auto& stage : stages) {
         if (stage.program == nullptr) continue;
-        visitWrittenBuffers(*stage.program, [&](std::uint32_t, std::uint64_t begin, std::uint64_t end, bool) { ranges.emplace_back(begin, end); });
+        visitWrittenBuffers(*stage.program, [&](std::uint32_t, std::uint64_t begin, std::uint64_t end, bool) {
+            ranges.emplace_back(begin, end);
+            if (writtenBuffers != nullptr) writtenBuffers->emplace_back(begin, end);
+        });
         for (const auto& binding : stage.program->bindings) {
             if (binding.role != ShaderRecompiler::DescriptorRole::GuestImages || binding.kind != ShaderRecompiler::DescriptorKind::StorageImage) continue;
             for (std::uint32_t element = 0; element < binding.count; ++element) {
@@ -156,8 +164,13 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graph
     return ranges;
 }
 
-std::vector<std::pair<std::uint64_t, std::uint64_t>> Driver::drawWriteRanges(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages) {
-    return DrawWriteRanges(graphics, stages, ExactDrawWrites());
+std::vector<std::pair<std::uint64_t, std::uint64_t>> Driver::drawWriteRanges(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages, Graphics::PreparedDraw* prepared) {
+    // A queued draw's written buffers for noteDrawWriters at commit come from this walk on the
+    // queue-0 worker (APS5_NO_PREPARED_DRAW_WRITERS=1 walks the bindings at commit).
+    auto* writers = prepared != nullptr && Graphics::PreparedDrawWriters() ? &prepared->writers : nullptr;
+    auto ranges = DrawWriteRanges(graphics, stages, ExactDrawWrites(), writers);
+    if (writers != nullptr) prepared->writersPrepared = true;
+    return ranges;
 }
 
 std::vector<std::pair<std::uint64_t, std::uint64_t>> QueuedDrawReadRanges(const Pm4::DrawParameters& draw, std::span<const Graphics::CompiledShader> stages) {
