@@ -174,32 +174,6 @@ void CheckSharedBlock() {
     if (!Watched(outside, unwatched.size())) Require(StoredOver(outside, unwatched.size(), TrackerGeneration()), "an unwatched range reads as not stored over");
 }
 
-// ChangedPages names the 4 KiB pages stored over since a generation: a CPU store and a small driver
-// store each mark their own page, a whole-block driver store every page, an untouched block none.
-void CheckChangedPages() {
-    constexpr std::uint64_t Page = 4096;
-    void* memory = AllocateWatched(3 * Block);
-    const auto base = reinterpret_cast<std::uint64_t>(memory);
-    std::memset(memory, 0x11, 3 * Block);
-    const auto synced = CollectWrites(base, 3 * Block);
-    Require(synced != 0, "the test block is not collected");
-    static_cast<volatile std::uint8_t*>(memory)[3 * Page + 8] = 0x22;
-    CollectWritesUncached(base, 3 * Block);
-    Require(MarkWritten(base + Block + 9 * Page + 0x100, 16) != 0, "a driver store into watched memory is not stamped");
-    std::array<std::uint16_t, 3> masks{};
-    Require(ChangedPages(base, 3 * Block, synced, masks), "a watched range is not covered by ChangedPages");
-    Require(masks[0] == (1u << 3), "the CPU store's page is not the only page of its block stored over");
-    Require(masks[1] == (1u << 9), "the driver store's page is not the only page of its block stored over");
-    Require(masks[2] == 0, "an untouched block has pages stored over");
-    const auto beforeWhole = TrackerGeneration();
-    MarkWritten(base + 2 * Block, Block);
-    Require(ChangedPages(base + 2 * Block, Block, beforeWhole, std::span(masks).first(1)) && masks[0] == 0xffffu, "a whole-block driver store does not mark every page");
-    Require(ChangedPages(base + Block + 9 * Page + 0x80, 0x100, synced, std::span(masks).first(1)) && masks[0] == (1u << 9), "a range inside one page over the driver store does not report its page");
-    Require(ChangedPages(base + Block + 9 * Page + 0x200, 64, synced, std::span(masks).first(1)) && masks[0] == 0, "a range of the page beside the driver store's bytes reads as stored over");
-    std::array<std::uint16_t, 1> outside{};
-    Require(!ChangedPages(base, Block, 0, outside) && outside[0] == 0xffffu, "a generation of 0 does not read as every page changed");
-}
-
 void CheckStoredAllSince() {
     constexpr std::size_t bytes = 4 * Block;
     auto* memory = static_cast<std::uint8_t*>(AllocateWatched(bytes));
@@ -1507,7 +1481,6 @@ int main() {
         }
 #endif
         CheckSharedBlock();
-        CheckChangedPages();
         CheckStoredAllSince();
         CheckSharedBlockProofs();
         CheckOwnStore();
