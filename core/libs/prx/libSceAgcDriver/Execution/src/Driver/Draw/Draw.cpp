@@ -661,6 +661,8 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     }
     if (pipelined && !drawParameters.indirect && deferredLabels().labels.empty()) {
         phaseTiming.Phase(DrawRowVectors);
+        // Commit work done here, off the committer, and checked there (Graphics::PreparedDraw).
+        auto prepared = localDevice->PrepareDraw(graphics, stages, recipe == nullptr);
         auto writes = drawWriteRanges(graphics, stages);
         const auto commitQueue = submission.queue;
         const auto commitPacket = (packet[0] >> 8u) & 0xffu;
@@ -672,7 +674,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
             commitDraw(localDevice, commitQueue, decode->state, drawParameters, stages, snapshots, recipe, recipeStages, drawKey);
         };
         auto held = std::make_shared<decltype(commit)>(std::move(commit));
-        DrawPipeline::Queue0().Enqueue([held] { (*held)(); }, std::move(writes), 0, {}, std::move(reads));
+        DrawPipeline::Queue0().Enqueue([held, prepared = std::move(prepared)] { Graphics::PreparedDrawScope scope(prepared.get()); (*held)(); }, std::move(writes), 0, {}, std::move(reads));
         phaseTiming.Phase(DrawRowLockWait);
         timing.Mark("draw_enqueued");
         return drawn();

@@ -4193,6 +4193,10 @@ std::optional<std::string> VulkanDevice::KnownDrawRejection(const Graphics::Stat
     return Graphics::KnownValidationFailure(graphicsContext(), shaders, graphics);
 }
 
+std::shared_ptr<Graphics::PreparedDraw> VulkanDevice::PrepareDraw(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> shaders, bool resources) const {
+    return Graphics::PrepareDraw(graphicsContext(), graphics, shaders, resources);
+}
+
 void VulkanDevice::DepthCopyPass(const Graphics::DepthCopyPass& pass) {
     Graphics::RunDepthCopyPass(graphicsContext(), pass);
 }

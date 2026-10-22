@@ -413,6 +413,16 @@ struct DrawOutcome {
 enum DrawKind : std::size_t { KindRecipeHit, KindTemplateHit, KindBuild, KindBda, KindCount };
 constexpr std::array<const char*, KindCount> DrawKindNames{"recipe hit", "template hit", "build", "BDA"};
 
+// PreparedDraw pieces the committer took, and those it had but whose check failed (it computed them
+// as before), for the [rescache] line: whether the queue-0 worker's preparation engaged. Relaxed,
+// counted under APS5_PROFILE_DRAW only.
+std::atomic<std::uint64_t> preparedKeysUsed{0}, preparedKeysRejected{0};
+
+void countPrepared(std::atomic<std::uint64_t>& counter) {
+    static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
+    if (profile) counter.fetch_add(1, std::memory_order_relaxed);
+}
+
 struct DrawProfile {
     std::mutex mutex;
     std::array<double, KindCount> kindUs{};
@@ -590,7 +600,7 @@ void reportDraw(const std::array<double, PhaseCount>& us, const ShaderResources:
         n += std::snprintf(line + n, sizeof(line) - static_cast<std::size_t>(n), " %s %llu", DrawRecipeMissName(static_cast<DrawRecipeMiss>(i)), static_cast<unsigned long long>(profile.recipeMisses[i]));
     }
     std::fprintf(stderr, "%s\n", line);
-    std::fprintf(stderr, "[rescache] draws: %llu hits, %llu misses, %llu invalidated, %llu uncacheable; validation memo %llu hits / %llu misses (which key words the misses differ in: the miss churn line)\n", static_cast<unsigned long long>(profile.cacheHits), static_cast<unsigned long long>(profile.cacheMisses), static_cast<unsigned long long>(profile.cacheInvalidated), static_cast<unsigned long long>(profile.uncacheable), static_cast<unsigned long long>(profile.validateHits), static_cast<unsigned long long>(profile.validateMisses));
+    std::fprintf(stderr, "[rescache] draws: %llu hits, %llu misses, %llu invalidated, %llu uncacheable; validation memo %llu hits / %llu misses (which key words the misses differ in: the miss churn line); prepared keys %llu used / %llu rejected\n", static_cast<unsigned long long>(profile.cacheHits), static_cast<unsigned long long>(profile.cacheMisses), static_cast<unsigned long long>(profile.cacheInvalidated), static_cast<unsigned long long>(profile.uncacheable), static_cast<unsigned long long>(profile.validateHits), static_cast<unsigned long long>(profile.validateMisses), static_cast<unsigned long long>(preparedKeysUsed.exchange(0, std::memory_order_relaxed)), static_cast<unsigned long long>(preparedKeysRejected.exchange(0, std::memory_order_relaxed)));
     profile.totalsUs.fill(0);
     profile.maxUs.fill(0);
     profile.maxDrawUs = profile.hookWaitUs = profile.maxHookWaitUs = profile.ownSyncUs = 0;
@@ -782,6 +792,21 @@ bool MovableBuffers() {
     return enabled;
 }
 
+// The render target and index ranges stay out of the key (see DrawResourceKey); a hit repeats the
+// alias checks instead. Debug aid: APS5_NO_DRAW_KEY_TRIM=1 keys them as before.
+bool DrawKeyTrim() {
+    static const bool trim = std::getenv("APS5_NO_DRAW_KEY_TRIM") == nullptr;
+    return trim;
+}
+
+// The part of resolveDrawResources' `cacheable` that does not depend on the draw's targets (the
+// switches and the stages), shared with PrepareDraw so the worker keys only draws that can use it.
+bool CacheableDrawStages(std::span<const CompiledShader> shaders) {
+    static const bool noDrawResourceCache = std::getenv("APS5_NO_DRAW_RESOURCE_CACHE") != nullptr;
+    static const bool noTextureCache = std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
+    return !noDrawResourceCache && !noTextureCache && std::all_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program != nullptr && shader.program->PipelineVariantId() != 0; }) && !ShaderResources::NeverReusable(shaders);
+}
+
 ResourceCache::Key DrawResourceKey(const Context& context, std::span<const CompiledShader> shaders, const ColorTarget& target, std::uint32_t colorAttachments, std::uint64_t indexAddress, std::uint64_t indexBytes, bool ranges) {
     ResourceCache::Key key;
     key.reserve(256);
@@ -833,6 +858,66 @@ void CheckBufferAliases(std::span<const CompiledShader> shaders, const ColorTarg
     }
 }
 
+thread_local PreparedDraw* activePreparedDraw = nullptr;
+
+}
+
+bool PreparedDraw::SameStages(std::span<const CompiledShader> other) const {
+    return std::equal(shaders.begin(), shaders.end(), other.begin(), other.end(), [](const CompiledShader& a, const CompiledShader& b) { return a.stage == b.stage && a.program == b.program && a.pushConstantOffset == b.pushConstantOffset; });
+}
+
+// The resource content key on the queue-0 worker: 3.6% of the draw committer's time in the play1022o
+// heavy hub, every cacheable draw paid it, and it depends only on the device handle, the stages and
+// the attachment count (with the default trim). APS5_NO_PREPARED_DRAW_KEY=1 keys at commit as before.
+bool PreparedDrawKeys() {
+    static const bool enabled = std::getenv("APS5_NO_PREPARED_DRAW_KEY") == nullptr;
+    return enabled;
+}
+
+std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& state, std::span<const CompiledShader> shaders, bool resources) {
+    const bool key = resources && PreparedDrawKeys() && DrawKeyTrim();
+    if (!key || std::any_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program == nullptr; })) return nullptr;
+    auto prepared = std::make_shared<PreparedDraw>();
+    prepared->device = context.device;
+    prepared->shaders.assign(shaders.begin(), shaders.end());
+    // A piece that throws here is left to the committer, which then fails the draw where it does today.
+    if (key && CacheableDrawStages(shaders)) {
+        try {
+            prepared->contentKey = DrawResourceKey(context, shaders, state.color, static_cast<std::uint32_t>(state.colors.size()), 0, 0, false);
+            prepared->colorAttachments = static_cast<std::uint32_t>(state.colors.size());
+            prepared->trimmedKey = true;
+        } catch (const std::exception&) {
+            prepared->contentKey.clear();
+        }
+    }
+    return prepared;
+}
+
+bool TakePreparedKey(PreparedDraw* prepared, const Context& context, const State& state, std::span<const CompiledShader> shaders, ResourceCache::Key& key) {
+    if (prepared == nullptr || prepared->contentKey.empty()) return false;
+    // The key names the device handle (a replaced device must not serve a template of the old one),
+    // every stage's content and the attachment count; with the trim off it would also need the target
+    // and index ranges, which the worker does not key.
+    if (!PreparedDrawKeys() || prepared->device != context.device || !prepared->SameStages(shaders) || prepared->colorAttachments != state.colors.size() || prepared->trimmedKey != DrawKeyTrim()) {
+        countPrepared(preparedKeysRejected);
+        return false;
+    }
+    key = std::move(prepared->contentKey);
+    prepared->contentKey.clear();
+    countPrepared(preparedKeysUsed);
+    return true;
+}
+
+PreparedDrawScope::PreparedDrawScope(PreparedDraw* prepared) : previous(activePreparedDraw) {
+    activePreparedDraw = prepared;
+}
+
+PreparedDrawScope::~PreparedDrawScope() {
+    activePreparedDraw = previous;
+}
+
+PreparedDraw* PreparedDrawScope::Active() {
+    return activePreparedDraw;
 }
 
 std::array<std::uint32_t, 4> MeshIndexBufferDescriptor(const Pm4::DrawParameters& draw) {
@@ -1494,15 +1579,13 @@ ResolvedResources resolveDrawResources(const Context& context, const State& stat
     // Only recordable draws take part: a synchronous draw writes its resources back, which a shared
     // object must never do. Revalidate proves a hit by texture identity, which needs the texture
     // caches. Push constants still come from this draw's stages. APS5_NO_DRAW_RESOURCE_CACHE=1
-    // builds every draw's resources as before.
-    static const bool noDrawResourceCache = std::getenv("APS5_NO_DRAW_RESOURCE_CACHE") != nullptr;
-    static const bool noTextureCache = std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
-    // The render target and index ranges stay out of the key (see DrawResourceKey); a hit repeats
-    // the alias checks instead. Debug aid: APS5_NO_DRAW_KEY_TRIM=1 keys them as before.
-    static const bool trimKey = std::getenv("APS5_NO_DRAW_KEY_TRIM") == nullptr;
-    resolved.cacheable = recordable && !noDrawResourceCache && !noTextureCache && std::all_of(shaders.begin(), shaders.end(), [](const CompiledShader& shader) { return shader.program != nullptr && shader.program->PipelineVariantId() != 0; }) && !ShaderResources::NeverReusable(shaders);
+    // builds every draw's resources as before (see CacheableDrawStages).
+    const bool trimKey = DrawKeyTrim();
+    resolved.cacheable = recordable && CacheableDrawStages(shaders);
     if (resolved.cacheable) {
-        resolved.contentKey = DrawResourceKey(context, shaders, state.color, static_cast<std::uint32_t>(state.colors.size()), draw.indexAddress, indexBytes, !trimKey);
+        // A queued draw's key was computed by the queue-0 worker (PrepareDraw) and is taken when it
+        // was made for this device, these stages and this attachment count (TakePreparedKey).
+        if (!TakePreparedKey(PreparedDrawScope::Active(), context, state, shaders, resolved.contentKey)) resolved.contentKey = DrawResourceKey(context, shaders, state.color, static_cast<std::uint32_t>(state.colors.size()), draw.indexAddress, indexBytes, !trimKey);
         if (auto cached = SharedResourceCache().Find(resolved.contentKey)) {
             const bool valid = cached->Revalidate(shaders);
             auto* recorder = Recorder::Active();

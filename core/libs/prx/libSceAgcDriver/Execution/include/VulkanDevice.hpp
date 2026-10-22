@@ -329,6 +329,9 @@ public:
     void Draw(const Graphics::State& graphics, const Pm4::DrawParameters& draw, std::span<const Graphics::CompiledShader> shaders, std::span<const Graphics::GuestMemorySnapshot> snapshots = {}, std::shared_ptr<const DrawRecipe>* recipe = nullptr);
     bool DrawInputsInPlace() const;
     std::optional<std::string> KnownDrawRejection(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> shaders) const;
+    // The part of a pipelined draw's commit the queue-0 worker can do before the enqueue
+    // (Graphics::PrepareDraw); null when nothing is prepared.
+    std::shared_ptr<Graphics::PreparedDraw> PrepareDraw(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> shaders, bool resources) const;
     void ColorMetadataPass(const Graphics::ColorMetadataPass& pass);
     void DepthCopyPass(const Graphics::DepthCopyPass& pass);
     // A draw-cache hit recorded from its recipe (Graphics::DrawWithRecipe), under the mutex after
