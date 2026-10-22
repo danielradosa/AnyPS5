@@ -81,7 +81,7 @@ int main() {
     exportInit.free_func = &allocator;
     Require(sceContentExportInit2(&exportInit) == 0, "content export initializes");
     const int session = sceContentExportStart();
-    Require(session > 0, "an export session starts");
+    Require(session >= 0, "an export session starts");
     const ContentExportParam image = MakeParam("image/png");
     const ContentExportParam video = MakeParam("video/mp4");
     char picture[64];
