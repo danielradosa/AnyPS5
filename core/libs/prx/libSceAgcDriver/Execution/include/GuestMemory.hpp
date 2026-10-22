@@ -131,6 +131,11 @@ bool UnchangedSinceCollected(std::uint64_t address, std::size_t bytes, std::uint
 constexpr std::uint8_t BlockUnchanged = 0;
 constexpr std::uint8_t BlockWritten = 1;
 bool ChangedBlocks(std::uint64_t address, std::size_t bytes, std::span<const std::uint64_t> generations, std::span<std::uint8_t> changed, std::span<std::uint8_t> cpu = {});
+// Per 64 KiB block of [address, address + bytes): a mask of its 4 KiB pages whose part of the range
+// was stored over since `generation`, by the same page notes and driver pieces UnchangedSince trusts
+// (a block whose stamps they cannot place reads as all pages). False, with every mask full, where
+// the tracker does not cover the range (unwatched, a host region, a generation of 0).
+bool ChangedPages(std::uint64_t address, std::size_t bytes, std::uint64_t generation, std::span<std::uint16_t> masks);
 
 // Serializes device work: draws, dispatches, presentation and the deferred write-backs below. The
 // mutex is recursive; it is wrapped so every acquisition (std::lock_guard at any site) measures how

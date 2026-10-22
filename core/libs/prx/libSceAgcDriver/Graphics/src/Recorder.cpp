@@ -2863,7 +2863,7 @@ void reportSnapshotReuse() {
     if (now - snapshotReuseReported < std::chrono::seconds(10)) return;
     snapshotReuseReported = now;
     const auto r = std::exchange(snapshotReuse, {});
-    std::fprintf(stderr, "[snapshots] (10 s): %llu reuse lookups: %llu without an entry, %llu unchanged, %llu refreshed (%llu blocks, %.1f MiB compared, %.1f MiB copied in), %llu dropped\n", static_cast<unsigned long long>(r.lookups), static_cast<unsigned long long>(r.missing), static_cast<unsigned long long>(r.unchanged), static_cast<unsigned long long>(r.refreshed), static_cast<unsigned long long>(r.blocks), r.compared / 1048576.0, r.copied / 1048576.0, static_cast<unsigned long long>(r.dropped));
+    std::fprintf(stderr, "[snapshots] (10 s): %llu reuse lookups: %llu without an entry, %llu unchanged, %llu refreshed (%llu spans, %.1f MiB compared, %.1f MiB copied in), %llu dropped\n", static_cast<unsigned long long>(r.lookups), static_cast<unsigned long long>(r.missing), static_cast<unsigned long long>(r.unchanged), static_cast<unsigned long long>(r.refreshed), static_cast<unsigned long long>(r.blocks), r.compared / 1048576.0, r.copied / 1048576.0, static_cast<unsigned long long>(r.dropped));
 }
 
 }
@@ -2910,6 +2910,7 @@ bool Recorder::refreshDrawSnapshot(DrawSnapshot& entry, std::uint64_t address, s
         std::vector<std::pair<std::size_t, std::size_t>> differing;
         std::vector<CompareSpan> spans;
         std::vector<std::uint8_t> equal;
+        std::vector<std::uint16_t> pages;
     };
     auto& scratch = HostThreadLocal<Scratch, Scratch>();
     auto& generations = scratch.generations;
@@ -2922,13 +2923,34 @@ bool Recorder::refreshDrawSnapshot(DrawSnapshot& entry, std::uint64_t address, s
     differing.clear();
     spans.clear();
     const bool sole = entry.buffer.use_count() == 1;
-    GuestMemory::ChangedBlocks(address, bytes, generations, changed);
+    // Only the 4 KiB pages stored over since the snapshot are compared (play1022l: ~10 refreshes per
+    // heavy-hub frame compared 8-9 GB per 10 s in whole 64 KiB blocks for 0.46 GB that differed).
+    // Debug aid: APS5_NO_PAGE_COMPARE=1 compares every changed block whole, as before.
+    static const bool pageCompare = std::getenv("APS5_NO_PAGE_COMPARE") == nullptr;
+    auto& pages = scratch.pages;
+    pages.assign(count, std::uint16_t{0xffffu});
+    if (pageCompare) {
+        GuestMemory::ChangedPages(address, bytes, entry.generation, pages);
+    } else {
+        GuestMemory::ChangedBlocks(address, bytes, generations, changed);
+        for (std::size_t k = 0; k < count; ++k) pages[k] = changed[k] == GuestMemory::BlockUnchanged ? 0 : 0xffffu;
+    }
+    constexpr std::uint64_t page = 4096;
     for (std::size_t k = 0; k < count; ++k) {
-        if (changed[k] == GuestMemory::BlockUnchanged) continue;
-        const auto from = std::max(address, aligned + k * block);
-        const auto to = std::min(end, aligned + (k + 1) * block);
-        const auto offset = static_cast<std::size_t>(from - address);
-        spans.push_back({held.data() + offset, reinterpret_cast<const void*>(from), static_cast<std::size_t>(to - from)});
+        for (std::uint32_t first = 0; first < block / page;) {
+            if ((pages[k] >> first & 1u) == 0) {
+                ++first;
+                continue;
+            }
+            auto stop = first + 1;
+            while (stop < block / page && (pages[k] >> stop & 1u) != 0) ++stop;
+            const auto from = std::max(address, aligned + k * block + first * page);
+            const auto to = std::min(end, aligned + k * block + stop * page);
+            first = stop;
+            if (from >= to) continue;
+            const auto offset = static_cast<std::size_t>(from - address);
+            spans.push_back({held.data() + offset, reinterpret_cast<const void*>(from), static_cast<std::size_t>(to - from)});
+        }
     }
     equal.assign(spans.size(), 0);
     CompareSpans(spans, equal);

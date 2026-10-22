@@ -1176,6 +1176,30 @@ struct WriteTracker {
         return false;
     }
 
+    // storedOver(walked) page by page for one block stamped since `generation`: bit p is set when page
+    // p's part of [address, end) was stored over (a CPU stamp without page notes, or a whole or
+    // dropped driver store, sets every page).
+    std::uint16_t storedPages(std::uint64_t block, std::uint64_t address, std::uint64_t end, std::uint64_t generation) const {
+        const auto cpu = cpuPages.find(block);
+        if (cpu == cpuPages.end() && cpuStampOf(block) > generation) return 0xffffu;
+        const auto driver = driverPieces.find(block);
+        if (driver != driverPieces.end() && (driver->second.whole > generation || driver->second.dropped > generation)) return 0xffffu;
+        const auto walk = walkPages.find(block);
+        const auto begin = blockBegin(block);
+        std::uint16_t mask = 0;
+        for (std::size_t page = 0; page < WritePagesPerBlock; ++page) {
+            const auto from = std::max<std::uint64_t>(address, begin + page * WritePageBytes) - begin;
+            const auto to = std::min<std::uint64_t>(end, begin + (page + 1) * WritePageBytes) - begin;
+            if (from >= to) continue;
+            bool stored = (cpu != cpuPages.end() && cpu->second.pages[page] > generation) || (walk != walkPages.end() && walk->second.pages[page] > generation);
+            if (!stored && driver != driverPieces.end()) {
+                for (const auto& piece : driver->second.pieces) stored = stored || (piece.generation > generation && piece.begin < to && from < piece.end);
+            }
+            if (stored) mask = static_cast<std::uint16_t>(mask | (1u << page));
+        }
+        return mask;
+    }
+
     bool rangeUnchanged(std::uint64_t address, std::size_t bytes, std::uint64_t since) const {
         return unchanged(blockOf(address), blockOf(address + bytes - 1), since) || !storedOver(address, address + bytes, since, true);
     }
@@ -1849,6 +1873,23 @@ bool StoredOver(std::uint64_t address, std::size_t bytes, std::uint64_t generati
     if (GuestArena::GuestArenaHostRegionOverlaps_nid_postfix(address, bytes)) return true;
 #endif
     return tracker.storedOver(address, address + bytes, generation, false);
+}
+
+bool ChangedPages(std::uint64_t address, std::size_t bytes, std::uint64_t generation, std::span<std::uint16_t> masks) {
+    std::fill(masks.begin(), masks.end(), std::uint16_t{0xffffu});
+    auto& tracker = Tracker();
+    const auto lock = lockTracker(tracker);
+    tracker.initialize();
+    if (!tracker.watched || generation == 0 || bytes == 0 || !tracker.covers(address, bytes)) return false;
+#ifdef _WIN32
+    if (GuestArena::GuestArenaHostRegionOverlaps_nid_postfix(address, bytes)) return false;
+#endif
+    const auto end = address + bytes;
+    const auto first = tracker.blockOf(address);
+    for (auto block = first; block <= tracker.blockOf(end - 1) && block - first < masks.size(); ++block) {
+        masks[block - first] = tracker.stampOf(block) > generation ? tracker.storedPages(block, address, end, generation) : 0;
+    }
+    return true;
 }
 
 bool StoredAllSince_nid_no_patch(std::uint64_t address, std::size_t bytes, std::uint64_t generation) {
