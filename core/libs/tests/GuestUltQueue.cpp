@@ -24,8 +24,8 @@ int APS5_VABI sceUltQueueTryPush(void*, const void*);
 int APS5_VABI sceUltQueuePop(void*, void*);
 int APS5_VABI sceUltQueueTryPop(void*, void*);
 int APS5_VABI sceUltWaitingQueueResourcePoolCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*, std::uint32_t);
-int APS5_VABI _sceUltQueueDataResourcePoolCreate(void*, const char*, std::uint32_t, std::uint64_t, std::uint32_t, void*, void*, const void*, std::uint32_t);
-int APS5_VABI _sceUltQueueCreate(void*, const char*, std::uint64_t, void*, void*, const void*, std::uint32_t);
+int APS5_VABI _sceUltQueueDataResourcePoolCreate(void*, const char*, std::uint32_t, std::uint64_t, std::uint32_t, void*, void*, const void*);
+int APS5_VABI _sceUltQueueCreate(void*, const char*, std::uint64_t, void*, void*, const void*);
 int APS5_VABI sceUltWaitingQueueResourcePoolDestroy(void*);
 int APS5_VABI sceUltWaitingQueueResourcePoolOptParamInitialize(void*, std::uint32_t);
 int APS5_VABI sceUltQueueDataResourcePoolOptParamInitialize(void*, std::uint32_t);
@@ -256,23 +256,23 @@ static void Stress() {
 }
 
 static void Versioned() {
-    Object waiting, pool, queue, other;
+    Object waiting, pool, queue, other, work;
     CHECK(sceUltWaitingQueueResourcePoolCreate(&waiting, "waiting", 2, 2, nullptr, nullptr, BuildVersion) == 0);
-    CHECK(_sceUltQueueDataResourcePoolCreate(nullptr, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == Null);
-    CHECK(_sceUltQueueDataResourcePoolCreate(pool.bytes.data() + 4, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == Alignment);
-    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 0, 1, &waiting, nullptr, nullptr, BuildVersion) == Range);
-    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &other, nullptr, nullptr, BuildVersion) == Invalid);
-    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == 0);
-    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, nullptr, nullptr, BuildVersion) == State);
-    CHECK(_sceUltQueueCreate(nullptr, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == Null);
-    CHECK(_sceUltQueueCreate(queue.bytes.data() + 4, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == Alignment);
-    CHECK(_sceUltQueueCreate(&queue, "queue", 0, &waiting, &pool, nullptr, BuildVersion) == Range);
-    CHECK(_sceUltQueueCreate(&queue, "queue", 9, &waiting, &pool, nullptr, BuildVersion) == Invalid);
-    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &other, nullptr, BuildVersion) == Invalid);
-    CHECK(_sceUltQueueCreate(&queue, "queue", 4, nullptr, &pool, nullptr, BuildVersion) == Invalid);
-    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == 0);
-    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == State);
-    CHECK(_sceUltQueueCreate(&other, "other", 4, &waiting, &pool, nullptr, BuildVersion) == Again);
+    CHECK(_sceUltQueueDataResourcePoolCreate(nullptr, "pool", 2, 8, 1, &waiting, &work, nullptr) == Null);
+    CHECK(_sceUltQueueDataResourcePoolCreate(pool.bytes.data() + 4, "pool", 2, 8, 1, &waiting, &work, nullptr) == Alignment);
+    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 0, 1, &waiting, &work, nullptr) == Invalid);
+    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &other, &work, nullptr) == Invalid);
+    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, &work, nullptr) == 0);
+    CHECK(_sceUltQueueDataResourcePoolCreate(&pool, "pool", 2, 8, 1, &waiting, &work, nullptr) == State);
+    CHECK(_sceUltQueueCreate(nullptr, "queue", 4, &waiting, &pool, nullptr) == Null);
+    CHECK(_sceUltQueueCreate(queue.bytes.data() + 4, "queue", 4, &waiting, &pool, nullptr) == Alignment);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 0, &waiting, &pool, nullptr) == Invalid);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 9, &waiting, &pool, nullptr) == Invalid);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &other, nullptr) == Invalid);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, nullptr, &pool, nullptr) == Invalid);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr) == 0);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr) == State);
+    CHECK(_sceUltQueueCreate(&other, "other", 4, &waiting, &pool, nullptr) == Busy);
     const std::array<std::uint32_t, 3> values{0xA1B2C3D4u, 0x01020304u, 0xDEADBEEFu};
     std::array<std::uint32_t, 2> output{UINT32_MAX, UINT32_MAX};
     CHECK(sceUltQueueTryPush(&queue, &values[0]) == 0);
@@ -285,10 +285,10 @@ static void Versioned() {
     CHECK(sceUltQueueTryPop(&queue, output.data()) == Again);
     CHECK(sceUltQueueDataResourcePoolDestroy(&pool) == Busy);
     CHECK(sceUltQueueDestroy(&queue) == 0);
-    CHECK(_sceUltQueueCreate(&other, "other", 8, &waiting, &pool, nullptr, BuildVersion) == 0);
+    CHECK(_sceUltQueueCreate(&other, "other", 8, &waiting, &pool, nullptr) == 0);
     CHECK(sceUltQueueDestroy(&other) == 0);
     CHECK(sceUltQueueDataResourcePoolDestroy(&pool) == 0);
-    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr, BuildVersion) == Invalid);
+    CHECK(_sceUltQueueCreate(&queue, "queue", 4, &waiting, &pool, nullptr) == Invalid);
 }
 
 static void OptParams() {
