@@ -131,6 +131,11 @@ struct CachedTexture {
     // write watch; zero when none was taken.
     std::array<std::uint64_t, 4> untracked{};
     std::uint64_t surfaceBytes = 0;
+    // APS5_TEXTURE_OVERFLOW=1: a snapshot the cache refused stays as an entry outside the budget
+    // (not in `bytes`), so the next frame finds it instead of reading guest memory again; it is
+    // dropped once neither this frame nor the last used it, and takes a place in the budget when a
+    // later lookup can make room for it.
+    bool overflow = false;
 };
 
 // Entries in use order (front = most recent) with a hash index by key: a lookup is O(1) and the
@@ -142,6 +147,8 @@ struct TextureCache {
     std::unordered_map<TextureKey, std::list<CachedTexture>::iterator, TextureKeyHash> index;
     std::unordered_multimap<const StorageTexture*, std::list<CachedTexture>::iterator> views;
     std::uint64_t bytes = 0;
+    std::size_t overflowEntries = 0;
+    std::uint64_t overflowSwept = 0;
     std::size_t passed = 0;
     std::chrono::steady_clock::time_point passedSince{};
     std::uint64_t firstUsesPresent = 0;
@@ -153,6 +160,9 @@ struct TextureCache {
         std::uint64_t passed = 0;
         std::uint64_t stale = 0;
         std::uint64_t idleHeld = 0;
+        std::uint64_t overflowKept = 0;
+        std::uint64_t overflowHits = 0;
+        std::uint64_t overflowPromoted = 0;
     } counts;
     std::chrono::steady_clock::time_point countsReported = std::chrono::steady_clock::now();
     VkPhysicalDevice budgetDevice = VK_NULL_HANDLE;
@@ -239,7 +249,11 @@ std::list<CachedTexture>::iterator findTexture(TextureCache& cache, const Textur
 }
 
 void eraseTexture(TextureCache& cache, std::list<CachedTexture>::iterator it) {
-    cache.bytes -= it->accounted;
+    if (it->overflow) {
+        --cache.overflowEntries;
+    } else {
+        cache.bytes -= it->accounted;
+    }
     if (it->source != nullptr) {
         for (auto [view, last] = cache.views.equal_range(it->source.get()); view != last; ++view) {
             if (view->second == it) {
@@ -319,6 +333,25 @@ bool admitTexture(TextureCache& cache, const TextureKey& key, std::uint64_t inco
     return true;
 }
 
+// Read per refusal so tests can set it.
+bool OverflowEnabled() {
+    const char* value = std::getenv("APS5_TEXTURE_OVERFLOW");
+    return value != nullptr && *value != '\0' && *value != '0';
+}
+
+// Once per present: drops the overflow entries neither this frame nor the last looked up or bound
+// (a resource-cache hit binds without a lookup); a held one is marked released like any eviction.
+void sweepOverflow(TextureCache& cache) {
+    const auto present = Recorder::Presents();
+    if (cache.overflowEntries == 0 || cache.overflowSwept == present) return;
+    cache.overflowSwept = present;
+    for (auto it = cache.entries.begin(); it != cache.entries.end();) {
+        const auto next = std::next(it);
+        if (it->overflow && std::max(it->present, it->texture->LastBound()) + 1u < present) eraseTexture(cache, it);
+        it = next;
+    }
+}
+
 void reportCacheCounts(TextureCache& cache, std::uint64_t budget) {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     if (!profile) return;
@@ -326,7 +359,7 @@ void reportCacheCounts(TextureCache& cache, std::uint64_t budget) {
     if (now - cache.countsReported < std::chrono::seconds(10)) return;
     cache.countsReported = now;
     const auto counts = std::exchange(cache.counts, {});
-    AgcDriver::ProfilePrint_nid_no_patch("[texture-cache] (10 s): %llu textures cached, %llu used uncached (first use this frame with the least recently used entry used this frame or the last, or a later use with it used this frame), %llu evicted (%llu of them held but idle), %llu held ones passed over, %llu found changed; %llu MiB in %zu entries, budget %llu MiB, frame %llu\n", static_cast<unsigned long long>(counts.inserted), static_cast<unsigned long long>(counts.uncached), static_cast<unsigned long long>(counts.evicted), static_cast<unsigned long long>(counts.idleHeld), static_cast<unsigned long long>(counts.passed), static_cast<unsigned long long>(counts.stale), static_cast<unsigned long long>(cache.bytes >> 20u), cache.entries.size(), static_cast<unsigned long long>(budget >> 20u), static_cast<unsigned long long>(Recorder::Presents()));
+    AgcDriver::ProfilePrint_nid_no_patch("[texture-cache] (10 s): %llu textures cached, %llu used uncached (first use this frame with the least recently used entry used this frame or the last, or a later use with it used this frame), %llu evicted (%llu of them held but idle), %llu held ones passed over, %llu found changed; overflow: %llu kept past the budget, %llu hits, %llu promoted, %zu entries now; %llu MiB in %zu entries, budget %llu MiB, frame %llu\n", static_cast<unsigned long long>(counts.inserted), static_cast<unsigned long long>(counts.uncached), static_cast<unsigned long long>(counts.evicted), static_cast<unsigned long long>(counts.idleHeld), static_cast<unsigned long long>(counts.passed), static_cast<unsigned long long>(counts.stale), static_cast<unsigned long long>(counts.overflowKept), static_cast<unsigned long long>(counts.overflowHits), static_cast<unsigned long long>(counts.overflowPromoted), cache.overflowEntries, static_cast<unsigned long long>(cache.bytes >> 20u), cache.entries.size() - cache.overflowEntries, static_cast<unsigned long long>(budget >> 20u), static_cast<unsigned long long>(Recorder::Presents()));
 }
 
 struct ImageMemoEntry {
@@ -664,6 +697,23 @@ std::uint64_t sampledBudget(const Context& context, TextureCache& cache) {
     return budget;
 }
 
+// An overflow entry looked up again takes a place in the budget when the cache can make room as for
+// a new texture: a new set replaces the old one without a guest read per frame meanwhile. The entry
+// sits out of the list while admitTexture evicts, so it is never the one evicted.
+void promoteOverflow(const Context& context, TextureCache& cache, std::list<CachedTexture>::iterator it) {
+    ++cache.counts.overflowHits;
+    if (it->accounted == 0 || Recorder::Presents() == 0) return;
+    std::list<CachedTexture> parked;
+    parked.splice(parked.begin(), cache.entries, it);
+    const bool admitted = admitTexture(cache, it->key, it->accounted, sampledBudget(context, cache));
+    cache.entries.splice(cache.entries.begin(), parked, it);
+    if (!admitted) return;
+    it->overflow = false;
+    --cache.overflowEntries;
+    cache.bytes += it->accounted;
+    ++cache.counts.overflowPromoted;
+}
+
 // A snapshot over memory outside the write watch is compared with guest memory again only when this
 // key changed: a write-watch mark in the range, a driver store, a mapping change or a recorded GPU
 // write (as StorageTexture::compareUntracked). Taken before the snapshot is read or compared, so a
@@ -895,6 +945,7 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
     std::lock_guard lock(cache.mutex);
     const CacheHold held(sampledCacheHeld);
     dropUncachedViews(cache);
+    sweepOverflow(cache);
     if (auto it = findTexture(cache, key); it != cache.entries.end()) {
         if (it->source != nullptr) {
             // The view follows the storage image, whatever the GPU wrote to it since; guest memory
@@ -935,6 +986,7 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
                 it->committed = std::move(committed);
                 it->untracked = untracked;
                 touchTexture(cache, it);
+                if (it->overflow) promoteOverflow(context, cache, it);
                 logLookup({it->texture.get(), resource, guestBytes, *keys, generation, nullptr});
                 reportTextureCounters();
                 if (profile) LookupOutcomes::Add(LookupOutcomes::SampledHitSnapshot, start);
@@ -988,7 +1040,17 @@ std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const s
     const auto budget = sampledBudget(context, cache);
     auto texture = entry.texture;
     if (!admitTexture(cache, key, entry.accounted, budget)) {
-        noteReleased(texture);
+        if (source == nullptr && OverflowEnabled()) {
+            // Not marked released: resource-cache sets may hold it until sweepOverflow drops it.
+            entry.overflow = true;
+            entry.present = Recorder::Presents();
+            cache.entries.push_front(std::move(entry));
+            cache.index[key] = cache.entries.begin();
+            ++cache.overflowEntries;
+            ++cache.counts.overflowKept;
+        } else {
+            noteReleased(texture);
+        }
         logLookup({texture.get(), resource, guestBytes, *keys, generation, source.get()});
         reportCacheCounts(cache, budget);
         reportTextureCounters();
@@ -4779,6 +4841,7 @@ std::shared_ptr<Texture> ShaderResources::fastTexture(const ImageRecord& record)
     if (it == cache.entries.end() || it->texture != record.texture || it->committed.has_value()) return nullptr;
     if (it->source == nullptr) it->generation = record.generation;
     touchTexture(cache, it);
+    if (it->overflow) promoteOverflow(context, cache, it);
     logLookup({record.texture.get(), record.resource, record.guestBytes, keys, record.source != nullptr ? 0 : record.generation, record.source.get()});
     outcome.hit = true;
     return record.texture;

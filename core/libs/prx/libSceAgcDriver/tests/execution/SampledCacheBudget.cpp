@@ -729,6 +729,46 @@ void idleHeldTests(Context context) {
     ClearCachedTextures(context.device);
 }
 
+void setOverflow(const char* value) {
+#ifdef _WIN32
+    Require(_putenv_s("APS5_TEXTURE_OVERFLOW", value) == 0, "cannot set APS5_TEXTURE_OVERFLOW");
+#else
+    Require((*value != '\0' ? setenv("APS5_TEXTURE_OVERFLOW", value, 1) : unsetenv("APS5_TEXTURE_OVERFLOW")) == 0, "cannot set APS5_TEXTURE_OVERFLOW");
+#endif
+}
+
+// APS5_TEXTURE_OVERFLOW=1: the textures a frame samples past the budget stay outside it for the next
+// frame, which finds them all, and go once two presents pass without a use.
+void overflowTests(const Context& context) {
+    setOverflow("1");
+    try {
+        Block block(context);
+        ClearCachedTextures(context.device);
+        Recorder::CountPresent();
+        const auto bytes = Sampled(context, block.Surface(0))->AllocationBytes();
+        const auto capacity = static_cast<std::size_t>(Budget / bytes);
+        const auto frame = capacity + 2u;
+        Require(capacity >= 2u && frame <= Surfaces, "a snapshot of the 256 KiB surface holds " + std::to_string(bytes) + " bytes, which the test's 1 MiB budget does not fit as planned");
+        std::vector<std::weak_ptr<Texture>> made(frame);
+        for (std::size_t surface = 0; surface < frame; ++surface) made[surface] = Sampled(context, block.Surface(surface));
+        Require(TextureCacheUsage().sampledBytes <= Budget, "textures kept past the budget were counted against it");
+        for (std::size_t surface = capacity; surface < frame; ++surface) Require(!made[surface].expired(), "surface " + std::to_string(surface) + ", sampled past the budget, was not kept for the next frame");
+        Recorder::CountPresent();
+        std::size_t hits = 0;
+        for (std::size_t surface = 0; surface < frame; ++surface) hits += Sampled(context, block.Surface(surface)) == made[surface].lock();
+        Require(hits == frame, "the next frame over the same " + std::to_string(frame) + " textures found " + std::to_string(hits) + " of them, not all");
+        Require(TextureCacheUsage().sampledBytes <= Budget, "a frame that still uses every cached texture let a kept one into the budget");
+        for (int present = 0; present < 3; ++present) Recorder::CountPresent();
+        Sampled(context, block.Surface(0));
+        for (std::size_t surface = capacity; surface < frame; ++surface) Require(made[surface].expired(), "surface " + std::to_string(surface) + ", kept past the budget, outlived two presents without a use");
+    } catch (...) {
+        setOverflow("");
+        throw;
+    }
+    setOverflow("");
+    ClearCachedTextures(context.device);
+}
+
 void releasedTests(Context context) {
     PlaceholderImages placeholders(context);
     context.placeholderImages = &placeholders;
@@ -1131,6 +1171,7 @@ int main(int argc, char** argv) {
             collidingKeyTests(context);
             // Last: it counts 61 presents, and rescanTests and the tests before frameTests run at present 0.
             idleHeldTests(context);
+            overflowTests(context);
             ClearCachedTextures(context.device);
         }
         std::puts("sampled texture cache budget tests passed");
