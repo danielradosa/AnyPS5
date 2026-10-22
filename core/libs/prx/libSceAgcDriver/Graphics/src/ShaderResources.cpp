@@ -131,7 +131,7 @@ struct CachedTexture {
     // write watch; zero when none was taken.
     std::array<std::uint64_t, 4> untracked{};
     std::uint64_t surfaceBytes = 0;
-    // APS5_TEXTURE_OVERFLOW=1: a snapshot the cache refused stays as an entry outside the budget
+    // Unless APS5_TEXTURE_OVERFLOW=0, a snapshot the cache refused stays as an entry outside the budget
     // (not in `bytes`), so the next frame finds it instead of reading guest memory again; it is
     // dropped once neither this frame nor the last used it, and takes a place in the budget when a
     // later lookup can make room for it.
@@ -333,10 +333,11 @@ bool admitTexture(TextureCache& cache, const TextureKey& key, std::uint64_t inco
     return true;
 }
 
-// Read per refusal so tests can set it.
+// On unless APS5_TEXTURE_OVERFLOW=0 (refused snapshots then go uncached, made again on each use);
+// read per refusal so tests can set it.
 bool OverflowEnabled() {
     const char* value = std::getenv("APS5_TEXTURE_OVERFLOW");
-    return value != nullptr && *value != '\0' && *value != '0';
+    return value == nullptr || *value != '0';
 }
 
 // Once per present: drops the overflow entries neither this frame nor the last looked up or bound

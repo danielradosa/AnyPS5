@@ -737,10 +737,10 @@ void setOverflow(const char* value) {
 #endif
 }
 
-// APS5_TEXTURE_OVERFLOW=1: the textures a frame samples past the budget stay outside it for the next
-// frame, which finds them all, and go once two presents pass without a use.
+// By default (APS5_TEXTURE_OVERFLOW unset) the textures a frame samples past the budget stay outside
+// it for the next frame, which finds them all, and go once two presents pass without a use.
 void overflowTests(const Context& context) {
-    setOverflow("1");
+    setOverflow("");
     try {
         Block block(context);
         ClearCachedTextures(context.device);
@@ -762,10 +762,10 @@ void overflowTests(const Context& context) {
         Sampled(context, block.Surface(0));
         for (std::size_t surface = capacity; surface < frame; ++surface) Require(made[surface].expired(), "surface " + std::to_string(surface) + ", kept past the budget, outlived two presents without a use");
     } catch (...) {
-        setOverflow("");
+        setOverflow("0");
         throw;
     }
-    setOverflow("");
+    setOverflow("0");
     ClearCachedTextures(context.device);
 }
 
@@ -1082,6 +1082,8 @@ void storageMemoryTests(Context context) {
 
 int main(int argc, char** argv) {
     try {
+        // These tests count refused textures as made again on each use; overflowTests covers the default.
+        setOverflow("0");
         const bool memory = argc > 1 && std::string(argv[1]) == "memory";
         const std::string mode = argc > 1 ? argv[1] : "";
         if (mode == "device-selection-cpu") {
