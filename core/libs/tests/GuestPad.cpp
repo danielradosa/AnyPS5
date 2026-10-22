@@ -45,6 +45,9 @@ int APS5_VABI scePadReadStateExt(int, PadData*);
 int APS5_VABI scePadSetLightBarForTracker(int, const PadLightBarParam*);
 int APS5_VABI scePadResetLightBar(int);
 int APS5_VABI scePadGetControllerType(int, std::int32_t*);
+bool APS5_VABI scePadIsDS4Connected(std::int32_t);
+bool APS5_VABI scePadIsBlasterConnected(std::int32_t);
+bool APS5_VABI scePadIsMoveConnected(std::int32_t);
 int APS5_VABI scePadGetControllerInformation(int, PadControllerInformation*);
 int APS5_VABI scePadGetExtControllerInformation(int, void*);
 int APS5_VABI scePadSetLightBar(int, const PadLightBarParam*);
@@ -488,6 +491,14 @@ static void CheckVrControllerCalls(int handle) {
     Require(!PadFetchOutput_nid_postfix(&seen, &output));
 }
 
+static void CheckTrackerDevices(int handle) {
+    for (const int candidate : {handle, handle + 1}) {
+        Require(!scePadIsDS4Connected(candidate));
+        Require(!scePadIsBlasterConnected(candidate));
+        Require(!scePadIsMoveConnected(candidate));
+    }
+}
+
 static void CheckAccessibilityControllerState(int handle) {
     std::uint32_t state = 7;
     Require(scePadGetAccessibilityControllerState(handle + 1, nullptr) == PAD_ERROR_INVALID_ARG);
@@ -652,6 +663,7 @@ int main() {
     CheckOutputReport(handle);
     CheckVrControllerReadState(user, handle);
     CheckVrControllerCalls(handle);
+    CheckTrackerDevices(handle);
     CheckAccessibilityControllerState(handle);
     CheckControllerType(handle);
     CheckInjectedState(commandPath);
