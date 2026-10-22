@@ -1431,7 +1431,13 @@ std::uint64_t SampledTextureBudget(const VkPhysicalDeviceMemoryProperties& memor
     const auto budget = reported->heapBudget[*heap];
     const auto usage = reported->heapUsage[*heap];
     const auto reserved = usage - std::min<std::uint64_t>(usage, textureBytes) + TextureCacheBudget(memory) + budget / 8u;
-    return std::max<std::uint64_t>(std::min<std::uint64_t>(2048ull << 20u, TextureCacheShare(budget)), budget > reserved ? budget - reserved : 0u);
+    // The floor counts 4.5 GiB for everything else, not TextureCacheShare's 5: 1290 MiB on an 8 GB card (7188 MiB),
+    // which holds the Astro hub's heavy-scene set (1.2-1.35 GiB). At TextureCacheShare's 1 GiB the budget sat on the
+    // floor while flushes no longer waited for read-only address-based builds and the set thrashed for 40 s on scene
+    // entry (play1022j); the storage cache keeps its cap, so the two stay well under play1018e's 1.75 + 2 GiB.
+    constexpr std::uint64_t others = 9ull << 29u;
+    const auto floor = std::max<std::uint64_t>(512ull << 20u, budget > others ? (budget - others) / 2u : 0u);
+    return std::max<std::uint64_t>(std::min<std::uint64_t>(2048ull << 20u, floor), budget > reserved ? budget - reserved : 0u);
 }
 
 bool SampledBudgetReportDue(std::uint64_t reported, std::uint64_t budget, std::chrono::steady_clock::duration sinceReport) {

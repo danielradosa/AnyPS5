@@ -6707,7 +6707,7 @@ void sampledTextureBudgetTests() {
     Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 2 * GiB, "a heap whose other users leave no room does not keep the 2 GiB floor");
     reported.heapBudget[2] = 7188 * MiB;
     reported.heapUsage[2] = 7 * GiB;
-    Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 1034 * MiB, "an 8 GB card's 7188 MiB budget does not lower the floor to half of what is left after 5 GiB");
+    Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 1290 * MiB, "an 8 GB card's 7188 MiB budget does not lower the floor to half of what is left after 4.5 GiB");
     reported.heapBudget[2] = 4 * GiB;
     Require(SampledTextureBudget(memory, &reported, 1 * GiB) == 512 * MiB, "a budget under 5 GiB does not keep the 512 MiB floor");
     memory.memoryHeaps[0].flags = 0;
