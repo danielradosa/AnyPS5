@@ -63,10 +63,18 @@ std::atomic<std::uint64_t>& DrawPipeline::EpochToken() {
     return token;
 }
 
-void DrawPipeline::FollowEpoch(std::uint64_t token) {
+DrawPipeline::ItemEpoch DrawPipeline::EnqueueEpoch() {
+    return {EpochToken().load(std::memory_order_relaxed), GuestMemory::HandOffCollectEpoch()};
+}
+
+void DrawPipeline::FollowEpoch(const ItemEpoch& epoch) {
     static thread_local std::uint64_t followed = 0;
-    if (followed == token) return;
-    followed = token;
+    if (GuestMemory::AdoptCollectEpoch(epoch.collect)) {
+        followed = epoch.token;
+        return;
+    }
+    if (followed == epoch.token) return;
+    followed = epoch.token;
     GuestMemory::BumpCollectEpoch();
 }
 

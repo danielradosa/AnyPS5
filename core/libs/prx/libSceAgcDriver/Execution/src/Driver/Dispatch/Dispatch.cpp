@@ -505,7 +505,7 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
 
     if (pipelined) {
         const auto recipe = keepVariant->recipe.load(std::memory_order_acquire);
-        const auto epoch = DrawPipeline::EpochToken().load(std::memory_order_relaxed);
+        const auto epoch = DrawPipeline::EnqueueEpoch();
         const auto queueId = submission.queue;
         itemCommits.fetch_add(1, std::memory_order_relaxed);
         DrawPipeline::Queue0().Enqueue([this, localDevice = std::move(localDevice), result = compiledResult, snapshots = std::move(snapshots), liveWords = std::move(liveWords), groups, address, queueId, recipe, keepVariant, dataHit, epoch] {

@@ -96,15 +96,48 @@ bool StoredAllSince_nid_no_patch(std::uint64_t address, std::size_t bytes, std::
 // for decisions about which blocks the CPU wrote while a GPU result was pending (a stale answer there
 // stores old texels over reused memory).
 // The epoch is per queue worker: BumpCollectEpoch advances the calling thread's epoch to a value no
-// other thread ever holds (one worker's walk never satisfies another's check) at the hardware
+// other thread ever holds (one worker's walk never satisfies another worker's check) at the hardware
 // ordering points of its queue: the start of a submission, a WAIT_REG_MEM the CPU may have satisfied
 // (at entry, polled, timed out, or by another queue's recorded label; a label this queue recorded
 // itself orders no CPU write), a device drain, and before reaping completions outside a submission.
 // A thread that never bumps (the presenter, game threads inside the flush hook) gets a fresh epoch
 // for every collect: nothing is reused without an ordering point. APS5_PACKET_EPOCH=1 makes the
 // workers bump before every packet as before. CollectEpochBumps counts the bumps ([guestmem] line).
+// Queue 0 is the exception, a pair (the collect handoff; APS5_NO_COLLECT_HANDOFF=1 turns it off):
+// the queue-0 worker hands its epoch to every item it enqueues on the draw pipeline
+// (HandOffCollectEpoch) and the draw committer runs the item in it (AdoptCollectEpoch, through
+// DrawPipeline::FollowEpoch) instead of bumping one of its own. Both threads keep the ranges they
+// walk in one memo per epoch value, shared and kept for the few newest epochs (a mutex taken alone
+// or inside the tracker's, never around anything else), so a range either walked in the epoch is a
+// hit for the other. That is the contract above for one queue: the committer runs the queue's items
+// in order between the same ordering points as the worker that enqueued them, so a CPU write landing
+// after either's walk is seen in the queue's next epoch; the driver's stores still stamp their
+// blocks, and CollectWritesUncached still walks. Before enqueueing a draw the worker walks the ranges
+// its commit will collect (PrewalkCollects), so the committer's collects are hits. A thread holding
+// the same epoch value without taking part (the presenter's AdoptLatestCollectEpoch) keeps its own memo.
 void BumpCollectEpoch();
 void AdoptLatestCollectEpoch();
+// The calling thread's epoch for the items it enqueues (0 when the handoff is off or the thread never
+// bumped: the committer then bumps its own); the thread takes part from now on.
+std::uint64_t HandOffCollectEpoch();
+// Runs the calling thread (the committer) in a handed-off epoch; false when the handoff is off.
+bool AdoptCollectEpoch(std::uint64_t epoch);
+// CollectWrites of every [begin, end) range on the handing-off thread (nothing elsewhere), walking only
+// what no walk of its epoch covered; a range above APS5_COLLECT_PREWALK_MAX_MIB (128 by default, 0
+// turns the pre-walk off) is left to its collector.
+void PrewalkCollects(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges);
+// Cumulative ([guestmem] line under APS5_PROFILE_DRAW): the committer's memoized collects served by the
+// memo vs walked, the bytes it walked, and the worker's pre-walked ranges, their bytes and the bytes
+// no walk of the epoch had covered.
+struct CollectHandoffCounts {
+    std::uint64_t committerHits = 0;
+    std::uint64_t committerWalks = 0;
+    std::uint64_t committerWalkedBytes = 0;
+    std::uint64_t prewalkRanges = 0;
+    std::uint64_t prewalkBytes = 0;
+    std::uint64_t prewalkUncoveredBytes = 0;
+};
+CollectHandoffCounts CollectHandoffStatistics();
 std::uint64_t CollectEpoch();
 std::uint64_t CollectEpochBumps();
 std::uint64_t ThreadCollectEpoch();

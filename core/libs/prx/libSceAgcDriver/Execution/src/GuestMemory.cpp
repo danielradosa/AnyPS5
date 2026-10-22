@@ -90,6 +90,21 @@ std::atomic<std::uint64_t> forgetSerial{0};
 std::atomic<std::uint64_t> forgetBytes{0};
 std::atomic<std::uint64_t> collectMemoHits{0};
 std::atomic<std::uint64_t> collectEpochBumps{0};
+// Collect handoff counters ([guestmem], see HandOffCollectEpoch): the committer's memoized collects
+// served without a walk vs walked (and the bytes walked), the worker's pre-walked ranges (bytes asked,
+// bytes no walk of the epoch covered yet). Each set has one writing thread, on its own cache line.
+struct alignas(64) HandoffCommitterCounts {
+    std::atomic<std::uint64_t> hits{0};
+    std::atomic<std::uint64_t> walks{0};
+    std::atomic<std::uint64_t> walkedBytes{0};
+};
+struct alignas(64) HandoffWorkerCounts {
+    std::atomic<std::uint64_t> ranges{0};
+    std::atomic<std::uint64_t> bytes{0};
+    std::atomic<std::uint64_t> uncoveredBytes{0};
+};
+HandoffCommitterCounts handoffCommitter;
+HandoffWorkerCounts handoffWorker;
 std::atomic<std::uint64_t> unwatchSerial{0};
 // Walks that reported at least one written page (the ones the probe pass used to double), and the
 // tracker mutex acquisitions that had to wait (APS5_PROFILE_DRAW; see lockTracker).
@@ -321,6 +336,10 @@ public:
             AgcDriver::ProfilePrint_nid_no_patch(" %s %llu calls %.0f MiB %.1f s", MemoryCounterNames[i], static_cast<unsigned long long>(totals[i][0]), totals[i][1] / 1048576.0, totals[i][2] / 1e9);
         }
         AgcDriver::ProfilePrint_nid_no_patch(" collect-memo hits %llu, collect epochs %llu", static_cast<unsigned long long>(collectMemoHits.load()), static_cast<unsigned long long>(collectEpochBumps.load()));
+        // Only once the handoff engaged (never with APS5_NO_COLLECT_HANDOFF=1): cumulative.
+        if (const auto hits = handoffCommitter.hits.load(), walks = handoffCommitter.walks.load(), ranges = handoffWorker.ranges.load(); hits != 0 || walks != 0 || ranges != 0) {
+            AgcDriver::ProfilePrint_nid_no_patch(" collect handoff: committer hits %llu walks %llu (%.0f MiB), worker pre-walks %llu ranges %.0f MiB (%.0f MiB uncovered)", static_cast<unsigned long long>(hits), static_cast<unsigned long long>(walks), handoffCommitter.walkedBytes.load() / 1048576.0, static_cast<unsigned long long>(ranges), handoffWorker.bytes.load() / 1048576.0, handoffWorker.uncoveredBytes.load() / 1048576.0);
+        }
         AgcDriver::ProfilePrint_nid_no_patch(" collect-dirty %llu tracker waits %llu / %llu", static_cast<unsigned long long>(collectDirty.load()), static_cast<unsigned long long>(trackerWaits.load()), static_cast<unsigned long long>(trackerAcquisitions.load()));
         AgcDriver::ProfilePrint_nid_no_patch(" | arena 0x%llx+0x%llx image 0x%llx+0x%llx forgets %llu (%.0f MiB)", static_cast<unsigned long long>(PagesBase()), static_cast<unsigned long long>(PagesSize()), static_cast<unsigned long long>(ImagePagesBase()), static_cast<unsigned long long>(ImagePagesSize()), static_cast<unsigned long long>(forgetCalls.load()), forgetBytes.load() / 1048576.0);
         {
@@ -1230,8 +1249,9 @@ void watchPrivateMapping(std::uintptr_t address, std::size_t bytes, std::uint64_
 #endif
 
 // Collect epochs are per thread and globally unique: every bump takes a fresh value from one counter,
-// so a memo entry (stamped with the epoch of its walk) can only match the thread that made it, and
-// only until that thread's next ordering point (the queue workers bump at theirs, see the header). A
+// so a memo entry (stamped with the epoch of its walk) can only match the thread that made it (or the
+// draw committer running the queue-0 worker's epoch, see HandOffCollectEpoch), and only until that
+// thread's next ordering point (the queue workers bump at theirs, see the header). A
 // thread that never bumped is given a new epoch for every collect: its walks are never reused (the
 // presenter, game threads inside the flush hook), as nothing orders the CPU's writes for it.
 std::atomic<std::uint64_t> nextCollectEpoch{1};
@@ -1298,6 +1318,9 @@ struct EpochCollectMemo {
     std::vector<std::uint64_t> begins;
     std::vector<std::uint64_t> ends;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> walk;
+    // The thread's own: the gaps a pre-walk (PrewalkCollects) found, walked one by one through
+    // collectWrites, which fills `walk` meanwhile.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> prewalk;
 
     void use(std::uint64_t currentEpoch, std::uint64_t serial, std::uint64_t generation) {
         if (epoch == currentEpoch && unwatched == serial && mapping == generation) return;
@@ -1344,6 +1367,49 @@ EpochCollectMemo& epochCollectMemo() {
 bool ringCollectMemo() {
     static const bool ring = std::getenv("APS5_RING_COLLECT_MEMO") != nullptr;
     return ring;
+}
+
+// Collect handoff (see HandOffCollectEpoch in the header): the queue-0 worker and the draw committer
+// run one epoch sequence and keep the ranges either walked in one EpochCollectMemo per epoch value,
+// here. A thread takes part once it handed off its epoch (the worker) or adopted one (the
+// committer); every other thread never looks at the store. Only with the union memo (the default):
+// the ring and the tracker's shared ring keep today's per-thread epochs.
+// APS5_NO_COLLECT_HANDOFF=1 turns it off: no epoch is handed off, the committer bumps its own.
+enum class CollectShare : std::uint8_t { None, Worker, Committer };
+thread_local CollectShare collectShare = CollectShare::None;
+
+bool collectHandoffEnabled() {
+    static const bool enabled = std::getenv("APS5_NO_COLLECT_HANDOFF") == nullptr && collectMemoEnabled() && !sharedCollectMemo() && !ringCollectMemo();
+    return enabled;
+}
+
+// The newest epochs: the committer runs up to DrawPipeline::Depth() (8 by default) items behind the
+// worker, and the worker may pass an ordering point between any two of them (a wait the CPU
+// satisfied, a drain). Only the worker starts a newer epoch, so its current one is never evicted. The
+// mutex is a leaf: collectWrites takes it alone for a lookup, or inside the tracker mutex for the
+// walk's gaps and its entry, and nothing is locked while it is held.
+struct SharedCollectMemos {
+    std::mutex mutex;
+    std::array<EpochCollectMemo, 8> slots;
+
+    // The slot of `epoch`: its own, else the oldest slot taken over for it (emptied by the use()
+    // that follows); nullptr when every slot holds a newer epoch (the caller's own memo serves then:
+    // an evicted epoch is never given a slot again).
+    EpochCollectMemo* find(std::uint64_t epoch) {
+        EpochCollectMemo* oldest = &slots[0];
+        for (auto& slot : slots) {
+            if (slot.epoch == epoch) return &slot;
+            if (slot.epoch < oldest->epoch) oldest = &slot;
+        }
+        if (oldest->epoch > epoch) return nullptr;
+        oldest->epoch = 0;
+        return oldest;
+    }
+};
+
+SharedCollectMemos& sharedCollectMemos() {
+    static auto* memos = new SharedCollectMemos();
+    return *memos;
 }
 
 struct StampRuns {
@@ -1432,11 +1498,30 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
     const bool useMemo = memoized && collectMemoEnabled() && bytes != 0;
     const bool epochMemo = collectMemoEnabled() && !sharedCollectMemo() && !ringCollectMemo();
     EpochCollectMemo* memo = epochMemo ? &epochCollectMemo() : nullptr;
-    if (useMemo && memo != nullptr) {
+    // A thread of the queue-0 handoff looks its epoch up in the shared store (its own memo `walk`
+    // receives the gaps); while the store has no slot for the epoch, its own memo serves as before.
+    auto* const store = memo != nullptr && collectShare != CollectShare::None && threadCollectEpoch != 0 ? &sharedCollectMemos() : nullptr;
+    const bool committer = useMemo && store != nullptr && collectShare == CollectShare::Committer;
+    bool sharedLookup = false;
+    if (useMemo && store != nullptr) {
+        std::lock_guard storeLock(store->mutex);
+        if (auto* slot = store->find(epoch); slot != nullptr) {
+            sharedLookup = true;
+            slot->use(epoch, unwatched, mapping);
+            slot->gaps(first, stop, memo->walk);
+            if (memo->walk.empty()) {
+                collectMemoHits.fetch_add(1, std::memory_order_relaxed);
+                if (committer) handoffCommitter.hits.fetch_add(1, std::memory_order_relaxed);
+                return tracker.generation.load(std::memory_order_relaxed);
+            }
+        }
+    }
+    if (useMemo && memo != nullptr && !sharedLookup) {
         memo->use(epoch, unwatched, mapping);
         memo->gaps(first, stop, memo->walk);
         if (memo->walk.empty()) {
             collectMemoHits.fetch_add(1, std::memory_order_relaxed);
+            if (committer) handoffCommitter.hits.fetch_add(1, std::memory_order_relaxed);
             return tracker.generation.load(std::memory_order_relaxed);
         }
     }
@@ -1488,14 +1573,58 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
         }
     }
 #endif
+    if (memo != nullptr && store != nullptr) {
+        // The shared store: the gaps are taken under its mutex, walked without it (the other thread's
+        // lookups go on; its walks wait for the tracker mutex held here, so no walk of this epoch
+        // lands between the gaps and the entry), and the walked ranges entered under it again. An
+        // epoch the store dropped meanwhile keeps only what the walk stamped.
+        const auto serial = unwatchSerial.load(std::memory_order_relaxed);
+        bool shared = false;
+        {
+            std::lock_guard storeLock(store->mutex);
+            if (auto* slot = store->find(epoch); slot != nullptr) {
+                shared = true;
+                slot->use(epoch, serial, mapping);
+                if (useMemo) slot->gaps(first, stop, memo->walk);
+                else memo->walk.assign(1, {first, stop});
+            }
+        }
+        if (shared) {
+            std::size_t walked = 0;
+            bool complete = true;
+            std::uint64_t walkedBytes = 0;
+            for (const auto& [from, to] : memo->walk) {
+                if (!walkWrites(tracker, from, to, StampKind::Cpu)) {
+                    complete = false;
+                    break;
+                }
+                ++walked;
+                walkedBytes += to - from;
+            }
+            if (committer) {
+                // Gaps the other thread walked between the lookup and the tracker mutex: a hit.
+                (memo->walk.empty() ? handoffCommitter.hits : handoffCommitter.walks).fetch_add(1, std::memory_order_relaxed);
+                handoffCommitter.walkedBytes.fetch_add(walkedBytes, std::memory_order_relaxed);
+            }
+            std::lock_guard storeLock(store->mutex);
+            if (auto* slot = store->find(epoch); slot != nullptr) {
+                slot->use(epoch, serial, mapping);
+                for (std::size_t i = 0; i < walked; ++i) slot->add(memo->walk[i].first, memo->walk[i].second);
+                if (complete) slot->add(first, stop);
+            }
+            return complete ? tracker.generation.load(std::memory_order_relaxed) : 0;
+        }
+    }
     if (memo != nullptr) {
         // Under the tracker mutex the unwatch serial cannot move (every bump holds it): a change since
         // the lock-free lookup empties the memo, so the whole range is walked.
         memo->use(epoch, unwatchSerial.load(std::memory_order_relaxed), mapping);
         if (useMemo) memo->gaps(first, stop, memo->walk);
         else memo->walk.assign(1, {first, stop});
+        if (committer) (memo->walk.empty() ? handoffCommitter.hits : handoffCommitter.walks).fetch_add(1, std::memory_order_relaxed);
         for (const auto& [from, to] : memo->walk) {
             if (!walkWrites(tracker, from, to, StampKind::Cpu)) return 0;
+            if (committer) handoffCommitter.walkedBytes.fetch_add(to - from, std::memory_order_relaxed);
             memo->add(from, to);
         }
         memo->add(first, stop);
@@ -1545,6 +1674,85 @@ std::uint64_t UnwatchSerial() {
 void AdoptLatestCollectEpoch() {
     const auto latest = lastBumpedEpoch.load(std::memory_order_acquire);
     if (latest > threadCollectEpoch) threadCollectEpoch = latest;
+}
+
+std::uint64_t HandOffCollectEpoch() {
+    if (threadCollectEpoch == 0 || !collectHandoffEnabled()) return 0;
+    if (collectShare == CollectShare::None) collectShare = CollectShare::Worker;
+    return threadCollectEpoch;
+}
+
+bool AdoptCollectEpoch(std::uint64_t epoch) {
+    if (epoch == 0 || !collectHandoffEnabled()) return false;
+    threadCollectEpoch = epoch;
+    // The worker running an item itself (DrawPipeline::Enqueue while closing) stays the worker.
+    if (collectShare == CollectShare::None) collectShare = CollectShare::Committer;
+    return true;
+}
+
+void PrewalkCollects(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges) {
+    if (collectShare != CollectShare::Worker || threadCollectEpoch == 0 || ranges.empty()) return;
+    // A range above the cap is left to its collector (a buffer descriptor spanning a heap is rarely
+    // collected whole); the gaps are walked in chunks, so the tracker mutex, which the committer's
+    // stamp checks take too, is never held for a long walk. APS5_COLLECT_PREWALK_MAX_MIB (default 128).
+    static const std::uint64_t cap = [] {
+        const char* text = std::getenv("APS5_COLLECT_PREWALK_MAX_MIB");
+        return (text != nullptr ? std::strtoull(text, nullptr, 10) : 128ull) << 20u;
+    }();
+    constexpr std::uint64_t page = 4096;
+    constexpr std::uint64_t chunk = std::uint64_t{4} << 20u;
+    auto& local = epochCollectMemo();
+    auto& gaps = local.prewalk;
+    gaps.clear();
+    const auto epoch = threadCollectEpoch;
+    const auto unwatched = unwatchSerial.load(std::memory_order_acquire);
+    const auto mapping = GuestAllocations::GuestAllocationsGeneration_nid_postfix();
+    std::uint64_t asked = 0;
+    std::uint64_t count = 0;
+    {
+        auto& store = sharedCollectMemos();
+        std::lock_guard storeLock(store.mutex);
+        auto* slot = store.find(epoch);
+        if (slot != nullptr) slot->use(epoch, unwatched, mapping);
+        for (const auto& [begin, end] : ranges) {
+            if (begin == 0 || end <= begin || end - begin > cap) continue;
+            const auto first = begin & ~(page - 1);
+            const auto stop = (end + page - 1) & ~(page - 1);
+            if (stop <= first) continue;
+            ++count;
+            asked += stop - first;
+            if (slot == nullptr) {
+                gaps.emplace_back(first, stop);
+                continue;
+            }
+            slot->gaps(first, stop, local.walk);
+            gaps.insert(gaps.end(), local.walk.begin(), local.walk.end());
+        }
+    }
+    // Overlapping ranges (a written buffer is also a read range) are walked once.
+    std::sort(gaps.begin(), gaps.end());
+    std::size_t merged = 0;
+    for (const auto& gap : gaps) {
+        if (merged != 0 && gap.first <= gaps[merged - 1].second) gaps[merged - 1].second = std::max(gaps[merged - 1].second, gap.second);
+        else gaps[merged++] = gap;
+    }
+    gaps.resize(merged);
+    std::uint64_t uncovered = 0;
+    for (const auto& [first, stop] : gaps) {
+        uncovered += stop - first;
+        for (auto cursor = first; cursor < stop;) {
+            const auto piece = std::min(chunk, stop - cursor);
+            static_cast<void>(collectWrites(cursor, static_cast<std::size_t>(piece), true));
+            cursor += piece;
+        }
+    }
+    handoffWorker.ranges.fetch_add(count, std::memory_order_relaxed);
+    handoffWorker.bytes.fetch_add(asked, std::memory_order_relaxed);
+    handoffWorker.uncoveredBytes.fetch_add(uncovered, std::memory_order_relaxed);
+}
+
+CollectHandoffCounts CollectHandoffStatistics() {
+    return {handoffCommitter.hits.load(std::memory_order_relaxed), handoffCommitter.walks.load(std::memory_order_relaxed), handoffCommitter.walkedBytes.load(std::memory_order_relaxed), handoffWorker.ranges.load(std::memory_order_relaxed), handoffWorker.bytes.load(std::memory_order_relaxed), handoffWorker.uncoveredBytes.load(std::memory_order_relaxed)};
 }
 
 std::uint64_t CollectEpochBumps() {

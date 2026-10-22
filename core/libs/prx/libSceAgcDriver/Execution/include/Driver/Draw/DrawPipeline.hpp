@@ -29,7 +29,16 @@ public:
     static std::size_t QueuedItems();
     static bool& Active();
     static std::atomic<std::uint64_t>& EpochToken();
-    static void FollowEpoch(std::uint64_t token);
+    // An item's epochs, taken on the queue-0 worker when it enqueues the item: the token and the
+    // worker's collect epoch (GuestMemory::HandOffCollectEpoch, the collect handoff; 0 when off).
+    struct ItemEpoch {
+        std::uint64_t token = 0;
+        std::uint64_t collect = 0;
+    };
+    static ItemEpoch EnqueueEpoch();
+    // On the committer, before an item's commit: the item's collect epoch when it has one, else a
+    // fresh epoch of the committer's own whenever the token moved (APS5_NO_COLLECT_HANDOFF=1).
+    static void FollowEpoch(const ItemEpoch& epoch);
     static unsigned Committers();
 
     void Enqueue(Commit commit, std::vector<Range> writes, std::uint64_t labelAddress = 0, std::vector<std::byte> labelBytes = {}, std::vector<Range> reads = {});
