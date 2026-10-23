@@ -5,6 +5,7 @@
 
 #include FT_SIZES_H
 #include FT_CID_H
+#include FT_GASP_H
 
 #include <algorithm>
 #include <bit>
@@ -289,6 +290,11 @@ int APS5_VABI FT_Get_CID_Is_Internally_CID_Keyed_nid_postfix(GuestFaceRec* face,
 int APS5_VABI FT_Get_CID_From_Glyph_Index_nid_postfix(GuestFaceRec* face, std::uint32_t glyphIndex, std::uint32_t* cid) {
     const GuestFace* owner = FaceOf(face);
     return FT_Get_CID_From_Glyph_Index(owner ? owner->host : nullptr, glyphIndex, cid);
+}
+
+int APS5_VABI FT_Get_Gasp_nid_postfix(GuestFaceRec* face, std::uint32_t ppem) {
+    const GuestFace* owner = FaceOf(face);
+    return FT_Get_Gasp(owner ? owner->host : nullptr, ppem);
 }
 
 int APS5_VABI FT_Load_Char_nid_postfix(GuestFaceRec* face, std::uint64_t charCode, std::int32_t loadFlags) {
