@@ -32,19 +32,6 @@ int APS5_VABI scePthreadMutexattrInitForInternalLibc(PthreadMutexattr* attr) {
     return PosixThread::ToSce(pthread_mutexattr_init_nid_postfix(attr));
 }
 
-int APS5_VABI pthread_timedjoin_np_nid_postfix(Pthread thread, void** value, const KernelTimespec* abstime) {
-    if (!abstime || abstime->tv_sec < 0 || abstime->tv_nsec < 0 || abstime->tv_nsec >= 1000000000) return GuestEinval;
-    return PthreadTimedJoin_nid_no_patch(thread, value, abstime);
-}
-
-int APS5_VABI pthread_rwlock_reltimedrdlock_np_nid_postfix(PthreadRwlock* rwlock, KernelUseconds usec) {
-    return PosixThread::ToErrno(scePthreadRwlockTimedrdlock(rwlock, usec));
-}
-
-int APS5_VABI pthread_rwlock_reltimedwrlock_np_nid_postfix(PthreadRwlock* rwlock, KernelUseconds usec) {
-    return PosixThread::ToErrno(scePthreadRwlockTimedwrlock(rwlock, usec));
-}
-
 int APS5_VABI pthread_rwlockattr_settype_np_nid_postfix(PthreadRwlockattr* attr, int type) {
     if (!attr || !*attr) return GuestEinval;
     return PosixThread::ToErrno(scePthreadRwlockattrSettype(attr, type));

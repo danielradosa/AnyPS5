@@ -243,10 +243,11 @@ static void SignalAll() {
     optParam.fill(0xAB);
     CHECK(sceUltConditionVariableOptParamInitialize(nullptr, 0x12000000) == Null);
     CHECK(sceUltConditionVariableOptParamInitialize(optParam.data(), 0x12000000) == 0);
-    CHECK(optParam[0] == 0xAB && optParam[127] == 0xAB);
+    CHECK(optParam[0] == 0 && optParam[127] == 0);
+    optParam.fill(0xAB);
     CHECK(_sceUltConditionVariableOptParamInitialize(nullptr, 0x12000000) == Null);
     CHECK(_sceUltConditionVariableOptParamInitialize(optParam.data(), 0x12000000) == 0);
-    CHECK(optParam[0] == 0xAB && optParam[127] == 0xAB);
+    CHECK(optParam[0] == 0 && optParam[127] == 0);
     CHECK(sceUltMutexCreate(&mutex, "mutex", nullptr, nullptr, 0x12000000) == 0);
     CHECK(sceUltConditionVariableCreate(nullptr, "condition", &mutex, nullptr, 0x12000000) == Null);
     CHECK(sceUltConditionVariableCreate(&condition, "condition", &unused, nullptr, 0x12000000) == Invalid);

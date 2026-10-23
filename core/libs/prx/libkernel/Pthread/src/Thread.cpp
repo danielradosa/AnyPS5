@@ -1060,11 +1060,6 @@ int APS5_VABI scePthreadJoin(Pthread thread, void** retval) {
     return JoinThread_nid_no_patch(thread, retval, nullptr);
 }
 
-int PthreadTimedJoin_nid_no_patch(Pthread thread, void** retval, const KernelTimespec* abstime) {
-    const int result = JoinThread_nid_no_patch(thread, retval, abstime);
-    return result == 0 ? 0 : static_cast<int>(static_cast<std::uint32_t>(result) & 0xffffu);
-}
-
 int APS5_VABI scePthreadDetach(Pthread thread) {
     if (!thread) return SCE_KERNEL_ERROR_EINVAL;
     {

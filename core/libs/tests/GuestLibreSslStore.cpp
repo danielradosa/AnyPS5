@@ -354,7 +354,7 @@ static void TestIssued() {
     Require(std::strcmp(X509_verify_cert_error_string_nid_postfix(0), "ok") == 0);
     Require(std::strcmp(X509_verify_cert_error_string_nid_postfix(20), "unable to get local issuer certificate") == 0);
     Require(std::strcmp(X509_verify_cert_error_string_nid_postfix(10), "certificate has expired") == 0);
-    Require(Throws([] { X509_verify_cert_error_string_nid_postfix(62); }));
+    Require(std::strcmp(X509_verify_cert_error_string_nid_postfix(62), "error number 62") == 0);
     for (GuestX509* x : {root, inter, leaf, self, under}) X509_free_nid_postfix(x);
 }
 

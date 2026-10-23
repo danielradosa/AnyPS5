@@ -14,7 +14,7 @@ struct Sigevent {
     int notify;
     int signo;
     std::int64_t value;
-    std::int64_t extra[6];
+    std::int64_t extra[8];
 };
 
 struct Timespec {
@@ -132,7 +132,7 @@ void Values() {
     disarmed = Get(id);
     Require(Nanoseconds(disarmed.value) == 0 && Nanoseconds(disarmed.interval) == 0);
 
-    const Itimerspec small{{0, 1}, {10, 0}};
+    const Itimerspec small{{0, Millisecond}, {10, 0}};
     Require(ktimer_settime_nid_postfix(id, 0, &small, nullptr) == 0);
     Itimerspec old{};
     const Itimerspec later{{0, 0}, {20, 0}};

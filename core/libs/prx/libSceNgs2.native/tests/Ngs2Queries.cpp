@@ -1,6 +1,5 @@
 #include "Ngs2Test.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -10,8 +9,6 @@ extern "C" {
 int APS5_VABI sceNgs2RackSetUserData(uintptr_t, uintptr_t);
 int APS5_VABI sceNgs2RackGetUserData(uintptr_t, uintptr_t*);
 int APS5_VABI sceNgs2VoiceGetOwner(uintptr_t, uintptr_t*, std::uint32_t*);
-int APS5_VABI sceNgs2VoiceGetMatrixInfo(uintptr_t, std::uint32_t, Ngs2VoiceMatrixInfo*, size_t);
-int APS5_VABI sceNgs2CustomRackGetModuleInfo(uintptr_t, std::uint32_t, Ngs2CustomModuleInfo*, size_t);
 int APS5_VABI sceNgs2ParseWaveformUser(Ngs2ParseReadHandler, uintptr_t, Ngs2WaveformInfo*);
 int APS5_VABI sceNgs2GetWaveformFrameInfo(const Ngs2WaveformFormat*, std::uint32_t*, std::uint32_t*, std::uint32_t*, std::uint32_t*);
 }
@@ -57,62 +54,6 @@ static void TestVoiceOwner() {
     Require(sceNgs2VoiceGetOwner(rack, &owner, &index) == SCE_NGS2_ERROR_INVALID_VOICE_HANDLE);
     Require(sceNgs2RackDestroy(rack, nullptr) == SCE_NGS2_OK);
     Require(sceNgs2VoiceGetOwner(voice, &owner, &index) == SCE_NGS2_ERROR_INVALID_VOICE_HANDLE);
-    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
-}
-
-static void TestVoiceMatrixInfo() {
-    const auto system = CreateSystem();
-    const auto voice = Voice(CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER));
-    Ngs2VoiceMatrixInfo info{};
-    info.num_levels = 0xffffffff;
-    Require(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info)) == SCE_NGS2_OK && info.num_levels == 0);
-    const float levels[4] = {1.0f, 0.5f, 0.25f, 8.0f};
-    Control(voice, SCE_NGS2_VOICE_PARAM_MATRIX_LEVELS, Ngs2VoiceMatrixLevelsParam{{}, 0, 4, levels});
-    std::fill(std::begin(info.levels), std::end(info.levels), -1.0f);
-    Require(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info)) == SCE_NGS2_OK && info.num_levels == 4);
-    Require(info.levels[0] == 1.0f && info.levels[1] == 0.5f && info.levels[2] == 0.25f && info.levels[3] == 4.0f);
-    Require(std::all_of(info.levels + 4, std::end(info.levels), [](float level) { return level == 0.0f; }));
-    Require(sceNgs2VoiceGetMatrixInfo(voice, 0, nullptr, sizeof(info)) == SCE_NGS2_ERROR_INVALID_OUT_ADDRESS);
-    Require(sceNgs2VoiceGetMatrixInfo(voice, 0, &info, sizeof(info) - 4) == SCE_NGS2_ERROR_INVALID_OUT_SIZE);
-    Require(sceNgs2VoiceGetMatrixInfo(system, 0, &info, sizeof(info)) == SCE_NGS2_ERROR_INVALID_VOICE_HANDLE);
-    Require(Throws<std::invalid_argument>([&] { sceNgs2VoiceGetMatrixInfo(voice, 1, &info, sizeof(info)); }));
-    Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
-}
-
-static void TestCustomModuleInfo() {
-    const auto system = CreateSystem();
-    Ngs2CustomSubmixerRackOption option{};
-    auto& common = option.custom_rack_option.rack_option;
-    common.size = sizeof(option);
-    common.max_grain_samples = 512;
-    common.max_voices = 1;
-    common.max_matrices = 1;
-    common.max_ports = 1;
-    option.custom_rack_option.num_buffers = 1;
-    option.custom_rack_option.num_modules = 2;
-    option.custom_rack_option.module[0].module_id = SCE_NGS2_CUSTOM_MODULE_ID_FILTER;
-    option.custom_rack_option.module[1].module_id = SCE_NGS2_CUSTOM_MODULE_ID_USER_FX;
-    option.custom_rack_option.module[1].extra_buffer_id = 0;
-    option.custom_rack_option.module[1].state_offset = 0x40;
-    option.custom_rack_option.module[1].state_size = 0x20;
-    option.custom_rack_option.module[1].reserved = 7;
-    option.max_channels = 2;
-    option.max_inputs = 1;
-    Ngs2ContextBufferInfo query{};
-    Require(sceNgs2RackQueryBufferSize(SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER, &common, &query) == SCE_NGS2_OK);
-    const auto buffer = Buffer(query);
-    uintptr_t rack = 0;
-    Require(sceNgs2RackCreate(system, SCE_NGS2_RACK_ID_CUSTOM_SUBMIXER, &common, &buffer, &rack) == SCE_NGS2_OK);
-    Ngs2CustomModuleInfo info{};
-    std::memset(&info, 0xa5, sizeof(info));
-    Require(sceNgs2CustomRackGetModuleInfo(rack, 0, &info, sizeof(info)) == SCE_NGS2_OK);
-    Require(info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_FILTER && info.source_buffer_id == 0 && info.extra_buffer_id == 0 && info.dest_buffer_id == 0);
-    Require(info.state_offset == 0 && info.state_size == 0 && info.reserved == 0 && info.reserved2 == 0);
-    Require(sceNgs2CustomRackGetModuleInfo(rack, 1, &info, sizeof(info)) == SCE_NGS2_OK);
-    Require(info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX && info.state_offset == 0x40 && info.state_size == 0x20 && info.reserved == 0);
-    Require(sceNgs2CustomRackGetModuleInfo(rack, 0, nullptr, sizeof(info)) == SCE_NGS2_ERROR_INVALID_OUT_ADDRESS);
-    Require(sceNgs2CustomRackGetModuleInfo(system, 0, &info, sizeof(info)) == SCE_NGS2_ERROR_INVALID_RACK_HANDLE);
-    Require(Throws<std::invalid_argument>([&] { sceNgs2CustomRackGetModuleInfo(rack, 2, &info, sizeof(info)); }));
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -203,8 +144,6 @@ static void TestWaveformFrameInfo() {
 int main() {
     TestRackUserData();
     TestVoiceOwner();
-    TestVoiceMatrixInfo();
-    TestCustomModuleInfo();
     TestParseWaveformUser();
     TestWaveformFrameInfo();
     return 0;

@@ -2,15 +2,11 @@
 #include "prx/libSceCommonDialog/CommonDialog.hpp"
 #include <cstdint>
 #include <cstdlib>
-#include <stdexcept>
-#include <string>
 
 extern "C" {
 int APS5_VABI sceWebBrowserDialogInitialize(void);
 int APS5_VABI sceWebBrowserDialogTerminate(void);
 int APS5_VABI sceWebBrowserDialogOpen(const void* param);
-int APS5_VABI sceWebBrowserDialogSetCookie(const void* param);
-int APS5_VABI sceWebBrowserDialogResetCookie(const void* param);
 int APS5_VABI sceWebBrowserDialogOpenForPredeterminedContent(const void* param, const WebBrowserDialogAllowList* allowList);
 int APS5_VABI sceWebBrowserDialogClose(void);
 int APS5_VABI sceWebBrowserDialogGetStatus(void);
@@ -28,31 +24,7 @@ constexpr int COMMON_DIALOG_ERROR_NOT_INITIALIZED = static_cast<int>(0x80B80003u
 constexpr int COMMON_DIALOG_ERROR_NOT_FINISHED = static_cast<int>(0x80B80005u);
 constexpr int COMMON_DIALOG_ERROR_ARG_NULL = static_cast<int>(0x80B8000Du);
 
-struct SetCookieParam {
-    std::size_t size;
-    const char* url;
-    const char* cookie;
-    char reserved[256];
-};
-static_assert(sizeof(SetCookieParam) == 280);
-
-struct ResetCookieParam {
-    std::size_t size;
-    char reserved[256];
-};
-static_assert(sizeof(ResetCookieParam) == 264);
-
 void Require(bool value) { if (!value) std::abort(); }
-
-template <typename TFunction>
-bool Throws(TFunction function) {
-    try {
-        function();
-    } catch (const std::logic_error&) {
-        return true;
-    }
-    return false;
-}
 
 }
 
@@ -63,14 +35,6 @@ int main() {
     allowList.addresses[0] = "test.invalid";
     WebBrowserDialogResult result{};
     result.result = 0x5a5a5a5a;
-    SetCookieParam validCookie = {};
-    validCookie.size = sizeof(SetCookieParam);
-    validCookie.url = "https://example.com/";
-    validCookie.cookie = "key0=value0";
-    ResetCookieParam validReset = {};
-    validReset.size = sizeof(ResetCookieParam);
-    Require(sceWebBrowserDialogSetCookie(&validCookie) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
-    Require(sceWebBrowserDialogResetCookie(&validReset) == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
 
     Require(sceWebBrowserDialogTerminate() == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
     Require(sceWebBrowserDialogGetStatus() == COMMON_DIALOG_STATUS_NONE);
@@ -85,33 +49,6 @@ int main() {
     Require(sceWebBrowserDialogUpdateStatus() == COMMON_DIALOG_STATUS_INITIALIZED);
     Require(sceWebBrowserDialogGetResult(&result) == COMMON_DIALOG_ERROR_NOT_FINISHED);
     Require(result.result == 0x5a5a5a5a);
-    Require(sceWebBrowserDialogSetCookie(nullptr) == COMMON_DIALOG_ERROR_ARG_NULL);
-    Require(sceWebBrowserDialogResetCookie(nullptr) == COMMON_DIALOG_ERROR_ARG_NULL);
-    Require(sceWebBrowserDialogSetCookie(&validCookie) == 0);
-    Require(sceWebBrowserDialogResetCookie(&validReset) == 0);
-    SetCookieParam badSize = validCookie;
-    badSize.size = 0;
-    Require(Throws([&] { sceWebBrowserDialogSetCookie(&badSize); }));
-    SetCookieParam nullUrl = validCookie;
-    nullUrl.url = nullptr;
-    Require(Throws([&] { sceWebBrowserDialogSetCookie(&nullUrl); }));
-    const std::string longUrl(2048, 'a');
-    SetCookieParam unterminatedUrl = validCookie;
-    unterminatedUrl.url = longUrl.c_str();
-    Require(Throws([&] { sceWebBrowserDialogSetCookie(&unterminatedUrl); }));
-    const std::string longCookie(4096, 'b');
-    SetCookieParam unterminatedCookie = validCookie;
-    unterminatedCookie.cookie = longCookie.c_str();
-    Require(Throws([&] { sceWebBrowserDialogSetCookie(&unterminatedCookie); }));
-    ResetCookieParam badReset = validReset;
-    badReset.size = 0;
-    Require(Throws([&] { sceWebBrowserDialogResetCookie(&badReset); }));
-    const std::string maxUrl(2047, 'a');
-    const std::string maxCookie(4095, 'b');
-    SetCookieParam boundaryCookie = validCookie;
-    boundaryCookie.url = maxUrl.c_str();
-    boundaryCookie.cookie = maxCookie.c_str();
-    Require(sceWebBrowserDialogSetCookie(&boundaryCookie) == 0);
 
     Require(sceWebBrowserDialogTerminate() == 0);
     Require(sceWebBrowserDialogTerminate() == COMMON_DIALOG_ERROR_NOT_INITIALIZED);
@@ -128,8 +65,6 @@ int main() {
     Require(sceWebBrowserDialogGetResult(nullptr) == COMMON_DIALOG_ERROR_ARG_NULL);
     Require(sceWebBrowserDialogGetResult(&result) == 0);
     Require(result.result == COMMON_DIALOG_RESULT_USER_CANCELED);
-    Require(sceWebBrowserDialogSetCookie(&validCookie) == 0);
-    Require(sceWebBrowserDialogResetCookie(&validReset) == 0);
 
     Require(sceWebBrowserDialogClose() == static_cast<int>(0x80B8000Bu));
     Require(sceWebBrowserDialogTerminate() == 0);

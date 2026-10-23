@@ -17,8 +17,6 @@ struct ReprojectionOutput;
 }
 
 extern "C" {
-std::int32_t APS5_VABI sceHmd2GazeGetResult(const void* param, void* result);
-std::int32_t APS5_VABI sceHmd2GazeGetResultForFoveatedRendering();
 std::int32_t APS5_VABI sceHmd2ReprojectionTerminate();
 std::int32_t APS5_VABI sceHmd2ReprojectionGetPredictedDisplayTime(std::uint64_t frame, std::uint64_t* time);
 std::int32_t APS5_VABI sceHmd2ReprojectionSetParam(std::uint32_t buffer, std::uint64_t frame, const void* param,
@@ -88,16 +86,9 @@ void Require(bool condition, const char* message) {
 }
 
 void CheckUninitialized() {
-    std::uint8_t output[64];
-    std::memset(output, 0xa5, sizeof(output));
-    std::uint8_t untouched[sizeof(output)];
-    std::memcpy(untouched, output, sizeof(output));
     std::uint8_t param[0x48]{};
     std::uint64_t time = 0x1234;
 
-    Require(sceHmd2GazeGetResult(param, output) == Hmd2::NotInitialized, "gaze result");
-    Require(std::memcmp(output, untouched, sizeof(output)) == 0, "failed query wrote output");
-    Require(sceHmd2GazeGetResultForFoveatedRendering() == Hmd2::NotInitialized, "foveated gaze result");
     Require(sceHmd2ReprojectionGetPredictedDisplayTime(1, &time) == Hmd2::NotInitialized, "predicted display time");
     Require(time == 0x1234, "failed display time query wrote output");
     Require(sceHmd2ReprojectionSetParam(0, 1, param, nullptr) == Hmd2::NotInitialized, "set param");

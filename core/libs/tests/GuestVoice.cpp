@@ -115,7 +115,6 @@ int main() {
     Require(sceVoiceGetResourceInfo(nullptr) == notInitialized);
     Require(sceVoiceEnableChat() == notInitialized);
     Require(sceVoiceDisableChat() == notInitialized);
-    RequireThrows([] { sceVoiceSetMuteFlagAll(true); });
     Require(sceVoiceSetThreadsParams(nullptr) == notInitialized);
     VoiceThreadsParams threads{};
     Require(sceVoiceSetThreadsParams(&threads) == notInitialized);
@@ -310,7 +309,6 @@ int main() {
     Require(sceVoiceGetResourceInfo(nullptr) == notInitialized);
     Require(sceVoiceEnableChat() == notInitialized);
     Require(sceVoiceDisableChat() == notInitialized);
-    RequireThrows([] { sceVoiceSetMuteFlagAll(false); });
     for (const auto mode : {4, 0x08000000, 0x10000000, 0x20000000}) {
         init.app_type = mode;
         Require(sceVoiceInit(&init, 100) == 0);

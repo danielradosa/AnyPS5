@@ -259,8 +259,8 @@ void CheckHardwareState(StateWriter write, std::span<const std::uint32_t> expect
     Require(Matches(buffer.data(), ClearContextState));
     Require(Matches(buffer.data() + 12, expected));
     const auto rest = static_cast<std::uint32_t>(0x100 - 12 - expected.size());
-    Require(buffer[12 + expected.size()] == Header(0x10, rest - 1));
-    for (std::size_t at = 13 + expected.size(); at < 0x100; ++at) Require(buffer[at] == 0);
+    Require(buffer[12 + expected.size()] == Header(0x10, rest - 1) && buffer[13 + expected.size()] == 0);
+    for (std::size_t at = 14 + expected.size(); at < 0x100; ++at) Require(buffer[at] == Fill);
 }
 
 void CheckContextState(StateWriter write, std::uint32_t words, std::span<const std::uint32_t> expected) {
@@ -268,7 +268,7 @@ void CheckContextState(StateWriter write, std::uint32_t words, std::span<const s
     Require(write(buffer.data(), words - 1) == 0 && write(buffer.data(), words + 1) == 0 && Untouched(buffer));
     Require(write(buffer.data(), words) == words);
     Require(Matches(buffer.data(), expected));
-    for (std::size_t at = expected.size(); at < words; ++at) Require(buffer[at] == 0);
+    for (std::size_t at = expected.size(); at < words; ++at) Require(buffer[at] == Fill);
     Require(buffer[words] == Fill);
 }
 
@@ -280,76 +280,76 @@ void CheckDraws() {
     Require(sceGnmDrawIndex(buffer.data(), 10, 0x30, 0x123456789abcull, 2, 0) == -1);
     Require(Untouched(buffer));
     Require(sceGnmDrawIndex(buffer.data(), 10, 0x30, 0x123456789abcull, 0xa0000001u, 1) == 0);
-    Require(buffer == Words({0xc0042700u, 0x30, 0x56789abcu, 0x1234, 0x30, 0xa0000000u, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0042700u, 0x30, 0x56789abcu, 0x1234, 0x30, 0xa0000000u, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(7);
     Require(sceGnmDrawIndexAuto(buffer.data(), 7, 12, 0x100) == -1 && Untouched(buffer));
     Require(sceGnmDrawIndexAuto(buffer.data(), 7, 12, 0x20000000u) == 0);
-    Require(buffer == Words({0xc0012d00u, 12, 0x20000002u, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0012d00u, 12, 0x20000002u, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(9);
     Require(sceGnmDrawIndexIndirect(buffer.data(), 9, 0x40, 7, 0, 0, 0) == -1);
     Require(sceGnmDrawIndexIndirect(buffer.data(), 9, 0x40, 2, 0x10, 0, 0) == -1);
     Require(sceGnmDrawIndexIndirect(buffer.data(), 8, 0x40, 2, 0, 0, 0) == -1 && Untouched(buffer));
     Require(sceGnmDrawIndexIndirect(buffer.data(), 9, 0x40, 2, 3, 4, 0x40000001u) == 0);
-    Require(buffer == Words({0xc0032501u, 0x40, 0x4f, 0x50, 0x40000000u, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0032501u, 0x40, 0x4f, 0x50, 0x40000000u, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(9);
     Require(sceGnmDrawIndirect(buffer.data(), 9, 0x20, 0, 1, 2, 0) == 0);
-    Require(buffer == Words({0xc0032400u, 0x20, 1, 2, 2, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0032400u, 0x20, 1, 2, 2, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(9);
     Require(sceGnmDrawIndexOffset(buffer.data(), 8, 100, 36, 0) == -1 && Untouched(buffer));
     Require(sceGnmDrawIndexOffset(buffer.data(), 9, 100, 36, 0xe0000001u) == 0);
-    Require(buffer == Words({0xc0033501u, 36, 100, 36, 0xe0000000u, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0033501u, 36, 100, 36, 0xe0000000u, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(16);
     Require(sceGnmDrawIndexIndirectCountMulti(buffer.data(), 16, 0x80, 5, 0x1000002000ull, 1, 0, 1, 1) == -1 && Untouched(buffer));
     Require(sceGnmDrawIndexIndirectCountMulti(buffer.data(), 16, 0x80, 5, 0x1000002000ull, 4, 0, 1, 1) == 0);
-    Require(buffer == Words({Nop2, 0, 0, 0xc0089d01u, 0x80, 0, 0xcd, 1u << 30, 5, 0x2000, 0x10, 0x14, 0, Nop2, 0, 0}));
+    Require(buffer == Words({Nop2, 0, Fill, 0xc0089d01u, 0x80, 0, 0xcd, 1u << 30, 5, 0x2000, 0x10, 0x14, 0, Nop2, 0, Fill}));
 
     buffer = Buffer(16);
     Require(sceGnmDrawIndirectCountMulti(buffer.data(), 16, 0, 7, 0, 1, 0, 0, 0x80000000u) == 0);
-    Require(buffer == Words({Nop2, 0, 0, 0xc0089c00u, 0, 0, 0, 0, 7, 0, 0, 0x10, 0x80000002u, Nop2, 0, 0}));
+    Require(buffer == Words({Nop2, 0, Fill, 0xc0089c00u, 0, 0, 0, 0, 7, 0, 0, 0x10, 0x80000002u, Nop2, 0, Fill}));
 
     buffer = Buffer(11);
     Require(sceGnmDrawIndexIndirectMulti(buffer.data(), 11, 0x10, 3, 3, 2, 0, 0) == -1 && Untouched(buffer));
     Require(sceGnmDrawIndexIndirectMulti(buffer.data(), 11, 0x10, 3, 6, 2, 0, 0) == 0);
-    Require(buffer == Words({0xc0053800u, 0x10, 0x14e, 0, 3, 0x14, 0, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0053800u, 0x10, 0x14e, 0, 3, 0x14, 0, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(11);
     Require(sceGnmDrawIndirectMulti(buffer.data(), 11, 4, 9, 2, 0, 5, 1) == 0);
-    Require(buffer == Words({0xc0052c01u, 4, 0, 0x51, 9, 0x10, 2, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0052c01u, 4, 0, 0x51, 9, 0x10, 2, Nop3, 0, Fill, Fill}));
 }
 
 void CheckCompute() {
     auto buffer = Buffer(9);
     Require(sceGnmDispatchDirect(buffer.data(), 9, 0x80000000u, 1, 1, 0) == -1 && Untouched(buffer));
     Require(sceGnmDispatchDirect(buffer.data(), 9, 8, 4, 1, 0x19) == 0);
-    Require(buffer == Words({0xc0031503u, 8, 4, 1, 0x19, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0031503u, 8, 4, 1, 0x19, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(7);
     Require(sceGnmDispatchIndirect(buffer.data(), 7, 0x30, 8) == 0);
-    Require(buffer == Words({0xc0011602u, 0x30, 9, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0011602u, 0x30, 9, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(8);
     Require(sceGnmDispatchIndirectOnMec(buffer.data(), 8, 0x1234567892ull, 0) == -1);
     Require(sceGnmDispatchIndirectOnMec(buffer.data(), 8, 0, 0) == -1);
     Require(sceGnmDispatchIndirectOnMec(buffer.data(), 7, 0x1234567890ull, 0) == -1 && Untouched(buffer));
     Require(sceGnmDispatchIndirectOnMec(buffer.data(), 8, 0x1234567890ull, 0x11) == 0);
-    Require(buffer == Words({0xc0021603u, 0x34567890u, 0x12, 0x11, Nop3, 0, 0, 0}));
+    Require(buffer == Words({0xc0021603u, 0x34567890u, 0x12, 0x11, Nop3, 0, Fill, Fill}));
 
     buffer = Buffer(14);
     Require(sceGnmComputeWaitOnAddress(buffer.data(), 13, 0x4000001006ull, 0xff, 3, 7) == -1 && Untouched(buffer));
     Require(sceGnmComputeWaitOnAddress(buffer.data(), 14, 0x4000001006ull, 0xff, 3, 7) == 0);
-    Require(buffer == Words({Nop3, 0, 0, 0, 0xc0053c00u, 0x13, 0x1004, 0x40, 7, 0xff, 10, Nop2, 0, 0}));
+    Require(buffer == Words({Nop3, 0, Fill, Fill, 0xc0053c00u, 0x13, 0x1004, 0x40, 7, 0xff, 10, Nop2, 0, Fill}));
     Require(sceGnmComputeWaitOnAddress(buffer.data(), 14, 0x1234, 0xffffffffu, 0xb, 1) == 0);
-    Require(buffer == Words({Nop3, 0, 0, 0, 0xc0053c00u, 3, 0x1234, 0, 1, 0xffffffffu, 10, Nop2, 0, 0}));
+    Require(buffer == Words({Nop3, 0, Fill, Fill, 0xc0053c00u, 3, 0x1234, 0, 1, 0xffffffffu, 10, Nop2, 0, Fill}));
 
     buffer = Buffer(10);
     Require(sceGnmComputeWaitSemaphore(buffer.data(), 9, 0x500000100ull, 1) == -1 && Untouched(buffer));
     Require(sceGnmComputeWaitSemaphore(buffer.data(), 10, 0x500000100ull, 1) == 0);
-    Require(buffer == Words({Nop3, 0, 0, 0, 0xc0013900u, 0x100, 0xe0100005u, Nop2, 0, 0}));
+    Require(buffer == Words({Nop3, 0, Fill, Fill, 0xc0013900u, 0x100, 0xe0100005u, Nop2, 0, Fill}));
     Require(sceGnmComputeWaitSemaphore(buffer.data(), 10, 0x500000100ull, 0) == 0 && buffer[6] == 0xe0000005u);
 }
 

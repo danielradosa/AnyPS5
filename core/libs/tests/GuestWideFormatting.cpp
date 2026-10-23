@@ -212,7 +212,7 @@ static void CheckScan() {
 
     Require(swscanf_s_nid_postfix(u"  42 abc d\u00e9f", u"%d %ls %s", &number, word, 8u, narrow, 8u) == 3,
         "swscanf_s mixed conversion count");
-    Require(number == 42 && word == std::u16string(u"abc") && std::strcmp(narrow, "d\xe9" "f") == 0, "swscanf_s mixed conversions");
+    Require(number == 42 && word == std::u16string(u"abc") && std::strcmp(narrow, "d\xc3\xa9" "f") == 0, "swscanf_s mixed conversions");
 
     Require(swscanf_s_nid_postfix(u"-9000000000 ff 2.5 -3", u"%lld %x %lf %hhd", &wide, &hex, &real, &tiny) == 4 &&
         wide == -9000000000LL && hex == 0xff && real == 2.5 && tiny == -3, "swscanf_s numeric conversions");
@@ -258,9 +258,8 @@ static void CheckScan() {
     Require(swscanf_s_nid_postfix(u"x", u"%d", &number) == 0, "swscanf_s matching failure");
     Require(swscanf_s_nid_postfix(u"x", u"y%d", &number) == 0, "swscanf_s literal mismatch at start");
 
-    *__error_nid_postfix() = 0;
-    Require(swscanf_s_nid_postfix(u"\u4e2d", u"%s", narrow, 8u) == EOF && *__error_nid_postfix() == 86,
-        "swscanf_s unconvertible narrow character");
+    Require(swscanf_s_nid_postfix(u"\u4e2d", u"%s", narrow, 8u) == 1 && std::strcmp(narrow, "\xe4\xb8\xad") == 0,
+        "swscanf_s narrow character above 0xff as UTF-8");
     Require(swscanf_s_nid_postfix(u"\u4e2d", u"%ls", word, 8u) == 1 && word == std::u16string(u"\u4e2d"), "swscanf_s wide character");
 
     const char16_t* const nullText = nullptr;
