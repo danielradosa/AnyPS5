@@ -69,6 +69,7 @@ int APS5_VABI sceRtcSetCurrentAdNetworkTick(const RtcTick*);
 int APS5_VABI sceRtcSetCurrentDebugNetworkTick(const RtcTick*);
 int APS5_VABI sceRtcInit(void);
 int APS5_VABI sceRtcEnd(void);
+int APS5_VABI sceRtcSetConf(int, int, int, int);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -908,6 +909,12 @@ int main() {
         Require(sceRtcGetCurrentAdNetworkTick(&current) == 0 && current.tick >= adClock.tick && current.tick < adClock.tick + 1000000);
         Require(sceRtcGetCurrentDebugNetworkTick(&current) == 0 && current.tick >= debugClock.tick && current.tick < debugClock.tick + 1000000);
         Require(sceRtcGetCurrentRawNetworkTick(&current) == 0 && current.tick > unixEpochTick);
+        Require(sceRtcSetConf(0, 0, 0, 0) == 0);
+        Require(sceRtcSetConf(0, 60, 0, 0) == 0);
+        Require(sceRtcSetConf(0, -300, 0, 0) == 0);
+        Require(sceRtcSetConf(1, 0, 0, 0) == invalidValue);
+        Require(sceRtcSetConf(0, 1440, 0, 0) == invalidValue);
+        Require(sceRtcSetConf(0, -1440, 0, 0) == invalidValue);
     }
     Require(sceRtcInit() == 0);
     Require(sceRtcEnd() == 0);
