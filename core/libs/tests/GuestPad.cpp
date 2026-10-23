@@ -55,6 +55,10 @@ int APS5_VABI scePadSetVibration(int, const PadVibrationParam*);
 int APS5_VABI scePadGetExtControllerInformation(int, void*);
 int APS5_VABI scePadSetLightBar(int, const PadLightBarParam*);
 int APS5_VABI scePadSetMotionSensorState(int, bool);
+int APS5_VABI scePadSetLotusEnableIrKey(std::int32_t);
+int APS5_VABI scePadSetLotusDisableIrKey(std::int32_t);
+int APS5_VABI scePadVirtualDeviceDisableButtonRemapping(bool);
+int APS5_VABI scePadVirtualDeviceGetRemoteSetting(std::int32_t, void*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -803,4 +807,15 @@ int main() {
     Require(scePadSetAngularVelocityDeadbandState(handle + 1, true) == PAD_ERROR_INVALID_HANDLE);
     Require(scePadSetAngularVelocityBiasCorrectionState(handle, false) == PAD_OK);
     Require(scePadSetAngularVelocityBiasCorrectionState(handle + 1, false) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadSetLotusEnableIrKey(handle) == PAD_OK);
+    Require(scePadSetLotusEnableIrKey(handle + 1) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadSetLotusDisableIrKey(handle) == PAD_OK);
+    Require(scePadSetLotusDisableIrKey(handle + 1) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadVirtualDeviceDisableButtonRemapping(true) == PAD_OK);
+    Require(scePadVirtualDeviceDisableButtonRemapping(false) == PAD_OK);
+    std::array<std::uint8_t, 64> remoteSetting{};
+    Require(scePadVirtualDeviceGetRemoteSetting(1, remoteSetting.data()) == static_cast<int>(0x80920007));
+    Require(scePadVirtualDeviceGetRemoteSetting(1, nullptr) == PAD_ERROR_INVALID_ARG);
+    Require(scePadVirtualDeviceGetRemoteSetting(0, remoteSetting.data()) == PAD_ERROR_INVALID_ARG);
+    Require(scePadVirtualDeviceGetRemoteSetting(-1, remoteSetting.data()) == PAD_ERROR_INVALID_ARG);
 }

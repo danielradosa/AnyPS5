@@ -23,7 +23,10 @@ struct PadUsbDetectionState;
 struct PadVrUsbConnectionStatus;
 struct PadDeviceInfo;
 struct PadLicenseControllerInformation;
-struct PadRemoteSetting;
+struct PadRemoteSetting {
+    std::uint8_t data[64];
+};
+static_assert(sizeof(PadRemoteSetting) == 64);
 struct PadVirtualTriggerSetting;
 struct PadProcessFocusParameter;
 struct PadDataExtended;
@@ -732,13 +735,13 @@ int APS5_VABI scePadGetLotusIrCodeSetResult(std::int32_t handle, std::int32_t* r
 }
 
 int APS5_VABI scePadSetLotusEnableIrKey(std::int32_t handle) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
+    return PAD_OK;
 }
 
 int APS5_VABI scePadSetLotusDisableIrKey(std::int32_t handle) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (handle != PAD_HANDLE) return PAD_ERROR_INVALID_HANDLE;
+    return PAD_OK;
 }
 
 int APS5_VABI scePadGetUsbDetectionState(std::int32_t deviceId, PadUsbDetectionState* state) {
@@ -1089,8 +1092,8 @@ int APS5_VABI scePadVirtualDeviceInsertTriggerInternalState(std::int32_t deviceI
 }
 
 int APS5_VABI scePadVirtualDeviceGetRemoteSetting(std::int32_t deviceId, PadRemoteSetting* setting) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    if (setting == nullptr || deviceId <= 0) return PAD_ERROR_INVALID_ARG;
+    return PAD_ERROR_DEVICE_NOT_CONNECTED;
 }
 
 int APS5_VABI scePadVirtualDeviceSetTriggerEffectSetting(std::int32_t handle, const PadVirtualTriggerSetting* setting) {
@@ -1099,8 +1102,7 @@ int APS5_VABI scePadVirtualDeviceSetTriggerEffectSetting(std::int32_t handle, co
 }
 
 int APS5_VABI scePadVirtualDeviceDisableButtonRemapping(bool disabled) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return PAD_OK;
 }
 
 int APS5_VABI scePadSetShareButtonMaskForRemotePlay(std::uint8_t mask) {
