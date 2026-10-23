@@ -2,6 +2,7 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libkernel/File/include/FileFlags.hpp"
 #include "prx/libkernel/File/include/ReservedDescriptor.hpp"
+#include "prx/libkernel/Semaphore/include/Ksem.hpp"
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -180,6 +181,12 @@ int Release(std::intptr_t id, bool destroy) {
     return close_nid_postfix(static_cast<int>(id));
 }
 
+}
+
+bool IsKsemDescriptor(int descriptor) {
+    auto& registry = State();
+    const std::lock_guard lock(registry.lock);
+    return registry.descriptors.contains(descriptor);
 }
 
 extern "C" {

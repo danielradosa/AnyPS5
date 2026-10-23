@@ -76,6 +76,8 @@ int APS5_VABI pipe_nid_postfix(int*);
 int APS5_VABI pthread_create_nid_postfix(Pthread*, const PthreadAttr*, PthreadEntry, void*);
 int APS5_VABI pthread_join_nid_postfix(Pthread, void**);
 int APS5_VABI close_nid_postfix(int);
+int APS5_VABI dup_nid_postfix(int);
+int APS5_VABI dup2_nid_postfix(int, int);
 int APS5_VABI ksem_init_nid_postfix(std::intptr_t*, unsigned int);
 int APS5_VABI ksem_open_nid_postfix(std::intptr_t*, const char*, int, std::uint16_t, unsigned int);
 int APS5_VABI ksem_unlink_nid_postfix(const char*);
@@ -408,6 +410,15 @@ void CheckAnonymousKernelSemaphores() {
     int streams[2];
     Require(pipe_nid_postfix(streams) == 0);
     Require(ksem_post_nid_postfix(streams[0]) == -1 && Error() == 22 && ksem_destroy_nid_postfix(streams[1]) == -1 && Error() == 22);
+    std::intptr_t target = -1;
+    Require(ksem_init_nid_postfix(&id, 1) == 0 && ksem_init_nid_postfix(&target, 1) == 0);
+    Require(Throws([&] { dup_nid_postfix(static_cast<int>(id)); }));
+    Require(Throws([&] { dup2_nid_postfix(static_cast<int>(id), static_cast<int>(target)); }));
+    Require(dup2_nid_postfix(static_cast<int>(id), static_cast<int>(id)) == static_cast<int>(id));
+    Require(KernelSemaphoreValue(id) == 1 && KernelSemaphoreValue(target) == 1);
+    Require(dup2_nid_postfix(streams[0], static_cast<int>(target)) == static_cast<int>(target));
+    Require(ksem_post_nid_postfix(target) == -1 && Error() == 22);
+    Require(close_nid_postfix(static_cast<int>(target)) == 0 && ksem_destroy_nid_postfix(id) == 0);
     Require(close_nid_postfix(streams[0]) == 0 && close_nid_postfix(streams[1]) == 0);
 }
 
