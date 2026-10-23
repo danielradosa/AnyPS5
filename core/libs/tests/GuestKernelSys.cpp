@@ -141,7 +141,6 @@ int APS5_VABI sceKernelGetModuleInfoInternal(KernelModule, ModuleInfoEx*);
 int APS5_VABI sceKernelGetModuleInfo(KernelModule, ModuleInfo*);
 int APS5_VABI sceKernelGetModuleList(KernelModule*, std::size_t, std::size_t*);
 int APS5_VABI sceKernelIsInSandbox(void);
-int APS5_VABI tcgetsid_nid_postfix(int);
 int APS5_VABI tcsetsid_nid_postfix(int, int);
 int APS5_VABI getsid_nid_postfix(int);
 void AddPathAlias_nid_no_patch(const char*, const char*);
@@ -796,8 +795,6 @@ void CheckModuleAndTerminalQueries(const std::filesystem::path& root) {
     std::ofstream(path) << "t";
     const int fd = sceKernelOpen(path.c_str(), SCE_KERNEL_O_RDONLY, 0);
     Require(fd >= 0);
-    Require(tcgetsid_nid_postfix(fd) == -1 && Error() == 25);
-    Require(tcgetsid_nid_postfix(-1) == -1 && Error() == 9);
     const int session = getsid_nid_postfix(0);
     Require(tcsetsid_nid_postfix(fd, session + 1) == -1 && Error() == 22);
     Require(tcsetsid_nid_postfix(fd, session) == -1 && Error() == 25);

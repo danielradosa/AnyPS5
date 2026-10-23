@@ -645,12 +645,6 @@ int APS5_VABI sceKernelIsInSandbox(void) {
 int APS5_VABI tcgetattr_nid_postfix(int descriptor, void* attributes);
 int APS5_VABI getsid_nid_postfix(int pid);
 
-int APS5_VABI tcgetsid_nid_postfix(int descriptor) {
-    std::array<std::byte, GuestTermiosBytes> attributes{};
-    if (tcgetattr_nid_postfix(descriptor, attributes.data()) != 0) return -1;
-    throw std::runtime_error("tcgetsid: descriptor " + std::to_string(descriptor) + " is a terminal, and terminal sessions are not modelled");
-}
-
 int APS5_VABI tcsetsid_nid_postfix(int descriptor, int pid) {
     const int saved = *__error_nid_postfix();
     const int session = getsid_nid_postfix(0);
