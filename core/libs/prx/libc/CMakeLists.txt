@@ -1395,16 +1395,6 @@ if(BUILD_TESTING)
         set_tests_properties(guest_find_trivial8 PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
-    add_test_executable(guest_hardware_concurrency_tests ${LIBS_INCLUDE_DIR}/tests/GuestHardwareConcurrency.cpp)
-    target_include_directories(guest_hardware_concurrency_tests PRIVATE ${LIBS_INCLUDE_DIR})
-    target_link_libraries(guest_hardware_concurrency_tests PRIVATE libc)
-    configure_windows_unwind(guest_hardware_concurrency_tests)
-    add_test(NAME guest_hardware_concurrency COMMAND guest_hardware_concurrency_tests)
-    set_tests_properties(guest_hardware_concurrency PROPERTIES TIMEOUT 30)
-    if(WIN32)
-        set_tests_properties(guest_hardware_concurrency PROPERTIES ENVIRONMENT_MODIFICATION
-            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
-    endif()
 endif()
 
 add_test_executable(guest_c_locale_helpers_tests EXCLUDE_FROM_ALL ${LIBS_INCLUDE_DIR}/tests/GuestCLocaleHelpers.cpp)

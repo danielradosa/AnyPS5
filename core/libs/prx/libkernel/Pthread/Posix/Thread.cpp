@@ -43,6 +43,7 @@ int APS5_VABI scePthreadCondDestroy(PthreadCond* cond);
 int APS5_VABI scePthreadCondWait(PthreadCond* cond, PthreadMutex* mutex);
 int APS5_VABI scePthreadCondSignal(PthreadCond* cond);
 int APS5_VABI scePthreadCondBroadcast(PthreadCond* cond);
+int APS5_VABI scePthreadCondTimedwait(PthreadCond* cond, PthreadMutex* mutex, KernelUseconds usec);
 int APS5_VABI scePthreadCancel(Pthread thread);
 int APS5_VABI scePthreadSetcancelstate(int state, int* old_state);
 int APS5_VABI scePthreadSetcanceltype(int type, int* old_type);
@@ -373,6 +374,9 @@ struct RegisterPthreadOnLoad {
             reinterpret_cast<decltype(sync.detach)>(scePthreadDetach),
             reinterpret_cast<decltype(sync.join)>(scePthreadJoin),
             scePthreadYield,
+            reinterpret_cast<decltype(sync.create)>(scePthreadCreate),
+            reinterpret_cast<decltype(sync.condTimedwait)>(scePthreadCondTimedwait),
+            reinterpret_cast<decltype(sync.getAffinity)>(scePthreadGetaffinity),
         };
         RegisterPthreadSyncForwards_nid_no_patch(&sync);
     }

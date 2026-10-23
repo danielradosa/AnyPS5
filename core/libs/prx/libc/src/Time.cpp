@@ -582,6 +582,10 @@ int APS5_VABI timespec_get_nid_postfix(timespec* ts, int base) {
     return TIME_UTC;
 }
 
+int64_t APS5_VABI _ZNSt8__sce_v26chrono12steady_clock13now_v1_compatEv_nid_postfix() {
+    return _Xtime_get_ticks_nid_postfix();
+}
+
 double APS5_VABI libc_difftime_nid_postfix(int64_t time1, int64_t time0) {
     if (time1 >= time0) return static_cast<double>(static_cast<uint64_t>(time1) - static_cast<uint64_t>(time0));
     return -static_cast<double>(static_cast<uint64_t>(time0) - static_cast<uint64_t>(time1));

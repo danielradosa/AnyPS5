@@ -1,4 +1,3 @@
-#include <thread>
 #include "prx/libc/include/exceptions/Runtime.hpp"
 #include <cstddef>
 #ifndef _UNWIND_H
@@ -27,11 +26,6 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 
 extern "C" {
-unsigned int APS5_VABI _ZNSt8__sce_v226_Thrd_hardware_concurrencyEv_nid_postfix() noexcept {
-    return std::thread::hardware_concurrency();
-}
-
-
 void* APS5_VABI __cxa_demangle_nid_postfix(const char* mangled, char* buf, std::size_t* len, int* status) {
     if (mangled == nullptr || (buf != nullptr && len == nullptr)) {
         if (status != nullptr) *status = -3;
