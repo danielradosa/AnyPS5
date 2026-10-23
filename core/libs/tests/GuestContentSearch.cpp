@@ -24,7 +24,6 @@ int APS5_VABI sceContentBinderReset(void);
 int APS5_VABI sceContentBinderSearchDifference(void);
 int APS5_VABI sceContentBinderStart(void);
 int APS5_VABI sceContentBinderTerminate(void);
-int APS5_VABI sceContentSearchGetApplicationLastUpdateId(void);
 int APS5_VABI sceContentSearchGetMyApplicationIndex(void);
 int APS5_VABI sceContentSearchGetNumOfApplication(void);
 int APS5_VABI sceContentSearchSearchApplication(void);
@@ -181,7 +180,6 @@ int main() {
     Require(sceContentBinderEnd() == binderResult);
     Require(sceContentBinderTerminate() == binderResult);
 
-    Require(ThrowsRuntimeError([] { sceContentSearchGetApplicationLastUpdateId(); }));
     Require(ThrowsRuntimeError([] { sceContentSearchGetMyApplicationIndex(); }));
     Require(ThrowsRuntimeError([] { sceContentSearchGetNumOfApplication(); }));
     Require(ThrowsRuntimeError([] { sceContentSearchSearchApplication(); }));

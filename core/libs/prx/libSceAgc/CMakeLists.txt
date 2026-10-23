@@ -37,7 +37,6 @@ add_library(libSceAgc SHARED EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/RegisterDefaults.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/Semaphore.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/ShaderFusion.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/ShaderInstrumentation.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/StaticBuffer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Misc/src/Suspend.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Patch/src/CondExec.cpp
