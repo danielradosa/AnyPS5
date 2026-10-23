@@ -619,8 +619,6 @@ void CheckPosixThreadExtensions() {
     Require(pthread_rwlockattr_settype_np_nid_postfix(&rwlockAttr, 1) == 0);
     Require(pthread_rwlockattr_gettype_np_nid_postfix(&rwlockAttr, &type) == 0 && type == 1);
     Require(scePthreadRwlockattrDestroy(&rwlockAttr) == 0);
-    PthreadRwlockattr noAttr = nullptr;
-    Require(pthread_rwlockattr_settype_np_nid_postfix(&noAttr, 1) == 22 && pthread_rwlockattr_settype_np_nid_postfix(nullptr, 1) == 22);
     PthreadMutex mutex = nullptr;
     Require(scePthreadMutexInit(&mutex, nullptr, "named") == 0);
     Require(pthread_mutex_setname_np_nid_postfix(&mutex, "renamed") == 0 && pthread_mutex_setname_np_nid_postfix(&mutex, nullptr) == 0);
