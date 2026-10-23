@@ -47,7 +47,7 @@ int APS5_VABI sceNetEpollDestroy(int);
 int APS5_VABI sceSslCreateConnection(int, int, const char*);
 int APS5_VABI sceSslDeleteConnection(int);
 int APS5_VABI sceSslConnect(int);
-int APS5_VABI sceSslRead(int, void*, std::size_t, int);
+int APS5_VABI GuestSslRead_nid_no_patch(int, void*, std::size_t, int);
 int APS5_VABI sceSslWrite(int, void*, std::size_t, int);
 int APS5_VABI sceSslSetVerifyCallback(int, int (APS5_VABI *)(int, unsigned int, void**, int, void*), void*);
 int APS5_VABI sceHttpParseStatusLine(const char*, std::size_t, std::int32_t*, std::int32_t*, std::int32_t*, const char**, std::size_t*);
@@ -126,7 +126,7 @@ public:
     int Read(void* buffer, std::size_t size) {
         if (closed_) return 0;
         const auto limit = std::min<std::size_t>(size, static_cast<std::size_t>(std::numeric_limits<int>::max()));
-        if (secure_) return sceSslRead(ssl_, buffer, limit, 0);
+        if (secure_) return GuestSslRead_nid_no_patch(ssl_, buffer, limit, 0);
         const auto result = GuestNetRecv_nid_no_patch(socket_, buffer, limit, 0);
         return result < 0 ? ERROR_NETWORK : static_cast<int>(result);
     }
