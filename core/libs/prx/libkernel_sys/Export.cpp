@@ -83,6 +83,7 @@ constexpr int GuestEnametoolong = 63;
 constexpr int GuestEnotempty = 66;
 constexpr int GuestEnosys = 78;
 constexpr int GuestEoverflow = 84;
+constexpr int GuestEnotsup = 45;
 constexpr int GuestAtFdcwd = -100;
 constexpr int GuestAtRemovedir = 0x800;
 constexpr std::size_t GuestPathMax = 1024;
@@ -1187,6 +1188,28 @@ int APS5_VABI scePthreadSetDefaultstacksize(std::size_t size) {
 
 void APS5_VABI scePthreadSetName(void* thread, const char* name) {
     pthread_set_name_np_nid_postfix(thread, name);
+}
+
+int APS5_VABI pthread_mutex_isowned_np_nid_postfix(void* mutex);
+
+int APS5_VABI scePthreadMutexIsowned(void* mutex) {
+    return pthread_mutex_isowned_np_nid_postfix(mutex);
+}
+
+int APS5_VABI pthread_switch_add_np_nid_postfix(void (*routine)(void*, void*)) {
+    (void)routine;
+    return GuestEnotsup;
+}
+
+int APS5_VABI pthread_switch_delete_np_nid_postfix(void (*routine)(void*, void*)) {
+    (void)routine;
+    return GuestEnotsup;
+}
+
+int APS5_VABI utrace_nid_postfix(const void* address, std::size_t length) {
+    (void)address;
+    (void)length;
+    return 0;
 }
 
 }

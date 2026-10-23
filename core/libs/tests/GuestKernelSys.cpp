@@ -146,6 +146,10 @@ int APS5_VABI tcsetsid_nid_postfix(int, int);
 int APS5_VABI getsid_nid_postfix(int);
 void AddPathAlias_nid_no_patch(const char*, const char*);
 void RemovePathAlias_nid_no_patch(const char*);
+int APS5_VABI scePthreadMutexIsowned(PthreadMutex*);
+int APS5_VABI pthread_switch_add_np_nid_postfix(void (*)(void*, void*));
+int APS5_VABI pthread_switch_delete_np_nid_postfix(void (*)(void*, void*));
+int APS5_VABI utrace_nid_postfix(const void*, std::size_t);
 }
 
 void Require(bool condition, std::source_location location = std::source_location::current()) {
@@ -157,6 +161,35 @@ void Require(bool condition, std::source_location location = std::source_locatio
 
 int Error() {
     return *__error_nid_postfix();
+}
+
+void SwitchRoutine(void*, void*) {}
+
+void ThreadAndTraceTests() {
+    PthreadMutex mutex = nullptr;
+    Require(scePthreadMutexIsowned(&mutex) == 0);
+    Require(scePthreadMutexInit(&mutex, nullptr, "isowned") == 0);
+    Require(scePthreadMutexIsowned(&mutex) == 0);
+    Require(scePthreadMutexLock(&mutex) == 0);
+    Require(scePthreadMutexIsowned(&mutex) == 1);
+    int fromOther = -1;
+    std::thread([&] { fromOther = scePthreadMutexIsowned(&mutex); }).join();
+    Require(fromOther == 0);
+    Require(scePthreadMutexUnlock(&mutex) == 0);
+    Require(scePthreadMutexIsowned(&mutex) == 0);
+    Require(scePthreadMutexDestroy(&mutex) == 0);
+    Require(scePthreadMutexIsowned(&mutex) == 0);
+
+    Require(pthread_switch_add_np_nid_postfix(SwitchRoutine) == 45);
+    Require(pthread_switch_add_np_nid_postfix(nullptr) == 45);
+    Require(pthread_switch_delete_np_nid_postfix(SwitchRoutine) == 45);
+    Require(pthread_switch_delete_np_nid_postfix(nullptr) == 45);
+
+    const char record[] = "trace";
+    *__error_nid_postfix() = 0;
+    Require(utrace_nid_postfix(record, sizeof(record)) == 0 && Error() == 0);
+    Require(utrace_nid_postfix(nullptr, 0) == 0);
+    Require(utrace_nid_postfix(nullptr, 4096) == 0 && Error() == 0);
 }
 
 bool PathconfThrows(const char* path, int name) {
@@ -797,6 +830,7 @@ int main() {
     CheckPathconf(root, file);
     const int descriptor = open_nid_postfix(file.c_str(), 0, 0);
     Require(descriptor >= 0);
+    ThreadAndTraceTests();
     unsigned char viaPublic[472] = {};
     unsigned char viaSyscall[472] = {};
     Require(fstatfs_nid_postfix(descriptor, viaPublic) == 0 && _fstatfs_nid_postfix(descriptor, viaSyscall) == 0);
