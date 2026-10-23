@@ -446,6 +446,16 @@ StreamManipulator APS5_VABI _ZSt4setwi_nid_postfix(std::int32_t width) {
     return {&SetStreamWidth, width};
 }
 
+GuestLocale::IosBase* APS5_VABI SetStreamPrecision(GuestLocale::IosBase* stream, std::int32_t precision) {
+    if (stream == nullptr) throw std::invalid_argument("setprecision: null stream");
+    stream->precision = precision;
+    return stream;
+}
+
+StreamManipulator APS5_VABI _ZSt12setprecisioni_nid_postfix(std::int32_t precision) {
+    return {&SetStreamPrecision, precision};
+}
+
 void* APS5_VABI SetStreamWidthV2(void* stream, std::int64_t width) {
     if (stream == nullptr) throw std::invalid_argument("setw: null stream");
     std::memcpy(static_cast<std::byte*>(stream) + 0x28, &width, sizeof(width));
