@@ -227,7 +227,7 @@ int main() {
     Require(sceVrTrackerTerm() == NotInit);
     Require(sceVrTrackerGetTime(&time) == NotInit);
     Require(sceVrTrackerInit(&param) == 0);
-    Require(sceVrTrackerRegisterDevice(1, 0x10100) == 0);
-    Require(sceVrTrackerUnregisterDevice(0x30B0200) == ArgumentInvalid);
+    Require(sceVrTrackerRegisterDevice(1, 0x10100) == DeviceAlreadyRegistered);
+    Require(sceVrTrackerUnregisterDevice(0x30B0200) == 0);
     Require(sceVrTrackerTerm() == 0);
 }

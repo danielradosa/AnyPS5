@@ -17,7 +17,11 @@ struct GuestRtPrio {
 int APS5_VABI rtprio_thread_nid_postfix(int function, int lwpid, GuestRtPrio* priority);
 int APS5_VABI pthread_setconcurrency_nid_postfix(int newLevel);
 int APS5_VABI pthread_getconcurrency_nid_postfix(void);
-int APS5_VABI sched_rr_get_interval_nid_postfix(int pid, struct timespec* interval);
+struct GuestTimespec {
+    std::int64_t tv_sec;
+    std::int64_t tv_nsec;
+};
+int APS5_VABI sched_rr_get_interval_nid_postfix(int pid, GuestTimespec* interval);
 int APS5_VABI getpid_nid_postfix(void);
 int* APS5_VABI __error_nid_postfix();
 }
@@ -50,9 +54,12 @@ static void RequireSetError(int which, int who, int nice, int error) {
 int main() {
     Require(Rejects(-1) && Rejects(2) && Rejects(5));
     const int self = getpid_nid_postfix();
-    struct timespec interval{};
+    GuestTimespec interval{};
     *__error_nid_postfix() = 13;
     Require(sched_rr_get_interval_nid_postfix(0, &interval) == 0 && interval.tv_sec == 0 && interval.tv_nsec == 94000000 && *__error_nid_postfix() == 13);
+    interval.tv_sec = -1;
+    interval.tv_nsec = -1;
+    Require(sched_rr_get_interval_nid_postfix(0, &interval) == 0 && interval.tv_sec == 0 && interval.tv_nsec == 94000000);
     interval = {};
     Require(sched_rr_get_interval_nid_postfix(self, &interval) == 0 && interval.tv_sec == 0 && interval.tv_nsec == 94000000);
     *__error_nid_postfix() = 0;

@@ -288,6 +288,7 @@ struct Picture {
     Vp9PictureInfo vp9{};
     Crop crop{};
     bool hevcIdr = false;
+    std::uint8_t bitDepthMinus8 = 0;
 };
 
 struct PictureHeader {
@@ -299,6 +300,7 @@ struct PictureHeader {
     std::uint32_t profile;
     std::uint32_t level;
     Crop crop;
+    std::uint8_t bitDepthMinus8;
 };
 
 struct FrameDeleter {
@@ -553,6 +555,7 @@ void EmitDecoded(std::uint64_t handle, Decoder& decoder, FrameBuffer* frame, Out
     if (decoder.context->profile > 0) decoder.profile = static_cast<std::uint32_t>(decoder.context->profile) & 0xffu;
     if (decoder.context->level > 0) decoder.level = static_cast<std::uint32_t>(decoder.context->level);
     if (!WriteNv12(decoder, *picture, static_cast<std::uint8_t*>(frame->frameBuffer), frame->frameBufferSize)) throw std::runtime_error("Videodec2: NV12 conversion failed");
+    timestamps.bitDepthMinus8 = decoder.sampleBytes == 2 ? 2 : 0;
     const auto pitch = PitchBytes(decoder.width, decoder.sampleBytes);
     frame->isAccepted = true;
     output->isValid = true;
@@ -716,7 +719,7 @@ int APS5_VABI sceVideodec2Flush_nid_postfix(std::uint64_t handle, FrameBuffer* f
     if (!found) throw std::runtime_error("Videodec2: invalid decoder handle");
     auto& decoder = *found;
     std::lock_guard guard(decoder.mutex);
-    if (!decoder.flushing) {
+    if (!decoder.flushing && decoder.ready.empty() && !decoder.inputs.empty()) {
         Send(decoder, nullptr);
         decoder.flushing = true;
     }
@@ -863,7 +866,14 @@ void Videodec2PictureHeader_nid_no_patch(std::uint64_t handle, const void* frame
     const auto picture = decoder.pictures.find(frameBuffer);
     if (picture == decoder.pictures.end()) throw std::runtime_error("Videodec2: unknown frame buffer");
     const auto& stored = picture->second;
-    *header = {stored.pts, stored.dts, stored.attached, stored.idr, stored.hevcIdr, decoder.profile, decoder.level, stored.crop};
+    *header = {stored.pts, stored.dts, stored.attached, stored.idr, stored.hevcIdr, decoder.profile, decoder.level, stored.crop, stored.bitDepthMinus8};
+}
+
+void Videodec2PictureCrop_nid_no_patch(std::uint64_t handle, const void* frameBuffer, Crop* crop) {
+    if (!crop) throw std::runtime_error("Videodec2: invalid argument pointer");
+    PictureHeader header{};
+    Videodec2PictureHeader_nid_no_patch(handle, frameBuffer, &header);
+    *crop = header.crop;
 }
 
 }

@@ -190,6 +190,7 @@ struct Videodec2PictureHeader {
     std::uint32_t profile;
     std::uint32_t level;
     Videodec2Crop crop;
+    std::uint8_t bitDepthMinus8;
 };
 
 struct DecoderMemoryInfo {
@@ -283,6 +284,8 @@ PictureInfo pictureInfo(std::uint64_t handle, const Videodec2OutputInfo& output)
         info.attachedData = header.attached;
         info.picWidthInLumaSamples = output.frameWidth;
         info.picHeightInLumaSamples = output.frameHeight;
+        info.bitDepthLumaMinus8 = header.bitDepthMinus8;
+        info.bitDepthChromaMinus8 = header.bitDepthMinus8;
         info.conformanceWindowFlag = cropped;
         info.confWinLeftOffset = crop.left / 2u;
         info.confWinRightOffset = crop.right / 2u;

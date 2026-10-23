@@ -2,6 +2,7 @@
 #include "../include/ThreadLifecycle.hpp"
 #include "../include/WindowsThreadLocal.hpp"
 #include "../include/Cancel.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/general/AsmMacros.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
@@ -80,9 +81,9 @@ static GuestThreadState& CurrentGuestState() {
     return state;
 #endif
 }
-static std::mutex stackLock;
-static std::map<PthreadPrivate*, std::pair<std::uintptr_t, std::uintptr_t>> liveStacks;
-static std::map<std::uintptr_t, std::size_t> protectedStackPages;
+static std::mutex& stackLock = *new std::mutex();
+static auto& liveStacks = *new std::map<PthreadPrivate*, std::pair<std::uintptr_t, std::uintptr_t>>();
+static auto& protectedStackPages = *new std::map<std::uintptr_t, std::size_t>();
 #if defined(__linux__)
 struct GuestStackMapping {
     std::uintptr_t mappingEnd;
@@ -90,7 +91,7 @@ struct GuestStackMapping {
     std::uintptr_t stackEnd;
 };
 static std::mutex guestStackMappingsLock;
-static std::map<std::uintptr_t, GuestStackMapping> guestStackMappings;
+static auto& guestStackMappings = *new std::map<std::uintptr_t, GuestStackMapping>();
 
 static void RegisterGuestStackMapping(PthreadPrivate* thread) {
     const auto mappingStart = reinterpret_cast<std::uintptr_t>(thread->guestStack);
@@ -1002,7 +1003,7 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
     return SCE_OK;
 }
 
-static int JoinGuestThread(Pthread thread, void** retval, std::optional<std::uint64_t> deadline) {
+int APS5_VABI JoinThread_nid_no_patch(Pthread thread, void** retval, const KernelTimespec* abstime) {
     if (!thread) return SCE_KERNEL_ERROR_EINVAL;
     if (thread == CurrentGuestState().current) return SCE_KERNEL_ERROR_EDEADLK;
     if (thread->_detached) return SCE_KERNEL_ERROR_EINVAL;
@@ -1014,9 +1015,20 @@ static int JoinGuestThread(Pthread thread, void** retval, std::optional<std::uin
         if (thread->_joining) return SCE_KERNEL_ERROR_EOPNOTSUPP;
         thread->_joining = true;
         while (!thread->_finished.load()) {
-            if (deadline && TimedWait::NowNanos() >= *deadline) {
-                thread->_joining = false;
-                return SCE_KERNEL_ERROR_ETIMEDOUT;
+            std::optional<std::uint64_t> deadline;
+            if (abstime != nullptr) {
+                KernelTimespec now{};
+                if (clock_gettime_nid_postfix(0, &now) != 0) {
+                    thread->_joining = false;
+                    throw std::runtime_error("Joining guest thread: realtime clock unavailable");
+                }
+                if (abstime->tv_sec < now.tv_sec || (abstime->tv_sec == now.tv_sec && abstime->tv_nsec <= now.tv_nsec)) {
+                    thread->_joining = false;
+                    return SCE_KERNEL_ERROR_ETIMEDOUT;
+                }
+                const auto seconds = static_cast<std::uint64_t>(abstime->tv_sec) - static_cast<std::uint64_t>(now.tv_sec);
+                const auto nanos = seconds > 1 ? std::int64_t{1000000000} : static_cast<std::int64_t>(seconds) * 1000000000 + abstime->tv_nsec - now.tv_nsec;
+                deadline = TimedWait::DeadlineNanos(static_cast<std::uint64_t>((nanos + 999) / 1000));
             }
             ThreadCancel::Wait(thread->_join_cv, lock, deadline);
             if (ThreadCancel::Requested()) {
@@ -1045,19 +1057,11 @@ static int JoinGuestThread(Pthread thread, void** retval, std::optional<std::uin
 }
 
 int APS5_VABI scePthreadJoin(Pthread thread, void** retval) {
-    return JoinGuestThread(thread, retval, std::nullopt);
+    return JoinThread_nid_no_patch(thread, retval, nullptr);
 }
 
-int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp);
-
 int PthreadTimedJoin_nid_no_patch(Pthread thread, void** retval, const KernelTimespec* abstime) {
-    KernelTimespec now{};
-    clock_gettime_nid_postfix(0, &now);
-    const std::uint64_t start = TimedWait::NowNanos();
-    const auto remaining = static_cast<__int128>(abstime->tv_sec - now.tv_sec) * 1000000000 + (abstime->tv_nsec - now.tv_nsec);
-    const auto limit = static_cast<__int128>(std::numeric_limits<std::uint64_t>::max() - start);
-    const std::uint64_t deadline = remaining <= 0 ? start : remaining >= limit ? std::numeric_limits<std::uint64_t>::max() : start + static_cast<std::uint64_t>(remaining);
-    const int result = JoinGuestThread(thread, retval, deadline);
+    const int result = JoinThread_nid_no_patch(thread, retval, abstime);
     return result == 0 ? 0 : static_cast<int>(static_cast<std::uint32_t>(result) & 0xffffu);
 }
 

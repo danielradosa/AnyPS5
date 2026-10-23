@@ -19,6 +19,8 @@ int APS5_VABI sceUltUlthreadOptParamInitialize(void*, std::uint32_t);
 int APS5_VABI _sceUltWaitingQueueResourcePoolCreate(void*, const char*, std::uint32_t, std::uint32_t, void*, const void*);
 int APS5_VABI sceUltWaitingQueueResourcePoolDestroy(void*);
 int APS5_VABI sceUltReaderWriterLockOptParamInitialize(void*, std::uint32_t);
+int APS5_VABI sceUltConditionVariableOptParamInitialize(void*, std::uint32_t);
+int APS5_VABI _sceUltConditionVariableOptParamInitialize(void*, std::uint32_t);
 int APS5_VABI sceUltReaderWriterLockCreate(void*, const char*, void*, const void*, std::uint32_t);
 int APS5_VABI sceUltReaderWriterLockDestroy(void*);
 int APS5_VABI sceUltReaderWriterLockLockRead(void*);
@@ -52,7 +54,8 @@ struct alignas(8) Object {
 void OptParams() {
     using Initializer = int (APS5_VABI *)(void*, std::uint32_t);
     for (const Initializer initialize : {sceUltSemaphoreOptParamInitialize, sceUltQueueOptParamInitialize, sceUltQueueDataResourcePoolOptParamInitialize,
-                                         sceUltWaitingQueueResourcePoolOptParamInitialize, sceUltUlthreadOptParamInitialize, sceUltReaderWriterLockOptParamInitialize}) {
+                                         sceUltWaitingQueueResourcePoolOptParamInitialize, sceUltUlthreadOptParamInitialize, sceUltReaderWriterLockOptParamInitialize,
+                                         sceUltConditionVariableOptParamInitialize, _sceUltConditionVariableOptParamInitialize}) {
         std::uint8_t bytes[136];
         std::memset(bytes, 0xa5, sizeof(bytes));
         CHECK(initialize(nullptr, 0) == Null);

@@ -1231,57 +1231,6 @@ int APS5_VABI X509_verify_cert_nid_postfix(StoreCtx* ctx) {
     return result;
 }
 
-const char* APS5_VABI X509_verify_cert_error_string_nid_postfix(std::int64_t n) {
-    switch (n) {
-    case 0: return "ok";
-    case 2: return "unable to get issuer certificate";
-    case 3: return "unable to get certificate CRL";
-    case 4: return "unable to decrypt certificate's signature";
-    case 5: return "unable to decrypt CRL's signature";
-    case 6: return "unable to decode issuer public key";
-    case 7: return "certificate signature failure";
-    case 8: return "CRL signature failure";
-    case 9: return "certificate is not yet valid";
-    case 10: return "certificate has expired";
-    case 11: return "CRL is not yet valid";
-    case 12: return "CRL has expired";
-    case 13: return "format error in certificate's notBefore field";
-    case 14: return "format error in certificate's notAfter field";
-    case 15: return "format error in CRL's lastUpdate field";
-    case 16: return "format error in CRL's nextUpdate field";
-    case 17: return "out of memory";
-    case 18: return "self signed certificate";
-    case 19: return "self signed certificate in certificate chain";
-    case 20: return "unable to get local issuer certificate";
-    case 21: return "unable to verify the first certificate";
-    case 22: return "certificate chain too long";
-    case 23: return "certificate revoked";
-    case 24: return "invalid CA certificate";
-    case 25: return "path length constraint exceeded";
-    case 26: return "unsupported certificate purpose";
-    case 27: return "certificate not trusted";
-    case 28: return "certificate rejected";
-    case 29: return "subject issuer mismatch";
-    case 30: return "authority and subject key identifier mismatch";
-    case 31: return "authority and issuer serial number mismatch";
-    case 32: return "key usage does not include certificate signing";
-    case 41: return "invalid or inconsistent certificate extension";
-    case 42: return "invalid or inconsistent certificate policy extension";
-    case 43: return "no explicit policy";
-    case 44: return "different CRL scope";
-    case 45: return "unsupported extension feature";
-    case 47: return "permitted subtree violation";
-    case 48: return "excluded subtree violation";
-    case 49: return "name constraints minimum and maximum not supported";
-    case 50: return "application verification failure";
-    case 51: return "unsupported name constraint type";
-    case 52: return "unsupported or invalid name constraint syntax";
-    case 54: return "CRL path validation error";
-    default:
-        throw std::invalid_argument("X509_verify_cert_error_string: the text for code " + std::to_string(n) + " is not documented");
-    }
-}
-
 int APS5_VABI X509_STORE_CTX_get_error_nid_postfix(const StoreCtx* ctx) {
     return RequireCtx(ctx, __func__).error;
 }

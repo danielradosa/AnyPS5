@@ -28,10 +28,10 @@ constexpr int CES_ERROR_UNASSIGNED_CODE = static_cast<int>(0x805C0020);
 constexpr int CES_ERROR_INVALID_DST_BUFFER = static_cast<int>(0x805C0030);
 constexpr int CES_ERROR_DST_BUFFER_END = static_cast<int>(0x805C0031);
 
-constexpr uint8_t PROFILES[3 + SingleByte::Count] = {0, 1, 2};
-constexpr const uint8_t* CP1252_PROFILE = &PROFILES[0];
-constexpr const uint8_t* CP1251_PROFILE = &PROFILES[1];
-constexpr const uint8_t* CP1250_PROFILE = &PROFILES[2];
+constexpr uint8_t PROFILES[3 + SingleByte::Count][8] = {{0}, {1}, {2}};
+constexpr const uint8_t* CP1252_PROFILE = PROFILES[0];
+constexpr const uint8_t* CP1251_PROFILE = PROFILES[1];
+constexpr const uint8_t* CP1250_PROFILE = PROFILES[2];
 
 constexpr uint16_t CP1252_HIGH[32] = {
     0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
@@ -67,7 +67,7 @@ constexpr uint16_t CP932_IBM_HEAD[28] = {
 };
 
 const uint8_t* singleByteProfile(SingleByte::Table table) {
-    return &PROFILES[3 + table];
+    return PROFILES[3 + table];
 }
 
 const uint16_t* sbcHighTable(const void* profile) {

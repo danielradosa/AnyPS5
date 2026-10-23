@@ -431,7 +431,7 @@ int APS5_VABI sceKernelGetModuleInfo2(KernelModule handle, ModuleInfo* info) {
     return FillModuleInfo(handle, info, true);
 }
 
-int ModuleInfoExForHandle_nid_no_patch(KernelModule handle, ModuleInfoEx* info) {
+int GetModuleInfoExByHandle_nid_no_patch(KernelModule handle, ModuleInfoEx* info) {
     return FillModuleInfo(handle, info, false);
 }
 

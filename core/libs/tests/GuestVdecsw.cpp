@@ -594,11 +594,29 @@ void testVp9PictureInfoOfAvcPicture() {
 
 }
 
+void testHevcMain10() {
+    Session session(CodecHevc, 2, 30);
+    std::vector<std::uint8_t> buffer(session.memory.maxFrameBufferSize);
+    const FrameBuffer frame{sizeof(FrameBuffer), buffer.data(), buffer.size()};
+    check(sceVdecswSetDecodeOutput(session.decoder, &frame) == 0, "Main 10 HEVC output buffer was rejected");
+    const InputData input{sizeof(InputData), HevcMain10Stream.data(), HevcMain10Stream.size(), 1000, 0, 0xa0};
+    check(sceVdecswSetDecodeInput(session.decoder, &input) == 0, "Main 10 HEVC decode input was rejected");
+    InputResult consumed{sizeof(InputResult)};
+    check(sceVdecswSyncDecodeInput(session.decoder, &consumed) == 0, "the Main 10 HEVC access unit was not consumed");
+    check(sceVdecswFinalizeDecodeSequence(session.decoder) == 0, "Main 10 HEVC finalize failed");
+    OutputInfo output{sizeof(OutputInfo)};
+    check(sceVdecswSyncDecodeOutput(session.decoder, &output) == 0 && output.isValid, "the Main 10 HEVC picture was not output");
+    HevcPictureInfo info{sizeof(HevcPictureInfo)};
+    check(sceVdecswGetHevcPictureInfo(&output, &info) == 0 && info.isValid, "Main 10 HEVC picture info missing");
+    check(info.generalProfileIdc == 2 && info.bitDepthLumaMinus8 == 2 && info.bitDepthChromaMinus8 == 2, "Main 10 HEVC profile or bit depth differs");
+}
+
 int main() {
     try {
         testDecode();
         testHevc();
         testHevcCrop();
+        testHevcMain10();
         testWithoutOutput();
         testSyncWrappers();
         testVp9PictureInfo();

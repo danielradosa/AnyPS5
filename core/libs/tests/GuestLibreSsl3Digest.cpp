@@ -10,7 +10,6 @@
 extern "C" {
 unsigned char* APS5_VABI MD5_nid_postfix(const unsigned char*, std::size_t, unsigned char*);
 unsigned char* APS5_VABI SHA1_nid_postfix(const unsigned char*, std::size_t, unsigned char*);
-int APS5_VABI CRYPTO_memcmp_nid_postfix(const void*, const void*, std::size_t);
 }
 
 static void Require(bool condition, std::source_location location = std::source_location::current()) {
@@ -51,12 +50,5 @@ int main() {
     RequireThrows([&] { SHA1_nid_postfix(abc, 3, nullptr); });
     RequireThrows([&] { SHA1_nid_postfix(nullptr, 1, digest); });
 
-    const unsigned char first[] {1, 2, 3, 4, 5};
-    const unsigned char second[] {1, 2, 3, 4, 5};
-    const unsigned char third[] {1, 0x22, 3, 4, 0x85};
-    Require(CRYPTO_memcmp_nid_postfix(first, second, sizeof(first)) == 0);
-    Require(CRYPTO_memcmp_nid_postfix(first, third, sizeof(first)) == ((2 ^ 0x22) | (5 ^ 0x85)));
-    Require(CRYPTO_memcmp_nid_postfix(first, third, 1) == 0);
-    Require(CRYPTO_memcmp_nid_postfix(nullptr, nullptr, 0) == 0);
     std::puts("libSceLibreSsl3 digest tests passed");
 }

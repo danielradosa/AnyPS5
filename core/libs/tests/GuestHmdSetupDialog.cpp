@@ -28,11 +28,11 @@ constexpr int kResultUserCanceled = 1;
 }
 
 int main() {
-    std::uint8_t param[0x68] = {};
-    std::int32_t result[9] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};
+    std::int64_t param = 0;
+    std::int32_t result[2] = {-1, -1};
 
     Require(sceHmdSetupDialogTerminate() == kErrNotInitialized);
-    Require(sceHmdSetupDialogOpen(param) == kErrNotInitialized);
+    Require(sceHmdSetupDialogOpen(&param) == kErrNotInitialized);
     Require(sceHmdSetupDialogClose() == kErrNotInitialized);
     Require(sceHmdSetupDialogGetResult(result) == kErrNotInitialized);
     Require(sceHmdSetupDialogGetStatus() == kStatusNone);
@@ -44,17 +44,16 @@ int main() {
     Require(sceHmdSetupDialogUpdateStatus() == kStatusInitialized);
 
     Require(sceHmdSetupDialogOpen(nullptr) == kErrArgNull);
-    Require(sceHmdSetupDialogGetStatus() == kStatusInitialized);
     Require(sceHmdSetupDialogGetResult(result) == kErrNotFinished);
 
-    Require(sceHmdSetupDialogOpen(param) == 0);
-    Require(sceHmdSetupDialogUpdateStatus() == kStatusFinished);
+    Require(sceHmdSetupDialogOpen(&param) == 0);
     Require(sceHmdSetupDialogGetStatus() == kStatusFinished);
+    Require(sceHmdSetupDialogUpdateStatus() == kStatusFinished);
 
     Require(sceHmdSetupDialogGetResult(nullptr) == kErrArgNull);
     Require(sceHmdSetupDialogGetResult(result) == 0);
     Require(result[0] == kResultUserCanceled);
-    for (int i = 1; i < 9; ++i) Require(result[i] == -1);
+    Require(result[1] == -1);
 
     Require(sceHmdSetupDialogClose() == 0);
     Require(sceHmdSetupDialogTerminate() == 0);

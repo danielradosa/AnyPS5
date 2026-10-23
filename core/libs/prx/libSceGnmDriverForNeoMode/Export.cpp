@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -6,6 +7,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libSceGnmDriver/include/Commands.hpp"
 #include "prx/libSceGnmDriver/include/Lowering.hpp"
+#include "prx/libSceGnmDriverForNeoMode/include/InitSequences.hpp"
 
 extern "C" {
 
@@ -19,40 +21,70 @@ int APS5_VABI sceKernelGetCompiledSdkVersion_nid_postfix(std::int32_t* version);
 
 namespace {
 
+constexpr std::uint32_t InitPacketWords = 0x100;
+
+template <std::size_t Words>
+int WriteHardwareState(std::uint32_t* cmdbuf, std::uint32_t size, const std::array<std::uint32_t, Words>& state) {
+    if (size < InitPacketWords) return 0;
+    auto* at = std::copy(GnmNeo::ClearState.begin(), GnmNeo::ClearState.end(), cmdbuf);
+    at = std::copy(state.begin(), state.end(), at);
+    const auto padding = static_cast<std::uint32_t>(cmdbuf + InitPacketWords - at - 1);
+    at[0] = 0xc0001000u | ((padding - 1) << 16);
+    at[1] = 0;
+    return InitPacketWords;
+}
+
+template <std::size_t Words>
+int WriteContextState(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t packetWords, const std::array<std::uint32_t, Words>& state) {
+    if (size != packetWords) return 0;
+    std::copy(state.begin(), state.end(), cmdbuf);
+    return static_cast<int>(packetWords);
+}
+
+constexpr int CommandFailed = -1;
+constexpr std::uint32_t OpNop = 0x10;
+constexpr std::uint32_t NeoDrawFlags = 0xe0000000u;
+constexpr std::uint32_t AutoIndex = 2;
+
+constexpr std::uint32_t Header(std::uint32_t opcode, std::uint32_t bodyWords, bool compute = false, bool predicated = false) {
+    return 0xc0000000u | ((bodyWords - 1) << 16) | (opcode << 8) | (compute ? 2u : 0u) | (predicated ? 1u : 0u);
+}
+
+std::uint32_t* Nop(std::uint32_t* at, std::uint32_t bodyWords) {
+    at[0] = Header(OpNop, bodyWords);
+    at[1] = 0;
+    return at + 1 + bodyWords;
+}
+
+constexpr std::uint32_t ShaderStageCount = 7;
+constexpr std::uint32_t StageVs = 2;
+constexpr std::uint32_t StageEs = 4;
+constexpr std::uint32_t StageLs = 6;
+constexpr std::uint32_t IndirectSgprBase[ShaderStageCount] = {0, 0, 0x4c, 0, 0xcc, 0, 0x14c};
+constexpr std::uint32_t DrawIndirectArgsBytes = 0x10;
+constexpr std::uint32_t DrawIndexedIndirectArgsBytes = 0x14;
+
+std::uint32_t IndirectSgpr(std::uint32_t stage, std::uint32_t offset) {
+    return offset == 0 ? 0 : (offset & 0xffffu) + IndirectSgprBase[stage];
+}
+
+bool ValidIndirect(std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr) {
+    return stage < ShaderStageCount && vertexSgpr < 0x10 && instanceSgpr < 0x10;
+}
+
+bool IndexedIndirectStage(std::uint32_t stage) {
+    return stage == StageVs || stage == StageEs || stage == StageLs;
+}
+
+constexpr std::uint32_t OpSetUconfigReg = 0x79;
+constexpr std::uint32_t IaMultiVgtParam = 0x40000258u;
+
+
 using GnmDriver::Emit;
-using GnmDriver::HardwareState;
-using GnmDriver::Nop;
-using GnmDriver::OpNop;
 using GnmDriver::OpSetContextReg;
 using GnmDriver::OpSetShReg;
-using GnmDriver::OpSetUconfigReg;
 using GnmDriver::SetRegisters;
 
-constexpr std::uint32_t OpDispatchDirect = 0x15;
-constexpr std::uint32_t OpDispatchIndirect = 0x16;
-constexpr std::uint32_t OpDrawIndirect = 0x24;
-constexpr std::uint32_t OpDrawIndexIndirect = 0x25;
-constexpr std::uint32_t OpDrawIndex2 = 0x27;
-constexpr std::uint32_t OpDrawIndirectMulti = 0x2c;
-constexpr std::uint32_t OpDrawIndexAuto = 0x2d;
-constexpr std::uint32_t OpDrawIndexOffset2 = 0x35;
-constexpr std::uint32_t OpDrawIndexIndirectMulti = 0x38;
-constexpr std::uint32_t OpMemSemaphore = 0x39;
-constexpr std::uint32_t OpWaitRegMem = 0x3c;
-constexpr std::uint32_t OpDrawIndirectCountMulti = 0x9c;
-constexpr std::uint32_t OpDrawIndexIndirectCountMulti = 0x9d;
-
-constexpr std::uint32_t NeoInitiatorFlags = 0xe0000000u;
-constexpr std::uint32_t DrawFlagsReserved = 0x1ffffffeu;
-constexpr std::uint32_t AutoIndex = 2;
-constexpr std::uint32_t DispatchOrderedAppend = 0x18;
-constexpr std::uint32_t DrawIndirectArgsBytes = 0x10;
-constexpr std::uint32_t DrawIndexIndirectArgsBytes = 0x14;
-constexpr std::uint32_t UserSgprCount = 0x10;
-constexpr std::uint32_t VsStage = 2;
-constexpr std::uint32_t EsStage = 4;
-constexpr std::uint32_t LsStage = 6;
-constexpr std::array<std::uint32_t, 7> StageUserSgprBase{0, 0, 0x4c, 0, 0xcc, 0, 0x14c};
 constexpr std::uint32_t RegisterUpdate = 0xc01e0000u;
 constexpr std::uint32_t VsModifierMask = 0xfcfffc3fu;
 
@@ -87,34 +119,12 @@ alignas(256) constexpr std::uint32_t EmbeddedVs0[]{
 constexpr std::array<std::uint32_t, 10> EmbeddedPs0Registers{0xc0000u, 4, 0, 4, 2, 2, 0, 0, 0x10, 0xf};
 constexpr std::array<std::uint32_t, 10> EmbeddedPs1Registers{0x2000u, 0, 0, 2, 2, 2, 0, 0, 0x10, 3};
 
-std::uint32_t* Predicated(std::uint32_t* at, std::uint32_t opcode, std::uint32_t flags, bool compute, std::initializer_list<std::uint32_t> body) {
-    auto* next = Emit(at, opcode, body, compute);
-    *at |= flags & 1u;
-    return next;
-}
-
 std::uint32_t* Update(std::uint32_t* at, std::uint32_t reg, std::initializer_list<std::uint32_t> values) {
     *at = GnmDriver::Header(OpNop, static_cast<std::uint32_t>(values.size()) + 1);
     at[1] = RegisterUpdate | reg;
     at += 2;
     for (const auto value : values) *at++ = value;
     return at;
-}
-
-std::uint32_t DrawInitiator(std::uint32_t flags, std::uint32_t source) {
-    return (flags & NeoInitiatorFlags) | source;
-}
-
-std::uint32_t UserSgpr(std::uint32_t stage, std::uint32_t offset) {
-    return offset == 0 ? 0 : offset + StageUserSgprBase[stage];
-}
-
-bool IndirectStage(std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr) {
-    return stage < StageUserSgprBase.size() && vertexSgpr < UserSgprCount && instanceSgpr < UserSgprCount;
-}
-
-bool MultiStage(std::uint32_t stage) {
-    return stage == VsStage || stage == EsStage || stage == LsStage;
 }
 
 bool UsesSdk400ContextState() {
@@ -130,9 +140,9 @@ int UpdatePsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* 
         cmd = Update(cmd, 0x203, {0});
         if (clearShaderMask) {
             cmd = Emit(cmd, OpSetContextReg, {0x8f, 0xf});
-            Nop(cmd, 0x1d);
+            GnmDriver::Nop(cmd, 0x1d);
         } else {
-            Nop(cmd, 0x20);
+            GnmDriver::Nop(cmd, 0x20);
         }
         return 0;
     }
@@ -145,11 +155,11 @@ int UpdatePsShader(std::uint32_t* cmd, std::uint32_t size, const std::uint32_t* 
     cmd = Update(cmd, 0x1b8, {regs[9]});
     cmd = Update(cmd, 0x203, {regs[10]});
     cmd = Update(cmd, 0x8f, {regs[11]});
-    Nop(cmd, 11);
+    GnmDriver::Nop(cmd, 11);
     return 0;
 }
 
-}
+} // namespace
 
 extern "C" {
 
@@ -159,21 +169,28 @@ int APS5_VABI sceGnmBeginWorkload(std::uint32_t workloadStream, std::uint64_t* w
     return workloadStream < WorkloadStreamCount ? 0 : 1;
 }
 
-int APS5_VABI sceGnmComputeWaitOnAddress(std::uint32_t* cmd, std::uint32_t size, std::uintptr_t address, std::uint32_t mask, std::uint32_t compareFunction, std::uint32_t reference) {
-    if (!cmd || size != 0xe) return -1;
-    const bool memory = address > 0xffffu;
-    cmd = Nop(cmd, 3);
-    cmd = Emit(cmd, OpWaitRegMem, {(memory ? 0x10u : 0u) | (compareFunction & 7u), static_cast<std::uint32_t>(address & (memory ? 0xfffffffcu : 0xffffu)),
-        static_cast<std::uint32_t>(static_cast<std::uint64_t>(address) >> 32), reference, mask, 10});
-    Nop(cmd, 2);
+int APS5_VABI sceGnmComputeWaitOnAddress(std::uint32_t* cmdbuf, std::uint32_t size, std::uint64_t address, std::uint32_t mask, std::uint32_t compare, std::uint32_t reference) {
+    if (!cmdbuf || size != 14) return CommandFailed;
+    auto* at = Nop(cmdbuf, 3);
+    const bool memory = address > 0xffff;
+    at[0] = Header(0x3c, 6);
+    at[1] = (memory ? 1u << 4 : 0u) | (compare & 7);
+    at[2] = static_cast<std::uint32_t>(address & (memory ? 0xfffffffcu : 0xffffu));
+    at[3] = static_cast<std::uint32_t>(address >> 32);
+    at[4] = reference;
+    at[5] = mask;
+    at[6] = 10;
+    Nop(at + 7, 2);
     return 0;
 }
 
-int APS5_VABI sceGnmComputeWaitSemaphore(std::uint32_t* cmd, std::uint32_t size, std::uint64_t semaphore, std::uint32_t flags) {
-    if (!cmd || size != 0xa) return -1;
-    cmd = Nop(cmd, 3);
-    cmd = Emit(cmd, OpMemSemaphore, {static_cast<std::uint32_t>(semaphore), (flags == 1 ? 0x100000u : 0u) + 0xe0000000u + static_cast<std::uint32_t>(semaphore >> 32)});
-    Nop(cmd, 2);
+int APS5_VABI sceGnmComputeWaitSemaphore(std::uint32_t* cmdbuf, std::uint32_t size, std::uint64_t semaphoreAddress, std::uint32_t flags) {
+    if (!cmdbuf || size != 10) return CommandFailed;
+    auto* at = Nop(cmdbuf, 3);
+    at[0] = Header(0x39, 2);
+    at[1] = static_cast<std::uint32_t>(semaphoreAddress);
+    at[2] = (flags == 1 ? 0x100000u : 0u) - 0x20000000u + static_cast<std::uint32_t>(semaphoreAddress >> 32);
+    Nop(at + 3, 2);
     return 0;
 }
 
@@ -201,66 +218,96 @@ int APS5_VABI sceGnmDingDongForWorkload(void) {
     return 0;
 }
 
-int APS5_VABI sceGnmDispatchDirect(std::uint32_t* cmd, std::uint32_t size, std::uint32_t threadsX, std::uint32_t threadsY, std::uint32_t threadsZ, std::uint32_t flags) {
-    if (!cmd || size != 9 || ((threadsX | threadsY | threadsZ) & 0x80000000u) != 0) return -1;
-    cmd = Predicated(cmd, OpDispatchDirect, flags, true, {threadsX, threadsY, threadsZ, (flags & DispatchOrderedAppend) + 1});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDispatchDirect(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t threadsX, std::uint32_t threadsY, std::uint32_t threadsZ, std::uint32_t flags) {
+    if (!cmdbuf || size != 9 || static_cast<std::int32_t>(threadsX | threadsY | threadsZ) < 0) return CommandFailed;
+    cmdbuf[0] = Header(0x15, 4, true, flags & 1);
+    cmdbuf[1] = threadsX;
+    cmdbuf[2] = threadsY;
+    cmdbuf[3] = threadsZ;
+    cmdbuf[4] = (flags & 0x18) + 1;
+    Nop(cmdbuf + 5, 3);
     return 0;
 }
 
-int APS5_VABI sceGnmDispatchIndirect(std::uint32_t* cmd, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t flags) {
-    if (!cmd || size != 7) return -1;
-    cmd = Predicated(cmd, OpDispatchIndirect, flags, true, {dataOffset, (flags & DispatchOrderedAppend) + 1});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDispatchIndirect(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t flags) {
+    if (!cmdbuf || size != 7) return CommandFailed;
+    cmdbuf[0] = Header(0x16, 2, true, flags & 1);
+    cmdbuf[1] = dataOffset;
+    cmdbuf[2] = (flags & 0x18) + 1;
+    Nop(cmdbuf + 3, 3);
     return 0;
 }
 
-int APS5_VABI sceGnmDispatchIndirectOnMec(std::uint32_t* cmd, std::uint32_t size, std::uint64_t arguments, std::uint32_t modifier) {
-    if (!cmd || size != 8 || arguments == 0 || (arguments & 3u) != 0) return -1;
-    cmd = Predicated(cmd, OpDispatchIndirect, modifier, true, {static_cast<std::uint32_t>(arguments), static_cast<std::uint32_t>(arguments >> 32), (modifier & DispatchOrderedAppend) | 1u});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDispatchIndirectOnMec(std::uint32_t* cmdbuf, std::uint32_t size, std::uint64_t args, std::uint32_t modifier) {
+    if (!cmdbuf || size != 8 || args == 0 || (args & 3) != 0) return CommandFailed;
+    cmdbuf[0] = Header(0x16, 3, true, modifier & 1);
+    cmdbuf[1] = static_cast<std::uint32_t>(args);
+    cmdbuf[2] = static_cast<std::uint32_t>(args >> 32);
+    cmdbuf[3] = (modifier & 0x18) | 1;
+    cmdbuf[4] = Header(OpNop, 3);
+    cmdbuf[5] = 0;
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndex(std::uint32_t* cmd, std::uint32_t size, std::uint32_t indexCount, std::uintptr_t indexAddress, std::uint32_t flags, std::uint32_t type) {
-    static_cast<void>(type);
-    if (!cmd || size != 10 || indexAddress == 0 || (indexAddress & 1u) != 0 || (flags & DrawFlagsReserved) != 0) return -1;
-    const auto address = static_cast<std::uint64_t>(indexAddress);
-    cmd = Emit(cmd, OpDrawIndex2, {indexCount, static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(address >> 32), indexCount, flags & NeoInitiatorFlags});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDrawIndex(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t indexCount, std::uint64_t indexAddress, std::uint32_t flags, std::uint32_t) {
+    if (!cmdbuf || size != 10 || indexAddress == 0 || (indexAddress & 1) != 0 || (flags & 0x1ffffffeu) != 0) return CommandFailed;
+    cmdbuf[0] = Header(0x27, 5);
+    cmdbuf[1] = indexCount;
+    cmdbuf[2] = static_cast<std::uint32_t>(indexAddress);
+    cmdbuf[3] = static_cast<std::uint32_t>(indexAddress >> 32);
+    cmdbuf[4] = indexCount;
+    cmdbuf[5] = flags & NeoDrawFlags;
+    Nop(cmdbuf + 6, 3);
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndexAuto(std::uint32_t* cmd, std::uint32_t size, std::uint32_t indexCount, std::uint32_t flags) {
-    if (!cmd || size != 7 || (flags & DrawFlagsReserved) != 0) return -1;
-    cmd = Emit(cmd, OpDrawIndexAuto, {indexCount, DrawInitiator(flags, AutoIndex)});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDrawIndexAuto(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t indexCount, std::uint32_t flags) {
+    if (!cmdbuf || size != 7 || (flags & 0x1ffffffeu) != 0) return CommandFailed;
+    cmdbuf[0] = Header(0x2d, 2);
+    cmdbuf[1] = indexCount;
+    cmdbuf[2] = (flags & NeoDrawFlags) | AutoIndex;
+    Nop(cmdbuf + 3, 3);
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndexIndirect(std::uint32_t* cmd, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
-    if (!cmd || size != 9 || !IndirectStage(stage, vertexSgpr, instanceSgpr)) return -1;
-    cmd = Predicated(cmd, OpDrawIndexIndirect, flags, false, {dataOffset, UserSgpr(stage, vertexSgpr), UserSgpr(stage, instanceSgpr), DrawInitiator(flags, 0)});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDrawIndexIndirect(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
+    if (!cmdbuf || size != 9 || !ValidIndirect(stage, vertexSgpr, instanceSgpr)) return CommandFailed;
+    cmdbuf[0] = Header(0x25, 4, false, flags & 1);
+    cmdbuf[1] = dataOffset;
+    cmdbuf[2] = IndirectSgpr(stage, vertexSgpr);
+    cmdbuf[3] = IndirectSgpr(stage, instanceSgpr);
+    cmdbuf[4] = flags & NeoDrawFlags;
+    Nop(cmdbuf + 5, 3);
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndexIndirectCountMulti(std::uint32_t* cmd, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t maxCount, std::uint64_t countAddress, std::uint32_t stage,
-    std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
-    if (!cmd || size != 16 || !IndirectStage(stage, vertexSgpr, instanceSgpr) || !MultiStage(stage)) return -1;
-    cmd = Nop(cmd, 2);
-    cmd = Predicated(cmd, OpDrawIndexIndirectCountMulti, flags, false, {dataOffset, UserSgpr(stage, vertexSgpr), UserSgpr(stage, instanceSgpr), (countAddress != 0 ? 1u : 0u) << 30,
-        maxCount, static_cast<std::uint32_t>(countAddress), static_cast<std::uint32_t>(countAddress >> 32), DrawIndexIndirectArgsBytes, DrawInitiator(flags, 0)});
-    Nop(cmd, 2);
+int APS5_VABI sceGnmDrawIndexIndirectCountMulti(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t maxCount, std::uint64_t countAddress, std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
+    if (!cmdbuf || size != 0x10 || vertexSgpr >= 0x10 || instanceSgpr >= 0x10 || !IndexedIndirectStage(stage)) return CommandFailed;
+    auto* at = Nop(cmdbuf, 2);
+    at[0] = Header(0x9d, 9, false, flags & 1);
+    at[1] = dataOffset;
+    at[2] = IndirectSgpr(stage, vertexSgpr);
+    at[3] = IndirectSgpr(stage, instanceSgpr);
+    at[4] = countAddress != 0 ? 1u << 30 : 0;
+    at[5] = maxCount;
+    at[6] = static_cast<std::uint32_t>(countAddress);
+    at[7] = static_cast<std::uint32_t>(countAddress >> 32);
+    at[8] = DrawIndexedIndirectArgsBytes;
+    at[9] = flags & NeoDrawFlags;
+    Nop(at + 10, 2);
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndexIndirectMulti(std::uint32_t* cmd, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t maxCount, std::uint32_t stage, std::uint32_t vertexSgpr,
-    std::uint32_t instanceSgpr, std::uint32_t flags) {
-    if (!cmd || size != 11 || !IndirectStage(stage, vertexSgpr, instanceSgpr) || !MultiStage(stage)) return -1;
-    cmd = Predicated(cmd, OpDrawIndexIndirectMulti, flags, false, {dataOffset, UserSgpr(stage, vertexSgpr), UserSgpr(stage, instanceSgpr), maxCount, DrawIndexIndirectArgsBytes,
-        DrawInitiator(flags, 0)});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDrawIndexIndirectMulti(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t maxCount, std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
+    if (!cmdbuf || size != 11 || vertexSgpr >= 0x10 || instanceSgpr >= 0x10 || !IndexedIndirectStage(stage)) return CommandFailed;
+    cmdbuf[0] = Header(0x38, 6, false, flags & 1);
+    cmdbuf[1] = dataOffset;
+    cmdbuf[2] = IndirectSgpr(stage, vertexSgpr);
+    cmdbuf[3] = IndirectSgpr(stage, instanceSgpr);
+    cmdbuf[4] = maxCount;
+    cmdbuf[5] = DrawIndexedIndirectArgsBytes;
+    cmdbuf[6] = flags & NeoDrawFlags;
+    Nop(cmdbuf + 7, 3);
     return 0;
 }
 
@@ -269,57 +316,76 @@ int APS5_VABI sceGnmDrawIndexMultiInstanced(void) {
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndexOffset(std::uint32_t* cmd, std::uint32_t size, std::uint32_t indexOffset, std::uint32_t indexCount, std::uint32_t flags) {
-    if (!cmd || size != 9) return -1;
-    cmd = Predicated(cmd, OpDrawIndexOffset2, flags, false, {indexCount, indexOffset, indexCount, DrawInitiator(flags, 0)});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDrawIndexOffset(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t indexOffset, std::uint32_t indexCount, std::uint32_t flags) {
+    if (!cmdbuf || size != 9) return CommandFailed;
+    cmdbuf[0] = Header(0x35, 4, false, flags & 1);
+    cmdbuf[1] = indexCount;
+    cmdbuf[2] = indexOffset;
+    cmdbuf[3] = indexCount;
+    cmdbuf[4] = flags & NeoDrawFlags;
+    Nop(cmdbuf + 5, 3);
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndirect(std::uint32_t* cmd, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
-    if (!cmd || size != 9 || !IndirectStage(stage, vertexSgpr, instanceSgpr)) return -1;
-    cmd = Predicated(cmd, OpDrawIndirect, flags, false, {dataOffset, UserSgpr(stage, vertexSgpr), UserSgpr(stage, instanceSgpr), DrawInitiator(flags, AutoIndex)});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDrawIndirect(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
+    if (!cmdbuf || size != 9 || !ValidIndirect(stage, vertexSgpr, instanceSgpr)) return CommandFailed;
+    cmdbuf[0] = Header(0x24, 4, false, flags & 1);
+    cmdbuf[1] = dataOffset;
+    cmdbuf[2] = IndirectSgpr(stage, vertexSgpr);
+    cmdbuf[3] = IndirectSgpr(stage, instanceSgpr);
+    cmdbuf[4] = (flags & NeoDrawFlags) | AutoIndex;
+    Nop(cmdbuf + 5, 3);
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndirectCountMulti(std::uint32_t* cmd, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t maxCount, std::uint64_t countAddress, std::uint32_t stage,
-    std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
-    if (!cmd || size != 16 || !IndirectStage(stage, vertexSgpr, instanceSgpr)) return -1;
-    cmd = Nop(cmd, 2);
-    cmd = Predicated(cmd, OpDrawIndirectCountMulti, flags, false, {dataOffset, UserSgpr(stage, vertexSgpr), UserSgpr(stage, instanceSgpr), (countAddress != 0 ? 1u : 0u) << 30,
-        maxCount, static_cast<std::uint32_t>(countAddress), static_cast<std::uint32_t>(countAddress >> 32), DrawIndirectArgsBytes, DrawInitiator(flags, AutoIndex)});
-    Nop(cmd, 2);
+int APS5_VABI sceGnmDrawIndirectCountMulti(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t maxCount, std::uint64_t countAddress, std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
+    if (!cmdbuf || size != 0x10 || !ValidIndirect(stage, vertexSgpr, instanceSgpr)) return CommandFailed;
+    auto* at = Nop(cmdbuf, 2);
+    at[0] = Header(0x9c, 9, false, flags & 1);
+    at[1] = dataOffset;
+    at[2] = IndirectSgpr(stage, vertexSgpr);
+    at[3] = IndirectSgpr(stage, instanceSgpr);
+    at[4] = countAddress != 0 ? 1u << 30 : 0;
+    at[5] = maxCount;
+    at[6] = static_cast<std::uint32_t>(countAddress);
+    at[7] = static_cast<std::uint32_t>(countAddress >> 32);
+    at[8] = DrawIndirectArgsBytes;
+    at[9] = (flags & NeoDrawFlags) | AutoIndex;
+    Nop(at + 10, 2);
     return 0;
 }
 
-int APS5_VABI sceGnmDrawIndirectMulti(std::uint32_t* cmd, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t maxCount, std::uint32_t stage, std::uint32_t vertexSgpr,
-    std::uint32_t instanceSgpr, std::uint32_t flags) {
-    if (!cmd || size != 11 || !IndirectStage(stage, vertexSgpr, instanceSgpr)) return -1;
-    cmd = Predicated(cmd, OpDrawIndirectMulti, flags, false, {dataOffset, UserSgpr(stage, vertexSgpr), UserSgpr(stage, instanceSgpr), maxCount, DrawIndirectArgsBytes,
-        DrawInitiator(flags, AutoIndex)});
-    Nop(cmd, 3);
+int APS5_VABI sceGnmDrawIndirectMulti(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t dataOffset, std::uint32_t maxCount, std::uint32_t stage, std::uint32_t vertexSgpr, std::uint32_t instanceSgpr, std::uint32_t flags) {
+    if (!cmdbuf || size != 11 || !ValidIndirect(stage, vertexSgpr, instanceSgpr)) return CommandFailed;
+    cmdbuf[0] = Header(0x2c, 6, false, flags & 1);
+    cmdbuf[1] = dataOffset;
+    cmdbuf[2] = IndirectSgpr(stage, vertexSgpr);
+    cmdbuf[3] = IndirectSgpr(stage, instanceSgpr);
+    cmdbuf[4] = maxCount;
+    cmdbuf[5] = DrawIndirectArgsBytes;
+    cmdbuf[6] = (flags & NeoDrawFlags) | AutoIndex;
+    Nop(cmdbuf + 7, 3);
     return 0;
 }
 
-std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState(std::uint32_t* cmd, std::uint32_t size) {
-    return GnmDriver::DrawInitDefaultHardwareState(cmd, size, HardwareState::Sdk100);
+int APS5_VABI sceGnmDrawInitDefaultHardwareState(std::uint32_t* cmdbuf, std::uint32_t size) {
+    return WriteHardwareState(cmdbuf, size, GnmNeo::HardwareState);
 }
 
-std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState200(std::uint32_t* cmd, std::uint32_t size) {
-    return GnmDriver::DrawInitDefaultHardwareState(cmd, size, HardwareState::Neo200);
+int APS5_VABI sceGnmDrawInitDefaultHardwareState200(std::uint32_t* cmdbuf, std::uint32_t size) {
+    return WriteHardwareState(cmdbuf, size, GnmNeo::HardwareState200);
 }
 
-std::uint32_t APS5_VABI sceGnmDrawInitDefaultHardwareState350(std::uint32_t* cmd, std::uint32_t size) {
-    return GnmDriver::DrawInitDefaultHardwareState(cmd, size, HardwareState::Neo350);
+int APS5_VABI sceGnmDrawInitDefaultHardwareState350(std::uint32_t* cmdbuf, std::uint32_t size) {
+    return WriteHardwareState(cmdbuf, size, GnmNeo::HardwareState350);
 }
 
-std::uint32_t APS5_VABI sceGnmDrawInitToDefaultContextState(std::uint32_t* cmd, std::uint32_t size) {
-    return GnmDriver::DrawInitToNeoContextState(cmd, size, false);
+int APS5_VABI sceGnmDrawInitToDefaultContextState(std::uint32_t* cmdbuf, std::uint32_t size) {
+    return WriteContextState(cmdbuf, size, 0x20, GnmNeo::ContextState);
 }
 
-std::uint32_t APS5_VABI sceGnmDrawInitToDefaultContextState400(std::uint32_t* cmd, std::uint32_t size) {
-    return GnmDriver::DrawInitToNeoContextState(cmd, size, true);
+int APS5_VABI sceGnmDrawInitToDefaultContextState400(std::uint32_t* cmdbuf, std::uint32_t size) {
+    return WriteContextState(cmdbuf, size, 0x100, GnmNeo::ContextState400);
 }
 
 int APS5_VABI sceGnmDrawInitToDefaultContextStateInternalCommand(std::uint32_t* cmd, std::uint32_t size) {
@@ -470,9 +536,12 @@ void APS5_VABI sceGnmGpuPaDebugEnter() {
 void APS5_VABI sceGnmGpuPaDebugLeave() {
 }
 
-int APS5_VABI sceGnmInsertDingDongMarker(std::uint32_t* cmd, std::uint32_t size) {
-    if (!cmd || size != 4) return -1;
-    Emit(cmd, OpNop, {0, 0, 0});
+int APS5_VABI sceGnmInsertDingDongMarker(std::uint32_t* cmdbuf, std::uint32_t size) {
+    if (!cmdbuf || size != 4) return CommandFailed;
+    cmdbuf[0] = Header(OpNop, 3);
+    cmdbuf[1] = 0;
+    cmdbuf[2] = 0;
+    cmdbuf[3] = 0;
     return 0;
 }
 
@@ -549,9 +618,11 @@ int APS5_VABI sceGnmRequestFlipAndSubmitDoneForWorkload(std::uint64_t workload, 
     return sceGnmRequestFlipAndSubmitDone(commands, sizeInBytes, handle, index, flipMode, flipArg);
 }
 
-int APS5_VABI sceGnmResetVgtControl(std::uint32_t* cmd, std::uint32_t size) {
-    if (!cmd || size != 3) return -1;
-    Emit(cmd, OpSetUconfigReg, {GnmDriver::NeoVgtParamRegister, GnmDriver::NeoVgtParamDefault});
+int APS5_VABI sceGnmResetVgtControl(std::uint32_t* cmdbuf, std::uint32_t size) {
+    if (!cmdbuf || size != 3) return CommandFailed;
+    cmdbuf[0] = Header(OpSetUconfigReg, 2);
+    cmdbuf[1] = IaMultiVgtParam;
+    cmdbuf[2] = 0x6d007fu;
     return 0;
 }
 
@@ -602,7 +673,7 @@ int APS5_VABI sceGnmSetEmbeddedPsShader(std::uint32_t* cmd, std::uint32_t size, 
     cmd = Emit(cmd, OpSetContextReg, {0x1c4, regs[2], regs[3]});
     cmd = Emit(cmd, OpSetContextReg, {0x1b3, regs[4], regs[5]});
     cmd = SetRegisters(cmd, OpSetContextReg, {{0x1b6, regs[6]}, {0x1b8, regs[7]}, {0x203, regs[8]}, {0x8f, regs[9]}});
-    Nop(cmd, 11);
+    GnmDriver::Nop(cmd, 11);
     return 0;
 }
 
@@ -614,7 +685,7 @@ int APS5_VABI sceGnmSetEmbeddedVsShader(std::uint32_t* cmd, std::uint32_t size, 
     cmd = Emit(cmd, OpSetShReg, {0x48, static_cast<std::uint32_t>(address >> 8), static_cast<std::uint32_t>(address >> 40)});
     cmd = Emit(cmd, OpSetShReg, {0x4a, 0xc0000u, 4});
     cmd = SetRegisters(cmd, OpSetContextReg, {{0x207, 0}, {0x1b1, 0}, {0x1c3, 4}});
-    Nop(cmd, 11);
+    GnmDriver::Nop(cmd, 11);
     return 0;
 }
 
@@ -638,14 +709,16 @@ int APS5_VABI sceGnmSetSpiEnableSqCountersForUnitInstance() {
     return GNM_ERROR_FAILURE;
 }
 
-int APS5_VABI sceGnmSetVgtControl(std::uint32_t* cmd, std::uint32_t size, std::uint32_t primGroupSizeMinusOne, std::uint32_t partialVsWaveMode, std::uint32_t wdSwitchOnlyOnEopMode) {
-    if (!cmd || size != 3 || primGroupSizeMinusOne >= 0x100 || (wdSwitchOnlyOnEopMode | partialVsWaveMode) >= 2) return -1;
-    const std::uint32_t switchOnEop = (wdSwitchOnlyOnEopMode != 0 ? 1u : 0u) << 20;
-    const std::uint32_t switchOnEoi = (wdSwitchOnlyOnEopMode == 0 ? 1u : 0u) << 19;
-    const std::uint32_t value = wdSwitchOnlyOnEopMode != 0
-        ? ((partialVsWaveMode & 1u) << 16) | primGroupSizeMinusOne | switchOnEop | switchOnEoi | 0x40000u
+int APS5_VABI sceGnmSetVgtControl(std::uint32_t* cmdbuf, std::uint32_t size, std::uint32_t primGroupSizeMinusOne, std::uint32_t partialVsWaveMode, std::uint32_t switchOnlyOnEop) {
+    if (!cmdbuf || size != 3 || primGroupSizeMinusOne >= 0x100 || (switchOnlyOnEop | partialVsWaveMode) >= 2) return CommandFailed;
+    const std::uint32_t switchOnEop = static_cast<std::uint32_t>(switchOnlyOnEop != 0) << 20;
+    const std::uint32_t switchOnEoi = static_cast<std::uint32_t>(switchOnlyOnEop == 0) << 19;
+    const std::uint32_t value = switchOnlyOnEop != 0
+        ? ((partialVsWaveMode & 1) << 16) | primGroupSizeMinusOne | switchOnEop | switchOnEoi | 0x40000u
         : (primGroupSizeMinusOne & 0x1cffffu) | switchOnEop | switchOnEoi | 0x50000u;
-    Emit(cmd, OpSetUconfigReg, {GnmDriver::NeoVgtParamRegister, value | 0x600000u});
+    cmdbuf[0] = Header(OpSetUconfigReg, 2);
+    cmdbuf[1] = IaMultiVgtParam;
+    cmdbuf[2] = value | 0x600000u;
     return 0;
 }
 
@@ -690,7 +763,7 @@ int APS5_VABI sceGnmUpdateGsShader(std::uint32_t* cmd, std::uint32_t size, const
     cmd = Update(cmd, 0x2e5, {regs[4]});
     cmd = Update(cmd, 0x29b, {regs[5]});
     cmd = Update(cmd, 0x2e4, {regs[6]});
-    Nop(cmd, 11);
+    GnmDriver::Nop(cmd, 11);
     return 0;
 }
 
@@ -701,7 +774,7 @@ int APS5_VABI sceGnmUpdateHsShader(std::uint32_t* cmd, std::uint32_t size, const
     cmd = Update(cmd, 0x286, {regs[5], regs[6]});
     cmd = Update(cmd, 0x2db, {regs[4]});
     cmd = Update(cmd, 0x2d6, {lsHsConfig});
-    Nop(cmd, 11);
+    GnmDriver::Nop(cmd, 11);
     return 0;
 }
 
@@ -721,7 +794,7 @@ int APS5_VABI sceGnmUpdateVsShader(std::uint32_t* cmd, std::uint32_t size, const
     cmd = Update(cmd, 0x207, {regs[6]});
     cmd = Update(cmd, 0x1b1, {regs[4]});
     cmd = Update(cmd, 0x1c3, {regs[5]});
-    Nop(cmd, 11);
+    GnmDriver::Nop(cmd, 11);
     return 0;
 }
 

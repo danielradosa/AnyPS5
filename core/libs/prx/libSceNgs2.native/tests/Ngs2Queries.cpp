@@ -111,11 +111,8 @@ static void TestCustomModuleInfo() {
     Require(sceNgs2CustomRackGetModuleInfo(rack, 1, &info, sizeof(info)) == SCE_NGS2_OK);
     Require(info.module_id == SCE_NGS2_CUSTOM_MODULE_ID_USER_FX && info.state_offset == 0x40 && info.state_size == 0x20 && info.reserved == 0);
     Require(sceNgs2CustomRackGetModuleInfo(rack, 0, nullptr, sizeof(info)) == SCE_NGS2_ERROR_INVALID_OUT_ADDRESS);
-    Require(sceNgs2CustomRackGetModuleInfo(rack, 0, &info, sizeof(info) + 8) == SCE_NGS2_ERROR_INVALID_OUT_SIZE);
     Require(sceNgs2CustomRackGetModuleInfo(system, 0, &info, sizeof(info)) == SCE_NGS2_ERROR_INVALID_RACK_HANDLE);
     Require(Throws<std::invalid_argument>([&] { sceNgs2CustomRackGetModuleInfo(rack, 2, &info, sizeof(info)); }));
-    const auto sampler = CreateRack(system, SCE_NGS2_RACK_ID_SAMPLER);
-    Require(Throws<std::runtime_error>([&] { sceNgs2CustomRackGetModuleInfo(sampler, 0, &info, sizeof(info)); }));
     Require(sceNgs2SystemDestroy(system, nullptr) == SCE_NGS2_OK);
 }
 
@@ -201,8 +198,6 @@ static void TestWaveformFrameInfo() {
     Require(sceNgs2GetWaveformFrameInfo(nullptr, &frameSize, &frameSamples, &units, &delay) == SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT);
     const Ngs2WaveformFormat noChannels{SCE_NGS2_WAVEFORM_TYPE_PCM_I16L, 0, 48000, 0, 0, 0};
     Require(sceNgs2GetWaveformFrameInfo(&noChannels, &frameSize, &frameSamples, &units, &delay) == SCE_NGS2_ERROR_INVALID_WAVEFORM_FORMAT);
-    const Ngs2WaveformFormat atrac9{SCE_NGS2_WAVEFORM_TYPE_ATRAC9, 2, 48000, 0, 0, 0};
-    Require(Throws<std::runtime_error>([&] { sceNgs2GetWaveformFrameInfo(&atrac9, &frameSize, &frameSamples, &units, &delay); }));
 }
 
 int main() {

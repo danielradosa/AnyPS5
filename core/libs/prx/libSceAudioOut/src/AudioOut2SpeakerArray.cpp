@@ -198,7 +198,7 @@ extern "C" {
 int APS5_VABI sceAudioOut2SpeakerArrayCreate(AudioOut2SpeakerArrayHandle* handle, const void* vbap_params, const void* ambi_params) {
     static_assert(offsetof(AudioOut2SpeakerArrayParam, vbap_correction) == 0x20);
     const auto* params = static_cast<const AudioOut2SpeakerArrayParam*>(vbap_params);
-    if (handle == nullptr || params == nullptr || ambi_params == nullptr || params->speaker_positions == nullptr ||
+    if (handle == nullptr || params == nullptr || params->speaker_positions == nullptr ||
         params->num_speakers == 0 || params->num_speakers > MaxSpeakers || params->buffer == nullptr ||
         params->size < sizeof(SpeakerArray) || reinterpret_cast<std::uintptr_t>(params->buffer) % alignof(SpeakerArray) != 0) {
         APS5_INVALID_ARG_EX;

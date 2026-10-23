@@ -2,10 +2,6 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
-#include <mutex>
-#include <string>
-#include <utility>
-#include <vector>
 #include "SceTypes.hpp"
 #include "prx/libSceCommonDialog/CommonDialog.hpp"
 #include "prx/libc/include/General.hpp"
@@ -29,6 +25,7 @@ static_assert(sizeof(WebBrowserDialogResetCookieParam) == 264);
 
 namespace {
 std::atomic<int> g_status{0};
+std::atomic<bool> g_open{false};
 
 constexpr int COMMON_DIALOG_STATUS_NONE = 0;
 constexpr int COMMON_DIALOG_STATUS_RUNNING = 2;
@@ -36,26 +33,22 @@ constexpr int COMMON_DIALOG_STATUS_FINISHED = 3;
 constexpr int COMMON_DIALOG_RESULT_USER_CANCELED = 1;
 constexpr int COMMON_DIALOG_ERROR_NOT_INITIALIZED = static_cast<int>(0x80B80003u);
 constexpr int COMMON_DIALOG_ERROR_NOT_FINISHED = static_cast<int>(0x80B80005u);
+constexpr int COMMON_DIALOG_ERROR_INVALID_STATE = static_cast<int>(0x80B80006u);
 constexpr int COMMON_DIALOG_ERROR_BUSY = static_cast<int>(0x80B80007u);
 constexpr int COMMON_DIALOG_ERROR_NOT_RUNNING = static_cast<int>(0x80B8000Bu);
 constexpr int COMMON_DIALOG_ERROR_PARAMETER = static_cast<int>(0x80B8000Au);
 constexpr int COMMON_DIALOG_ERROR_ARG_NULL = static_cast<int>(0x80B8000Du);
 
-constexpr std::size_t COOKIE_URL_SIZE = 2048;
-constexpr std::size_t COOKIE_DATA_SIZE = 4096;
+bool ReservedClear(const std::uint8_t (&reserved)[256]) {
+    for (const auto byte : reserved)
+        if (byte != 0) return false;
+    return true;
+}
 
-struct StoredCookie {
-    std::string url;
-    std::string cookie;
-};
-
-std::mutex g_cookieMutex;
-std::vector<StoredCookie> g_cookies;
-
-std::string ReadTerminated(const char* text, std::size_t size, const char* function) {
-    const auto* end = static_cast<const char*>(std::memchr(text, '\0', size));
-    if (end == nullptr) throw std::length_error(std::string(function) + ": string does not end within its buffer");
-    return std::string(text, end);
+bool LengthWithin(const char* text, std::size_t limit) {
+    if (!text) return false;
+    const auto length = strnlen(text, limit);
+    return length != 0 && length < limit;
 }
 }
 
@@ -69,14 +62,21 @@ int APS5_VABI sceWebBrowserDialogInitialize(void) {
 
 int APS5_VABI sceWebBrowserDialogTerminate(void) {
     int expected = 1;
-    if (g_status.compare_exchange_strong(expected, COMMON_DIALOG_STATUS_NONE)) return 0;
+    if (g_status.compare_exchange_strong(expected, COMMON_DIALOG_STATUS_NONE)) {
+        g_open = false;
+        return 0;
+    }
     expected = COMMON_DIALOG_STATUS_FINISHED;
-    if (g_status.compare_exchange_strong(expected, COMMON_DIALOG_STATUS_NONE)) return 0;
+    if (g_status.compare_exchange_strong(expected, COMMON_DIALOG_STATUS_NONE)) {
+        g_open = false;
+        return 0;
+    }
     if (g_status.load() == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
     return COMMON_DIALOG_ERROR_BUSY;
 }
 
 int APS5_VABI sceWebBrowserDialogClose(void) {
+    g_open = false;
     const int status = g_status.load();
     if (status == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
     if (status != COMMON_DIALOG_STATUS_RUNNING) return COMMON_DIALOG_ERROR_NOT_RUNNING;
@@ -110,22 +110,24 @@ int APS5_VABI sceWebBrowserDialogOpen(const void* param) {
  if (status == COMMON_DIALOG_STATUS_RUNNING) return COMMON_DIALOG_ERROR_BUSY;
  if (param == nullptr) return COMMON_DIALOG_ERROR_ARG_NULL;
  g_status = COMMON_DIALOG_STATUS_FINISHED;
+ g_open = true;
  return 0;
 }
 
 int APS5_VABI sceWebBrowserDialogUpdateStatus(void) {
-    return g_status.load();
+    const int status = g_status.load();
+    if (status == COMMON_DIALOG_STATUS_FINISHED) g_open = false;
+    return status;
 }
 
 
 int APS5_VABI sceWebBrowserDialogSetCookie(const WebBrowserDialogCookieParam* param) {
     if (g_status.load() == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
+    if (g_open.load()) return COMMON_DIALOG_ERROR_INVALID_STATE;
     if (param == nullptr) return COMMON_DIALOG_ERROR_ARG_NULL;
-    if (param->size != sizeof(WebBrowserDialogCookieParam)) throw std::invalid_argument("sceWebBrowserDialogSetCookie: unknown param size");
-    if (param->address == nullptr || param->cookie == nullptr) throw std::invalid_argument("sceWebBrowserDialogSetCookie: null url or cookie");
-    StoredCookie stored{ReadTerminated(param->address, COOKIE_URL_SIZE, __func__), ReadTerminated(param->cookie, COOKIE_DATA_SIZE, __func__)};
-    std::lock_guard lock(g_cookieMutex);
-    g_cookies.push_back(std::move(stored));
+    if (param->size != sizeof(WebBrowserDialogCookieParam) || !LengthWithin(param->address, 0x800) || !LengthWithin(param->cookie, 0x1000) ||
+        !ReservedClear(param->reserved))
+        return COMMON_DIALOG_ERROR_PARAMETER;
     return 0;
 }
 
@@ -146,15 +148,15 @@ int APS5_VABI sceWebBrowserDialogOpenForPredeterminedContent(const void* param, 
     if (param == nullptr) return COMMON_DIALOG_ERROR_ARG_NULL;
     if (status == COMMON_DIALOG_STATUS_RUNNING) return COMMON_DIALOG_ERROR_BUSY;
     g_status = COMMON_DIALOG_STATUS_FINISHED;
+    g_open = true;
     return 0;
 }
 
 int APS5_VABI sceWebBrowserDialogResetCookie(const WebBrowserDialogResetCookieParam* param) {
     if (g_status.load() == COMMON_DIALOG_STATUS_NONE) return COMMON_DIALOG_ERROR_NOT_INITIALIZED;
     if (param == nullptr) return COMMON_DIALOG_ERROR_ARG_NULL;
-    if (param->size != sizeof(WebBrowserDialogResetCookieParam)) throw std::invalid_argument("sceWebBrowserDialogResetCookie: unknown param size");
-    std::lock_guard lock(g_cookieMutex);
-    g_cookies.clear();
+    if (g_open.load()) return COMMON_DIALOG_ERROR_INVALID_STATE;
+    if (param->size != sizeof(WebBrowserDialogResetCookieParam) || !ReservedClear(param->reserved)) return COMMON_DIALOG_ERROR_PARAMETER;
     return 0;
 }
 

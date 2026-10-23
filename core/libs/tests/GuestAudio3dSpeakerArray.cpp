@@ -13,6 +13,7 @@ int APS5_VABI sceAudio3dCreateSpeakerArray(Audio3dSpeakerArrayHandle* handle, co
 int APS5_VABI sceAudio3dDeleteSpeakerArray(Audio3dSpeakerArrayHandle handle);
 int APS5_VABI sceAudio3dGetSpeakerArrayMixCoefficients(Audio3dSpeakerArrayHandle handle, Audio3dPosition pos, float spread, float* coefficients, std::uint32_t num_coefficients);
 int APS5_VABI sceAudio3dGetSpeakerArrayMixCoefficients2(Audio3dSpeakerArrayHandle handle, Audio3dPosition pos, float spread, float* coefficients, std::uint32_t num_coefficients, std::uint8_t height_aware, float downmix_spread_radius);
+std::size_t APS5_VABI sceAudioOut2GetSpeakerArrayMemorySize(std::uint32_t num_speakers, std::uint8_t is_3d, std::uint8_t is_ambisonics);
 }
 
 static_assert(sizeof(Audio3dSpeakerArrayParameters) == 0x20);
@@ -70,6 +71,7 @@ std::vector<float> Gains(Audio3dSpeakerArrayHandle handle, std::uint32_t count, 
 }
 
 void CheckMemorySize() {
+    Require(sceAudio3dGetSpeakerArrayMemorySize(4, 1) == sceAudioOut2GetSpeakerArrayMemorySize(4, 1, 0), "memory size forwards to AudioOut2 without ambisonics");
     Require(sceAudio3dGetSpeakerArrayMemorySize(1, 0) > 0, "one speaker needs memory");
     Require(sceAudio3dGetSpeakerArrayMemorySize(16, 1) >= sceAudio3dGetSpeakerArrayMemorySize(1, 0), "sixteen speakers need at least as much memory as one");
     RequireThrows([] { sceAudio3dGetSpeakerArrayMemorySize(0, 0); }, "the size of an array without speakers must throw");

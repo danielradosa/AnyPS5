@@ -64,6 +64,7 @@ int main() {
 
     Context context;
     Require(scePthreadBarrierInit(&context.barrier, &attr, 0, "zero") == SCE_KERNEL_ERROR_EINVAL);
+    Require(scePthreadBarrierInit(&context.barrier, &attr, 0x80000000u, "over") == SCE_KERNEL_ERROR_EINVAL && context.barrier == nullptr);
     Require(scePthreadBarrierInit(nullptr, &attr, WAITERS, "null") == SCE_KERNEL_ERROR_EINVAL);
     Require(scePthreadBarrierInit(&context.barrier, &attr, WAITERS, "barrier") == 0 && context.barrier != nullptr);
     Require(scePthreadBarrierattrDestroy(&attr) == 0 && attr == nullptr);
