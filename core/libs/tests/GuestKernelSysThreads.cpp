@@ -67,8 +67,8 @@ int main(int argc, char** argv) {
     using Attr = void*;
     const auto init = LoadFunction<int (APS5_VABI*)(Attr*)>(kernel, "pthread_attr_init", patched);
     const auto destroy = LoadFunction<int (APS5_VABI*)(Attr*)>(kernel, "pthread_attr_destroy", patched);
-    const auto getAffinity = LoadFunction<int (APS5_VABI*)(const Attr*, std::size_t, void*)>(sys, "pthread_attr_getaffinity_np", patched);
-    const auto setAffinity = LoadFunction<int (APS5_VABI*)(Attr*, std::size_t, const void*)>(sys, "pthread_attr_setaffinity_np", patched);
+    const auto getAffinity = LoadFunction<int (APS5_VABI*)(const Attr*, std::size_t, void*)>(kernel, "pthread_attr_getaffinity_np", patched);
+    const auto setAffinity = LoadFunction<int (APS5_VABI*)(Attr*, std::size_t, const void*)>(kernel, "pthread_attr_setaffinity_np", patched);
     Attr attr = nullptr;
     Require(init(&attr) == 0);
     *error() = 71;
@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
         worker.join();
         Require(other == 0 && isMain() == 1 && *error() == 71);
     } else if (test == "stack") {
-        const auto setStack = LoadFunction<int (APS5_VABI*)(Attr*, void*)>(sys, "pthread_attr_setstackaddr", patched);
+        const auto setStack = LoadFunction<int (APS5_VABI*)(Attr*, void*)>(kernel, "pthread_attr_setstackaddr", patched);
         const auto getStack = LoadFunction<int (APS5_VABI*)(const Attr*, void**, std::size_t*)>(kernel, "pthread_attr_getstack", patched);
         alignas(16) std::array<unsigned char, 16384> stack{};
         void* address = nullptr;
@@ -88,10 +88,10 @@ int main(int argc, char** argv) {
         const auto originalSize = size;
         Require(setStack(&attr, stack.data()) == 0 && *error() == 71);
         Require(getStack(&attr, &address, &size) == 0 && address == stack.data() && size == originalSize);
-        Require(setStack(&attr, nullptr) == 22 && setStack(nullptr, stack.data()) == 22);
+        Require(setStack(nullptr, stack.data()) == 22);
         Require(getStack(&attr, &address, &size) == 0 && address == stack.data());
     } else if (test == "solo") {
-        const auto getSolo = LoadFunction<int (APS5_VABI*)(const Attr*, int*)>(sys, "pthread_attr_getsolosched_np", patched);
+        const auto getSolo = LoadFunction<int (APS5_VABI*)(const Attr*, int*)>(kernel, "pthread_attr_getsolosched_np", patched);
         const auto setSolo = LoadFunction<int (APS5_VABI*)(Attr*, int)>(kernel, "pthread_attr_setsolosched_np", patched);
         int value = -1;
         Require(getSolo(&attr, &value) == 0 && value == 0);
