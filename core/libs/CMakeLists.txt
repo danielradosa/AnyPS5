@@ -630,6 +630,8 @@ if(BUILD_TESTING)
     if(WIN32)
         set_tests_properties(guest_np_dialogs PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceNpSnsFacebookDialog>")
+    endif()
+
     add_test_executable(guest_np_ps4_imports_tests tests/GuestNpPs4Imports.cpp)
     target_include_directories(guest_np_ps4_imports_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(guest_np_ps4_imports_tests PRIVATE libSceNpMatching2 libSceNpSignaling libSceNpTrophy libc)

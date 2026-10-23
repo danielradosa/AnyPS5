@@ -464,6 +464,8 @@ if(BUILD_TESTING)
     add_test(NAME guest_rand48 COMMAND guest_rand48_tests)
     if(WIN32)
         set_tests_properties(guest_rand48 PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test_executable(guest_set_env_tests ${LIBS_INCLUDE_DIR}/tests/GuestSetEnv.cpp)
     target_include_directories(guest_set_env_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_set_env_tests PRIVATE libc ${CMAKE_DL_LIBS})
@@ -1402,6 +1404,9 @@ if(BUILD_TESTING)
     if(WIN32)
         set_tests_properties(guest_hardware_concurrency PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
 add_test_executable(guest_c_locale_helpers_tests EXCLUDE_FROM_ALL ${LIBS_INCLUDE_DIR}/tests/GuestCLocaleHelpers.cpp)
 target_include_directories(guest_c_locale_helpers_tests PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(guest_c_locale_helpers_tests PRIVATE libc)
