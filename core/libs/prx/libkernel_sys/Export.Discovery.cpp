@@ -459,11 +459,6 @@ int APS5_VABI sceKernelCloseEport(void) {
     return static_cast<int>(0x80020001);
 }
 
-int APS5_VABI sceKernelCloseEventFlag(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceKernelCloseSema(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
