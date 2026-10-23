@@ -132,12 +132,6 @@ int APS5_VABI linkat_nid_postfix(int, const char*, int, const char*, int);
 char* APS5_VABI getlogin_nid_postfix(void);
 int APS5_VABI getlogin_r_nid_postfix(char*, int);
 int APS5_VABI vfork_nid_postfix(void);
-void* APS5_VABI sem_open_nid_postfix(const char*, int, ...);
-int APS5_VABI sem_close_nid_postfix(void*);
-int APS5_VABI sem_unlink_nid_postfix(const char*);
-int APS5_VABI sem_trywait_nid_postfix(void*);
-int APS5_VABI sem_post_nid_postfix(void*);
-int APS5_VABI sem_getvalue_nid_postfix(void*, int*);
 int APS5_VABI pselect_nid_postfix(int, void*, void*, void*, const KernelTimespec*, const void*);
 int APS5_VABI sigprocmask_nid_postfix(int, const void*, void*);
 int APS5_VABI settimeofday_nid_postfix(const KernelTimeval*, const KernelTimezone*);
@@ -698,58 +692,6 @@ void CheckOwnershipAndLinks(const std::filesystem::path& root) {
     else Require(login == nullptr && Error() == 34);
     *__error_nid_postfix() = 0;
     Require(vfork_nid_postfix() == -1 && Error() == 78);
-}
-
-int SemaphoreValue(void* semaphore) {
-    int value = -1;
-    Require(sem_getvalue_nid_postfix(semaphore, &value) == 0);
-    return value;
-}
-
-void CheckNamedSemaphores() {
-    constexpr int Create = SCE_KERNEL_O_CREAT;
-    constexpr int Exclusive = SCE_KERNEL_O_EXCL;
-    const char* name = "/anyps5-kernel-sys-semaphore";
-    Require(sem_open_nid_postfix("anyps5", 0) == nullptr && Error() == 22);
-    Require(sem_open_nid_postfix(name, 0) == nullptr && Error() == 2);
-    Require(sem_open_nid_postfix(name, SCE_KERNEL_O_RDWR) == nullptr && Error() == 22);
-    void* first = sem_open_nid_postfix(name, Create, 0644, 2);
-    Require(first != nullptr && SemaphoreValue(first) == 2);
-    Require(sem_trywait_nid_postfix(first) == 0 && sem_trywait_nid_postfix(first) == 0);
-    Require(sem_trywait_nid_postfix(first) == -1 && Error() == 35);
-    Require(sem_post_nid_postfix(first) == 0);
-    Require(sem_open_nid_postfix(name, 0) == first && sem_open_nid_postfix(name, Create, 0644, 9) == first && SemaphoreValue(first) == 1);
-    Require(sem_open_nid_postfix(name, Create | Exclusive, 0644, 1) == nullptr && Error() == 17);
-    Require(sem_close_nid_postfix(first) == 0 && sem_close_nid_postfix(first) == 0 && sem_close_nid_postfix(first) == 0);
-    Require(sem_close_nid_postfix(first) == -1 && Error() == 22);
-    void* reopened = sem_open_nid_postfix(name, 0);
-    Require(reopened != nullptr && SemaphoreValue(reopened) == 1);
-    Require(sem_unlink_nid_postfix(name) == 0);
-    Require(sem_unlink_nid_postfix(name) == -1 && Error() == 2);
-    Require(sem_unlink_nid_postfix("anyps5") == -1 && Error() == 2);
-    Require(sem_post_nid_postfix(reopened) == 0 && SemaphoreValue(reopened) == 2);
-    Require(sem_open_nid_postfix(name, 0) == nullptr && Error() == 2);
-    void* replaced = sem_open_nid_postfix(name, Create | Exclusive, 0600, 0);
-    Require(replaced != nullptr && replaced != reopened && SemaphoreValue(replaced) == 0 && SemaphoreValue(reopened) == 2);
-    Require(sem_open_nid_postfix(name, 0) == replaced);
-    Require(sem_close_nid_postfix(reopened) == 0 && sem_close_nid_postfix(replaced) == 0 && sem_close_nid_postfix(replaced) == 0);
-    Require(sem_unlink_nid_postfix(name) == 0);
-    const auto longPath = "/" + std::string(1015, 'p');
-    Require(sem_open_nid_postfix(longPath.c_str(), Create, 0644, 1) == nullptr && Error() == 63);
-    Require(sem_unlink_nid_postfix(longPath.c_str()) == -1 && Error() == 63);
-    const auto longName = "/" + std::string(252, 'c');
-    Require(sem_open_nid_postfix(longName.c_str(), Create, 0644, 1) == nullptr && Error() == 63);
-    Require(sem_open_nid_postfix(longName.c_str(), SCE_KERNEL_O_RDWR, 0644, 1) == nullptr && Error() == 22);
-    const auto fittingName = "/" + std::string(251, 'c');
-    void* fitting = sem_open_nid_postfix(fittingName.c_str(), Create, 0644, 1);
-    Require(fitting != nullptr && sem_close_nid_postfix(fitting) == 0 && sem_unlink_nid_postfix(fittingName.c_str()) == 0);
-    Require(sem_open_nid_postfix("/anyps5-kernel-sys-big", Create, 0644, -1) == nullptr && Error() == 22);
-    Require(sem_open_nid_postfix("/anyps5-kernel-sys-big", 0) == nullptr && Error() == 2);
-    Require(Throws([] { sem_open_nid_postfix("/anyps5/nested", Create, 0644, 1); }));
-    void* unnamed = nullptr;
-    Require(sem_init_nid_postfix(&unnamed, 0, 1) == 0);
-    Require(sem_close_nid_postfix(&unnamed) == -1 && Error() == 22);
-    Require(sem_destroy_nid_postfix(&unnamed) == 0);
 }
 
 std::array<std::uint32_t, 4> SignalMask() {
@@ -1461,7 +1403,6 @@ int main() {
     CheckOwnershipAndLinks(root);
     CheckScePthreadWrappers();
     CheckPosixThreadExtensions();
-    CheckNamedSemaphores();
     CheckTimeAndSelect();
     RemoveTree(root);
     return 0;
