@@ -48,7 +48,6 @@
 
 extern "C" int* APS5_VABI __error_nid_postfix();
 extern "C" int APS5_VABI getpid_nid_postfix();
-extern "C" int APS5_VABI getlogin_r_nid_postfix(char* output, int size);
 
 namespace {
 #ifdef _WIN32
@@ -88,7 +87,6 @@ constexpr int GuestAtFdcwd = -100;
 constexpr int GuestAtRemovedir = 0x800;
 constexpr std::size_t GuestPathMax = 1024;
 constexpr std::size_t GuestNameMax = 255;
-constexpr std::size_t GuestLoginNameMax = 33;
 constexpr std::size_t GuestSignalSetWords = 4;
 constexpr int GuestSigSetmask = 3;
 constexpr std::size_t GuestTermiosBytes = 44;
@@ -496,21 +494,6 @@ int APS5_VABI fork_nid_postfix(void) {
 
 int APS5_VABI vfork_nid_postfix(void) {
     return static_cast<int>(Fail(GuestEnosys));
-}
-
-char* APS5_VABI getlogin_nid_postfix(void) {
-    static std::mutex lock;
-    static char name[GuestLoginNameMax];
-    static bool valid = false;
-    const std::lock_guard guard(lock);
-    if (!valid) {
-        if (const int error = getlogin_r_nid_postfix(name, sizeof(name))) {
-            *__error_nid_postfix() = error;
-            return nullptr;
-        }
-        valid = true;
-    }
-    return name[0] != '\0' ? name : nullptr;
 }
 
 int APS5_VABI setsid_nid_postfix(void) {
