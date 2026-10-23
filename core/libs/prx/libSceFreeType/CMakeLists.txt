@@ -7,6 +7,7 @@ add_library(libSceFreeType SHARED EXCLUDE_FROM_ALL src/Geometry.cpp
         src/GuestObjects.cpp
         src/Names.cpp
         src/Trigonometry.cpp
+        src/OutlineDecompose.cpp
 )
 if(BUILD_TESTING)
     add_test_executable(guest_freetype_variant_tests ${LIBS_INCLUDE_DIR}/tests/GuestFreeTypeVariants.cpp)
