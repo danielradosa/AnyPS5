@@ -41,7 +41,7 @@ const char* APS5_VABI RAND_file_name_nid_postfix(char* buffer, std::size_t size)
 }
 
 void* APS5_VABI CRYPTO_malloc_nid_postfix(int count, const char*, int) {
-    if (count <= 0) NotImplemented_nid_no_patch("CRYPTO_malloc: zero or negative size");
+    if (count <= 0) return nullptr;
     return malloc_nid_postfix(static_cast<std::size_t>(count));
 }
 
