@@ -1,5 +1,9 @@
 # libSceConvertKeycode technical debt
 
+### Silent stubs
+
+- [sceConvertKeycodeGetCharacterFromKeyboardData](../../../core/libs/prx/libSceConvertKeycode/Export.cpp) returns `0x80BC0031` (invalid address) for every call without reading the keyboard data or writing a character; the console behaviour is unverified.
+
 ### Functional
 
 - [sceConvertKeycodeGetVirtualKeycode](../../../core/libs/prx/libSceConvertKeycode/Export.cpp) and `sceConvertKeycodeGetCharacter`: layouts 31–39 throw until the guest platform and compiled SDK version are exposed. `GetVirtualKeycode` also throws for version-dependent Y/Z mappings in layouts 2, 3 and 12. Mapping tables and modifier behavior are recovered; no SDK version is guessed.
