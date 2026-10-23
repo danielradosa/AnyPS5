@@ -1130,7 +1130,8 @@ namespace {
 
 // APS5_VRAM_DRAW_INPUTS: a vertex or index copy that will be kept for reuse goes to device-local host-visible
 // memory while the live total stays under the cap and the heap stays the margin below its budget (re-read at
-// most every 100 ms); null = make a host copy as before.
+// most every 100 ms); null = CopyDrawInput's default placement (a vertex copy in BAR snapshot memory, an index copy
+// in host memory).
 std::shared_ptr<Buffer> VramDrawInput(const Context& context, std::size_t bytes, VkBufferUsageFlags usage) {
     const auto cap = BufferPool::VramDrawInputCap();
     if (cap == 0 || context.memoryProperties2 == nullptr || context.physical == VK_NULL_HANDLE) return {};
@@ -1164,6 +1165,9 @@ std::shared_ptr<Buffer> VramDrawInput(const Context& context, std::size_t bytes,
     } catch (...) {
         return {};
     }
+    // Buffer places a mapped device-local request in host memory when the heap budget, the buffer's memory types or
+    // a refused allocation say so (upstream #9712); such a copy is a plain host copy, outside the cap.
+    if ((made->Properties() & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0) return std::shared_ptr<Buffer>(made.release());
     BufferPool::VramDrawInputBytes += bytes;
     return std::shared_ptr<Buffer>(made.release(), [bytes](Buffer* gone) {
         BufferPool::VramDrawInputBytes -= bytes;
@@ -1221,10 +1225,13 @@ DrawInputCopy CopyDrawInput(const Context& context, Recorder* recorder, std::uin
             return copy;
         }
     }
+    // Our opt-in APS5_VRAM_DRAW_INPUTS path (VramDrawInput) takes a kept copy first; anything it declines takes the
+    // snapshot memory (upstream #9712): a vertex copy goes to resizable BAR memory unless APS5_NO_BAR_SNAPSHOTS=1, an
+    // index copy stays in host memory so the highest-index and restart scans read the copy the draw binds.
     const VkBufferUsageFlags usage = use == Recorder::SnapshotUse::Vertex ? VK_BUFFER_USAGE_VERTEX_BUFFER_BIT : VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     if (copy.generation != 0) copy.buffer = VramDrawInput(context, bytes, usage);
-    copy.vram = copy.buffer != nullptr;
-    if (!copy.vram) copy.buffer = std::make_shared<Buffer>(context, bytes, usage);
+    if (copy.buffer == nullptr) copy.buffer = use == Recorder::SnapshotUse::Vertex ? std::make_shared<Buffer>(context, bytes, usage, context.SnapshotProperties()) : std::make_shared<Buffer>(context, bytes, usage);
+    copy.vram = (copy.buffer->Properties() & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
     GuestMemory::Read(address, copy.buffer->Bytes(), alignment);
     return copy;
 }
