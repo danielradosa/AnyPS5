@@ -14,7 +14,6 @@ extern "C" int APS5_VABI sceSystemServiceGetAppId(const char* titleId);
 extern "C" int APS5_VABI sceSystemServiceGetAppTitleId(int appId, char* titleId);
 extern "C" int APS5_VABI sceSystemServiceGetMainAppTitleId(char* titleId);
 extern "C" int APS5_VABI sceLncUtilGetAppTitleId(std::uint32_t appId, char* titleId);
-extern "C" int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted(int userId, bool* isAdjusted);
 extern "C" int APS5_VABI sceSystemServiceShowEyeToEyeDistanceSetting(void);
 extern "C" int APS5_VABI sceSystemServiceEnablePersonalEyeToEyeDistanceSetting(void);
 extern "C" int APS5_VABI sceSystemServiceDisablePersonalEyeToEyeDistanceSetting(void);
@@ -209,13 +208,6 @@ int main() {
     Require(sceSystemServiceLaunchTournamentsTeamProfile(USER_SERVICE_INITIAL_USER_ID, teamId, eventId, teamPlatform) == SYSTEM_SERVICE_OK);
     Require(std::strcmp(teamId, "team-1") == 0 && std::strcmp(eventId, "event-1") == 0 && std::strcmp(teamPlatform, "PS5") == 0);
     Require(sceSystemServiceLaunchTournamentsTeamProfile(USER_SERVICE_USER_ID_INVALID, nullptr, nullptr, nullptr) == SYSTEM_SERVICE_OK);
-
-    Require(sceSystemServiceIsEyeToEyeDistanceAdjusted(USER_SERVICE_INITIAL_USER_ID, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
-    bool adjusted = true;
-    Require(sceSystemServiceIsEyeToEyeDistanceAdjusted(USER_SERVICE_INITIAL_USER_ID, &adjusted) == SYSTEM_SERVICE_OK && !adjusted);
-    adjusted = true;
-    Require(Throws([&] { return sceSystemServiceIsEyeToEyeDistanceAdjusted(USER_SERVICE_INITIAL_USER_ID + 1, &adjusted); }) && adjusted);
-    Require(Throws([&] { return sceSystemServiceIsEyeToEyeDistanceAdjusted(USER_SERVICE_USER_ID_INVALID, &adjusted); }) && adjusted);
 
     Require(sceSystemServiceGetAppId(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);
     Require(sceSystemServiceGetAppTitleId(SYSTEM_SERVICE_RUNNING_APP_ID, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER);

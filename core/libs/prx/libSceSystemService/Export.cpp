@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -75,8 +76,17 @@ ConsoleTimeZone HostTimeZone() {
     return {static_cast<int>(offset.count()) - summerMinutes, summer};
 }
 
+std::mutex appSuspendBlockMutex;
+int appSuspendBlocks = 0;
+
 int WriteStatus(bool* status, bool value, const char* function) {
     if (status == nullptr) NotImplemented_nid_no_patch((std::string(function) + " with a null output").c_str());
+    *status = value;
+    return SYSTEM_SERVICE_OK;
+}
+
+int WriteStatusOrRefuse(bool* status, bool value, int nullOutputError) {
+    if (status == nullptr) return nullOutputError;
     *status = value;
     return SYSTEM_SERVICE_OK;
 }
@@ -329,6 +339,21 @@ int APS5_VABI sceSystemServiceGetStatus(SystemServiceStatus* status) {
  return SYSTEM_SERVICE_OK;
 }
 
+int APS5_VABI sceLncUtilBlockAppSuspend(const char* reason) {
+    if (reason == nullptr) NotImplemented_nid_no_patch("sceLncUtilBlockAppSuspend with a null reason");
+    std::lock_guard lock(appSuspendBlockMutex);
+    ++appSuspendBlocks;
+    return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceLncUtilUnblockAppSuspend(const char* reason) {
+    std::lock_guard lock(appSuspendBlockMutex);
+    if (appSuspendBlocks == 0) return SCE_KERNEL_ERROR_EBUSY;
+    if (reason == nullptr) NotImplemented_nid_no_patch("sceLncUtilUnblockAppSuspend with a null reason while a block is held");
+    --appSuspendBlocks;
+    return SYSTEM_SERVICE_OK;
+}
+
 int APS5_VABI sceLncUtilEnableSuspendNotification() {
     return SYSTEM_SERVICE_OK;
 }
@@ -346,12 +371,15 @@ int APS5_VABI sceSystemServiceDisableSuspendNotification() {
 }
 
 int APS5_VABI sceShellCoreUtilGetRemotePlayStatus(bool* active) {
-    return WriteStatus(active, false, __func__);
+    return WriteStatusOrRefuse(active, false, SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
 }
 
 int APS5_VABI sceSystemServiceGetRemoteplayStatus(bool* active) {
-    if (active == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
     return sceShellCoreUtilGetRemotePlayStatus(active);
+}
+
+int APS5_VABI sceShellCoreUtilGetSharePlayStatus(bool* active) {
+    return WriteStatusOrRefuse(active, false, SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
 }
 
 bool APS5_VABI sceShellCoreUtilIsGameLiveStreamingOnAir() {
@@ -360,6 +388,10 @@ bool APS5_VABI sceShellCoreUtilIsGameLiveStreamingOnAir() {
 
 bool APS5_VABI sceSystemServiceIsGameLiveStreamingOnAir() {
     return sceShellCoreUtilIsGameLiveStreamingOnAir();
+}
+
+int APS5_VABI sceShellCoreUtilGetGameLiveStreamingStatus(bool* active) {
+    return WriteStatusOrRefuse(active, sceShellCoreUtilIsGameLiveStreamingOnAir(), SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
 }
 
 bool APS5_VABI sceLncUtilIsShellUiFgAndGameBgCpuMode() {
@@ -386,6 +418,24 @@ bool APS5_VABI sceSystemStateMgrIsShellUIShutdownInProgress() {
     return false;
 }
 
+int APS5_VABI sceShellCoreUtilGetSocialScreenStatus(bool* active) {
+    return WriteStatus(active, false, __func__);
+}
+
+int APS5_VABI sceShellCoreUtilIsEyeToEyeDistanceAdjusted(std::uint32_t userId, std::uint8_t* adjusted) {
+    if (adjusted == nullptr) NotImplemented_nid_no_patch("sceShellCoreUtilIsEyeToEyeDistanceAdjusted with a null output");
+    if (userId != static_cast<std::uint32_t>(USER_SERVICE_INITIAL_USER_ID)) {
+        NotImplemented_nid_no_patch("sceShellCoreUtilIsEyeToEyeDistanceAdjusted for a user other than the logged-in user");
+    }
+    *adjusted = 0;
+    return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted(std::uint32_t userId, std::uint8_t* adjusted) {
+    if (adjusted == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
+    return sceShellCoreUtilIsEyeToEyeDistanceAdjusted(userId, adjusted);
+}
+
 bool APS5_VABI sceSystemStateMgrIsBdDriveReady() {
     return false;
 }
@@ -396,6 +446,10 @@ bool APS5_VABI sceShellCoreUtilIsUsbMassStorageMounted(std::uint32_t) {
 
 bool APS5_VABI sceShellCoreUtilIsExternalStorageAppMoveInProgress() {
     return false;
+}
+
+int APS5_VABI sceLncUtilIsPs2Emu(bool* emulated) {
+    return WriteStatusOrRefuse(emulated, false, LNC_UTIL_ERROR_NULL_OUTPUT);
 }
 
 int APS5_VABI sceSystemServiceHideSplashScreen(void) {
@@ -587,15 +641,6 @@ int APS5_VABI sceLncUtilGetAppTitleId(std::uint32_t appId, char* titleId) {
  }
  if (titleId == nullptr) throw std::runtime_error("sceLncUtilGetAppTitleId: null title ID buffer");
  WriteRunningTitleId(titleId);
- return SYSTEM_SERVICE_OK;
-}
-
-int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted(int userId, bool* isAdjusted) {
- if (isAdjusted == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
- if (userId != USER_SERVICE_INITIAL_USER_ID) {
-  throw std::runtime_error("sceSystemServiceIsEyeToEyeDistanceAdjusted: user " + std::to_string(userId) + " is not the signed-in user");
- }
- *isAdjusted = false;
  return SYSTEM_SERVICE_OK;
 }
 

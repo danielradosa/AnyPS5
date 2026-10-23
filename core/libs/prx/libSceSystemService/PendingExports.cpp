@@ -276,11 +276,6 @@ int APS5_VABI sceLncUtilAddLocalProcess(std::int32_t appId, const char* path, co
     return 0;
 }
 
-int APS5_VABI sceLncUtilBlockAppSuspend(const char* reason) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceLncUtilBlockingGetEventForDaemon(LncDaemonEvent* event, std::uint64_t receiveArgument) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -466,11 +461,6 @@ int APS5_VABI sceLncUtilIsHostBoot(std::int32_t appId, bool* hostBoot) {
     return 0;
 }
 
-int APS5_VABI sceLncUtilIsPs2Emu(bool* emulated) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceLncUtilIsSpeculativeLaunch(std::int32_t appId, bool* speculative) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -612,11 +602,6 @@ int APS5_VABI sceLncUtilTerminate() {
 }
 
 int APS5_VABI sceLncUtilTryBlockAppSuspend(const char* reason) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceLncUtilUnblockAppSuspend(const char* reason) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -966,11 +951,6 @@ int APS5_VABI sceShellCoreUtilGetFsckProgress(const char* titleId, std::uint32_t
     return 0;
 }
 
-int APS5_VABI sceShellCoreUtilGetGameLiveStreamingStatus(bool* active) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 bool APS5_VABI sceShellCoreUtilGetGnmCompositorOnScreenProfilerFlag() {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -1091,16 +1071,6 @@ int APS5_VABI sceShellCoreUtilGetRunLevel() {
     return 0;
 }
 
-int APS5_VABI sceShellCoreUtilGetSharePlayStatus(bool* active) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceShellCoreUtilGetSocialScreenStatus(bool* active) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceShellCoreUtilGetSplashScreenState(std::int32_t appId) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -1202,11 +1172,6 @@ bool APS5_VABI sceShellCoreUtilIsBgmCpuBudgetAcquired() {
 }
 
 bool APS5_VABI sceShellCoreUtilIsBgmCpuBudgetAvailable() {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceShellCoreUtilIsEyeToEyeDistanceAdjusted(std::uint32_t userId, std::uint8_t* adjusted) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
