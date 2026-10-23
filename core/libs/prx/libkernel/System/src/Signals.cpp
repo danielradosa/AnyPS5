@@ -652,6 +652,17 @@ int APS5_VABI kill_nid_postfix(int pid, int guest) {
     if (pid != self && pid != 0 && pid != -self) { *__error_nid_postfix() = 3; return -1; }
     return guest == 0 ? 0 : raise_nid_postfix(guest);
 }
+int APS5_VABI GuestSigqueue_nid_no_patch(int pid, int guest, void* value) {
+    if (static_cast<unsigned>(guest) > MaxSignal || pid <= 0) { *__error_nid_postfix() = 22; return -1; }
+    const int self = getpid_nid_postfix();
+    if (pid != self) { *__error_nid_postfix() = 3; return -1; }
+    if (guest == 0) return 0;
+    const GuestSignalRecord record{GuestSiQueue, self, reinterpret_cast<std::uintptr_t>(value), {0, 0}, 0, nullptr};
+    return GuestSignalQueue_nid_no_patch(guest, &record);
+}
+int APS5_VABI sigqueue_nid_disambig1_nid_postfix(int pid, int guest, void* value) {
+    return GuestSigqueue_nid_no_patch(pid, guest, value);
+}
 int APS5_VABI killpg_nid_postfix(int pgrp, int guest) {
     if (pgrp < 0) { *__error_nid_postfix() = 22; return -1; }
     return kill_nid_postfix(-pgrp, guest);
