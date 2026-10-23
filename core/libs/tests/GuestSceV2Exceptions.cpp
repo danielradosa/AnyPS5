@@ -7,7 +7,7 @@
 
 struct TypeRecord { const void* vtable; const char* name; const TypeRecord* base; };
 struct Category { const void* const* vtable; };
-struct ErrorCode { int value; const Category* category; };
+struct ErrorCode { int reserved; int value; const Category* category; };
 struct Exception { const void* const* vtable; const char* message; };
 struct SystemError { Exception base; ErrorCode code; };
 static_assert(sizeof(Exception) == 16 && sizeof(SystemError) == 32);
@@ -155,7 +155,7 @@ static void CheckCopies() {
 
     SystemError error {};
     _ZNSt13__sce_cxxvers16_Error_exceptionC2EPKc_nid_postfix(&error.base, "system copy");
-    error.code = {5, _ZSt16generic_categoryv_nid_postfix()};
+    error.code = {0, 5, _ZSt16generic_categoryv_nid_postfix()};
     inspectBytes = sizeof(SystemError);
     SceV2CatchType = &runtimeError;
     SceV2OtherType = &logicError;

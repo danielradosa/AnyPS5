@@ -129,13 +129,10 @@ ExceptionObject* Assign(ExceptionObject* object, const ExceptionObject* source) 
 }
 
 struct CategoryObject { const void* vtable; };
-struct ErrorCode {
-    std::int32_t value;
-    std::int32_t value_high;
-    const CategoryObject* category;
-};
+struct ErrorCode { int reserved; int value; const CategoryObject* category; };
 struct SystemErrorObject { ExceptionObject base; ErrorCode code; };
-static_assert(sizeof(ErrorCode) == 16 && sizeof(SystemErrorObject) == 32 && offsetof(SystemErrorObject, code) == 16);
+static_assert(sizeof(ErrorCode) == 16 && offsetof(ErrorCode, value) == 4 && offsetof(ErrorCode, category) == 8);
+static_assert(sizeof(SystemErrorObject) == 32 && offsetof(SystemErrorObject, code) == 16);
 struct CppError { int value; const char* message; };
 
 static const char* GenericErrorMessage(int value) {
@@ -224,13 +221,15 @@ static const char* GenericErrorMessage(int value) {
 
 const TypeRecord ErrorCategoryType {ClassTypeVtable + 2, "St14error_category", nullptr};
 const TypeRecord GenericCategoryType {SingleTypeVtable + 2, "St23_Generic_error_category", &ErrorCategoryType};
-static void APS5_VABI GenericCategoryDestroy_nid_no_patch(CategoryObject*) {}
-static void APS5_VABI GenericCategoryDelete_nid_no_patch(CategoryObject*) {
-    throw std::invalid_argument("std::_Generic_error_category: the generic category object is not heap allocated");
+const TypeRecord SystemCategoryType {SingleTypeVtable + 2, "St22_System_error_category", &ErrorCategoryType};
+static void APS5_VABI CategoryDestroy_nid_no_patch(CategoryObject*) {}
+static void APS5_VABI CategoryDelete_nid_no_patch(CategoryObject*) {
+    throw std::invalid_argument("std::error_category: the generic and system category objects are not heap allocated");
 }
 static const char* APS5_VABI GenericCategoryName_nid_no_patch(const CategoryObject*) { return "generic"; }
-static GuestLocale::String* APS5_VABI GenericCategoryMessage_nid_no_patch(GuestLocale::String* result, const CategoryObject*, int value) {
-    if (!result) throw std::invalid_argument("std::_Generic_error_category::message: null result");
+static const char* APS5_VABI SystemCategoryName_nid_no_patch(const CategoryObject*) { return "system"; }
+static GuestLocale::String* APS5_VABI CategoryMessage_nid_no_patch(GuestLocale::String* result, const CategoryObject*, int value) {
+    if (!result) throw std::invalid_argument("std::error_category::message: null result");
     const char* message = GenericErrorMessage(value);
     if (!message) message = "unknown error";
     const auto length = std::strlen(message);
@@ -243,59 +242,34 @@ static GuestLocale::String* APS5_VABI GenericCategoryMessage_nid_no_patch(GuestL
     result->capacity = capacity;
     return result;
 }
-static ErrorCode APS5_VABI GenericCategoryCondition_nid_no_patch(const CategoryObject* self, int value) {
-    return {value, value, self};
+static ErrorCode APS5_VABI CategoryCondition_nid_no_patch(const CategoryObject* self, int value) { return {0, value, self}; }
+static bool APS5_VABI CategoryEquivalentCondition_nid_no_patch(const CategoryObject* self, int value, const ErrorCode* condition) {
+    using Condition = ErrorCode (APS5_VABI *)(const CategoryObject*, int);
+    const auto mapped = reinterpret_cast<Condition>(static_cast<const void* const*>(self->vtable)[4])(self, value);
+    return condition->category == mapped.category && condition->value == mapped.value;
 }
-static bool APS5_VABI GenericCategoryEquivalentCondition_nid_no_patch(const CategoryObject* self, int value, const ErrorCode* condition) {
-    if (!condition) return false;
-    return condition->category == self && (condition->value == value || condition->value_high == value);
-}
-static bool APS5_VABI GenericCategoryEquivalentCode_nid_no_patch(const CategoryObject* self, const ErrorCode* code, int value) {
-    if (!code) return false;
-    return code->category == self && (code->value == value || code->value_high == value);
+static bool APS5_VABI CategoryEquivalentCode_nid_no_patch(const CategoryObject* self, const ErrorCode* code, int value) {
+    return code->category == self && code->value == value;
 }
 const void* const GenericCategoryVtable[] {
     nullptr, &GenericCategoryType,
-    reinterpret_cast<const void*>(GenericCategoryDestroy_nid_no_patch), reinterpret_cast<const void*>(GenericCategoryDelete_nid_no_patch),
-    reinterpret_cast<const void*>(GenericCategoryName_nid_no_patch), reinterpret_cast<const void*>(GenericCategoryMessage_nid_no_patch),
-    reinterpret_cast<const void*>(GenericCategoryCondition_nid_no_patch),
-    reinterpret_cast<const void*>(GenericCategoryEquivalentCondition_nid_no_patch),
-    reinterpret_cast<const void*>(GenericCategoryEquivalentCode_nid_no_patch)
+    reinterpret_cast<const void*>(CategoryDestroy_nid_no_patch), reinterpret_cast<const void*>(CategoryDelete_nid_no_patch),
+    reinterpret_cast<const void*>(GenericCategoryName_nid_no_patch), reinterpret_cast<const void*>(CategoryMessage_nid_no_patch),
+    reinterpret_cast<const void*>(CategoryCondition_nid_no_patch),
+    reinterpret_cast<const void*>(CategoryEquivalentCondition_nid_no_patch),
+    reinterpret_cast<const void*>(CategoryEquivalentCode_nid_no_patch)
 };
 const CategoryObject GenericCategory {GenericCategoryVtable + 2};
-
-const TypeRecord SystemCategoryType {SingleTypeVtable + 2, "St22_System_error_category", &ErrorCategoryType};
-static void APS5_VABI SystemCategoryDestroy_nid_no_patch(CategoryObject*) {}
-static void APS5_VABI SystemCategoryDelete_nid_no_patch(CategoryObject*) {
-    throw std::invalid_argument("std::_System_error_category: the system category object is not heap allocated");
-}
-static const char* APS5_VABI SystemCategoryName_nid_no_patch(const CategoryObject*) { return "system"; }
-static GuestLocale::String* APS5_VABI SystemCategoryMessage_nid_no_patch(GuestLocale::String* result, const CategoryObject* self, int value) {
-    return GenericCategoryMessage_nid_no_patch(result, self, value);
-}
 static ErrorCode APS5_VABI SystemCategoryCondition_nid_no_patch(const CategoryObject* self, int value) {
-    if (GenericErrorMessage(value) != nullptr) {
-        return {value, value, &GenericCategory};
-    }
-    return {value, value, self};
-}
-static bool APS5_VABI SystemCategoryEquivalentCondition_nid_no_patch(const CategoryObject* self, int value, const ErrorCode* condition) {
-    if (!condition) return false;
-    const CategoryObject* expected_cat = (GenericErrorMessage(value) != nullptr) ? &GenericCategory : self;
-    return (condition->category == expected_cat || condition->category == self) &&
-           (condition->value == value || condition->value_high == value);
-}
-static bool APS5_VABI SystemCategoryEquivalentCode_nid_no_patch(const CategoryObject* self, const ErrorCode* code, int value) {
-    if (!code) return false;
-    return code->category == self && (code->value == value || code->value_high == value);
+    return {0, value, GenericErrorMessage(value) ? &GenericCategory : self};
 }
 const void* const SystemCategoryVtable[] {
     nullptr, &SystemCategoryType,
-    reinterpret_cast<const void*>(SystemCategoryDestroy_nid_no_patch), reinterpret_cast<const void*>(SystemCategoryDelete_nid_no_patch),
-    reinterpret_cast<const void*>(SystemCategoryName_nid_no_patch), reinterpret_cast<const void*>(SystemCategoryMessage_nid_no_patch),
+    reinterpret_cast<const void*>(CategoryDestroy_nid_no_patch), reinterpret_cast<const void*>(CategoryDelete_nid_no_patch),
+    reinterpret_cast<const void*>(SystemCategoryName_nid_no_patch), reinterpret_cast<const void*>(CategoryMessage_nid_no_patch),
     reinterpret_cast<const void*>(SystemCategoryCondition_nid_no_patch),
-    reinterpret_cast<const void*>(SystemCategoryEquivalentCondition_nid_no_patch),
-    reinterpret_cast<const void*>(SystemCategoryEquivalentCode_nid_no_patch)
+    reinterpret_cast<const void*>(CategoryEquivalentCondition_nid_no_patch),
+    reinterpret_cast<const void*>(CategoryEquivalentCode_nid_no_patch)
 };
 const CategoryObject SystemCategory {SystemCategoryVtable + 2};
 
@@ -322,24 +296,13 @@ static GuestLocale::String* APS5_VABI FutureCategoryMessage_nid_no_patch(GuestLo
     result->capacity = capacity;
     return result;
 }
-static ErrorCode APS5_VABI FutureCategoryCondition_nid_no_patch(const CategoryObject* self, int value) {
-    return {value, value, self};
-}
-static bool APS5_VABI FutureCategoryEquivalentCondition_nid_no_patch(const CategoryObject* self, int value, const ErrorCode* condition) {
-    if (!condition) return false;
-    return condition->category == self && (condition->value == value || condition->value_high == value);
-}
-static bool APS5_VABI FutureCategoryEquivalentCode_nid_no_patch(const CategoryObject* self, const ErrorCode* code, int value) {
-    if (!code) return false;
-    return code->category == self && (code->value == value || code->value_high == value);
-}
 const void* const FutureCategoryVtable[] {
     nullptr, &FutureCategoryType,
     reinterpret_cast<const void*>(FutureCategoryDestroy_nid_no_patch), reinterpret_cast<const void*>(FutureCategoryDelete_nid_no_patch),
     reinterpret_cast<const void*>(FutureCategoryName_nid_no_patch), reinterpret_cast<const void*>(FutureCategoryMessage_nid_no_patch),
-    reinterpret_cast<const void*>(FutureCategoryCondition_nid_no_patch),
-    reinterpret_cast<const void*>(FutureCategoryEquivalentCondition_nid_no_patch),
-    reinterpret_cast<const void*>(FutureCategoryEquivalentCode_nid_no_patch)
+    reinterpret_cast<const void*>(CategoryCondition_nid_no_patch),
+    reinterpret_cast<const void*>(CategoryEquivalentCondition_nid_no_patch),
+    reinterpret_cast<const void*>(CategoryEquivalentCode_nid_no_patch)
 };
 const CategoryObject FutureCategory {FutureCategoryVtable + 2};
 
@@ -360,7 +323,7 @@ const CategoryObject FutureCategory {FutureCategoryVtable + 2};
     std::snprintf(message, sizeof(message), "%s: %s", error.message, GenericErrorMessage(error.value));
     auto* object = static_cast<SystemErrorObject*>(__cxa_allocate_exception_nid_postfix(sizeof(SystemErrorObject)));
     Construct(&object->base, table, message);
-    object->code = {error.value, error.value, &GenericCategory};
+    object->code = {0, error.value, &GenericCategory};
     __cxa_throw_nid_postfix(object, reinterpret_cast<std::type_info*>(const_cast<TypeRecord*>(table.type)),
         reinterpret_cast<decltype(Header::destructor)>(DestroyGuestMessage_nid_no_patch));
 }
@@ -384,27 +347,23 @@ void APS5_VABI _ZNSt14error_categoryD1Ev_nid_postfix(LibcException::CategoryObje
 void APS5_VABI _ZNSt14error_categoryD0Ev_nid_postfix(LibcException::CategoryObject*) {}
 LibcException::ErrorCode APS5_VABI _ZNKSt14error_category23default_error_conditionEi_nid_postfix(
     const LibcException::CategoryObject* self, int value) {
-    return {value, value, self};
+    return LibcException::CategoryCondition_nid_no_patch(self, value);
 }
 bool APS5_VABI _ZNKSt14error_category10equivalentEiRKSt15error_condition_nid_postfix(
     const LibcException::CategoryObject* self, int value, const LibcException::ErrorCode* condition) {
-    if (!self || !condition) return false;
-    auto cond = reinterpret_cast<LibcException::ErrorCode (APS5_VABI *)(const LibcException::CategoryObject*, int)>(
-        reinterpret_cast<const void* const*>(self->vtable)[4])(self, value);
-    return cond.category == condition->category && (cond.value == condition->value || cond.value_high == condition->value_high);
+    return LibcException::CategoryEquivalentCondition_nid_no_patch(self, value, condition);
 }
 bool APS5_VABI _ZNKSt14error_category10equivalentERKSt10error_codei_nid_postfix(
     const LibcException::CategoryObject* self, const LibcException::ErrorCode* code, int value) {
-    if (!code) return false;
-    return code->category == self && (code->value == value || code->value_high == value);
+    return LibcException::CategoryEquivalentCode_nid_no_patch(self, code, value);
 }
 GuestLocale::String* APS5_VABI _ZNKSt23_Generic_error_category7messageEi_nid_postfix(
     GuestLocale::String* result, const LibcException::CategoryObject* self, int value) {
-    return LibcException::GenericCategoryMessage_nid_no_patch(result, self, value);
+    return LibcException::CategoryMessage_nid_no_patch(result, self, value);
 }
 GuestLocale::String* APS5_VABI _ZNKSt22_System_error_category7messageEi_nid_postfix(
     GuestLocale::String* result, const LibcException::CategoryObject* self, int value) {
-    return LibcException::SystemCategoryMessage_nid_no_patch(result, self, value);
+    return LibcException::CategoryMessage_nid_no_patch(result, self, value);
 }
 const char* APS5_VABI _ZNKSt22_System_error_category4nameEv_nid_postfix(const LibcException::CategoryObject* self) {
     return LibcException::SystemCategoryName_nid_no_patch(self);
