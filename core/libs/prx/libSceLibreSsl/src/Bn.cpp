@@ -147,7 +147,7 @@ Bignum* NewBignum() {
 
 void FreeBignum(Bignum* bn) {
     if (!bn) return;
-    std::free(bn->d);
+    if (!(bn->flags & FlagStaticData)) std::free(bn->d);
     delete bn;
 }
 

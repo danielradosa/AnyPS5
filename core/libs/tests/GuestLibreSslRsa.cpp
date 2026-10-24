@@ -555,6 +555,10 @@ static void TestMethodFlags() {
     Require(RSA_flags_nid_postfix(&rsa) == -1);
     rsa.meth = nullptr;
     Require(Throws([&] { RSA_flags_nid_postfix(&rsa); }));
+    GuestRsa* created = RSA_new_nid_postfix();
+    Require(created && created->meth && RSA_flags_nid_postfix(created) == 0);
+    Require(std::strcmp(static_cast<const GuestRsaMethod*>(created->meth)->name, "Eric Young's PKCS#1 RSA") == 0);
+    RSA_free_nid_postfix(created);
 }
 
 static int ModulusSize(GuestBignum* modulus) {

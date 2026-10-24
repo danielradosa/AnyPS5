@@ -21,6 +21,7 @@ namespace LibreSsl {
 namespace {
 
 constexpr int BnFlagMalloced = 0x01;
+constexpr int BnFlagStaticData = 0x02;
 constexpr int RsaFlagCachePublic = 0x0002;
 constexpr int RsaFlagCachePrivate = 0x0004;
 constexpr int RsaSslv23Padding = 2;
@@ -38,6 +39,8 @@ struct RsaMethod {
 };
 
 static_assert(sizeof(RsaMethod) == 112 && offsetof(RsaMethod, flags) == 72);
+
+constexpr RsaMethod DefaultRsaMethod{"Eric Young's PKCS#1 RSA", {}, 0, nullptr, nullptr, nullptr, nullptr};
 
 constexpr int RsaFunctionCheckKey = 123;
 constexpr int RsaFunctionEayPrivateDecrypt = 101;
@@ -231,7 +234,7 @@ Bignum* MpiBignum(const mbedtls_mpi& in, const char* function) {
 void ClearFreeBignum(Bignum* bn) {
     if (!bn) return;
     if (!(bn->flags & BnFlagMalloced)) throw std::invalid_argument("RSA/EC_KEY free: a key BIGNUM was not created by BN_new");
-    if (bn->d && bn->dmax > 0) mbedtls_platform_zeroize(bn->d, static_cast<std::size_t>(bn->dmax) * sizeof(std::uint64_t));
+    if (bn->d && bn->dmax > 0 && !(bn->flags & BnFlagStaticData)) mbedtls_platform_zeroize(bn->d, static_cast<std::size_t>(bn->dmax) * sizeof(std::uint64_t));
     FreeBignum(bn);
 }
 
@@ -257,6 +260,7 @@ const EvpMd* DigestByNid(int nid) {
 Rsa* NewRsa() {
     auto* rsa = new (std::nothrow) Rsa{};
     if (!rsa) return nullptr;
+    rsa->meth = &DefaultRsaMethod;
     rsa->references = 1;
     rsa->flags = RsaFlagCachePublic | RsaFlagCachePrivate;
     return rsa;

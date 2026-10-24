@@ -90,6 +90,19 @@ int main() {
     Require(fresh && fresh->top == 0 && fresh->neg == 0 && BN_num_bits_nid_postfix(fresh) == 0);
     BN_free_nid_postfix(fresh);
     BN_free_nid_postfix(nullptr);
+    {
+        static std::uint64_t words[1] = {5};
+        Bn* borrowed = BN_new_nid_postfix();
+        Require(borrowed);
+        borrowed->d = words;
+        borrowed->top = 1;
+        borrowed->dmax = 1;
+        borrowed->flags |= 2;
+        BN_free_nid_postfix(borrowed);
+        Bn local{words, 1, 1, 0, 2};
+        BN_free_nid_postfix(&local);
+        Require(local.d == nullptr && words[0] == 5);
+    }
 
     BnCtx* ctx = BN_CTX_new_nid_postfix();
     Require(ctx);
