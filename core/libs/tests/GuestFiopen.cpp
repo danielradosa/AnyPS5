@@ -12,6 +12,8 @@ FileStream* APS5_VABI _ZSt7_FiopenPKcNSt5_IosbIiE9_OpenmodeEi_nid_postfix(const 
 FileStream* APS5_VABI _ZNSt8__sce_v27_FiopenEPKcii_nid_postfix(const char*, int, int);
 FileStream* APS5_VABI fopen_nid_postfix(const char*, const char*);
 int APS5_VABI fopen_s_nid_postfix(FileStream**, const char*, const char*);
+void APS5_VABI ignore_handler_s_nid_postfix(const char* message, void* pointer, int error);
+void* APS5_VABI set_constraint_handler_s_nid_postfix(void* handler);
 int APS5_VABI fclose_nid_postfix(FileStream*);
 std::int64_t APS5_VABI ftello_nid_postfix(FileStream*);
 }
@@ -76,6 +78,7 @@ int main() {
     Write(Open(file, Out), "abc");
     Require(Contents(file) == "abc");
 
+    set_constraint_handler_s_nid_postfix(reinterpret_cast<void*>(&ignore_handler_s_nid_postfix));
     FileStream* checkedStream = &_Stdout_nid_postfix;
     Require(fopen_s_nid_postfix(&checkedStream, nullptr, "rb") == GuestEinval);
     Require(checkedStream == nullptr);
