@@ -1,7 +1,7 @@
 # libkernel_sys technical debt
 
 ### Silent stubs
-- [pthread_cond_setname_np, sem_setname](../../../core/libs/prx/libkernel_sys/Pthread.cpp) (libkernel_sys) - the name is kept nowhere and the call returns 0, as libkernel's condition variables and semaphores have no name (`scePthreadCondInit` ignores its name too) and no export reads one back. Argument checks follow [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/kernel/threads/condvar.cpp) (PS4): a null name returns `EINVAL` from the condition-variable call and -1 with `errno` `EINVAL` from `sem_setname`; a null object pointer, which shadPS4 dereferences, throws
+- [sem_setname](../../../core/libs/prx/libkernel_sys/Pthread.cpp) (libkernel_sys) - the name is kept nowhere and the call returns 0, as libkernel's semaphores have no name and no export reads one back. Argument checks follow [shadPS4](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/kernel/threads/semaphore.cpp) (PS4): a null name returns -1 with `errno` `EINVAL`; a null semaphore pointer, which shadPS4 dereferences, throws
 - [fchmodat](../../../core/libs/prx/libkernel_sys/Export.cpp) (libkernel_sys) - `AT_SYMLINK_NOFOLLOW` on a symbolic link (on Windows and Linux)
 
 ### Unknown function info
