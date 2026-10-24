@@ -23,11 +23,6 @@ int APS5_VABI BN_print_nid_postfix(void) {
     return 0;
 }
 
-int APS5_VABI CRYPTO_THREADID_set_callback_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 void APS5_VABI DES_ecb_encrypt_nid_postfix(const unsigned char* input, unsigned char* output, const unsigned char* schedule, int enc) {
     if (input == nullptr || output == nullptr || schedule == nullptr) APS5_INVALID_ARG_EX;
     mbedtls_des_context context;

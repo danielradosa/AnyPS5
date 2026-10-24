@@ -30,6 +30,7 @@ void APS5_VABI CRYPTO_cleanup_all_ex_data_nid_postfix();
 int APS5_VABI CRYPTO_num_locks_nid_postfix();
 void APS5_VABI CRYPTO_set_locking_callback_nid_postfix(void (APS5_VABI*)(int, int, const char*, int));
 void APS5_VABI CRYPTO_set_add_lock_callback_nid_postfix(int (APS5_VABI*)(int*, int, int, const char*, int));
+int APS5_VABI CRYPTO_THREADID_set_callback_nid_postfix(void (APS5_VABI*)(void*));
 void* APS5_VABI ENGINE_by_id_nid_postfix(const char*);
 void APS5_VABI ENGINE_load_builtin_engines_nid_postfix();
 void APS5_VABI ENGINE_cleanup_nid_postfix();
@@ -67,6 +68,12 @@ static void APS5_VABI Lock(int, int, const char*, int) {
 static int APS5_VABI AddLock(int* number, int amount, int, const char*, int) {
     ++lockCalls;
     return *number += amount;
+}
+
+static void APS5_VABI ThreadId(void*) {
+}
+
+static void APS5_VABI OtherThreadId(void*) {
 }
 
 static void PushNoDigest() {
@@ -157,6 +164,12 @@ static void TestLibrary() {
     CRYPTO_set_locking_callback_nid_postfix(nullptr);
     CRYPTO_set_add_lock_callback_nid_postfix(nullptr);
     Require(lockCalls == 0);
+    Require(CRYPTO_THREADID_set_callback_nid_postfix(nullptr) == 1);
+    Require(CRYPTO_THREADID_set_callback_nid_postfix(nullptr) == 1);
+    Require(CRYPTO_THREADID_set_callback_nid_postfix(ThreadId) == 1);
+    Require(CRYPTO_THREADID_set_callback_nid_postfix(OtherThreadId) == 0);
+    Require(CRYPTO_THREADID_set_callback_nid_postfix(ThreadId) == 0);
+    Require(CRYPTO_THREADID_set_callback_nid_postfix(nullptr) == 0);
 
     ENGINE_load_builtin_engines_nid_postfix();
     Require(ENGINE_by_id_nid_postfix("dynamic") == nullptr);

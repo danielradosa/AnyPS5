@@ -9,6 +9,7 @@ constexpr int CryptoNumLocks = 41;
 
 std::atomic<void*> lockingCallback{nullptr};
 std::atomic<void*> addLockCallback{nullptr};
+std::atomic<void*> threadIdCallback{nullptr};
 
 }
 
@@ -50,6 +51,11 @@ void APS5_VABI CRYPTO_set_locking_callback_nid_postfix(void* func) {
 
 void APS5_VABI CRYPTO_set_add_lock_callback_nid_postfix(void* func) {
     addLockCallback.store(func);
+}
+
+int APS5_VABI CRYPTO_THREADID_set_callback_nid_postfix(void* func) {
+    void* expected = nullptr;
+    return threadIdCallback.compare_exchange_strong(expected, func) ? 1 : 0;
 }
 
 void* APS5_VABI ENGINE_by_id_nid_postfix(const char*) {
