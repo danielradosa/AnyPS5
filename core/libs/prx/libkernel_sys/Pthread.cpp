@@ -32,18 +32,8 @@ int APS5_VABI scePthreadMutexattrInitForInternalLibc(PthreadMutexattr* attr) {
     return PosixThread::ToSce(pthread_mutexattr_init_nid_postfix(attr));
 }
 
-int APS5_VABI pthread_mutex_setname_np_nid_postfix(PthreadMutex* mutex, const char*) {
-    if (!mutex) throw std::invalid_argument("pthread_mutex_setname_np: null mutex");
-    return 0;
-}
-
 int APS5_VABI pthread_cond_setname_np_nid_postfix(PthreadCond* cond, const char* name) {
     if (!cond) throw std::invalid_argument("pthread_cond_setname_np: null condition variable");
-    return name ? 0 : GuestEinval;
-}
-
-int APS5_VABI pthread_rwlock_setname_np_nid_postfix(PthreadRwlock* rwlock, const char* name) {
-    if (!rwlock) throw std::invalid_argument("pthread_rwlock_setname_np: null rwlock");
     return name ? 0 : GuestEinval;
 }
 
