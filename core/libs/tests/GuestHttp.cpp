@@ -53,12 +53,12 @@ struct HttpMemoryPoolStats {
     std::uint64_t usedSize;
 };
 struct HttpCookieStats {
-    std::uint64_t usedBytes;
-    std::uint32_t cookieCount;
-    std::uint32_t reserved;
-    std::uint64_t peakUsedBytes;
-    std::uint32_t peakCookieCount;
-    std::uint32_t evictedCookieCount;
+    std::uint64_t currentInuseSize;
+    std::uint32_t currentInuseNum;
+    std::uint64_t maxInuseSize;
+    std::uint32_t maxInuseNum;
+    std::uint32_t removedNum;
+    std::int32_t reserved;
 };
 int APS5_VABI sceHttpCreateTemplate(int, const char*, int, int);
 int APS5_VABI sceHttpCreateConnectionWithURL(int, const char*, int);
@@ -512,8 +512,7 @@ static void CheckSettings() {
     Require(sceHttpGetCookieStats(context, nullptr) == invalidValue);
     std::memset(&cookies, 0x5a, sizeof(cookies));
     Require(sceHttpGetCookieStats(context, &cookies) == 0);
-    const auto* cookieBytes = reinterpret_cast<const unsigned char*>(&cookies);
-    for (std::size_t index = 0; index < sizeof(cookies); ++index) Require(cookieBytes[index] == 0);
+    Require(cookies.currentInuseSize == 0 && cookies.currentInuseNum == 0 && cookies.maxInuseSize == 0 && cookies.maxInuseNum == 0 && cookies.removedNum == 0 && cookies.reserved == 0);
     for (const int id : {context, -1}) {
         const int expected = id == context ? 0 : invalidId;
         Require(sceHttpSetCookieMaxNum(id, 300) == expected);
