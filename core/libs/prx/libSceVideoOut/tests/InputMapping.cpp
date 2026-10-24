@@ -114,6 +114,24 @@ void screenshotBinding() {
     require(rejects("Screenshot = WHEEL:Up\n"), "the screenshot key refuses the mouse wheel");
 }
 
+void quitBinding() {
+    useConfig("Cross = KEY:F\n");
+    bool onHome = false;
+    for (const auto& binding : Pad::LoadInputMapping().bindings) onHome = onHome || (binding.control == Pad::InputControl::Quit && binding.key == SDL_SCANCODE_HOME);
+    require(onHome, "Home quits by default");
+    useConfig("Quit = KEY:End\n");
+    bool onEnd = false;
+    bool stillOnHome = false;
+    for (const auto& binding : Pad::LoadInputMapping().bindings) {
+        if (binding.control != Pad::InputControl::Quit) continue;
+        onEnd = onEnd || binding.key == SDL_SCANCODE_END;
+        stillOnHome = stillOnHome || binding.key == SDL_SCANCODE_HOME;
+    }
+    require(onEnd && !stillOnHome, "the quit key moves to another key");
+    require(rejects("Quit = MOUSE:Left\n"), "the quit key refuses a mouse button");
+    require(rejects("Quit = WHEEL:Up\n"), "the quit key refuses the mouse wheel");
+}
+
 void mouseLookDefault() {
     useConfig("Cross = KEY:F\n");
     const auto settings = Pad::LoadInputMapping().settings;
@@ -277,6 +295,7 @@ int main() try {
     settingsReject();
     performanceOverlayBinding();
     screenshotBinding();
+    quitBinding();
     mouseLookDefault();
     mouseLookParse();
     mouseLookReject();

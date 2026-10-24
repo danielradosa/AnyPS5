@@ -19,6 +19,7 @@
 #include "prx/libScePad/include/PadState.hpp"
 #include "prx/libScePad/include/PadInputTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/Shutdown.hpp"
 #include "prx/libSceIme/include/ImeInput.hpp"
 
 PadInput::PadInput() : PadInput(Pad::LoadInputMapping()) {
@@ -278,6 +279,7 @@ void PadInput::HandleEvent(const SDL_Event& event, DisplayWindow& window) {
     if (requests.toggleFullscreen && window.Handle() != nullptr && event.key.windowID == SDL_GetWindowID(window.Handle())) window.ToggleFullscreen();
     if (requests.togglePerformanceOverlay && window.Handle() != nullptr && event.key.windowID == SDL_GetWindowID(window.Handle())) AgcDriverTogglePerformanceOverlay_nid_postfix();
     if (requests.screenshot && window.Handle() != nullptr && event.key.windowID == SDL_GetWindowID(window.Handle())) AgcDriverRequestScreenshot_nid_postfix();
+    if (requests.quit && window.Handle() != nullptr && event.key.windowID == SDL_GetWindowID(window.Handle())) LibcRequestExit_nid_postfix(0);
     if (requests.toggleMouse) setMouseMode(!keyboardMouse.MouseMode());
     if (event.type != SDL_MOUSEMOTION) publish(window.FrameNumber());
 }
