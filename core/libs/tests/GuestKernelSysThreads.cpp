@@ -38,6 +38,13 @@ static void* LoadLibraryFile(const std::filesystem::path& path) {
     if (!module) std::fprintf(stderr, "%s\n", dlerror());
 #endif
     Require(module != nullptr);
+#ifdef _WIN32
+    std::wstring loaded(32768, L'\0');
+    const auto length = GetModuleFileNameW(static_cast<HMODULE>(module), loaded.data(), static_cast<DWORD>(loaded.size()));
+    Require(length != 0 && length < loaded.size());
+    loaded.resize(length);
+    Require(std::filesystem::equivalent(path, std::filesystem::path(loaded)));
+#endif
     return module;
 }
 
@@ -60,6 +67,20 @@ int main(int argc, char** argv) {
     const auto directory = std::filesystem::absolute(argv[1]);
     const bool patched = std::strcmp(argv[2], "patched") == 0;
     const std::string test = argv[3];
+#ifdef __linux__
+    if (test == "main_late_load") {
+        int (APS5_VABI* isMain)() = nullptr;
+        int other = -1;
+        std::thread loader([&] {
+            auto* module = LoadLibraryFile(directory / "libkernel_sys.prx");
+            isMain = LoadFunction<int (APS5_VABI*)()>(module, "pthread_main_np", patched);
+            other = isMain();
+        });
+        loader.join();
+        Require(other == 0 && isMain() == 1);
+        return 0;
+    }
+#endif
     auto* sys = LoadLibraryFile(directory / "libkernel_sys.prx");
     auto* kernel = LoadLibraryFile(directory / "libkernel.prx");
     auto* libc = LoadLibraryFile(directory / "libc.prx");
@@ -88,7 +109,7 @@ int main(int argc, char** argv) {
         const auto originalSize = size;
         Require(setStack(&attr, stack.data()) == 0 && *error() == 71);
         Require(getStack(&attr, &address, &size) == 0 && address == stack.data() && size == originalSize);
-        Require(setStack(nullptr, stack.data()) == 22);
+        Require(setStack(&attr, nullptr) == 22 && setStack(nullptr, stack.data()) == 22);
         Require(getStack(&attr, &address, &size) == 0 && address == stack.data());
     } else if (test == "solo") {
         const auto getSolo = LoadFunction<int (APS5_VABI*)(const Attr*, int*)>(kernel, "pthread_attr_getsolosched_np", patched);
