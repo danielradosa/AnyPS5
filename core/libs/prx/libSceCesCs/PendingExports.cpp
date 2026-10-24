@@ -37,16 +37,6 @@ int APS5_VABI sceCesRefersUcsProfileCp864(void) {
     return 0;
 }
 
-int APS5_VABI sceCesUcsProfileInitEucJis2004(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceCesUcsProfileInitSJis2004X0213(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceCesUcsToJiscs(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
