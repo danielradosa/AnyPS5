@@ -647,6 +647,7 @@ alignas(16) unsigned char _ZSt4clog_nid_postfix[0x400] {};
 alignas(16) unsigned char _ZSt3cin_nid_postfix[0x400] {};
 alignas(16) unsigned char _ZSt5wcout_nid_postfix[0x400] {};
 alignas(16) unsigned char _ZSt5wcerr_nid_postfix[0x400] {};
+alignas(16) unsigned char _ZSt5wclog_nid_postfix[0x400] {};
 alignas(16) unsigned char _ZSt4wcin_nid_postfix[0x400] {};
 
 // Facet vectors are read by inlined guest code, so they come from the guest application heap.
