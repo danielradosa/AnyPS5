@@ -183,6 +183,7 @@ void ReadAfterLabel(std::uint8_t* block) {
     auto* label = reinterpret_cast<std::uint32_t*>(block + LabelOffset);
     const auto mip = Layout();
     const auto bytes = static_cast<std::size_t>(mip.tiledOffset + mip.pitchBytes * Height);
+    Require(bytes <= AgcDriver::Graphics::StorageTexture::LabelStoreLinearBytes, "linear readback label: the test image is larger than the linear label store limit");
     std::vector<std::uint8_t> initial(bytes);
     for (std::size_t index = 0; index < initial.size(); ++index) initial[index] = static_cast<std::uint8_t>(0x80u + 37u * index + 11u * (index >> 4u));
     std::memcpy(texels, initial.data(), initial.size());

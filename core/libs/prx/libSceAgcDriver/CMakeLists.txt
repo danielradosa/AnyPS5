@@ -2891,8 +2891,10 @@ if(BUILD_TESTING)
     set_property(TEST agc_driver_draw_cache_reuse_draw_pipeline agc_driver_draw_cache_relocation_draw_pipeline APPEND PROPERTY ENVIRONMENT "APS5_NO_DRAW_PREP=1")
     add_test(NAME agc_driver_linear_readback_label_off COMMAND agc_driver_linear_readback_label_tests)
     set_tests_properties(agc_driver_linear_readback_label_off PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_NO_LABEL_READBACK_STORE=1" WILL_FAIL TRUE TIMEOUT 60)
+    add_test(NAME agc_driver_linear_readback_label_capped COMMAND agc_driver_linear_readback_label_tests)
+    set_tests_properties(agc_driver_linear_readback_label_capped PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1;APS5_LABEL_STORE_MAX_KIB=0" WILL_FAIL TRUE TIMEOUT 60)
     if(WIN32)
-        set_tests_properties(agc_driver_linear_readback_label_off PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(agc_driver_linear_readback_label_off agc_driver_linear_readback_label_capped PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     add_test(NAME agc_driver_draw_cache_reuse_off COMMAND agc_driver_draw_cache_reuse_tests)

@@ -4448,12 +4448,17 @@ std::size_t StorageTexture::StoreSmallPending(const char* reason) {
 void StorageTexture::StoreReadbackBeforeLabel(const char* reason) {
     static const bool disabled = std::getenv("APS5_NO_LABEL_READBACK_STORE") != nullptr;
     if (disabled) return;
+    static const std::uint64_t linearBytes = [] {
+        const char* value = std::getenv("APS5_LABEL_STORE_MAX_KIB");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) * 1024u : LabelStoreLinearBytes;
+    }();
     std::vector<std::pair<std::uint64_t, std::size_t>> ranges;
     {
         auto& pending = Pending();
         std::lock_guard lock(pending.mutex);
         for (const auto* texture : pending.textures) {
-            if (texture->descriptor.tileMode == TextureTileMode::kLinear || texture->guestBytes <= SmallStoreBytes) ranges.emplace_back(texture->descriptor.baseAddress, static_cast<std::size_t>(texture->guestBytes));
+            const auto limit = texture->descriptor.tileMode == TextureTileMode::kLinear ? linearBytes : SmallStoreBytes;
+            if (texture->guestBytes <= limit) ranges.emplace_back(texture->descriptor.baseAddress, static_cast<std::size_t>(texture->guestBytes));
         }
     }
     for (const auto& [address, bytes] : ranges) static_cast<void>(FlushPending(address, bytes, nullptr, reason));
