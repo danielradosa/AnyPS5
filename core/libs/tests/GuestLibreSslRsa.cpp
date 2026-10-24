@@ -36,6 +36,19 @@ struct GuestRsa {
     void* reserved[5];
 };
 
+struct GuestRsaMethod {
+    const char* name;
+    void* operations[8];
+    int flags;
+    char* appData;
+    void* sign;
+    void* verify;
+    void* keygen;
+};
+
+static_assert(offsetof(GuestRsaMethod, flags) == 72);
+static_assert(offsetof(GuestRsa, meth) == 16 && offsetof(GuestRsa, n) == 32);
+
 struct GuestEvpPkey {
     int type;
     int save_type;
@@ -65,6 +78,7 @@ extern "C" {
 GuestRsa* APS5_VABI RSA_new_nid_postfix();
 void APS5_VABI RSA_free_nid_postfix(GuestRsa*);
 int APS5_VABI RSA_size_nid_postfix(const GuestRsa*);
+int APS5_VABI RSA_flags_nid_postfix(const GuestRsa*);
 int APS5_VABI RSA_public_encrypt_nid_postfix(int, const unsigned char*, unsigned char*, GuestRsa*, int);
 int APS5_VABI RSA_private_decrypt_nid_postfix(int, const unsigned char*, unsigned char*, GuestRsa*, int);
 int APS5_VABI RSA_private_encrypt_nid_postfix(int, const unsigned char*, unsigned char*, GuestRsa*, int);
@@ -529,6 +543,65 @@ static void TestPem(const char* path) {
     std::remove(path);
 }
 
+static void TestMethodFlags() {
+    GuestRsaMethod method {};
+    GuestRsa rsa {};
+    rsa.meth = &method;
+    Require(RSA_flags_nid_postfix(nullptr) == 0);
+    Require(RSA_flags_nid_postfix(&rsa) == 0);
+    method.flags = 0x0400;
+    Require(RSA_flags_nid_postfix(&rsa) == 0x0400);
+    method.flags = -1;
+    Require(RSA_flags_nid_postfix(&rsa) == -1);
+    rsa.meth = nullptr;
+    Require(Throws([&] { RSA_flags_nid_postfix(&rsa); }));
+}
+
+static int ModulusSize(GuestBignum* modulus) {
+    GuestRsa rsa {};
+    rsa.n = modulus;
+    return RSA_size_nid_postfix(&rsa);
+}
+
+static void TestModulusSize() {
+    std::uint64_t words[32] {};
+    GuestBignum modulus {words, 0, 32, 0, 0};
+    Require(ModulusSize(&modulus) == 0);
+    modulus.d = nullptr;
+    Require(ModulusSize(&modulus) == 0);
+    modulus.d = words;
+    modulus.top = 1;
+    words[0] = 1;
+    Require(ModulusSize(&modulus) == 1);
+    words[0] = 0xFF;
+    Require(ModulusSize(&modulus) == 1);
+    words[0] = 0x100;
+    Require(ModulusSize(&modulus) == 2);
+    words[0] = 0x8000000000000000ull;
+    Require(ModulusSize(&modulus) == 8);
+    modulus.top = 2;
+    words[1] = 1;
+    Require(ModulusSize(&modulus) == 9);
+    modulus.top = 32;
+    words[31] = 0xC000000000000000ull;
+    Require(ModulusSize(&modulus) == 256);
+    modulus.neg = 1;
+    Require(ModulusSize(&modulus) == 256);
+    modulus.neg = 0;
+    modulus.top = 16;
+    words[15] = 0x00FFFFFFFFFFFFFFull;
+    Require(ModulusSize(&modulus) == 127);
+    words[15] = 0;
+    Require(ModulusSize(&modulus) == 120);
+    modulus.top = -1;
+    Require(Throws([&] { ModulusSize(&modulus); }));
+    modulus.top = 1;
+    modulus.d = nullptr;
+    Require(Throws([&] { ModulusSize(&modulus); }));
+    Require(Throws([] { ModulusSize(nullptr); }));
+    Require(Throws([] { RSA_size_nid_postfix(nullptr); }));
+}
+
 static void TestPublicKey(GuestRsa* key) {
     const auto spki = Hex(SpkiHex);
     std::vector<unsigned char> input = spki;
@@ -563,6 +636,8 @@ int main(int argc, char** argv) {
     TestPkey(rsa);
     TestPem(argv[1]);
     TestPublicKey(rsa);
+    TestMethodFlags();
+    TestModulusSize();
     RSA_free_nid_postfix(rsa);
     return 0;
 }
