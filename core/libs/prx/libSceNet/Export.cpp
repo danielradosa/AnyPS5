@@ -650,7 +650,7 @@ struct NetThreadParameter {
 };
 static_assert(sizeof(NetThreadParameter) == 32 && offsetof(NetThreadParameter, flags) == 24);
 
-void* APS5_VABI NetThreadEntry_nid_no_patch(void* start) {
+void* APS5_VABI RunNetThread(void* start) {
     NetThreadParameter param{};
     {
         const std::unique_ptr<NetThreadParameter> owned(static_cast<NetThreadParameter*>(start));
@@ -2966,7 +2966,7 @@ int APS5_VABI sceNetThreadCreate(Pthread* thread, const NetThreadParameter* para
     if (!parameter->entry) throw std::runtime_error("sceNetThreadCreate: null entry");
     auto start = std::make_unique<NetThreadParameter>(*parameter);
     Pthread created = nullptr;
-    const int result = scePthreadCreate(&created, nullptr, NetThreadEntry_nid_no_patch, start.get(), name);
+    const int result = scePthreadCreate(&created, nullptr, RunNetThread, start.get(), name);
     if (result != 0) {
         set_errno(NET_ERETURN);
         return result;
