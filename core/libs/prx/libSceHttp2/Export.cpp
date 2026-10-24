@@ -4,6 +4,7 @@
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
+#include "Cookies.hpp"
 #include <atomic>
 #include <deque>
 #include <string>
@@ -74,27 +75,17 @@ static bool HandleIsLive(int id) {
     return FindAnyHandle(id) != nullptr;
 }
 
+bool Http2CookieBoxExists(int cookieBoxId) {
+    std::lock_guard lock(g_handlesMutex);
+    return FindHandle(cookieBoxId, Http2Kind::CookieBox) != nullptr;
+}
+
 struct Http2MemoryPoolStats {
     size_t pool_size;
     size_t max_inuse_size;
     size_t current_inuse_size;
     int32_t reserved;
 };
-
-struct Http2CookieStats {
-    size_t current_inuse_size;
-    uint32_t current_inuse_num;
-    size_t max_inuse_size;
-    uint32_t max_inuse_num;
-    uint32_t removed_num;
-    int32_t reserved;
-};
-static_assert(sizeof(Http2CookieStats) == 40);
-
-static bool CookieBoxIsLive(int id) {
-    std::lock_guard lock(g_handlesMutex);
-    return FindHandle(id, Http2Kind::CookieBox) != nullptr;
-}
 
 static std::mutex g_completionsMutex;
 static std::unordered_map<int, std::deque<Http2AsyncResult>> g_completions;
@@ -424,7 +415,7 @@ int APS5_VABI sceHttp2GetMemoryPoolStats(int lib_http2_ctx_id, Http2MemoryPoolSt
 }
 
 int APS5_VABI sceHttp2CookieFlush(int id) {
-    (void)id;
+    Http2FlushCookies(id);
     return 0;
 }
 
@@ -440,9 +431,12 @@ int APS5_VABI sceHttp2CreateCookieBox(std::size_t poolSize) {
 }
 
 int APS5_VABI sceHttp2DeleteCookieBox(int cookie_box_id) {
-    std::lock_guard lock(g_handlesMutex);
-    if (FindHandle(cookie_box_id, Http2Kind::CookieBox) == nullptr) return ERROR_INVALID_ID;
-    g_handles.erase(cookie_box_id);
+    {
+        std::lock_guard lock(g_handlesMutex);
+        if (FindHandle(cookie_box_id, Http2Kind::CookieBox) == nullptr) return ERROR_INVALID_ID;
+        g_handles.erase(cookie_box_id);
+    }
+    Http2ForgetCookies(cookie_box_id);
     return 0;
 }
 
@@ -493,11 +487,6 @@ int APS5_VABI sceHttp2WebSocketSetPingTimeout(std::int32_t requestId, std::uint3
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
-int APS5_VABI sceHttp2AddCookie(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceHttp2AuthCacheFlush(int lib_http2_ctx_id) {
     return FlushContextCache(lib_http2_ctx_id);
 }
@@ -520,21 +509,8 @@ int APS5_VABI sceHttp2GetAutoRedirect(int id, int* enable) {
     return GetFlag(__func__, id, &Http2Handle::autoRedirect, enable);
 }
 
-int APS5_VABI sceHttp2GetCookie(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceHttp2GetCookieBox(void) {
     NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceHttp2GetCookieStats(int cookie_box_id, Http2CookieStats* stats) {
-    if (stats == nullptr) return ERROR_NULL_POINTER;
-    std::lock_guard lock(g_handlesMutex);
-    if (FindHandle(cookie_box_id, Http2Kind::CookieBox) == nullptr) return ERROR_INVALID_ID;
-    *stats = {};
     return 0;
 }
 
@@ -558,21 +534,6 @@ int APS5_VABI sceHttp2SetAuthInfoCallback(int id, Http2AuthInfoCallback cb_func,
     handle->authInfoCallback = cb_func;
     handle->authInfoArgument = user_arg;
     return 0;
-}
-
-int APS5_VABI sceHttp2SetCookieMaxNum(int cookie_box_id, uint32_t num) {
-    (void)num;
-    return CookieBoxIsLive(cookie_box_id) ? 0 : ERROR_INVALID_ID;
-}
-
-int APS5_VABI sceHttp2SetCookieMaxNumPerDomain(int cookie_box_id, uint32_t num) {
-    (void)num;
-    return CookieBoxIsLive(cookie_box_id) ? 0 : ERROR_INVALID_ID;
-}
-
-int APS5_VABI sceHttp2SetCookieMaxSize(int cookie_box_id, uint32_t size) {
-    (void)size;
-    return CookieBoxIsLive(cookie_box_id) ? 0 : ERROR_INVALID_ID;
 }
 
 int APS5_VABI sceHttp2SetCookieRecvCallback(int id, void* cb_func, void* user_arg) {
