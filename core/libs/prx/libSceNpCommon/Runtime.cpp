@@ -126,6 +126,16 @@ constexpr int NP_ERROR_NULL_ARGUMENT = static_cast<int>(0x80550003);
 constexpr int NP_ERROR_IPC_ALREADY_INITIALIZED = static_cast<int>(0x80559D00);
 constexpr int NP_ERROR_IPC_NOT_INITIALIZED = static_cast<int>(0x80559D01);
 constexpr int NP_ERROR_ONLINE_ID_MISMATCH = static_cast<int>(0x80550609);
+constexpr int NP_ERROR_INVALID_NP_ID = static_cast<int>(0x80550605);
+constexpr std::size_t NP_ID_OPT_OFFSET = 0x14;
+constexpr std::size_t NP_ID_PLATFORM_OFFSET = 0x18;
+constexpr std::size_t NP_ID_TERMINATOR_FLAG_OFFSET = 0x1C;
+
+std::uint32_t NpIdWord(const std::uint8_t* npId, std::size_t offset) {
+    std::uint32_t value;
+    std::memcpy(&value, npId + offset, sizeof(value));
+    return value;
+}
 constexpr std::size_t NP_ONLINE_ID_MAX = 16;
 constexpr std::size_t NP_ONLINE_ID_MIN = 3;
 constexpr int NP_ERROR_INVALID_ARGUMENT_UTIL = static_cast<int>(0x80550601);
@@ -297,7 +307,8 @@ std::mt19937 g_random {std::random_device {}()};
 NpMemoryHeap g_globalHeap {};
 NpAllocator g_globalAllocator {};
 NpAllocatorEx g_globalAllocatorEx {};
-std::atomic<int> g_archReferences {0};
+int g_archReferences = 0;
+std::mutex g_archMutex;
 std::mutex g_ipcClientMutex;
 bool g_ipcClientInitialized = false;
 NpMemoryHeap g_ipcClientHeap {};
@@ -517,14 +528,21 @@ int APS5_VABI sceNpIpc2ClientTerm(void) {
 }
 
 int APS5_VABI sceNpArchInit(void) {
-    if (g_archReferences.fetch_add(1) != 0) return 0;
+    std::lock_guard lock(g_archMutex);
+    if (g_archReferences != 0) {
+        ++g_archReferences;
+        return 0;
+    }
     const int result = InitMemoryHeap(&g_globalHeap, NP_GLOBAL_HEAP_SIZE, NP_GLOBAL_HEAP_NAME);
-    if (result < 0) g_archReferences.fetch_sub(1);
-    return result < 0 ? result : 0;
+    if (result < 0) return result;
+    g_archReferences = 1;
+    return 0;
 }
 
 void APS5_VABI sceNpArchTerm(void) {
-    if (g_archReferences.fetch_sub(1) == 1) DestroyMemoryHeap(&g_globalHeap);
+    std::lock_guard lock(g_archMutex);
+    if (g_archReferences == 0) return;
+    if (--g_archReferences == 0) DestroyMemoryHeap(&g_globalHeap);
 }
 
 int APS5_VABI sceNpHeapInit(NpHeap* heap, void* base, std::size_t size, const char* name) {
@@ -714,10 +732,7 @@ void APS5_VABI sceNpCalloutTermCtx(NpCalloutContext* context) {
 int APS5_VABI sceNpCalloutStartOnCtx64(NpCalloutContext* context, NpCallout* callout, std::uint64_t usec,
     void (APS5_VABI *handler)(void* arg), void* arg) {
     if (context->initialized == 0) return NP_ERROR_NOT_INITIALIZED;
-    *callout = {};
-    callout->deadline = ClockUsec() + usec;
-    callout->handler = handler;
-    callout->arg = arg;
+    const std::uint64_t deadline = ClockUsec() + usec;
     sceNpMutexLock(&context->mutex);
     for (NpCallout* entry = context->pending; entry != nullptr; entry = entry->next) {
         if (entry == callout) {
@@ -725,6 +740,10 @@ int APS5_VABI sceNpCalloutStartOnCtx64(NpCalloutContext* context, NpCallout* cal
             return NP_ERROR_ALREADY_QUEUED;
         }
     }
+    *callout = {};
+    callout->deadline = deadline;
+    callout->handler = handler;
+    callout->arg = arg;
     NpCallout** link = &context->pending;
     while (*link != nullptr && callout->deadline > (*link)->deadline) link = &(*link)->next;
     callout->next = *link;
@@ -762,6 +781,18 @@ std::uint32_t APS5_VABI sceNpGetRandom(void) {
 
 int APS5_VABI sceNpUtilCmpAccountId(std::uint64_t left, std::uint64_t right) {
     return left != right ? 1 : 0;
+}
+
+int APS5_VABI sceNpCmpNpId(const void* npId1, const void* npId2) {
+    if (!npId1 || !npId2) return NP_ERROR_NULL_ARGUMENT;
+    const auto* left = static_cast<const std::uint8_t*>(npId1);
+    const auto* right = static_cast<const std::uint8_t*>(npId2);
+    if (left[NP_ID_TERMINATOR_FLAG_OFFSET] != 1 || right[NP_ID_TERMINATOR_FLAG_OFFSET] != 1) return NP_ERROR_INVALID_NP_ID;
+    if (std::strncmp(static_cast<const char*>(npId1), static_cast<const char*>(npId2), NP_ONLINE_ID_MAX) != 0) return NP_ERROR_ONLINE_ID_MISMATCH;
+    if (NpIdWord(left, NP_ID_OPT_OFFSET) != NpIdWord(right, NP_ID_OPT_OFFSET)) return NP_ERROR_ONLINE_ID_MISMATCH;
+    if (NpIdWord(left, NP_ID_PLATFORM_OFFSET) == NpIdWord(right, NP_ID_PLATFORM_OFFSET)) return 0;
+    if (left[NP_ID_PLATFORM_OFFSET] == 0 || right[NP_ID_PLATFORM_OFFSET] == 0) return 0;
+    return NP_ERROR_ONLINE_ID_MISMATCH;
 }
 
 bool APS5_VABI sceNpIntIsOnlineIdString(const char* text) {

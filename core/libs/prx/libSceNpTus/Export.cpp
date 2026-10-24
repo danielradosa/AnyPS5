@@ -97,14 +97,6 @@ struct TssGetDataOptParam {
     void* ifParam;
 };
 
-int CreateTitleContext() {
-    std::lock_guard lock(tusMutex);
-    if (titleContexts.size() >= MAX_TITLE_CONTEXTS) return SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS;
-    const int contextId = nextTitleContext++;
-    titleContexts.insert(contextId);
-    return contextId;
-}
-
 int ValidateFriends(const void* array, std::int32_t slotId, std::int32_t sortType, int arrayLen, std::int32_t firstSortType, std::int32_t lastSortType, const void* option) {
     if (!array) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
     if (arrayLen < 1 || slotId < 0) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
@@ -122,6 +114,14 @@ int Complete(int reqId, int asyncResult) {
     int result = 0;
     if (const int error = WaitOffline(reqId, &result)) return error;
     return result;
+}
+
+int CreateTitleContext() {
+    std::lock_guard lock(tusMutex);
+    if (titleContexts.size() >= MAX_TITLE_CONTEXTS) return SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS;
+    const int contextId = nextTitleContext++;
+    titleContexts.insert(contextId);
+    return contextId;
 }
 }
 
@@ -206,6 +206,16 @@ int APS5_VABI sceNpTusAddAndGetVariableAAsync(int reqId, std::uint64_t targetAcc
 int APS5_VABI sceNpTusSetThreadParam(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
+}
+
+int APS5_VABI sceNpTssCreateNpTitleCtx(std::uint32_t serviceLabel, const NpId* npId) {
+    if (!npId) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
+    if (serviceLabel == INVALID_SERVICE_LABEL) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
+    return CreateTitleContext();
+}
+
+int APS5_VABI sceNpTssCreateNpTitleCtxA(std::uint32_t serviceLabel, int userId) {
+    return sceNpTusCreateNpTitleCtxA(serviceLabel, userId);
 }
 
 int APS5_VABI sceNpTusCreateTitleCtx(void) {
@@ -938,16 +948,6 @@ int APS5_VABI sceNpTusTryAndSetVariableForCrossSaveVUser(int reqId, const NpOnli
 
 int APS5_VABI sceNpTusTryAndSetVariableVUser(int reqId, const NpOnlineId* targetVirtualUserId, std::int32_t slotId, std::int32_t opeType, std::int64_t variable, const std::int64_t* compareValue, const void* isLastChangedAuthor, const void* isLastChangedDate, void* resultVariable, std::uint64_t resultVariableSize, void* option) {
     return Complete(reqId, sceNpTusTryAndSetVariableVUserAsync(reqId, targetVirtualUserId, slotId, opeType, variable, compareValue, isLastChangedAuthor, isLastChangedDate, resultVariable, resultVariableSize, option));
-}
-
-int APS5_VABI sceNpTssCreateNpTitleCtx(std::uint32_t serviceLabel, const void* npId) {
-    if (!npId) return SCE_NP_COMMUNITY_ERROR_INSUFFICIENT_ARGUMENT;
-    if (serviceLabel == INVALID_SERVICE_LABEL) return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
-    return CreateTitleContext();
-}
-
-int APS5_VABI sceNpTssCreateNpTitleCtxA(std::uint32_t serviceLabel, int userId) {
-    return sceNpTusCreateNpTitleCtxA(serviceLabel, userId);
 }
 
 int APS5_VABI sceNpTssGetDataAsync(int reqId, std::int32_t slotId, void* dataStatus, std::uint64_t dataStatusSize, void* data, std::uint64_t recvSize, void* option) {

@@ -1,5 +1,4 @@
 #include <cstddef>
-#include <cstring>
 #include "prx/libc/include/General.hpp"
 
 extern "C" {
@@ -26,14 +25,6 @@ unsigned char* APS5_VABI SHA1_nid_postfix(const unsigned char* data, std::size_t
     SHA1_Update_nid_postfix(context, data, length);
     SHA1_Final_nid_postfix(digest, context);
     return digest;
-}
-
-int APS5_VABI CRYPTO_memcmp_nid_postfix(const void* first, const void* second, std::size_t length) {
-    const auto* a = static_cast<const unsigned char*>(first);
-    const auto* b = static_cast<const unsigned char*>(second);
-    unsigned char difference = 0;
-    for (std::size_t i = 0; i < length; ++i) difference |= a[i] ^ b[i];
-    return difference;
 }
 
 }

@@ -1,11 +1,13 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/DrawWriteRanges.hpp"
+#include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ColorTargetLayout.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestTextureResource.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/VertexInput.hpp"
 #include "Optimization/ShaderStageInputInfo.hpp"
+#include "ThreadOwned.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -87,6 +89,11 @@ void Driver::noteForeignWriter(std::uint64_t begin, std::uint64_t end, std::uint
 }
 
 void Driver::noteDrawWriters(std::span<const Graphics::CompiledShader> stages, std::uint32_t queue) {
+    // A queued commit notes the list its worker collected for these stages (Graphics::PreparedWriters).
+    if (const auto* writers = Graphics::PreparedWriters(Graphics::PreparedDrawScope::Active(), stages)) {
+        for (const auto& [begin, end] : *writers) noteForeignWriter(begin, end, queue);
+        return;
+    }
     for (const auto& stage : stages) {
         forEachWrittenBuffer(*stage.program, [&](std::uint32_t, std::uint64_t begin, std::uint64_t end, bool) { noteForeignWriter(begin, end, queue); });
     }
@@ -97,7 +104,7 @@ bool ExactDrawWrites() {
     return exact;
 }
 
-std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages, bool exact) {
+std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages, bool exact, std::vector<std::pair<std::uint64_t, std::uint64_t>>* writtenBuffers) {
     constexpr std::uint64_t Slack = 64 * 1024;
     constexpr std::uint64_t UnknownBytes = 64ull * 1024 * 1024;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
@@ -106,7 +113,10 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graph
     };
     for (const auto& stage : stages) {
         if (stage.program == nullptr) continue;
-        visitWrittenBuffers(*stage.program, [&](std::uint32_t, std::uint64_t begin, std::uint64_t end, bool) { ranges.emplace_back(begin, end); });
+        visitWrittenBuffers(*stage.program, [&](std::uint32_t, std::uint64_t begin, std::uint64_t end, bool) {
+            ranges.emplace_back(begin, end);
+            if (writtenBuffers != nullptr) writtenBuffers->emplace_back(begin, end);
+        });
         for (const auto& binding : stage.program->bindings) {
             if (binding.role != ShaderRecompiler::DescriptorRole::GuestImages || binding.kind != ShaderRecompiler::DescriptorKind::StorageImage) continue;
             for (std::uint32_t element = 0; element < binding.count; ++element) {
@@ -156,8 +166,13 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> DrawWriteRanges(const Graph
     return ranges;
 }
 
-std::vector<std::pair<std::uint64_t, std::uint64_t>> Driver::drawWriteRanges(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages) {
-    return DrawWriteRanges(graphics, stages, ExactDrawWrites());
+std::vector<std::pair<std::uint64_t, std::uint64_t>> Driver::drawWriteRanges(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages, Graphics::PreparedDraw* prepared) {
+    // A queued draw's written buffers for noteDrawWriters at commit come from this walk on the
+    // queue-0 worker (APS5_NO_PREPARED_DRAW_WRITERS=1 walks the bindings at commit).
+    auto* writers = prepared != nullptr && Graphics::PreparedDrawWriters() ? &prepared->writers : nullptr;
+    auto ranges = DrawWriteRanges(graphics, stages, ExactDrawWrites(), writers);
+    if (writers != nullptr) prepared->writersPrepared = true;
+    return ranges;
 }
 
 std::vector<std::pair<std::uint64_t, std::uint64_t>> QueuedDrawReadRanges(const Pm4::DrawParameters& draw, std::span<const Graphics::CompiledShader> stages) {
@@ -193,6 +208,55 @@ std::vector<std::pair<std::uint64_t, std::uint64_t>> QueuedDrawReadRanges(const 
         add(address, bytes);
     }
     return ranges;
+}
+
+// What the commit collects (GuestMemory::CollectWrites, memoized per epoch), as a superset where the
+// exact range needs commit-time state: `reads` (the index range, every guest buffer descriptor, the
+// vertex descriptors' whole extents, where CopyDrawInput collects the part up to the highest index)
+// and `writes` (DrawWriteRanges: the color targets with DCC keys and CMASK, depth and stencil, the
+// written buffers and storage images), then what neither holds: every image element's surface and
+// DCC keys (fastRevalidate, the stage lookups, ProvedClearKeys), the HTILE (the depth view), and a
+// mip-chain color target's whole surface (refreshProved walks the resident image, not the mip).
+// Commit-time ranges that differ (an extended mip chain, a 2D array target) only walk their gaps.
+// A descriptor that does not decode is skipped: the commit reports it as before.
+void PrewalkDrawCollects(const Graphics::State& graphics, std::span<const Graphics::CompiledShader> stages, std::span<const std::pair<std::uint64_t, std::uint64_t>> writes, std::span<const std::pair<std::uint64_t, std::uint64_t>> reads) {
+    if (GuestMemory::HandOffCollectEpoch() == 0) return;
+    thread_local std::vector<std::pair<std::uint64_t, std::uint64_t>>* slot = nullptr;
+    auto& ranges = ShaderRecompiler::ThreadOwned(slot);
+    ranges.assign(reads.begin(), reads.end());
+    ranges.insert(ranges.end(), writes.begin(), writes.end());
+    const auto addSurface = [&](const Graphics::GuestTextureResource& resource) {
+        const auto bytes = Graphics::DescribeSurface(resource).guestBytes;
+        if (resource.baseAddress == 0 || bytes == 0) return;
+        ranges.emplace_back(resource.baseAddress, resource.baseAddress + bytes);
+        if (resource.dccAddress != 0) ranges.emplace_back(resource.dccAddress, resource.dccAddress + bytes / 256 + 1);
+    };
+    for (const auto& stage : stages) {
+        if (stage.program == nullptr) continue;
+        for (const auto& binding : stage.program->bindings) {
+            if (binding.role != ShaderRecompiler::DescriptorRole::GuestImages || (binding.kind != ShaderRecompiler::DescriptorKind::SampledImage && binding.kind != ShaderRecompiler::DescriptorKind::StorageImage)) continue;
+            std::span<const std::uint32_t> previous;
+            for (std::uint32_t element = 0; element < binding.count && binding.guestDescriptor.size() >= (static_cast<std::size_t>(element) + 1) * 8; ++element) {
+                const auto words = std::span<const std::uint32_t>(binding.guestDescriptor).subspan(static_cast<std::size_t>(element) * 8, 8);
+                // Consecutive equal descriptors (the mips of one storage image) are one surface.
+                if (!previous.empty() && std::equal(words.begin(), words.end(), previous.begin())) continue;
+                previous = words;
+                try {
+                    if (!Graphics::IsNullTextureResource(words)) addSurface(Graphics::DecodeTextureResource(words));
+                } catch (const std::exception&) {
+                }
+            }
+        }
+    }
+    if (graphics.depth && graphics.depth->htileAddress != 0 && graphics.depth->samples == 1) ranges.emplace_back(graphics.depth->htileAddress, graphics.depth->htileAddress + Graphics::HtileMetadataBytes(graphics.depth->extent));
+    for (const auto& color : graphics.colors) {
+        if (color.mipCount <= 1 || color.samples > 1 || color.arrayLastSlice != 0 || color.tileMode == Graphics::ColorTileMode::Linear) continue;
+        try {
+            addSurface(Graphics::SurfaceForTarget(color));
+        } catch (const std::exception&) {
+        }
+    }
+    GuestMemory::PrewalkCollects(ranges);
 }
 
 std::optional<WrittenBuffer> Driver::newestWriterLocked(std::uint64_t begin, std::uint64_t end) const {

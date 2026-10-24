@@ -28,10 +28,10 @@ constexpr int CES_ERROR_UNASSIGNED_CODE = static_cast<int>(0x805C0020);
 constexpr int CES_ERROR_INVALID_DST_BUFFER = static_cast<int>(0x805C0030);
 constexpr int CES_ERROR_DST_BUFFER_END = static_cast<int>(0x805C0031);
 
-constexpr uint8_t PROFILES[3 + SingleByte::Count] = {0, 1, 2};
-constexpr const uint8_t* CP1252_PROFILE = &PROFILES[0];
-constexpr const uint8_t* CP1251_PROFILE = &PROFILES[1];
-constexpr const uint8_t* CP1250_PROFILE = &PROFILES[2];
+constexpr uint8_t PROFILES[3 + SingleByte::Count][8] = {{0}, {1}, {2}};
+constexpr const uint8_t* CP1252_PROFILE = PROFILES[0];
+constexpr const uint8_t* CP1251_PROFILE = PROFILES[1];
+constexpr const uint8_t* CP1250_PROFILE = PROFILES[2];
 
 constexpr uint16_t CP1252_HIGH[32] = {
     0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
@@ -67,7 +67,7 @@ constexpr uint16_t CP932_IBM_HEAD[28] = {
 };
 
 const uint8_t* singleByteProfile(SingleByte::Table table) {
-    return &PROFILES[3 + table];
+    return PROFILES[3 + table];
 }
 
 const uint16_t* sbcHighTable(const void* profile) {
@@ -79,9 +79,12 @@ const uint16_t* sbcHighTable(const void* profile) {
     return nullptr;
 }
 
-uint32_t sbcToUnicode(const uint8_t* profile, uint8_t sbc) {
-    if (const uint16_t* high = sbcHighTable(profile)) return sbc >= 0x80 ? high[sbc - 0x80] : sbc;
-    return sbc >= 0x80 && sbc < 0xA0 ? CP1252_HIGH[sbc - 0x80] : sbc;
+bool sbcToUnicode(const uint8_t* profile, uint8_t sbc, uint32_t& code) {
+    code = sbc;
+    if (sbc < 0x80) return true;
+    if (const uint16_t* high = sbcHighTable(profile)) code = high[sbc - 0x80];
+    else if (sbc < 0xA0) code = CP1252_HIGH[sbc - 0x80];
+    return code != 0 && code != SingleByte::Unassigned;
 }
 
 bool unicodeToSbc(const uint8_t* profile, uint32_t code, uint8_t& sbc) {
@@ -91,7 +94,7 @@ bool unicodeToSbc(const uint8_t* profile, uint32_t code, uint8_t& sbc) {
             return true;
         }
         for (uint32_t i = 0; i < 128; ++i) {
-            if (high[i] == code) {
+            if (high[i] != SingleByte::Unassigned && high[i] == code) {
                 sbc = static_cast<uint8_t>(0x80 + i);
                 return true;
             }
@@ -577,8 +580,7 @@ int decodeMbcs(const void* profile, const uint8_t* mbcs, uint32_t mbcsMax, uint3
     const uint8_t lead = mbcs[0];
     if (isSbc(profile)) {
         length = 1;
-        code = sbcToUnicode(static_cast<const uint8_t*>(profile), lead);
-        return 0;
+        return sbcToUnicode(static_cast<const uint8_t*>(profile), lead, code) ? 0 : CES_ERROR_UNASSIGNED_CODE;
     }
     if (isSjis(profile)) {
         const bool strict = isSjisX0208(profile);
@@ -987,8 +989,7 @@ uint32_t encodeUtf32(uint32_t code, uint32_t* utf32) {
 int sbcToUnit(const uint8_t* profile, uint8_t sbc, const void* target, uint32_t& code) {
     if (!isSbc(profile)) return CES_ERROR_INVALID_PARAMETER;
     if (!target) return CES_ERROR_INVALID_DST_BUFFER;
-    code = sbcToUnicode(profile, sbc);
-    return 0;
+    return sbcToUnicode(profile, sbc, code) ? 0 : CES_ERROR_UNASSIGNED_CODE;
 }
 
 template<bool BigEndian>
@@ -1051,6 +1052,38 @@ const uint8_t* APS5_VABI sceCesRefersUcsProfileCp1251(void) {
 
 const void* APS5_VABI sceCesRefersUcsProfileCp1250(void) {
     return CP1250_PROFILE;
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileIso8859_3(void) {
+    return singleByteProfile(SingleByte::Iso8859_3);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileIso8859_6(void) {
+    return singleByteProfile(SingleByte::Iso8859_6);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileIso8859_7(void) {
+    return singleByteProfile(SingleByte::Iso8859_7);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileIso8859_8(void) {
+    return singleByteProfile(SingleByte::Iso8859_8);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileIso8859_11(void) {
+    return singleByteProfile(SingleByte::Iso8859_11);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileCp857(void) {
+    return singleByteProfile(SingleByte::Cp857);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileCp869(void) {
+    return singleByteProfile(SingleByte::Cp869);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileCp874(void) {
+    return singleByteProfile(SingleByte::Cp874);
 }
 
 const uint8_t* APS5_VABI sceCesRefersUcsProfileIso8859_1(void) {
@@ -1159,6 +1192,18 @@ const uint8_t* APS5_VABI sceCesRefersUcsProfileCp1256(void) {
 
 const uint8_t* APS5_VABI sceCesRefersUcsProfileCp1258(void) {
     return singleByteProfile(SingleByte::Cp1258);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileCp1253(void) {
+    return singleByteProfile(SingleByte::Cp1253);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileCp1255(void) {
+    return singleByteProfile(SingleByte::Cp1255);
+}
+
+const uint8_t* APS5_VABI sceCesRefersUcsProfileCp1257(void) {
+    return singleByteProfile(SingleByte::Cp1257);
 }
 
 void* APS5_VABI sceCesUcsProfileInitSJis1997Cp932(void* sheet) {
@@ -1281,8 +1326,10 @@ int APS5_VABI sceCesSbcToUtf8(const uint8_t* profile, uint8_t sbc, uint8_t* utf8
     if (!isSbc(profile)) return CES_ERROR_INVALID_PARAMETER;
     if (!utf8) return CES_ERROR_INVALID_DST_BUFFER;
 
+    uint32_t code = 0;
+    if (!sbcToUnicode(profile, sbc, code)) return CES_ERROR_UNASSIGNED_CODE;
     uint8_t encoded[4];
-    const uint32_t length = encodeUtf8(sbcToUnicode(profile, sbc), encoded);
+    const uint32_t length = encodeUtf8(code, encoded);
     if (utf8max < length) return CES_ERROR_DST_BUFFER_END;
     for (uint32_t i = 0; i < length; ++i) utf8[i] = encoded[i];
     if (utf8_len) *utf8_len = length;

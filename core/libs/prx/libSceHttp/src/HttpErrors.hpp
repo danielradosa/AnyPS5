@@ -3,6 +3,7 @@
 
 inline constexpr int ERROR_BEFORE_INIT = static_cast<int>(0x80431001);
 inline constexpr int ERROR_OUT_OF_MEMORY = static_cast<int>(0x80431022);
+inline constexpr int HTTP_ERROR_NOT_FOUND = static_cast<int>(0x80431025);
 inline constexpr int ERROR_NETWORK = static_cast<int>(0x80431063);
 inline constexpr int ERROR_ABORTED = static_cast<int>(0x80431080);
 inline constexpr int ERROR_INVALID_ID = static_cast<int>(0x80431100);

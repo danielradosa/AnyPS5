@@ -231,6 +231,7 @@ IrProgram PrepareResourceProgram(const RecompileRequest& request, ShaderPreparat
     translateOptions.shaderHash = request.shader.codeAddress;
     translateOptions.waveSize = request.context.waveSize;
     translateOptions.userDataBaseRegister = request.context.userDataBaseRegister;
+    translateOptions.gcnLegacyVertexInputs = GcnGuestShaders() && request.context.userDataBaseRegister == 0u;
     translateOptions.userDataCount = static_cast<std::uint32_t>(request.context.userData.size());
     translateOptions.scratchDwords = request.context.compute.has_value() ? request.context.compute->scratchDwords : 0u;
     translateOptions.sharedMemoryBytes = DeviceMemoryLdsBytes(request);
@@ -609,6 +610,7 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
     targetOptions.robustBufferAccess2 = request.target.robustBufferAccess2 || forceRobust;
     targetOptions.float32FlushToZero = request.target.float32FlushToZero;
     targetOptions.float32DenormPreserve = request.target.float32DenormPreserve;
+    targetOptions.fusedExactArithmetic = request.target.fusedExactArithmetic;
     targetOptions.meshBarycentricPixel = request.shader.stage == ShaderStage::Fragment && request.graphics && request.graphics->mesh;
     if (request.shader.stage == ShaderStage::Mesh && request.graphics && request.graphics->meshBarycentrics) {
         const auto& paired = *request.graphics->meshBarycentrics;
@@ -690,7 +692,7 @@ CompiledVariant emitVariant(const RecompileRequest& request, IrProgram& program)
         result.fragmentParameters = DescribeFragmentParameters(program, inputInfo);
         const auto& inputs = program.Info().inputs;
         const auto reads = [&](StageInputKind kind) { return std::any_of(inputs.begin(), inputs.end(), [&](const auto& input) { return input.kind == kind; }); };
-        if (program.Metadata().barycentricEmulation) result.barycentricEmulation = {true, reads(StageInputKind::BaryCoordSmooth), reads(StageInputKind::BaryCoordNoPerspective)};
+        if (program.Metadata().barycentricEmulation) result.barycentricEmulation = {true, reads(StageInputKind::BaryCoordSmooth), reads(StageInputKind::BaryCoordNoPerspective), program.Info().smoothOffsetBarycentrics};
     }
     if (request.shader.stage == ShaderStage::Vertex || request.shader.stage == ShaderStage::Local) {
         if (inputInfo.vertex == nullptr) throw std::runtime_error("vertex input metadata is missing");
@@ -995,7 +997,7 @@ std::shared_ptr<const SpecializedModule> specializeModule(const CompiledShaderAr
     return entry->module;
 }
 
-RecompileResult materializeResult(const CompiledVariant& variant, const RecompileRequest& request, const ResourceSnapshot& snapshot, bool registrationDefaults = false) {
+RecompileResult materializeResult(const CompiledVariant& variant, const RecompileRequest& request, const ResourceSnapshot& snapshot, bool registrationDefaults = false, std::vector<DescriptorBinding> reuse = {}) {
     RecompileResult result;
     const auto& artifact = variant.artifact;
     static_cast<CompiledShaderArtifact&>(result) = {
@@ -1138,9 +1140,11 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
     const auto resolved = ResourceMaterializer::ResolveImageTablesShared(variant.info.info, snapshot, artifact.variantId);
     const auto& tables = *resolved;
     BindingAllocationResult bindings;
+    bindings.bindings = std::move(reuse);
     DescriptorBindingBuilder{}.Populate(bindings, variant.bindings, *bindingPlan, variant.info.userDataBase, snapshot, partialThreads(request), &tables);
     result.workgroupMemoryDwords = WorkgroupMemoryStrideDwords(variant.info.info);
     result.bindings = std::move(bindings.bindings);
+    if (std::ranges::none_of(result.bindings, [](const DescriptorBinding& binding) { return binding.role == DescriptorRole::BdaPagetable || binding.role == DescriptorRole::FaultBuffer; })) result.bdaAbiVersion = 0u;
     result.pushConstants = std::move(bindings.pushConstants);
     result.readsDepthRemapPush = depthRemap;
     if (request.shader.stage == ShaderStage::Compute) {
@@ -1434,12 +1438,15 @@ std::shared_ptr<const RecompileResult> materializePreparedMemoized(SourceEntry& 
     const auto hash = snapshotHash(request, snapshot);
     std::uint64_t index = 0;
     auto& counters = resultMemoCounters();
+    std::shared_ptr<const RecompileResult> recycled;
     {
         std::lock_guard lock(source.mutex);
         index = (variant->artifact.variantId * 0x9e3779b97f4a7c15ull) ^ hash;
         if (auto* set = memoSet(source, index)) {
+            auto* victim = set;
             for (std::size_t way = 0; way < ResultMemoWays; ++way) {
                 auto& entry = set[way];
+                if (entry.used < victim->used) victim = &entry;
                 if (entry.result == nullptr || entry.variantId != variant->artifact.variantId || entry.hash != hash) continue;
                 entry.used = ++source.memoClock;
                 counters.hits.fetch_add(1, std::memory_order_relaxed);
@@ -1447,10 +1454,17 @@ std::shared_ptr<const RecompileResult> materializePreparedMemoized(SourceEntry& 
                 reportResultMemo();
                 return entry.result;
             }
+            if (victim->result != nullptr && victim->result.use_count() == 1) {
+                recycled = std::move(victim->result);
+                *victim = {};
+                counters.evictions.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
+    std::vector<DescriptorBinding> reuse;
+    if (recycled != nullptr) reuse = std::move(const_cast<RecompileResult&>(*recycled).bindings);
     const auto started = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    auto result = std::make_shared<RecompileResult>(materializeResult(*variant, request, snapshot));
+    auto result = std::make_shared<RecompileResult>(materializeResult(*variant, request, snapshot, false, std::move(reuse)));
     result->cacheHit = cacheHit;
     if (profile) counters.populateNanoseconds.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()), std::memory_order_relaxed);
     counters.misses.fetch_add(1, std::memory_order_relaxed);

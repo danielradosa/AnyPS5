@@ -15,8 +15,8 @@ int APS5_VABI sceImeDialogAbort(void);
 int APS5_VABI sceImeDialogTerm(void);
 int APS5_VABI sceImeDialogForTestFunction(void);
 int APS5_VABI sceImeDialogForceClose(void);
-int APS5_VABI sceImeDialogGetCurrentStarState(std::uint32_t*);
-int APS5_VABI sceImeDialogInitInternal(Param*, ExtendedParam*);
+int APS5_VABI sceImeDialogGetCurrentStarState(std::int64_t);
+int APS5_VABI sceImeDialogInitInternal(const Param*, const ExtendedParam*);
 int APS5_VABI sceImeDialogSetPanelPosition(std::int32_t, std::int32_t);
 }
 
@@ -29,8 +29,8 @@ constexpr std::uint32_t EndStatusOk = 0;
 constexpr std::uint32_t EndStatusUserCanceled = 1;
 constexpr std::uint32_t EndStatusAborted = 2;
 constexpr int ErrorBusy = static_cast<int>(0x80bc0001u);
+constexpr int ErrorSuspending = static_cast<int>(0x80bc0009u);
 constexpr int ErrorNotOpened = static_cast<int>(0x80bc0002u);
-constexpr int ErrorImeSuspending = static_cast<int>(0x80bc0009u);
 constexpr int ErrorInternal = static_cast<int>(0x80bc00ffu);
 constexpr int ErrorNotInUse = static_cast<int>(0x80bc0107u);
 constexpr int ErrorInvalidMaxTextLength = static_cast<int>(0x80bc0016u);
@@ -194,33 +194,31 @@ int main() {
     Require(!ImeCapturesKeyboard_nid_postfix());
 
     Require(sceImeDialogForTestFunction() == ErrorInternal);
-    std::uint32_t star = 0x5a5a5a5au;
-    Require(sceImeDialogGetCurrentStarState(&star) == ErrorNotOpened);
-    Require(sceImeDialogSetPanelPosition(100, 200) == ErrorNotOpened);
-
-    Param internal = DialogParam(buffer, 8);
+    std::uint32_t star = 0xa5a5a5a5u;
+    const auto starAddress = static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(&star));
+    Require(sceImeDialogGetCurrentStarState(starAddress) == ErrorNotInUse && star == 0xa5a5a5a5u);
+    Require(sceImeDialogSetPanelPosition(640, 360) == ErrorNotInUse);
     Require(sceImeDialogInitInternal(nullptr, nullptr) == ErrorInvalidAddress);
-    Require(sceImeDialogInitInternal(&internal, nullptr) == 0);
-    Require(sceImeDialogGetStatus() == StatusRunning);
-    Require(ImeCapturesKeyboard_nid_postfix());
-    Require(sceImeDialogInitInternal(&internal, nullptr) == ErrorBusy);
+    Require(sceImeDialogInitInternal(&empty, nullptr) == ErrorInvalidMaxTextLength);
+    Require(sceImeDialogGetStatus() == StatusNone);
+    Require(sceImeDialogInitInternal(&param, nullptr) == 0);
+    Require(sceImeDialogGetStatus() == StatusRunning && ImeCapturesKeyboard_nid_postfix());
+    Require(sceImeDialogInitInternal(&param, nullptr) == ErrorBusy);
     Require(sceImeDialogInit(&param, nullptr) == ErrorBusy);
-    Require(sceImeDialogGetCurrentStarState(nullptr) == ErrorInvalidAddress);
-    Require(sceImeDialogGetCurrentStarState(&star) == ErrorImeSuspending && star == 0x5a5a5a5au);
-    Require(sceImeDialogSetPanelPosition(100, 200) == ErrorImeSuspending);
+    Require(sceImeDialogGetCurrentStarState(0) == ErrorInvalidAddress);
+    Require(sceImeDialogGetCurrentStarState(starAddress) == 0 && star == 0);
+    Require(sceImeDialogSetPanelPosition(640, 360) == ErrorSuspending);
+    Require(sceImeDialogAbort() == 0);
+    star = 0xa5a5a5a5u;
+    Require(sceImeDialogGetCurrentStarState(starAddress) == 0 && star == 0);
+    Require(sceImeDialogSetPanelPosition(0, 0) == ErrorSuspending);
+    Close();
+
+    Require(sceImeDialogInitInternal(&param, nullptr) == 0);
     Type("lost");
     Require(sceImeDialogForceClose() == 0);
     Require(sceImeDialogGetStatus() == StatusNone);
     Require(!ImeCapturesKeyboard_nid_postfix());
     Require(std::u16string(buffer) == u"keep!");
     Require(sceImeDialogTerm() == ErrorNotOpened);
-
-    Open(param);
-    Press(SDL_SCANCODE_RETURN);
-    Require(sceImeDialogGetStatus() == StatusFinished);
-    Require(sceImeDialogGetCurrentStarState(&star) == ErrorImeSuspending);
-    Require(sceImeDialogSetPanelPosition(0, 0) == ErrorImeSuspending);
-    Require(sceImeDialogForceClose() == 0);
-    Require(sceImeDialogGetStatus() == StatusNone);
-    Require(sceImeDialogGetResult(&early) == ErrorNotOpened);
 }

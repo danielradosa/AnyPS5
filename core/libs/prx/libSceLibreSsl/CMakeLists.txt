@@ -20,7 +20,8 @@ add_library(libSceLibreSsl SHARED EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/E
     ${CMAKE_CURRENT_SOURCE_DIR}/src/X509Ext.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/PemX509.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Verify.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Pkcs12.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Pkcs12.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Ocsp.cpp)
 target_include_directories(libSceLibreSsl PRIVATE ${LIBS_INCLUDE_DIR})
 target_link_libraries(libSceLibreSsl PRIVATE mbedtls mbedx509 mbedcrypto)
 set_target_properties(libSceLibreSsl PROPERTIES VISIBILITY_INLINES_HIDDEN ON)
@@ -33,6 +34,16 @@ endif()
 configure_windows_unwind(libSceLibreSsl)
 
 if(BUILD_TESTING)
+    add_test_executable(guest_libressl_x509_errors_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslX509Errors.cpp)
+    target_include_directories(guest_libressl_x509_errors_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_x509_errors_tests PRIVATE libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl_x509_errors_tests)
+    add_test(NAME guest_libressl_x509_errors COMMAND guest_libressl_x509_errors_tests)
+    set_tests_properties(guest_libressl_x509_errors PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl_x509_errors PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
     add_test_executable(guest_libressl_digest_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslDigest.cpp)
     target_include_directories(guest_libressl_digest_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_libressl_digest_tests PRIVATE libSceLibreSsl libc)
@@ -221,6 +232,16 @@ if(BUILD_TESTING)
     set_tests_properties(guest_libressl_tls_verify PROPERTIES TIMEOUT 60)
     if(WIN32)
         set_tests_properties(guest_libressl_tls_verify PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
+    endif()
+    add_test_executable(guest_libressl_ocsp_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibreSslOcsp.cpp)
+    target_include_directories(guest_libressl_ocsp_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_libressl_ocsp_tests PRIVATE libSceLibreSsl libc)
+    configure_windows_unwind(guest_libressl_ocsp_tests)
+    add_test(NAME guest_libressl_ocsp COMMAND guest_libressl_ocsp_tests)
+    set_tests_properties(guest_libressl_ocsp PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(guest_libressl_ocsp PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceLibreSsl>")
     endif()
 endif()

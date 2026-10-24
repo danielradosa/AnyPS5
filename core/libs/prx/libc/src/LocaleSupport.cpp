@@ -392,6 +392,8 @@ int APS5_VABI isprint_nid_postfix(int c) { return ClassifyCharacter(c, std::ctyp
 int APS5_VABI isgraph_nid_postfix(int c) { return ClassifyCharacter(c, std::ctype_base::graph); }
 int APS5_VABI ispunct_nid_postfix(int c) { return ClassifyCharacter(c, std::ctype_base::punct); }
 int APS5_VABI isxdigit_nid_postfix(int c) { return ClassifyCharacter(c, std::ctype_base::xdigit); }
+int APS5_VABI isascii_nid_postfix(int c) { return (c & ~0x7F) == 0; }
+int APS5_VABI toascii_nid_postfix(int c) { return c & 0x7F; }
 int APS5_VABI toupper_nid_postfix(int c) { return ConvertCharacter(c, true); }
 int APS5_VABI tolower_nid_postfix(int c) { return ConvertCharacter(c, false); }
 
@@ -405,6 +407,9 @@ std::uint64_t _ZNSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE2idE_n
 std::uintptr_t _ZTVSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE_nid_postfix[12] {};
 std::uint64_t _ZNSt8numpunctIcE2idE_nid_postfix = 0;
 std::uint64_t _ZNSt8time_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;
+std::uint64_t _ZNSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;
+std::uintptr_t _ZTVSt7num_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE_nid_postfix[17] {};
+std::uint64_t _ZNSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE2idE_nid_postfix = 0;
 
 std::streamoff _ZSt7_BADOFF_nid_postfix = -1;
 std::fpos_t _ZSt4_Fpz_nid_postfix {};
@@ -439,6 +444,33 @@ static_assert(sizeof(StreamManipulator) == 0x10);
 
 StreamManipulator APS5_VABI _ZSt4setwi_nid_postfix(std::int32_t width) {
     return {&SetStreamWidth, width};
+}
+
+GuestLocale::IosBase* APS5_VABI SetStreamPrecision(GuestLocale::IosBase* stream, std::int32_t precision) {
+    if (stream == nullptr) throw std::invalid_argument("setprecision: null stream");
+    stream->precision = precision;
+    return stream;
+}
+
+StreamManipulator APS5_VABI _ZSt12setprecisioni_nid_postfix(std::int32_t precision) {
+    return {&SetStreamPrecision, precision};
+}
+
+void* APS5_VABI SetStreamWidthV2(void* stream, std::int64_t width) {
+    if (stream == nullptr) throw std::invalid_argument("setw: null stream");
+    std::memcpy(static_cast<std::byte*>(stream) + 0x28, &width, sizeof(width));
+    return stream;
+}
+
+struct StreamManipulatorV2 {
+    void* (APS5_VABI* function)(void*, std::int64_t);
+    std::int64_t argument;
+};
+
+static_assert(sizeof(StreamManipulatorV2) == 0x10);
+
+StreamManipulatorV2 APS5_VABI _ZNSt8__sce_v24setwEx_nid_postfix(std::int64_t width) {
+    return {&SetStreamWidthV2, width};
 }
 
 void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(GuestLocale::IosBase* self) {

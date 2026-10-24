@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -93,6 +94,7 @@ void APS5_VABI sceNpCalloutTermCtx(NpCalloutContext* context);
 int APS5_VABI sceNpCalloutStartOnCtx(NpCalloutContext* context, NpCallout* callout, std::uint32_t usec, void (APS5_VABI *handler)(void* arg), void* arg);
 int APS5_VABI sceNpCalloutStopOnCtx(NpCalloutContext* context, NpCallout* callout, int* wasPending);
 int APS5_VABI sceNpUtilCmpAccountId(std::uint64_t left, std::uint64_t right);
+int APS5_VABI sceNpCmpNpId(const void* npId1, const void* npId2);
 bool APS5_VABI sceNpIntIsOnlineIdString(const char* text);
 int APS5_VABI sceNpUtilGetNpLanguageCode(int language, char* code);
 int APS5_VABI sceNpUtilGetNpLanguageCode2(int language, char* tag);
@@ -292,6 +294,19 @@ void TestCallouts() {
     Require(sceNpCalloutStopOnCtx(&context, &stopped, &wasPending) == 0 && wasPending == 1, "a queued callout is removed");
     Require(sceNpCalloutStopOnCtx(&context, &stopped, &wasPending) == 0 && wasPending == 0, "removing twice reports nothing pending");
 
+    NpCallout queuedFirst {};
+    NpCallout queuedSecond {};
+    Require(sceNpCalloutStartOnCtx(&context, &queuedFirst, 30000000, RecordUnexpected, nullptr) == 0, "an earlier distant callout is queued");
+    Require(sceNpCalloutStartOnCtx(&context, &queuedSecond, 60000000, RecordUnexpected, nullptr) == 0, "a later distant callout is queued");
+    const std::uint64_t queuedDeadline = queuedFirst.deadline;
+    Require(sceNpCalloutStartOnCtx(&context, &queuedFirst, 0, RecordFirst, &context) == NpAlreadyQueued,
+        "the earlier callout cannot be queued again");
+    Require(queuedFirst.next == &queuedSecond && queuedFirst.deadline == queuedDeadline && queuedFirst.handler == RecordUnexpected &&
+        queuedFirst.arg == nullptr, "a rejected start leaves the queued callout unchanged");
+    Require(sceNpCalloutStopOnCtx(&context, &queuedSecond, &wasPending) == 0 && wasPending == 1,
+        "the later callout is still pending after the rejected start");
+    Require(sceNpCalloutStopOnCtx(&context, &queuedFirst, &wasPending) == 0 && wasPending == 1, "the earlier callout is still pending");
+
     NpCallout later {};
     Require(sceNpCalloutStartOnCtx(&context, &later, 20000, RecordSecond, nullptr) == 0, "a later callout is queued");
     Require(sceNpCalloutStartOnCtx(&context, &callout, 1000, RecordFirst, nullptr) == 0, "an earlier callout is queued");
@@ -308,6 +323,29 @@ bool Equals(const char* actual, const char* expected) {
 
 void TestIds() {
     Require(sceNpUtilCmpAccountId(7, 7) == 0 && sceNpUtilCmpAccountId(7, 8) == 1, "account ids compare for equality");
+
+    constexpr int NullArgument = static_cast<int>(0x80550003);
+    constexpr int InvalidNpId = static_cast<int>(0x80550605);
+    constexpr int NotMatch = static_cast<int>(0x80550609);
+    auto makeNpId = [](const char* name, std::uint32_t opt, std::uint32_t platform) {
+        std::array<std::uint8_t, 0x24> id{};
+        std::memcpy(id.data(), name, std::strlen(name));
+        std::memcpy(id.data() + 0x14, &opt, sizeof(opt));
+        std::memcpy(id.data() + 0x18, &platform, sizeof(platform));
+        id[0x1C] = 1;
+        return id;
+    };
+    const auto alice = makeNpId("Alice_01", 5, 0x11223344);
+    auto other = alice;
+    Require(sceNpCmpNpId(nullptr, alice.data()) == NullArgument && sceNpCmpNpId(alice.data(), nullptr) == NullArgument, "null NpIds are refused");
+    Require(sceNpCmpNpId(alice.data(), other.data()) == 0, "identical NpIds match");
+    other[0x1C] = 0;
+    Require(sceNpCmpNpId(alice.data(), other.data()) == InvalidNpId && sceNpCmpNpId(other.data(), alice.data()) == InvalidNpId, "the flag byte at 0x1C must be 1");
+    Require(sceNpCmpNpId(makeNpId("Bob-2", 5, 0x11223344).data(), alice.data()) == NotMatch, "different online ids do not match");
+    Require(sceNpCmpNpId(makeNpId("Alice_01", 6, 0x11223344).data(), alice.data()) == NotMatch, "different words at 0x14 do not match");
+    Require(sceNpCmpNpId(makeNpId("Alice_01", 5, 0).data(), alice.data()) == 0, "an empty first byte at 0x18 on the first id matches");
+    Require(sceNpCmpNpId(alice.data(), makeNpId("Alice_01", 5, 0).data()) == 0, "an empty first byte at 0x18 on the second id matches");
+    Require(sceNpCmpNpId(alice.data(), makeNpId("Alice_01", 5, 0x11223355).data()) == NotMatch, "different words at 0x18 do not match");
 
     Require(sceNpIntIsOnlineIdString("Alice_01") && sceNpIntIsOnlineIdString("Bob-2"), "letters, digits, '_' and '-' are allowed");
     Require(!sceNpIntIsOnlineIdString("ab") && !sceNpIntIsOnlineIdString("abcdefghijklmnopq"), "online ids are 3 to 16 characters");

@@ -299,6 +299,7 @@ int APS5_VABI sceNpSessionSignalingGetGroupFromSessionId(std::uint32_t contextId
 }
 
 int APS5_VABI sceNpSessionSignalingGetGroupInfo(std::uint32_t contextId, std::uint32_t groupId, SessionSignalingGroupInfo* groupInfo) {
+    (void)groupId;
     std::lock_guard lock(g_mutex);
     if (!g_initialized) return SCE_NP_SESSION_SIGNALING_ERROR_NOT_INITIALIZED;
     if (!groupInfo) return SCE_NP_SESSION_SIGNALING_ERROR_INVALID_ARGUMENT;
@@ -306,10 +307,13 @@ int APS5_VABI sceNpSessionSignalingGetGroupInfo(std::uint32_t contextId, std::ui
     return SCE_NP_SESSION_SIGNALING_ERROR_GROUP_NOT_FOUND;
 }
 
-int APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress2(std::uint32_t contextId, std::uint32_t groupId, std::uint32_t address, std::uint16_t port, SessionSignalingGroupInfo* groupInfo) {
+int APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress2(std::uint32_t contextId, std::uint32_t groupId, std::uint32_t address, std::uint16_t port, std::uint32_t* connectionId) {
+    (void)groupId;
+    (void)address;
+    (void)port;
     std::lock_guard lock(g_mutex);
     if (!g_initialized) return SCE_NP_SESSION_SIGNALING_ERROR_NOT_INITIALIZED;
-    if (!groupInfo) return SCE_NP_SESSION_SIGNALING_ERROR_INVALID_ARGUMENT;
+    if (!connectionId) return SCE_NP_SESSION_SIGNALING_ERROR_INVALID_ARGUMENT;
     if (!FindContext(contextId)) return SCE_NP_SESSION_SIGNALING_ERROR_CONTEXT_NOT_FOUND;
     return SCE_NP_SESSION_SIGNALING_ERROR_GROUP_NOT_FOUND;
 }
@@ -320,6 +324,8 @@ int APS5_VABI sceNpSessionSignalingCreateJoinActivate() {
 }
 
 int APS5_VABI sceNpSessionSignalingGetConnectionFromNetAddress(std::uint32_t contextId, std::uint32_t address, std::uint16_t port, std::uint32_t* connectionId) {
+    (void)address;
+    (void)port;
     std::lock_guard lock(g_mutex);
     if (!g_initialized) return SCE_NP_SESSION_SIGNALING_ERROR_NOT_INITIALIZED;
     if (!connectionId) return SCE_NP_SESSION_SIGNALING_ERROR_INVALID_ARGUMENT;

@@ -13,6 +13,8 @@
 namespace AgcDriver::Graphics {
 
 struct HostImport;
+class VertexInputCache;
+struct VertexInputLayout;
 
 // `recipe`, when given, receives the DrawRecipe a recorded, cacheable, reusable, non-indirect draw
 // built for its draw-cache entry (design_cpu_final M8; null otherwise, and always under
@@ -20,6 +22,72 @@ struct HostImport;
 void Draw(const Context& context, const State& state, const Pm4::DrawParameters& draw, std::span<const CompiledShader> shaders, std::span<const GuestMemorySnapshot> snapshots = {}, std::shared_ptr<const DrawRecipe>* recipe = nullptr);
 std::optional<std::string> KnownValidationFailure(const Context& context, std::span<const CompiledShader> shaders, const State& state);
 std::uint64_t DrawRenderPassKey(const Context& context, const State& state, std::span<const VkImageView> targetViews);
+
+// A pipelined draw's per-draw work done by the queue-0 worker before DrawPipeline::Enqueue, so the
+// draw committer (the pipeline's serial stage) does not do it. Nothing in it is trusted as is: the
+// committer takes a piece only when its check passes (the device handle, the stages field for field,
+// and what the piece depends on), else it computes the piece as before. The worker builds it with
+// PrepareDraw (VulkanDevice::PrepareDraw), the queued commit makes it current with
+// PreparedDrawScope, and only that commit's Draw (and the driver's noteDrawWriters) reads it. Pieces,
+// each with its own switch (read once; =1 restores the old path): the resource content key
+// (APS5_NO_PREPARED_DRAW_KEY), the written guest buffer list (APS5_NO_PREPARED_DRAW_WRITERS) and
+// the draw-only inputs (APS5_NO_PREPARED_DRAW_INPUTS).
+struct PreparedDraw {
+    // What it was computed for. The stages' programs are owned by the queued item and do not change
+    // after the enqueue, so equal pointers mean equal contents.
+    VkDevice device = VK_NULL_HANDLE;
+    std::vector<CompiledShader> shaders;
+    // DrawResourceKey with the default trim (APS5_NO_DRAW_KEY_TRIM unset) for `colorAttachments`
+    // color attachments; empty when not prepared or already taken.
+    ResourceCache::Key contentKey;
+    std::uint32_t colorAttachments = 0;
+    bool trimmedKey = false;
+    // The stages' written guest buffer ranges in the order the driver's noteDrawWriters notes them,
+    // collected by the worker's DrawWriteRanges walk (Driver::drawWriteRanges sets them).
+    bool writersPrepared = false;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> writers;
+    // prepareDrawInputs' draw-only parts: the fragment outputs from the validation memo (a hit only:
+    // a validation that has not run yet, or that fails, stays on the committer) with the pipeline
+    // stages, and the vertex input layout from the device's VertexInputCache (null when the worker
+    // got none). They depend on the device's features, the state's fields (`state`: the immutable
+    // object the queued item owns) and the stages.
+    const State* state = nullptr;
+    const VertexInputCache* vertexInputs = nullptr;
+    bool outputsPrepared = false;
+    std::uint32_t fragmentOutputs = 0;
+    VkPipelineStageFlags shaderStages = 0;
+    std::shared_ptr<const VertexInputLayout> vertexInput;
+
+    bool SameStages(std::span<const CompiledShader> other) const;
+};
+bool PreparedDrawKeys();
+bool PreparedDrawWriters();
+bool PreparedDrawInputs();
+// Null when every piece is switched off or a stage has no program. `resources` is false when the
+// draw has a recipe (DrawWithRecipe needs neither the key nor the inputs).
+std::shared_ptr<PreparedDraw> PrepareDraw(const Context& context, const State& state, std::span<const CompiledShader> shaders, bool resources);
+// Moves the prepared key into `key` when it was made for this device, these stages, this attachment
+// count and the current trim mode; counted as used or rejected on the [rescache] line.
+bool TakePreparedKey(PreparedDraw* prepared, const Context& context, const State& state, std::span<const CompiledShader> shaders, ResourceCache::Key& key);
+// The prepared written buffer list when it was collected for these stages (it depends on nothing
+// else), null otherwise; counted as used or rejected on the [rescache] line.
+const std::vector<std::pair<std::uint64_t, std::uint64_t>>* PreparedWriters(const PreparedDraw* prepared, std::span<const CompiledShader> shaders);
+// The prepared inputs when they were made for this device (handle and vertex input cache), this state
+// object and these stages, null otherwise; counted as used or rejected on the [rescache] line.
+const PreparedDraw* PreparedInputs(const PreparedDraw* prepared, const Context& context, const State& state, std::span<const CompiledShader> shaders);
+// The calling thread's current prepared draw while a queued commit runs (nested scopes restore the
+// outer one).
+class PreparedDrawScope {
+public:
+    explicit PreparedDrawScope(PreparedDraw* prepared);
+    ~PreparedDrawScope();
+    PreparedDrawScope(const PreparedDrawScope&) = delete;
+    PreparedDrawScope& operator=(const PreparedDrawScope&) = delete;
+    static PreparedDraw* Active();
+
+private:
+    PreparedDraw* previous;
+};
 
 struct DrawInputCopy {
     std::shared_ptr<Buffer> buffer;
@@ -95,6 +163,8 @@ bool DrawRecipes();
 enum class IndirectDrawPath : std::uint8_t { Gpu, NotFolded, FetchUnknown, NonVertexPath, IndxOffset, DrawIndex, VertexRange, FeatureGap, PendingImage, PendingLabel, CopiedWriter, NotImported, Disabled, IndexRange, Count };
 void CountIndirectDraw(IndirectDrawPath path, double readMs, bool rewritten = false);
 std::array<std::uint64_t, static_cast<std::size_t>(IndirectDrawPath::Count)> IndirectDrawCounts();
+void CountEmptyIndirectDraw(double readMs);
+std::uint64_t EmptyIndirectDrawCount();
 
 struct DrawPassCounts {
     std::uint64_t draws = 0;
@@ -129,6 +199,9 @@ std::shared_ptr<std::vector<std::shared_ptr<ShaderResources>>> DrawCopiedWriters
 
 void RunColorMetadataPass(const Context& context, const ColorMetadataPass& pass);
 void RunDepthCopyPass(const Context& context, const DepthCopyPass& pass);
+std::vector<std::pair<std::uint64_t, std::uint64_t>> PipelinedColorMetadataPassWrites(const ColorMetadataPass& pass);
+bool DrawPipelineEnabled();
+bool CommitTrims();
 
 }
 

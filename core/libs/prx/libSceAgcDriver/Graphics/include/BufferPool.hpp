@@ -4,6 +4,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
 #include <atomic>
 #include <chrono>
+#include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
 #include <cstdint>
 #include <deque>
 #include <limits>
@@ -35,6 +36,7 @@ struct SlabSlot {
     VkDeviceMemory memory;
     VkDeviceSize offset;
     void* mapping;
+    std::uint32_t memoryType = 0;
 };
 
 // Released buffer allocations kept for reuse, since creating, binding and mapping one costs tens of
@@ -69,7 +71,8 @@ public:
     // APS5_VRAM_MARGIN_MIB (default 384, 0 = no margin).
     static VkDeviceSize VramMargin();
     // APS5_VRAM_DRAW_INPUTS=1: kept vertex and index snapshots are made in device-local host-visible memory, at most
-    // APS5_VRAM_DRAW_INPUTS_MIB (default 256) live, and the pool does not retain such buffers. 0 = off.
+    // APS5_VRAM_DRAW_INPUTS_MIB (default 256) live, and the pool does not retain device-local host-visible vertex or
+    // index buffers. 0 = off. Copies past the cap take Context::SnapshotProperties (vertex) or host memory (index).
     static std::size_t VramDrawInputCap();
     static bool VramDrawInputFits(std::size_t live, std::size_t bytes, std::size_t cap, VkDeviceSize usage, VkDeviceSize budget, VkDeviceSize margin);
     static inline std::atomic<std::size_t> VramDrawInputBytes{0};
@@ -88,7 +91,7 @@ public:
     void Put(const BufferAllocation& allocation) noexcept;
     static bool SlabEligible(std::size_t capacity, VkDeviceSize alignment, VkDeviceSize size, VkDeviceSize atom);
     static VkDeviceSize SlabBlockBytes(std::size_t capacity);
-    SlabSlot TakeSlot(const Context& context, std::uint32_t memoryType, std::size_t capacity, bool addressable);
+    SlabSlot TakeSlot(const Context& context, std::uint32_t memoryType, std::size_t capacity, bool addressable, std::optional<std::uint32_t> hostType = std::nullopt);
     VkDeviceSize PutSlot(VkDeviceMemory memory, VkDeviceSize offset) noexcept;
     std::size_t SlabBlocks();
 
@@ -100,6 +103,7 @@ private:
         std::vector<std::uint32_t> free;
         std::uint32_t used = 0;
         std::uint64_t slab = 0;
+        std::uint32_t memoryType = 0;
     };
     struct Slab {
         std::vector<SlabBlock*> available;
@@ -169,7 +173,7 @@ private:
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     PFN_vkGetPhysicalDeviceMemoryProperties2 memoryProperties2 = nullptr;
-    std::mutex mutex;
+    AgcDriver::Mutex mutex;
     // Not `small`/`large`: <rpcndr.h> (via <windows.h>) defines `small` as a macro.
     Tier smallTier;
     Tier largeTier;
@@ -187,7 +191,7 @@ private:
     std::optional<std::uint32_t> deviceHeap;
     std::chrono::steady_clock::time_point allowanceChecked{};
     VkDeviceSize deviceAllowance = std::numeric_limits<VkDeviceSize>::max();
-    std::mutex slabMutex;
+    AgcDriver::Mutex slabMutex;
     std::unordered_map<std::uint64_t, Slab> slabs;
     std::unordered_map<VkDeviceMemory, std::unique_ptr<SlabBlock>> slabBlocks;
     static constexpr VkDeviceSize budget = 512ull * 1024 * 1024;

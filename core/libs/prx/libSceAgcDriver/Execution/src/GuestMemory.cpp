@@ -1,6 +1,7 @@
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/HandoffSpin.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTrace.hpp"
 #include "prx/libSceAgcDriver/Execution/include/WriteWatchCoverage.hpp"
 #include "ThreadOwned.hpp"
@@ -8,6 +9,7 @@
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
+#include "prx/libc/include/HostThreadSlot.hpp"
 #include <mutex>
 #include <array>
 #include <chrono>
@@ -90,6 +92,21 @@ std::atomic<std::uint64_t> forgetSerial{0};
 std::atomic<std::uint64_t> forgetBytes{0};
 std::atomic<std::uint64_t> collectMemoHits{0};
 std::atomic<std::uint64_t> collectEpochBumps{0};
+// Collect handoff counters ([guestmem], see HandOffCollectEpoch): the committer's memoized collects
+// served without a walk vs walked (and the bytes walked), the worker's pre-walked ranges (bytes asked,
+// bytes no walk of the epoch covered yet). Each set has one writing thread, on its own cache line.
+struct alignas(64) HandoffCommitterCounts {
+    std::atomic<std::uint64_t> hits{0};
+    std::atomic<std::uint64_t> walks{0};
+    std::atomic<std::uint64_t> walkedBytes{0};
+};
+struct alignas(64) HandoffWorkerCounts {
+    std::atomic<std::uint64_t> ranges{0};
+    std::atomic<std::uint64_t> bytes{0};
+    std::atomic<std::uint64_t> uncoveredBytes{0};
+};
+HandoffCommitterCounts handoffCommitter;
+HandoffWorkerCounts handoffWorker;
 std::atomic<std::uint64_t> unwatchSerial{0};
 // Walks that reported at least one written page (the ones the probe pass used to double), and the
 // tracker mutex acquisitions that had to wait (APS5_PROFILE_DRAW; see lockTracker).
@@ -153,13 +170,13 @@ struct MemoryCounters {
 };
 
 struct MemoryProfile {
-    std::mutex threadsMutex;
+    AgcDriver::Mutex threadsMutex;
     std::vector<const MemoryCounters*> threads;
     MemoryCounters retired;
     MemoryCounters shared;
     std::atomic<std::int64_t> lastReport{0};
     // Sampled callers of Read and Write (module offsets), to name what touches guest memory most.
-    std::mutex callersMutex;
+    AgcDriver::Mutex callersMutex;
     std::array<std::pair<unsigned long long, std::uint64_t>, 16> callers{};
     std::array<std::pair<unsigned long long, std::uint64_t>, 16> writeCallers{};
 };
@@ -223,19 +240,19 @@ void CountCaller(std::array<std::pair<unsigned long long, std::uint64_t>, 16>& c
     }
 }
 
-// Attribution tags (see the header): the packet a queue worker executes and the read site the
-// driver code named. Plain thread-locals; a store per packet costs nothing measurable.
-thread_local PacketTag currentPacket{NoPacket, 0xffffffffu};
-thread_local ReadSite currentReadSite = ReadSite::Unknown;
+struct CurrentPacketSlot {};
+struct CurrentReadSiteSlot {};
+constexpr std::uint64_t NoPacketBits = NoPacket | (std::uint64_t{0xffffffffu} << 32u);
 // Sampled reads by site (every 256th Read/ReadCommitted, like the callers), for the [guestmem] line.
 std::atomic<std::uint64_t> readSiteSamples[static_cast<std::size_t>(ReadSite::Count)] = {};
 
 void SetCurrentPacket(std::uint32_t opcode, std::uint32_t queue) {
-    currentPacket = {opcode, queue};
+    HostThreadSlot<std::uint64_t, CurrentPacketSlot>::Set((opcode | (std::uint64_t{queue} << 32u)) ^ NoPacketBits);
 }
 
 PacketTag CurrentPacket() {
-    return currentPacket;
+    const auto bits = HostThreadSlot<std::uint64_t, CurrentPacketSlot>::Get() ^ NoPacketBits;
+    return {static_cast<std::uint32_t>(bits), static_cast<std::uint32_t>(bits >> 32u)};
 }
 
 const char* ReadSiteName(ReadSite site) {
@@ -245,11 +262,13 @@ const char* ReadSiteName(ReadSite site) {
 }
 
 ReadSite SetReadSite(ReadSite site) {
-    return std::exchange(currentReadSite, site);
+    const auto previous = HostThreadSlot<ReadSite, CurrentReadSiteSlot>::Get();
+    HostThreadSlot<ReadSite, CurrentReadSiteSlot>::Set(site);
+    return previous;
 }
 
 ReadSite CurrentReadSite() {
-    return currentReadSite;
+    return HostThreadSlot<ReadSite, CurrentReadSiteSlot>::Get();
 }
 
 std::size_t CaptureCallerOffsets(std::span<unsigned long long> frames, unsigned skip) {
@@ -290,7 +309,7 @@ std::size_t CaptureCallerOffsets(std::span<unsigned long long> frames, unsigned 
 void CountReadCaller(const void* returnAddress) {
     thread_local std::uint32_t sampled = 0;
     // Sampled at the same rate as the callers, in step with them (CountCaller advances the counter).
-    if ((sampled + 1) % 256 == 0) readSiteSamples[static_cast<std::size_t>(currentReadSite)].fetch_add(256, std::memory_order_relaxed);
+    if ((sampled + 1) % 256 == 0) readSiteSamples[static_cast<std::size_t>(CurrentReadSite())].fetch_add(256, std::memory_order_relaxed);
     CountCaller(Profile().callers, sampled, 256, returnAddress);
 }
 
@@ -321,6 +340,10 @@ public:
             AgcDriver::ProfilePrint_nid_no_patch(" %s %llu calls %.0f MiB %.1f s", MemoryCounterNames[i], static_cast<unsigned long long>(totals[i][0]), totals[i][1] / 1048576.0, totals[i][2] / 1e9);
         }
         AgcDriver::ProfilePrint_nid_no_patch(" collect-memo hits %llu, collect epochs %llu", static_cast<unsigned long long>(collectMemoHits.load()), static_cast<unsigned long long>(collectEpochBumps.load()));
+        // Only once the handoff engaged (never with APS5_NO_COLLECT_HANDOFF=1): cumulative.
+        if (const auto hits = handoffCommitter.hits.load(), walks = handoffCommitter.walks.load(), ranges = handoffWorker.ranges.load(); hits != 0 || walks != 0 || ranges != 0) {
+            AgcDriver::ProfilePrint_nid_no_patch(" collect handoff: committer hits %llu walks %llu (%.0f MiB), worker pre-walks %llu ranges %.0f MiB (%.0f MiB uncovered)", static_cast<unsigned long long>(hits), static_cast<unsigned long long>(walks), handoffCommitter.walkedBytes.load() / 1048576.0, static_cast<unsigned long long>(ranges), handoffWorker.bytes.load() / 1048576.0, handoffWorker.uncoveredBytes.load() / 1048576.0);
+        }
         AgcDriver::ProfilePrint_nid_no_patch(" collect-dirty %llu tracker waits %llu / %llu", static_cast<unsigned long long>(collectDirty.load()), static_cast<unsigned long long>(trackerWaits.load()), static_cast<unsigned long long>(trackerAcquisitions.load()));
         AgcDriver::ProfilePrint_nid_no_patch(" | arena 0x%llx+0x%llx image 0x%llx+0x%llx forgets %llu (%.0f MiB)", static_cast<unsigned long long>(PagesBase()), static_cast<unsigned long long>(PagesSize()), static_cast<unsigned long long>(ImagePagesBase()), static_cast<unsigned long long>(ImagePagesSize()), static_cast<unsigned long long>(forgetCalls.load()), forgetBytes.load() / 1048576.0);
         {
@@ -849,7 +872,7 @@ void watchPrivateMapping(std::uintptr_t address, std::size_t bytes, std::uint64_
 #endif
 
 struct WriteTracker {
-    std::mutex mutex;
+    AgcDriver::Mutex mutex;
     bool initialized = false;
     bool watched = false;
     static constexpr std::size_t CoarseBlocks = 64;
@@ -972,8 +995,10 @@ struct WriteTracker {
     struct DriverPieces {
         std::uint32_t whole = 0;
         std::uint32_t dropped = 0;
-        std::uint32_t next = 0;
         std::array<DriverPiece, 4> pieces{};
+        std::uint32_t possibleWhole = 0;
+        std::uint32_t possibleDropped = 0;
+        std::array<DriverPiece, 4> possiblePieces{};
 
         bool covers(std::uint32_t begin, std::uint32_t end, std::uint64_t generation) const {
             if (generation == 0 || begin >= end || dropped > generation) return false;
@@ -1026,7 +1051,7 @@ struct WriteTracker {
 #endif
     }
 
-    void stampWatchedPart(std::uint64_t address, std::uint64_t end, std::uint32_t stampGeneration) {
+    void stampWatchedPart(std::uint64_t address, std::uint64_t end, std::uint32_t stampGeneration, bool complete) {
 #ifdef _WIN32
         address = std::max<std::uint64_t>(address, base);
         end = std::min<std::uint64_t>(end, base + size);
@@ -1040,24 +1065,45 @@ struct WriteTracker {
             const auto stop = std::min<std::uint64_t>(end, blockBegin(block) + WriteBlockBytes);
             if (!blockPartWatched(first, stop)) continue;
             stamp(block, stampGeneration, StampKind::Driver);
-            noteDriverStore(block, address, end, stampGeneration);
+            noteDriverStore(block, address, end, stampGeneration, complete);
         }
     }
 
-    void noteDriverStore(std::uint64_t block, std::uint64_t address, std::uint64_t end, std::uint32_t stampGeneration) {
+    void noteDriverStore(std::uint64_t block, std::uint64_t address, std::uint64_t end, std::uint32_t stampGeneration, bool complete) {
         const auto begin = blockBegin(block);
         const auto from = static_cast<std::uint32_t>(std::max(address, begin) - begin);
         const auto to = static_cast<std::uint32_t>(std::min<std::uint64_t>(end, begin + WriteBlockBytes) - begin);
         if (from == 0 && to == WriteBlockBytes) {
             auto& entry = driverPieces[block];
-            entry = DriverPieces{};
-            entry.whole = stampGeneration;
+            if (complete) {
+                entry = DriverPieces{};
+                entry.whole = stampGeneration;
+            } else {
+                entry.possibleWhole = stampGeneration;
+                entry.possibleDropped = 0;
+                entry.possiblePieces = {};
+            }
             return;
         }
         auto& entry = driverPieces[block];
-        auto& slot = entry.pieces[entry.next++ % entry.pieces.size()];
-        entry.dropped = std::max(entry.dropped, slot.generation);
-        slot = {stampGeneration, from, to};
+        auto& pieces = complete ? entry.pieces : entry.possiblePieces;
+        auto& dropped = complete ? entry.dropped : entry.possibleDropped;
+        DriverPiece* contained = nullptr;
+        for (auto& piece : pieces) {
+            if (piece.generation == 0 || piece.begin < from || piece.end > to) continue;
+            if (contained == nullptr) contained = &piece;
+            else piece = {};
+        }
+        if (contained != nullptr) {
+            *contained = {stampGeneration, from, to};
+            return;
+        }
+        auto* oldest = &pieces.front();
+        for (auto& piece : pieces) {
+            if (piece.generation < oldest->generation) oldest = &piece;
+        }
+        dropped = std::max(dropped, oldest->generation);
+        *oldest = {stampGeneration, from, to};
     }
 
     Leaf& leafFor(std::uint64_t block) {
@@ -1168,8 +1214,11 @@ struct WriteTracker {
                 continue;
             }
             const auto& entry = found->second;
-            if (entry.whole > generation || entry.dropped > generation) return true;
+            if (entry.whole > generation || entry.dropped > generation || entry.possibleWhole > generation || entry.possibleDropped > generation) return true;
             for (const auto& piece : entry.pieces) {
+                if (piece.generation > generation && piece.begin < to && from < piece.end) return true;
+            }
+            for (const auto& piece : entry.possiblePieces) {
                 if (piece.generation > generation && piece.begin < to && from < piece.end) return true;
             }
         }
@@ -1200,7 +1249,7 @@ WriteTracker& Tracker() {
 
 // Takes the tracker mutex; under APS5_PROFILE_DRAW an acquisition that found it held is counted
 // ('tracker waits N / M' in [guestmem]), which says whether walking outside the lock would pay.
-std::unique_lock<std::mutex> lockTracker(WriteTracker& tracker) {
+std::unique_lock<AgcDriver::Mutex> lockTracker(WriteTracker& tracker) {
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     if (!profile) return std::unique_lock(tracker.mutex);
     std::unique_lock lock(tracker.mutex, std::try_to_lock);
@@ -1230,16 +1279,17 @@ void watchPrivateMapping(std::uintptr_t address, std::size_t bytes, std::uint64_
 #endif
 
 // Collect epochs are per thread and globally unique: every bump takes a fresh value from one counter,
-// so a memo entry (stamped with the epoch of its walk) can only match the thread that made it, and
-// only until that thread's next ordering point (the queue workers bump at theirs, see the header). A
+// so a memo entry (stamped with the epoch of its walk) can only match the thread that made it (or the
+// draw committer running the queue-0 worker's epoch, see HandOffCollectEpoch), and only until that
+// thread's next ordering point (the queue workers bump at theirs, see the header). A
 // thread that never bumped is given a new epoch for every collect: its walks are never reused (the
 // presenter, game threads inside the flush hook), as nothing orders the CPU's writes for it.
 std::atomic<std::uint64_t> nextCollectEpoch{1};
-thread_local std::uint64_t threadCollectEpoch = 0;
+struct CollectEpochSlot {};
 std::atomic<std::uint64_t> lastBumpedEpoch{0};
 
 std::uint64_t currentCollectEpoch() {
-    if (threadCollectEpoch != 0) return threadCollectEpoch;
+    if (const auto epoch = HostThreadSlot<std::uint64_t, CollectEpochSlot>::Get(); epoch != 0) return epoch;
     return nextCollectEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
@@ -1257,7 +1307,15 @@ struct ThreadCollectMemo {
     std::array<WriteTracker::Memo, 256> entries{};
     std::size_t next = 0;
 };
-thread_local ThreadCollectMemo threadCollectMemo;
+ThreadCollectMemo& threadCollectMemo() {
+    struct Slot {};
+    auto* memo = HostThreadSlot<ThreadCollectMemo*, Slot>::Get();
+    if (memo == nullptr) {
+        ShaderRecompiler::ThreadOwned(memo);
+        HostThreadSlot<ThreadCollectMemo*, Slot>::Set(memo);
+    }
+    return *memo;
+}
 
 struct EpochCollectMap {
     std::uint64_t epoch = 0;
@@ -1298,6 +1356,9 @@ struct EpochCollectMemo {
     std::vector<std::uint64_t> begins;
     std::vector<std::uint64_t> ends;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> walk;
+    // The thread's own: the gaps a pre-walk (PrewalkCollects) found, walked one by one through
+    // collectWrites, which fills `walk` meanwhile.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> prewalk;
 
     void use(std::uint64_t currentEpoch, std::uint64_t serial, std::uint64_t generation) {
         if (epoch == currentEpoch && unwatched == serial && mapping == generation) return;
@@ -1344,6 +1405,49 @@ EpochCollectMemo& epochCollectMemo() {
 bool ringCollectMemo() {
     static const bool ring = std::getenv("APS5_RING_COLLECT_MEMO") != nullptr;
     return ring;
+}
+
+// Collect handoff (see HandOffCollectEpoch in the header): the queue-0 worker and the draw committer
+// run one epoch sequence and keep the ranges either walked in one EpochCollectMemo per epoch value,
+// here. A thread takes part once it handed off its epoch (the worker) or adopted one (the
+// committer); every other thread never looks at the store. Only with the union memo (the default):
+// the ring and the tracker's shared ring keep today's per-thread epochs.
+// APS5_NO_COLLECT_HANDOFF=1 turns it off: no epoch is handed off, the committer bumps its own.
+enum class CollectShare : std::uint8_t { None, Worker, Committer };
+struct CollectShareSlot {};
+
+bool collectHandoffEnabled() {
+    static const bool enabled = std::getenv("APS5_NO_COLLECT_HANDOFF") == nullptr && collectMemoEnabled() && !sharedCollectMemo() && !ringCollectMemo();
+    return enabled;
+}
+
+// The newest epochs: the committer runs up to DrawPipeline::Depth() (8 by default) items behind the
+// worker, and the worker may pass an ordering point between any two of them (a wait the CPU
+// satisfied, a drain). Only the worker starts a newer epoch, so its current one is never evicted. The
+// mutex is a leaf: collectWrites takes it alone for a lookup, or inside the tracker mutex for the
+// walk's gaps and its entry, and nothing is locked while it is held.
+struct SharedCollectMemos {
+    std::mutex mutex;
+    std::array<EpochCollectMemo, 8> slots;
+
+    // The slot of `epoch`: its own, else the oldest slot taken over for it (emptied by the use()
+    // that follows); nullptr when every slot holds a newer epoch (the caller's own memo serves then:
+    // an evicted epoch is never given a slot again).
+    EpochCollectMemo* find(std::uint64_t epoch) {
+        EpochCollectMemo* oldest = &slots[0];
+        for (auto& slot : slots) {
+            if (slot.epoch == epoch) return &slot;
+            if (slot.epoch < oldest->epoch) oldest = &slot;
+        }
+        if (oldest->epoch > epoch) return nullptr;
+        oldest->epoch = 0;
+        return oldest;
+    }
+};
+
+SharedCollectMemos& sharedCollectMemos() {
+    static auto* memos = new SharedCollectMemos();
+    return *memos;
 }
 
 struct StampRuns {
@@ -1432,11 +1536,31 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
     const bool useMemo = memoized && collectMemoEnabled() && bytes != 0;
     const bool epochMemo = collectMemoEnabled() && !sharedCollectMemo() && !ringCollectMemo();
     EpochCollectMemo* memo = epochMemo ? &epochCollectMemo() : nullptr;
-    if (useMemo && memo != nullptr) {
+    // A thread of the queue-0 handoff looks its epoch up in the shared store (its own memo `walk`
+    // receives the gaps); while the store has no slot for the epoch, its own memo serves as before.
+    const auto collectShare = HostThreadSlot<CollectShare, CollectShareSlot>::Get();
+    auto* const store = memo != nullptr && collectShare != CollectShare::None && HostThreadSlot<std::uint64_t, CollectEpochSlot>::Get() != 0 ? &sharedCollectMemos() : nullptr;
+    const bool committer = useMemo && store != nullptr && collectShare == CollectShare::Committer;
+    bool sharedLookup = false;
+    if (useMemo && store != nullptr) {
+        std::lock_guard storeLock(store->mutex);
+        if (auto* slot = store->find(epoch); slot != nullptr) {
+            sharedLookup = true;
+            slot->use(epoch, unwatched, mapping);
+            slot->gaps(first, stop, memo->walk);
+            if (memo->walk.empty()) {
+                collectMemoHits.fetch_add(1, std::memory_order_relaxed);
+                if (committer) handoffCommitter.hits.fetch_add(1, std::memory_order_relaxed);
+                return tracker.generation.load(std::memory_order_relaxed);
+            }
+        }
+    }
+    if (useMemo && memo != nullptr && !sharedLookup) {
         memo->use(epoch, unwatched, mapping);
         memo->gaps(first, stop, memo->walk);
         if (memo->walk.empty()) {
             collectMemoHits.fetch_add(1, std::memory_order_relaxed);
+            if (committer) handoffCommitter.hits.fetch_add(1, std::memory_order_relaxed);
             return tracker.generation.load(std::memory_order_relaxed);
         }
     }
@@ -1452,7 +1576,7 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
                 return tracker.generation.load(std::memory_order_relaxed);
             }
         }
-        auto& memo = threadCollectMemo;
+        auto& memo = threadCollectMemo();
         for (std::size_t back = 1; back <= memo.entries.size(); ++back) {
             const auto& entry = memo.entries[(memo.next - back) % memo.entries.size()];
             if (entry.epoch != epoch) break;
@@ -1479,7 +1603,7 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
     }
     const TimedAccess timed(CounterCollect, bytes);
 #ifndef _WIN32
-    if (useMemo && threadCollectEpoch != 0 && bytes <= WriteBlockBytes) {
+    if (useMemo && HostThreadSlot<std::uint64_t, CollectEpochSlot>::Get() != 0 && bytes <= WriteBlockBytes) {
         const auto begin = first & ~(WriteBlockBytes - 1);
         const auto end = (stop + WriteBlockBytes - 1) & ~(WriteBlockBytes - 1);
         if (end > begin && tracker.covers(begin, end - begin)) {
@@ -1488,14 +1612,58 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
         }
     }
 #endif
+    if (memo != nullptr && store != nullptr) {
+        // The shared store: the gaps are taken under its mutex, walked without it (the other thread's
+        // lookups go on; its walks wait for the tracker mutex held here, so no walk of this epoch
+        // lands between the gaps and the entry), and the walked ranges entered under it again. An
+        // epoch the store dropped meanwhile keeps only what the walk stamped.
+        const auto serial = unwatchSerial.load(std::memory_order_relaxed);
+        bool shared = false;
+        {
+            std::lock_guard storeLock(store->mutex);
+            if (auto* slot = store->find(epoch); slot != nullptr) {
+                shared = true;
+                slot->use(epoch, serial, mapping);
+                if (useMemo) slot->gaps(first, stop, memo->walk);
+                else memo->walk.assign(1, {first, stop});
+            }
+        }
+        if (shared) {
+            std::size_t walked = 0;
+            bool complete = true;
+            std::uint64_t walkedBytes = 0;
+            for (const auto& [from, to] : memo->walk) {
+                if (!walkWrites(tracker, from, to, StampKind::Cpu)) {
+                    complete = false;
+                    break;
+                }
+                ++walked;
+                walkedBytes += to - from;
+            }
+            if (committer) {
+                // Gaps the other thread walked between the lookup and the tracker mutex: a hit.
+                (memo->walk.empty() ? handoffCommitter.hits : handoffCommitter.walks).fetch_add(1, std::memory_order_relaxed);
+                handoffCommitter.walkedBytes.fetch_add(walkedBytes, std::memory_order_relaxed);
+            }
+            std::lock_guard storeLock(store->mutex);
+            if (auto* slot = store->find(epoch); slot != nullptr) {
+                slot->use(epoch, serial, mapping);
+                for (std::size_t i = 0; i < walked; ++i) slot->add(memo->walk[i].first, memo->walk[i].second);
+                if (complete) slot->add(first, stop);
+            }
+            return complete ? tracker.generation.load(std::memory_order_relaxed) : 0;
+        }
+    }
     if (memo != nullptr) {
         // Under the tracker mutex the unwatch serial cannot move (every bump holds it): a change since
         // the lock-free lookup empties the memo, so the whole range is walked.
         memo->use(epoch, unwatchSerial.load(std::memory_order_relaxed), mapping);
         if (useMemo) memo->gaps(first, stop, memo->walk);
         else memo->walk.assign(1, {first, stop});
+        if (committer) (memo->walk.empty() ? handoffCommitter.hits : handoffCommitter.walks).fetch_add(1, std::memory_order_relaxed);
         for (const auto& [from, to] : memo->walk) {
             if (!walkWrites(tracker, from, to, StampKind::Cpu)) return 0;
+            if (committer) handoffCommitter.walkedBytes.fetch_add(to - from, std::memory_order_relaxed);
             memo->add(from, to);
         }
         memo->add(first, stop);
@@ -1507,7 +1675,8 @@ std::uint64_t collectWrites(std::uint64_t address, std::size_t bytes, bool memoi
         const auto serial = unwatchSerial.load(std::memory_order_relaxed);
         if (sharedCollectMemo()) tracker.memo[tracker.nextMemo++ % tracker.memo.size()] = {first, stop, epoch, serial, mapping};
         else {
-            threadCollectMemo.entries[threadCollectMemo.next++ % threadCollectMemo.entries.size()] = {first, stop, epoch, serial, mapping};
+            auto& memo = threadCollectMemo();
+            memo.entries[memo.next++ % memo.entries.size()] = {first, stop, epoch, serial, mapping};
             if (epochCollectMapEnabled()) {
                 auto& entry = epochCollectMap(epoch).ranges[first];
                 if (entry.unwatched != serial || entry.mapping != mapping || entry.end < stop) entry = {first, stop, epoch, serial, mapping};
@@ -1528,14 +1697,15 @@ std::uint64_t CollectWritesUncached(std::uint64_t address, std::size_t bytes) {
 }
 
 void BumpCollectEpoch() {
-    threadCollectEpoch = nextCollectEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto epoch = nextCollectEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
+    HostThreadSlot<std::uint64_t, CollectEpochSlot>::Set(epoch);
     auto last = lastBumpedEpoch.load(std::memory_order_relaxed);
-    while (last < threadCollectEpoch && !lastBumpedEpoch.compare_exchange_weak(last, threadCollectEpoch, std::memory_order_release, std::memory_order_relaxed)) {}
+    while (last < epoch && !lastBumpedEpoch.compare_exchange_weak(last, epoch, std::memory_order_release, std::memory_order_relaxed)) {}
     collectEpochBumps.fetch_add(1, std::memory_order_relaxed);
 }
 
 std::uint64_t ThreadCollectEpoch() {
-    return collectMemoEnabled() ? threadCollectEpoch : 0;
+    return collectMemoEnabled() ? HostThreadSlot<std::uint64_t, CollectEpochSlot>::Get() : 0;
 }
 
 std::uint64_t UnwatchSerial() {
@@ -1544,15 +1714,114 @@ std::uint64_t UnwatchSerial() {
 
 void AdoptLatestCollectEpoch() {
     const auto latest = lastBumpedEpoch.load(std::memory_order_acquire);
-    if (latest > threadCollectEpoch) threadCollectEpoch = latest;
+    if (latest > HostThreadSlot<std::uint64_t, CollectEpochSlot>::Get()) HostThreadSlot<std::uint64_t, CollectEpochSlot>::Set(latest);
+}
+
+std::uint64_t HandOffCollectEpoch() {
+    const auto epoch = HostThreadSlot<std::uint64_t, CollectEpochSlot>::Get();
+    if (epoch == 0 || !collectHandoffEnabled()) return 0;
+    if (HostThreadSlot<CollectShare, CollectShareSlot>::Get() == CollectShare::None) HostThreadSlot<CollectShare, CollectShareSlot>::Set(CollectShare::Worker);
+    return epoch;
+}
+
+bool AdoptCollectEpoch(std::uint64_t epoch) {
+    if (epoch == 0 || !collectHandoffEnabled()) return false;
+    HostThreadSlot<std::uint64_t, CollectEpochSlot>::Set(epoch);
+    // The worker running an item itself (DrawPipeline::Enqueue while closing) stays the worker.
+    if (HostThreadSlot<CollectShare, CollectShareSlot>::Get() == CollectShare::None) HostThreadSlot<CollectShare, CollectShareSlot>::Set(CollectShare::Committer);
+    return true;
+}
+
+void PrewalkCollects(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges) {
+    const auto epoch = HostThreadSlot<std::uint64_t, CollectEpochSlot>::Get();
+    if (HostThreadSlot<CollectShare, CollectShareSlot>::Get() != CollectShare::Worker || epoch == 0 || ranges.empty()) return;
+    // A range of the cap or more is left to its collector: a buffer descriptor spanning a heap is
+    // rarely collected whole, and the draw write ranges stand 64 MiB in for a size they do not know
+    // (a 4K target of 8-byte texels is 63.3 MiB). The gaps are walked in chunks, so the tracker
+    // mutex, which the committer's stamp checks take too, is never held for a long walk.
+    // APS5_COLLECT_PREWALK_MAX_MIB (default 64; 0 turns the pre-walk off).
+    static const std::uint64_t cap = [] {
+        const char* text = std::getenv("APS5_COLLECT_PREWALK_MAX_MIB");
+        return (text != nullptr ? std::strtoull(text, nullptr, 10) : 64ull) << 20u;
+    }();
+    constexpr std::uint64_t page = 4096;
+    constexpr std::uint64_t chunk = std::uint64_t{4} << 20u;
+    auto& local = epochCollectMemo();
+    auto& gaps = local.prewalk;
+    gaps.clear();
+    const auto unwatched = unwatchSerial.load(std::memory_order_acquire);
+    const auto mapping = GuestAllocations::GuestAllocationsGeneration_nid_postfix();
+    std::uint64_t asked = 0;
+    std::uint64_t count = 0;
+    {
+        auto& store = sharedCollectMemos();
+        std::lock_guard storeLock(store.mutex);
+        auto* slot = store.find(epoch);
+        if (slot != nullptr) slot->use(epoch, unwatched, mapping);
+        for (const auto& [begin, end] : ranges) {
+            if (begin == 0 || end <= begin || end - begin >= cap) continue;
+            const auto first = begin & ~(page - 1);
+            const auto stop = (end + page - 1) & ~(page - 1);
+            if (stop <= first) continue;
+            ++count;
+            asked += stop - first;
+            if (slot == nullptr) {
+                gaps.emplace_back(first, stop);
+                continue;
+            }
+            slot->gaps(first, stop, local.walk);
+            gaps.insert(gaps.end(), local.walk.begin(), local.walk.end());
+        }
+    }
+    // Overlapping ranges (a written buffer is also a read range) are walked once.
+    std::sort(gaps.begin(), gaps.end());
+    std::size_t merged = 0;
+    for (const auto& gap : gaps) {
+        if (merged != 0 && gap.first <= gaps[merged - 1].second) gaps[merged - 1].second = std::max(gaps[merged - 1].second, gap.second);
+        else gaps[merged++] = gap;
+    }
+    gaps.resize(merged);
+    std::uint64_t uncovered = 0;
+    for (const auto& [first, stop] : gaps) {
+        uncovered += stop - first;
+        for (auto cursor = first; cursor < stop;) {
+            const auto piece = std::min(chunk, stop - cursor);
+            static_cast<void>(collectWrites(cursor, static_cast<std::size_t>(piece), true));
+            cursor += piece;
+        }
+    }
+    handoffWorker.ranges.fetch_add(count, std::memory_order_relaxed);
+    handoffWorker.bytes.fetch_add(asked, std::memory_order_relaxed);
+    handoffWorker.uncoveredBytes.fetch_add(uncovered, std::memory_order_relaxed);
+}
+
+CollectHandoffCounts CollectHandoffStatistics() {
+    return {handoffCommitter.hits.load(std::memory_order_relaxed), handoffCommitter.walks.load(std::memory_order_relaxed), handoffCommitter.walkedBytes.load(std::memory_order_relaxed), handoffWorker.ranges.load(std::memory_order_relaxed), handoffWorker.bytes.load(std::memory_order_relaxed), handoffWorker.uncoveredBytes.load(std::memory_order_relaxed)};
 }
 
 std::uint64_t CollectEpochBumps() {
     return collectEpochBumps.load(std::memory_order_relaxed);
 }
 
+namespace {
+std::atomic<std::uint64_t> proofSerial{1};
+thread_local bool proofThread = false;
+}
+
+std::uint64_t ProofSerial() {
+    return proofSerial.load(std::memory_order_acquire);
+}
+
+void BreakProofs() {
+    proofSerial.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void MarkProofThread() {
+    proofThread = true;
+}
+
 std::uint64_t CollectEpoch() {
-    return collectMemoEnabled() ? threadCollectEpoch : 0;
+    return collectMemoEnabled() ? HostThreadSlot<std::uint64_t, CollectEpochSlot>::Get() : 0;
 }
 
 namespace {
@@ -1758,17 +2027,18 @@ bool UnchangedCommittedSince(std::span<const std::pair<std::uint64_t, std::uint6
 
 std::uint64_t storeOwn(std::uint64_t address, std::size_t bytes, const std::function<std::pair<std::uint64_t, std::uint64_t>()>& store) {
     if (bytes == 0) return 0;
+    BreakProofs();
     const auto stampStored = [](WriteTracker& tracker, std::pair<std::uint64_t, std::uint64_t> stored) -> std::uint64_t {
         if (stored.second <= stored.first) return 0;
         ++tracker.generation;
         if (!tracker.watched || !tracker.covers(stored.first, static_cast<std::size_t>(stored.second - stored.first))) {
             tracker.noteUnstampedStore(stored.first, stored.second);
-            if (tracker.watched) tracker.stampWatchedPart(stored.first, stored.second, tracker.generation);
+            if (tracker.watched) tracker.stampWatchedPart(stored.first, stored.second, tracker.generation, true);
             return 0;
         }
         for (auto block = tracker.blockOf(stored.first); block <= tracker.blockOf(stored.second - 1); ++block) {
             tracker.stamp(block, tracker.generation, StampKind::Driver);
-            tracker.noteDriverStore(block, stored.first, stored.second, tracker.generation);
+            tracker.noteDriverStore(block, stored.first, stored.second, tracker.generation, true);
         }
         return tracker.generation;
     };
@@ -1801,7 +2071,8 @@ std::uint64_t StoreOwnBytes(std::uint64_t address, std::span<const std::byte> so
     });
 }
 
-std::uint64_t MarkWritten(std::uint64_t address, std::size_t bytes) {
+static std::uint64_t markWritten(std::uint64_t address, std::size_t bytes, bool complete) {
+    BreakProofs();
     auto& tracker = Tracker();
     auto lock = lockTracker(tracker);
     tracker.initialize();
@@ -1809,7 +2080,7 @@ std::uint64_t MarkWritten(std::uint64_t address, std::size_t bytes) {
     ++tracker.generation;
     if (!tracker.watched || !tracker.covers(address, bytes)) {
         tracker.noteUnstampedStore(address, address + bytes);
-        if (tracker.watched) tracker.stampWatchedPart(address, address + bytes, tracker.generation);
+        if (tracker.watched) tracker.stampWatchedPart(address, address + bytes, tracker.generation, complete);
         return 0;
     }
     {
@@ -1817,11 +2088,11 @@ std::uint64_t MarkWritten(std::uint64_t address, std::size_t bytes) {
         const auto blockStop = (address + bytes + WriteBlockBytes - 1) & ~(std::uint64_t{WriteBlockBytes} - 1);
         StampRuns runs{tracker, StampKind::Fresh};
 #ifdef _WIN32
-        const bool complete = collectWindowsWrites(runs, blockFirst, blockStop, false);
+        const bool collected = collectWindowsWrites(runs, blockFirst, blockStop, false);
 #else
-        const bool complete = GuestWriteWatch::GuestWriteWatchCollectFresh_nid_postfix(static_cast<std::uintptr_t>(blockFirst), static_cast<std::size_t>(blockStop - blockFirst), &stampWrittenRun, &runs);
+        const bool collected = GuestWriteWatch::GuestWriteWatchCollectFresh_nid_postfix(static_cast<std::uintptr_t>(blockFirst), static_cast<std::size_t>(blockStop - blockFirst), &stampWrittenRun, &runs);
 #endif
-        if (!complete) {
+        if (!collected) {
             lock.unlock();
             beforeUnwatch(blockFirst, static_cast<std::size_t>(blockStop - blockFirst));
             lock.lock();
@@ -1835,9 +2106,17 @@ std::uint64_t MarkWritten(std::uint64_t address, std::size_t bytes) {
     const auto last = tracker.blockOf(address + bytes - 1);
     for (auto block = first; block <= last; ++block) {
         tracker.stamp(block, tracker.generation, StampKind::Driver);
-        tracker.noteDriverStore(block, address, address + bytes, tracker.generation);
+        tracker.noteDriverStore(block, address, address + bytes, tracker.generation, complete);
     }
     return tracker.generation;
+}
+
+std::uint64_t MarkWritten(std::uint64_t address, std::size_t bytes) {
+    return markWritten(address, bytes, true);
+}
+
+std::uint64_t MarkPossiblyWritten(std::uint64_t address, std::size_t bytes) {
+    return markWritten(address, bytes, false);
 }
 
 bool StoredOver(std::uint64_t address, std::size_t bytes, std::uint64_t generation) {
@@ -2145,24 +2424,29 @@ std::string WaitedBehindReport(const HolderMatrixValues& waited) {
 
 }
 
-// The owner token is a thread-local's address: unique per live thread and free to read.
 namespace {
-const void* ThreadToken() {
-    thread_local char token;
-    return &token;
-}
-
 std::atomic<std::uint64_t> gpuHoldSerial{0};
 }
 
+void GpuMutexType::enter() {
+    if (!HeldByThisThread()) LockSpinning(mutex, HandoffSpinWindow());
+}
+
+bool GpuMutexType::tryEnter() {
+    return HeldByThisThread() || mutex.try_lock();
+}
+
 void GpuMutexType::acquired() {
-    owner.store(ThreadToken(), std::memory_order_relaxed);
-    if (++depth == 1) gpuHoldSerial.fetch_add(1, std::memory_order_relaxed);
+    owner.store(CurrentThreadToken(), std::memory_order_relaxed);
+    if (++depth == 1) {
+        gpuHoldSerial.fetch_add(1, std::memory_order_relaxed);
+        if (!proofThread) BreakProofs();
+    }
 }
 
 bool GpuMutexType::try_lock() {
     if (!GpuLockProfiled()) {
-        if (!mutex.try_lock()) return false;
+        if (!tryEnter()) return false;
         acquired();
         return true;
     }
@@ -2171,7 +2455,7 @@ bool GpuMutexType::try_lock() {
     auto& stats = LockStats();
     const auto tagged = std::exchange(stats.nextSite, GpuLockSite::Other);
     ++stats.tries;
-    if (!mutex.try_lock()) {
+    if (!tryEnter()) {
         ++stats.triesFailed;
         return false;
     }
@@ -2198,8 +2482,8 @@ void GpuMutexType::unlock() {
         owner.store(nullptr, std::memory_order_relaxed);
         // Still the holder here: the hold ends when the mutex is given up, not before.
         if (GpuHoldProfiled()) EndHold();
+        mutex.unlock();
     }
-    mutex.unlock();
     // After the release, so what the hook does (destroying a batch's kept objects) is neither part
     // of the hold nor waited for by the next holder.
     if (outermost) {
@@ -2208,7 +2492,7 @@ void GpuMutexType::unlock() {
 }
 
 bool GpuMutexType::HeldByThisThread() const {
-    return owner.load(std::memory_order_relaxed) == ThreadToken();
+    return owner.load(std::memory_order_relaxed) == CurrentThreadToken();
 }
 
 std::uint32_t GpuMutexType::DepthOnThisThread() const {
@@ -2227,10 +2511,10 @@ void GpuMutexType::lock() {
     if (!GpuLockProfiled()) {
         auto* trace = PerformanceTrace::Recording() ? PerformanceTrace::Thread() : nullptr;
         if (trace == nullptr) {
-            LockSpinning(mutex, HandoffSpinWindow());
+            enter();
         } else {
             const auto site = static_cast<std::size_t>(std::exchange(LockStats().nextSite, GpuLockSite::Other));
-            if (!mutex.try_lock()) {
+            if (!tryEnter()) {
                 const auto start = std::chrono::steady_clock::now();
                 LockSpinning(mutex, HandoffSpinWindow());
                 trace->Add("GpuMutex.wait", GpuLockSiteNames[site], start, std::chrono::steady_clock::now());
@@ -2245,7 +2529,7 @@ void GpuMutexType::lock() {
     ++stats.siteAcquisitions[site];
     // An uncontended (or recursive) acquisition costs no clock reads for the wait; only a wait is
     // timed. The hold timer (outermost acquisitions only) starts once the mutex is held.
-    if (!mutex.try_lock()) {
+    if (!tryEnter()) {
         const bool holders = GpuHoldProfiled();
         HolderMatrixValues before{};
         if (holders) Holders().Snapshot(before);
@@ -2512,6 +2796,7 @@ void WriteChangedCommitted(std::uint64_t address, std::span<const std::byte> cur
 
 void WriteChanged(std::uint64_t address, std::span<const std::byte> current, std::span<const std::byte> original) {
     require(current.size() == original.size(), "write-back snapshot sizes differ");
+    BreakProofs();
     if (current.empty()) return;
     // A store: the hook sync it makes orders this write after a pending GPU write, whatever a read
     // site above it was doing (the [hooksync] line counts stores apart).

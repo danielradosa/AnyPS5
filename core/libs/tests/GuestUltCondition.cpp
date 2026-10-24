@@ -15,6 +15,7 @@ int APS5_VABI sceUltMutexCreate(void*, const char*, void*, const UltMutexOptPara
 int APS5_VABI sceUltMutexLock(void*);
 int APS5_VABI sceUltMutexUnlock(void*);
 int APS5_VABI sceUltMutexDestroy(void*);
+int APS5_VABI sceUltConditionVariableCreate(void*, const char*, void*, const void*, std::uint32_t);
 int APS5_VABI _sceUltConditionVariableCreate(void*, const char*, void*, const void*, std::uint32_t);
 int APS5_VABI sceUltConditionVariableWait(void*);
 int APS5_VABI sceUltConditionVariableSignal(void*);
@@ -70,6 +71,9 @@ static void Validation() {
     Object unused;
     CHECK(sceUltMutexDestroy(nullptr) == Null);
     CHECK(sceUltMutexDestroy(&unused) == State);
+    CHECK(sceUltConditionVariableCreate(nullptr, nullptr, nullptr, nullptr, 0) == Null);
+    CHECK(sceUltConditionVariableCreate(&unused, nullptr, &unused, nullptr, 0) == Invalid);
+    CHECK(sceUltConditionVariableCreate(&f.condition, nullptr, &f.mutex, nullptr, 0) == State);
     CHECK(_sceUltConditionVariableCreate(nullptr, nullptr, nullptr, nullptr, 0) == Null);
     CHECK(_sceUltConditionVariableCreate(&unused, nullptr, &unused, nullptr, 0) == Invalid);
     CHECK(_sceUltConditionVariableCreate(&f.condition, nullptr, &f.mutex, nullptr, 0) == State);
@@ -239,10 +243,11 @@ static void SignalAll() {
     optParam.fill(0xAB);
     CHECK(sceUltConditionVariableOptParamInitialize(nullptr, 0x12000000) == Null);
     CHECK(sceUltConditionVariableOptParamInitialize(optParam.data(), 0x12000000) == 0);
-    CHECK(optParam[0] == 0xAB && optParam[127] == 0xAB);
+    CHECK(optParam[0] == 0 && optParam[127] == 0);
+    optParam.fill(0xAB);
     CHECK(_sceUltConditionVariableOptParamInitialize(nullptr, 0x12000000) == Null);
     CHECK(_sceUltConditionVariableOptParamInitialize(optParam.data(), 0x12000000) == 0);
-    CHECK(optParam[0] == 0xAB && optParam[127] == 0xAB);
+    CHECK(optParam[0] == 0 && optParam[127] == 0);
     CHECK(sceUltMutexCreate(&mutex, "mutex", nullptr, nullptr, 0x12000000) == 0);
     CHECK(sceUltConditionVariableCreate(nullptr, "condition", &mutex, nullptr, 0x12000000) == Null);
     CHECK(sceUltConditionVariableCreate(&condition, "condition", &unused, nullptr, 0x12000000) == Invalid);

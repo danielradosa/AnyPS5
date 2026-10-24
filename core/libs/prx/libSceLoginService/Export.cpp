@@ -16,7 +16,6 @@ int APS5_VABI sceLoginServiceTerminate(void) {
 
 int APS5_VABI sceLoginServiceRequestDevices(const LoginServiceDeviceRequest* param) {
     (void)param;
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 

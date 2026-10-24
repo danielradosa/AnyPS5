@@ -86,8 +86,8 @@ int main() {
     block = static_cast<unsigned char*>(malloc_nid_postfix(16));
     CRYPTO_free_nid_postfix(block);
     CRYPTO_free_nid_postfix(nullptr);
-    RequireThrows([] { CRYPTO_malloc_nid_postfix(0, nullptr, 0); });
-    RequireThrows([] { CRYPTO_malloc_nid_postfix(-1, nullptr, 0); });
+    Require(CRYPTO_malloc_nid_postfix(0, nullptr, 0) == nullptr);
+    Require(CRYPTO_malloc_nid_postfix(-1, nullptr, 0) == nullptr);
     Require(CRYPTO_set_mem_functions_nid_postfix(reinterpret_cast<void*>(&std::malloc), reinterpret_cast<void*>(&std::realloc), reinterpret_cast<void*>(&std::free)) == 0);
     Require(CRYPTO_set_mem_functions_nid_postfix(nullptr, nullptr, nullptr) == 0);
     std::puts("libSceLibreSsl runtime tests passed");

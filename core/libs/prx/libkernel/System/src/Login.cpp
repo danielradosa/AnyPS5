@@ -14,6 +14,8 @@
 #include <unistd.h>
 #endif
 
+extern "C" int* APS5_VABI __error_nid_postfix();
+
 namespace {
 int ReadLogin(char* output, int size) {
 #ifdef _WIN32
@@ -76,4 +78,19 @@ extern "C" int APS5_VABI getlogin_r_nid_postfix(char* output, int size) {
     const int result = ReadLogin(output, size);
     errno = saved;
     return result;
+}
+
+extern "C" char* APS5_VABI getlogin_nid_postfix(void) {
+    static std::mutex lock;
+    static char name[MaxLoginName];
+    static bool valid = false;
+    const std::lock_guard guard(lock);
+    if (!valid) {
+        if (const int error = getlogin_r_nid_postfix(name, static_cast<int>(sizeof(name)))) {
+            *__error_nid_postfix() = error;
+            return nullptr;
+        }
+        valid = true;
+    }
+    return name[0] != '\0' ? name : nullptr;
 }

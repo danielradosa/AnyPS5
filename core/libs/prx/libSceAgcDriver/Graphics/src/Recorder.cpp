@@ -1,6 +1,7 @@
 #include "prx/libSceAgcDriver/Execution/include/AsyncLog.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/CaptureTrace.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
 #include "prx/libc/include/HostThreadLocal.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
@@ -129,7 +130,7 @@ struct ThreadSyncs {
     std::array<double, 5> waitedMs;
 };
 std::vector<ThreadSyncs> threadSyncs;
-std::mutex threadSyncsMutex;
+AgcDriver::Mutex threadSyncsMutex;
 
 // This thread's fence and timeline waits in total (Recorder::ThreadWaitedMs): a caller times a span
 // of its own work and reads the difference to learn how much of it was waiting for the GPU.
@@ -177,7 +178,7 @@ std::atomic<int> unlockedWaiters[WaiterSlots]{};
 std::atomic<int>& WaitersOf(std::uint64_t id) { return unlockedWaiters[id % WaiterSlots]; }
 // Recorders alive, by id (own mutex, taken under the GpuMutex or with nothing held): a thread that
 // released the GpuMutex around a wait learns whether its recorder still exists before touching it.
-std::mutex liveRecordersMutex;
+AgcDriver::Mutex liveRecordersMutex;
 std::vector<std::uint64_t> liveRecorders;
 std::atomic<std::uint64_t> nextRecorderId{1};
 std::atomic<std::uint64_t> samplesPassed{0};
@@ -194,7 +195,7 @@ std::atomic<std::uint64_t> dumpsQueued{0}, dumpsQueuedInPass{0}, dumpsAtOnce{0},
 struct SamplePoolCache {
     VkDevice device;
     PFN_vkDestroyQueryPool destroy;
-    std::mutex mutex;
+    AgcDriver::Mutex mutex;
     std::vector<VkQueryPool> free;
     bool closed = false;
     void put(VkQueryPool pool) {
@@ -417,7 +418,7 @@ struct ReleaseQueue {
     // Set by a joiner under `mutex` until the thread was joined: the thread leaves once the queue
     // is empty, and hand-offs meanwhile destroy inline (nothing may be queued without a taker).
     bool stop = false;
-    std::mutex joinMutex;
+    AgcDriver::Mutex joinMutex;
 };
 
 ReleaseQueue& ReleaseThreadQueue() {
@@ -542,7 +543,7 @@ bool ProcTable() {
 // instead of queueing behind a dispatch. `labelTableOwner` is the active recorder while it lives,
 // set and cleared under this mutex, so a lookup never touches a table being destroyed. Nothing
 // under this mutex takes the GPU mutex (no lock-order cycle).
-std::mutex labelTableMutex;
+AgcDriver::Mutex labelTableMutex;
 Recorder* labelTableOwner = nullptr;
 // The ranges of the calling worker's queued labels (NoteQueuedLabel, cleared by
 // ForgetQueuedLabels): the flush hook, on the same thread, has them recorded before an access that
@@ -899,7 +900,7 @@ struct RecordedStoreTotals {
 };
 
 struct RecordedStoreStats {
-    std::mutex mutex;
+    AgcDriver::Mutex mutex;
     std::map<HookSyncKey, RecordedStoreTotals> byKey;
     RecordedStoreTotals totals;
     std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
@@ -1041,11 +1042,9 @@ void FlushForAccess(std::uint64_t address, std::size_t bytes) {
             recorder->SyncThrough(address, bytes, true);
         }
     }
-    // A reader takes every shadowed unit of the range; a store only the units it covers partly
-    // (its own stamp makes the others stale). Inside a completion action a store has no publish
-    // recorded: the batch is not waited for, and the copy would land over the store later.
     const auto site = GuestMemory::CurrentReadSite();
-    const auto scope = site != GuestMemory::ReadSite::Store ? PublishScope::Whole : completionDepth != 0 ? PublishScope::None : PublishScope::PartialUnits;
+    const auto scope = site != GuestMemory::ReadSite::Store ? PublishScope::Whole : PublishScope::PartialUnits;
+    const bool waited = completionDepth != 0;
     bool published = false;
     // The classification is made before the store (the store changes what it measures); profile only.
     StorageTexture::AccessClassification classification{};
@@ -1060,12 +1059,12 @@ void FlushForAccess(std::uint64_t address, std::size_t bytes) {
     const bool kept = !HookFlushCpuBlocks() && StorageTexture::AccessKeptByCpu(address, bytes, &images, &evicted);
     if (kept || (images == 0 && !HookFlushCpuBlocks())) {
         stored = StorageTexture::WaitForFlushing(address, bytes);
-        published = StorageTexture::PublishShadowsOnly(address, bytes, scope);
+        published = StorageTexture::PublishShadowsOnly(address, bytes, scope, "memory access", waited);
         if (kept && HookSyncProfiled()) CountRecordedStoreSkip(RecordedStoreKey(), evicted);
     } else {
-        stored = StorageTexture::FlushPending(address, bytes, nullptr, "memory access", scope, &published);
+        stored = StorageTexture::FlushPending(address, bytes, nullptr, "memory access", scope, &published, waited);
     }
-    if (stored || published) {
+    if (stored || published || (completionDepth == 0 && SnapshotOverlaps(address, bytes))) {
         // Stores into imported memory were only recorded; the CPU is about to read them. The wait
         // targets the batch holding them (the open one: SyncThrough submits it) and runs with the
         // mutex released when this acquisition is the outermost; a nested hook waits locked through
@@ -1855,7 +1854,7 @@ std::atomic<std::uint64_t> timingPresents{0};
 std::atomic<std::uint64_t> presentSerial{0};
 std::atomic<std::uint64_t> timingDropped{0};
 struct TimingTotals { std::uint64_t count = 0; double ms = 0; std::uint64_t bytes = 0; };
-std::mutex timingMutex;
+AgcDriver::Mutex timingMutex;
 std::map<std::uint64_t, TimingTotals> timingByKey;
 double timingProgramMs = 0, timingClassMs = 0, timingUnionMs = 0, timingBatchMs = 0;
 std::uint64_t timingBatches = 0;
@@ -2777,7 +2776,9 @@ Recorder::DrawData Recorder::AllocateDrawData(std::size_t bytes) {
     auto offset = (open->drawDataUsed + alignment - 1) / alignment * alignment;
     if (open->drawData == nullptr || offset + bytes > open->drawData->Bytes().size()) {
         const auto chunk = std::max(bytes, DrawDataChunkBytes);
-        open->drawData = std::make_shared<Buffer>(context, chunk, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        // The arena takes the small draw snapshots DrawUpload takes upstream, written and never read back by the CPU, so
+        // it lives in the same snapshot memory (resizable BAR unless APS5_NO_BAR_SNAPSHOTS=1, upstream #9712).
+        open->drawData = std::make_shared<Buffer>(context, chunk, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, context.SnapshotProperties());
         Keep(open->drawData);
         KeepBytes(open->drawData.get(), chunk);
         offset = 0;
@@ -2814,7 +2815,7 @@ Recorder::UploadSlice Recorder::DrawUpload(std::size_t bytes) {
     const VkDeviceSize alignment = std::max<VkDeviceSize>(context.limits.minStorageBufferOffsetAlignment, 16);
     auto offset = (drawUploadUsed + alignment - 1) & ~(alignment - 1);
     if (drawUpload == nullptr || offset + bytes > drawUpload->Bytes().size()) {
-        drawUpload = std::make_shared<Buffer>(context, std::max(DrawUploadChunk, bytes), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        drawUpload = std::make_shared<Buffer>(context, std::max(DrawUploadChunk, bytes), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, context.SnapshotProperties());
         offset = 0;
     }
     drawUploadUsed = offset + bytes;
@@ -2849,7 +2850,8 @@ void Recorder::NoteUnwrittenDrawSnapshot(std::uint64_t address, std::size_t byte
 
 // APS5_PROFILE_DRAW: what ReusableDrawSnapshot's lookups found, as [snapshots] every 10 s: no entry, unchanged since
 // its generation, refreshed by comparing the changed 64 KiB blocks (refreshDrawSnapshot: blocks and bytes compared,
-// bytes copied in), or dropped. Only the committer looks these up; plain counters under the GPU mutex.
+// bytes copied in; a BAR snapshot rewrites its changed blocks uncompared), or dropped. Only the committer looks these
+// up; plain counters under the GPU mutex.
 namespace {
 
 struct SnapshotReuse {
@@ -2931,10 +2933,15 @@ bool Recorder::refreshDrawSnapshot(DrawSnapshot& entry, std::uint64_t address, s
         spans.push_back({held.data() + offset, reinterpret_cast<const void*>(from), static_cast<std::size_t>(to - from)});
     }
     equal.assign(spans.size(), 0);
-    CompareSpans(spans, equal);
+    // A snapshot in device-local (resizable BAR) memory is never read back on the CPU: its changed blocks are
+    // rewritten without comparing them (upstream #9712), and count as copied in, not compared.
+    const bool compare = (entry.buffer->Properties() & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0;
+    if (compare) CompareSpans(spans, equal);
     if (DrawProfiled()) {
         snapshotReuse.blocks += spans.size();
-        for (const auto& span : spans) snapshotReuse.compared += span.bytes;
+        if (compare) {
+            for (const auto& span : spans) snapshotReuse.compared += span.bytes;
+        }
         for (std::size_t k = 0; k < spans.size(); ++k) snapshotReuse.copied += equal[k] != 0 ? 0u : spans[k].bytes;
     }
     for (std::size_t k = 0; k < spans.size(); ++k) {
@@ -3580,6 +3587,7 @@ void Recorder::AfterCompletions(std::uint64_t address, std::span<const std::byte
     } else {
         ++batch.completionLabelCount;
         completionLabels.fetch_add(1, std::memory_order_acq_rel);
+        GuestMemory::BreakProofs();
     }
     // The table entry before the write note: the note bumps the generation a poller watches, and a
     // poller that sees the bump then finds the label without the GPU mutex.
@@ -3596,6 +3604,7 @@ bool Recorder::AfterRecordedWork(std::function<void()> action) {
     batch.completions.push_back(std::move(action));
     ++batch.completionLabelCount;
     completionLabels.fetch_add(1, std::memory_order_acq_rel);
+        GuestMemory::BreakProofs();
     if (&batch == open.get() && activeRecorder == this && pendingLabelSince.load(std::memory_order_relaxed) == NoPendingLabel) {
         pendingLabelSince.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
     }
@@ -3623,6 +3632,7 @@ void Recorder::NoteWrittenBack(std::uint64_t address, std::size_t bytes) {
             label.counted = true;
             ++batch.completionLabelCount;
             completionLabels.fetch_add(1, std::memory_order_acq_rel);
+        GuestMemory::BreakProofs();
             completionLabelsCountedLate.fetch_add(1, std::memory_order_relaxed);
             recorder->markBehindCompletion(batch, label.begin, label.end);
         }

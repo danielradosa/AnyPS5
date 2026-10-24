@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 extern "C" {
@@ -37,6 +38,22 @@ static void CheckList() {
     Require(sceKernelGetModuleListInternal(shorter.data(), shorter.size(), nullptr) == SCE_KERNEL_ERROR_EFAULT);
 }
 
+static void CheckEachModule() {
+    for (const auto handle : List(sceKernelGetModuleListInternal)) {
+        ModuleInfoEx extended{};
+        extended.st_size = sizeof(ModuleInfoEx);
+        Require(sceKernelGetModuleInfoInternal(handle, &extended) == 0);
+        ModuleInfo basic{};
+        basic.st_size = sizeof(ModuleInfo);
+        Require(sceKernelGetModuleInfo(handle, &basic) == 0);
+        Require(extended.st_size == sizeof(ModuleInfoEx) && extended.id == handle);
+        Require(std::string(extended.name) == basic.name && extended.segment_count == basic.segment_count);
+        for (std::uint32_t i = 0; i < basic.segment_count; ++i)
+            Require(extended.segments[i].address == basic.segments[i].address && extended.segments[i].size == basic.segments[i].size &&
+                    extended.segments[i].prot == basic.segments[i].prot);
+    }
+}
+
 static void CheckMatchesAddressLookup() {
     ModuleInfoEx byAddress{};
     byAddress.st_size = sizeof(ModuleInfoEx);
@@ -56,6 +73,7 @@ static void CheckRefusals() {
         Require(sceKernelGetModuleInfoInternal(handle, &sized) == SCE_KERNEL_ERROR_EINVAL);
         Require(sized.st_size == size && sized.name[0] == 'x');
     }
+    Require(sceKernelGetModuleInfoInternal(handle, nullptr) == SCE_KERNEL_ERROR_EFAULT);
     ModuleInfoEx unknown{};
     unknown.st_size = sizeof(ModuleInfoEx);
     Require(sceKernelGetModuleInfoInternal(-1, &unknown) == SCE_KERNEL_ERROR_ESRCH && unknown.name[0] == '\0');
@@ -63,6 +81,7 @@ static void CheckRefusals() {
 
 int main() {
     CheckList();
+    CheckEachModule();
     CheckMatchesAddressLookup();
     CheckRefusals();
     return 0;

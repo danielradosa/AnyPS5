@@ -1,4 +1,5 @@
 #include <atomic>
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -8,6 +9,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -34,6 +36,17 @@
 namespace {
 
 std::atomic<bool> lncUtilInitialized{false};
+
+struct MeasuredParameter {
+    int id;
+    int value;
+};
+
+constexpr MeasuredParameter RegistryParameters[] = {
+    {SYSTEM_SERVICE_PARAM_ID_100, 0}, {101, 1}, {102, 2}, {103, 100}, {104, 0x20202}, {105, 0}, {106, 0}, {107, 100}, {108, 0},
+    {109, 100}, {110, 0x20202}, {111, 0}, {200, 0}, {201, 0}, {202, 0}, {203, 0}, {204, 0}, {205, 0}, {206, 0}, {207, 0},
+    {208, 0}, {209, 1}, {210, 71}, {211, 0}, {212, 0}, {213, 0}, {300, 0},
+};
 
 struct ConsoleTimeZone {
     int minutes;
@@ -63,8 +76,17 @@ ConsoleTimeZone HostTimeZone() {
     return {static_cast<int>(offset.count()) - summerMinutes, summer};
 }
 
+std::mutex appSuspendBlockMutex;
+int appSuspendBlocks = 0;
+
 int WriteStatus(bool* status, bool value, const char* function) {
     if (status == nullptr) NotImplemented_nid_no_patch((std::string(function) + " with a null output").c_str());
+    *status = value;
+    return SYSTEM_SERVICE_OK;
+}
+
+int WriteStatusOrRefuse(bool* status, bool value, int nullOutputError) {
+    if (status == nullptr) return nullOutputError;
     *status = value;
     return SYSTEM_SERVICE_OK;
 }
@@ -317,6 +339,21 @@ int APS5_VABI sceSystemServiceGetStatus(SystemServiceStatus* status) {
  return SYSTEM_SERVICE_OK;
 }
 
+int APS5_VABI sceLncUtilBlockAppSuspend(const char* reason) {
+    if (reason == nullptr) NotImplemented_nid_no_patch("sceLncUtilBlockAppSuspend with a null reason");
+    std::lock_guard lock(appSuspendBlockMutex);
+    ++appSuspendBlocks;
+    return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceLncUtilUnblockAppSuspend(const char* reason) {
+    std::lock_guard lock(appSuspendBlockMutex);
+    if (appSuspendBlocks == 0) return SCE_KERNEL_ERROR_EBUSY;
+    if (reason == nullptr) NotImplemented_nid_no_patch("sceLncUtilUnblockAppSuspend with a null reason while a block is held");
+    --appSuspendBlocks;
+    return SYSTEM_SERVICE_OK;
+}
+
 int APS5_VABI sceLncUtilEnableSuspendNotification() {
     return SYSTEM_SERVICE_OK;
 }
@@ -334,12 +371,15 @@ int APS5_VABI sceSystemServiceDisableSuspendNotification() {
 }
 
 int APS5_VABI sceShellCoreUtilGetRemotePlayStatus(bool* active) {
-    return WriteStatus(active, false, __func__);
+    return WriteStatusOrRefuse(active, false, SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
 }
 
 int APS5_VABI sceSystemServiceGetRemoteplayStatus(bool* active) {
-    if (active == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
     return sceShellCoreUtilGetRemotePlayStatus(active);
+}
+
+int APS5_VABI sceShellCoreUtilGetSharePlayStatus(bool* active) {
+    return WriteStatusOrRefuse(active, false, SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
 }
 
 bool APS5_VABI sceShellCoreUtilIsGameLiveStreamingOnAir() {
@@ -348,6 +388,10 @@ bool APS5_VABI sceShellCoreUtilIsGameLiveStreamingOnAir() {
 
 bool APS5_VABI sceSystemServiceIsGameLiveStreamingOnAir() {
     return sceShellCoreUtilIsGameLiveStreamingOnAir();
+}
+
+int APS5_VABI sceShellCoreUtilGetGameLiveStreamingStatus(bool* active) {
+    return WriteStatusOrRefuse(active, sceShellCoreUtilIsGameLiveStreamingOnAir(), SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
 }
 
 bool APS5_VABI sceLncUtilIsShellUiFgAndGameBgCpuMode() {
@@ -374,6 +418,24 @@ bool APS5_VABI sceSystemStateMgrIsShellUIShutdownInProgress() {
     return false;
 }
 
+int APS5_VABI sceShellCoreUtilGetSocialScreenStatus(bool* active) {
+    return WriteStatus(active, false, __func__);
+}
+
+int APS5_VABI sceShellCoreUtilIsEyeToEyeDistanceAdjusted(std::uint32_t userId, std::uint8_t* adjusted) {
+    if (adjusted == nullptr) NotImplemented_nid_no_patch("sceShellCoreUtilIsEyeToEyeDistanceAdjusted with a null output");
+    if (userId != static_cast<std::uint32_t>(USER_SERVICE_INITIAL_USER_ID)) {
+        NotImplemented_nid_no_patch("sceShellCoreUtilIsEyeToEyeDistanceAdjusted for a user other than the logged-in user");
+    }
+    *adjusted = 0;
+    return SYSTEM_SERVICE_OK;
+}
+
+int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted(std::uint32_t userId, std::uint8_t* adjusted) {
+    if (adjusted == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
+    return sceShellCoreUtilIsEyeToEyeDistanceAdjusted(userId, adjusted);
+}
+
 bool APS5_VABI sceSystemStateMgrIsBdDriveReady() {
     return false;
 }
@@ -384,6 +446,10 @@ bool APS5_VABI sceShellCoreUtilIsUsbMassStorageMounted(std::uint32_t) {
 
 bool APS5_VABI sceShellCoreUtilIsExternalStorageAppMoveInProgress() {
     return false;
+}
+
+int APS5_VABI sceLncUtilIsPs2Emu(bool* emulated) {
+    return WriteStatusOrRefuse(emulated, false, LNC_UTIL_ERROR_NULL_OUTPUT);
 }
 
 int APS5_VABI sceSystemServiceHideSplashScreen(void) {
@@ -401,13 +467,11 @@ int APS5_VABI sceSystemServiceParamGetInt(int paramId, int* value) {
   case SYSTEM_SERVICE_PARAM_ID_TIME_FORMAT: *value = SYSTEM_SERVICE_PARAM_TIME_FORMAT_24HOUR; break;
   case SYSTEM_SERVICE_PARAM_ID_TIME_ZONE: *value = HostTimeZone().minutes; break;
   case SYSTEM_SERVICE_PARAM_ID_SUMMERTIME: *value = HostTimeZone().summer ? 1 : 0; break;
-  case SYSTEM_SERVICE_PARAM_ID_GAME_PARENTAL_LEVEL: *value = SYSTEM_SERVICE_PARAM_GAME_PARENTAL_OFF; break;
-  case SYSTEM_SERVICE_PARAM_ID_ENTER_BUTTON_ASSIGN: *value = SYSTEM_SERVICE_PARAM_ENTER_BUTTON_CROSS; break;
-  default:
-   if ((paramId >= 100 && paramId <= 111) || (paramId >= 200 && paramId <= 213) || paramId == 300) {
-    NotImplemented_nid_no_patch("sceSystemServiceParamGetInt: registry-backed parameter");
-   }
-   return SYSTEM_SERVICE_ERROR_PARAMETER;
+  default: {
+   const auto measured = std::ranges::find(RegistryParameters, paramId, &MeasuredParameter::id);
+   if (measured == std::ranges::end(RegistryParameters)) return SYSTEM_SERVICE_ERROR_PARAMETER;
+   *value = measured->value;
+  }
  }
  static const bool trace = std::getenv("APS5_TRACE_SYSTEM_PARAMS") != nullptr;
  if (trace) std::fprintf(stderr, "[systemservice] param %d -> %d\n", paramId, *value);
@@ -577,15 +641,6 @@ int APS5_VABI sceLncUtilGetAppTitleId(std::uint32_t appId, char* titleId) {
  }
  if (titleId == nullptr) throw std::runtime_error("sceLncUtilGetAppTitleId: null title ID buffer");
  WriteRunningTitleId(titleId);
- return SYSTEM_SERVICE_OK;
-}
-
-int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted(int userId, bool* isAdjusted) {
- if (isAdjusted == nullptr) return SYSTEM_SERVICE_ERROR_PARAMETER;
- if (userId != USER_SERVICE_INITIAL_USER_ID) {
-  throw std::runtime_error("sceSystemServiceIsEyeToEyeDistanceAdjusted: user " + std::to_string(userId) + " is not the signed-in user");
- }
- *isAdjusted = false;
  return SYSTEM_SERVICE_OK;
 }
 

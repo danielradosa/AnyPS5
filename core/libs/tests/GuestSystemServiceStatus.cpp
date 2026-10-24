@@ -1,17 +1,24 @@
 #include "SceTypes.hpp"
 #include "prx/libSceSystemService/SystemService.hpp"
+#include "prx/libkernel/KernelErrors.hpp"
+#include "prx/libSceUserService/UserService.hpp"
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <initializer_list>
 #include <stdexcept>
 #include <string_view>
 
+extern "C" int APS5_VABI sceLncUtilBlockAppSuspend(const char* reason);
+extern "C" int APS5_VABI sceLncUtilUnblockAppSuspend(const char* reason);
 extern "C" int APS5_VABI sceLncUtilEnableSuspendNotification();
 extern "C" int APS5_VABI sceLncUtilDisableSuspendNotification();
 extern "C" int APS5_VABI sceSystemServiceEnableSuspendNotification();
 extern "C" int APS5_VABI sceSystemServiceDisableSuspendNotification();
 extern "C" int APS5_VABI sceShellCoreUtilGetRemotePlayStatus(bool* active);
 extern "C" int APS5_VABI sceSystemServiceGetRemoteplayStatus(bool* active);
+extern "C" int APS5_VABI sceShellCoreUtilGetSharePlayStatus(bool* active);
+extern "C" int APS5_VABI sceShellCoreUtilGetGameLiveStreamingStatus(bool* active);
 extern "C" bool APS5_VABI sceShellCoreUtilIsGameLiveStreamingOnAir();
 extern "C" bool APS5_VABI sceSystemServiceIsGameLiveStreamingOnAir();
 extern "C" bool APS5_VABI sceLncUtilIsShellUiFgAndGameBgCpuMode();
@@ -20,11 +27,17 @@ extern "C" bool APS5_VABI sceShellCoreUtilIsImposeScreenOverlaid();
 extern "C" bool APS5_VABI sceShellCoreUtilIsScreenSaverOn();
 extern "C" bool APS5_VABI sceSystemServiceIsScreenSaverOn();
 extern "C" bool APS5_VABI sceSystemStateMgrIsShellUIShutdownInProgress();
+extern "C" int APS5_VABI sceShellCoreUtilGetSocialScreenStatus(bool* active);
+extern "C" int APS5_VABI sceShellCoreUtilIsEyeToEyeDistanceAdjusted(std::uint32_t userId, std::uint8_t* adjusted);
+extern "C" int APS5_VABI sceSystemServiceIsEyeToEyeDistanceAdjusted(std::uint32_t userId, std::uint8_t* adjusted);
 extern "C" bool APS5_VABI sceSystemStateMgrIsBdDriveReady();
 extern "C" bool APS5_VABI sceShellCoreUtilIsUsbMassStorageMounted(std::uint32_t deviceIndex);
 extern "C" bool APS5_VABI sceShellCoreUtilIsExternalStorageAppMoveInProgress();
+extern "C" int APS5_VABI sceLncUtilIsPs2Emu(bool* emulated);
 
 namespace {
+
+constexpr auto LOGGED_IN_USER = static_cast<std::uint32_t>(USER_SERVICE_INITIAL_USER_ID);
 
 int failures = 0;
 
@@ -50,6 +63,20 @@ bool Unimplemented(TCall call, std::string_view reason) {
 }
 
 void TestSuspend() {
+    Case("sceLncUtilBlockAppSuspend", [] {
+        return sceLncUtilBlockAppSuspend("saving") == SYSTEM_SERVICE_OK && sceLncUtilBlockAppSuspend("saving") == SYSTEM_SERVICE_OK;
+    });
+    Case("sceLncUtilUnblockAppSuspend", [] {
+        return sceLncUtilUnblockAppSuspend("saving") == SYSTEM_SERVICE_OK && sceLncUtilUnblockAppSuspend("saving") == SYSTEM_SERVICE_OK;
+    });
+    Case("sceLncUtilUnblockAppSuspend with no block left", [] {
+        return sceLncUtilUnblockAppSuspend("saving") == SCE_KERNEL_ERROR_EBUSY && sceLncUtilUnblockAppSuspend(nullptr) == SCE_KERNEL_ERROR_EBUSY &&
+            sceLncUtilBlockAppSuspend("saving") == SYSTEM_SERVICE_OK && sceLncUtilUnblockAppSuspend("saving") == SYSTEM_SERVICE_OK &&
+            sceLncUtilUnblockAppSuspend("saving") == SCE_KERNEL_ERROR_EBUSY;
+    });
+    Case("sceLncUtilBlockAppSuspend null reason", [] {
+        return Unimplemented([] { return sceLncUtilBlockAppSuspend(nullptr); }, "null reason");
+    });
     Case("sceLncUtilEnableSuspendNotification", [] {
         return sceLncUtilEnableSuspendNotification() == SYSTEM_SERVICE_OK && sceLncUtilEnableSuspendNotification() == SYSTEM_SERVICE_OK;
     });
@@ -62,6 +89,10 @@ void TestSuspend() {
     Case("sceSystemServiceDisableSuspendNotification", [] {
         return sceSystemServiceDisableSuspendNotification() == sceLncUtilDisableSuspendNotification();
     });
+    Case("sceLncUtilUnblockAppSuspend null reason while a block is held", [] {
+        return sceLncUtilBlockAppSuspend("saving") == SYSTEM_SERVICE_OK &&
+            Unimplemented([] { return sceLncUtilUnblockAppSuspend(nullptr); }, "null reason while a block is held");
+    });
 }
 
 template<typename TCall>
@@ -70,18 +101,49 @@ bool ReportsInactive(TCall call) {
     return call(&active) == SYSTEM_SERVICE_OK && !active;
 }
 
+template<typename TCall>
+bool RefusesNullOutput(TCall call) {
+    return Unimplemented(call, "null output");
+}
+
+template<typename TCall>
+bool RejectsNullOutput(TCall call, int error) {
+    return call(nullptr) == error;
+}
+
 void TestSessions() {
     Case("sceShellCoreUtilGetRemotePlayStatus", [] { return ReportsInactive(sceShellCoreUtilGetRemotePlayStatus); });
     Case("sceShellCoreUtilGetRemotePlayStatus null output", [] {
-        return Unimplemented([] { return sceShellCoreUtilGetRemotePlayStatus(nullptr); }, "null output");
+        return RejectsNullOutput(sceShellCoreUtilGetRemotePlayStatus, SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
     });
-    Case("sceSystemServiceGetRemoteplayStatus", [] {
-        return ReportsInactive(sceSystemServiceGetRemoteplayStatus) && sceSystemServiceGetRemoteplayStatus(nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER;
+    Case("sceSystemServiceGetRemoteplayStatus", [] { return ReportsInactive(sceSystemServiceGetRemoteplayStatus); });
+    Case("sceSystemServiceGetRemoteplayStatus null output", [] {
+        return RejectsNullOutput(sceSystemServiceGetRemoteplayStatus, SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
+    });
+    Case("sceShellCoreUtilGetSharePlayStatus", [] { return ReportsInactive(sceShellCoreUtilGetSharePlayStatus); });
+    Case("sceShellCoreUtilGetSharePlayStatus null output", [] {
+        return RejectsNullOutput(sceShellCoreUtilGetSharePlayStatus, SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
+    });
+    Case("sceShellCoreUtilGetGameLiveStreamingStatus", [] { return ReportsInactive(sceShellCoreUtilGetGameLiveStreamingStatus); });
+    Case("sceShellCoreUtilGetGameLiveStreamingStatus null output", [] {
+        return RejectsNullOutput(sceShellCoreUtilGetGameLiveStreamingStatus, SHELL_CORE_UTIL_ERROR_NULL_OUTPUT);
     });
     Case("sceShellCoreUtilIsGameLiveStreamingOnAir", [] { return !sceShellCoreUtilIsGameLiveStreamingOnAir(); });
     Case("sceSystemServiceIsGameLiveStreamingOnAir", [] {
         return !sceSystemServiceIsGameLiveStreamingOnAir() && sceSystemServiceIsGameLiveStreamingOnAir() == sceShellCoreUtilIsGameLiveStreamingOnAir();
     });
+}
+
+template<typename TCall>
+bool ReportsNotAdjusted(TCall call) {
+    const auto user = LOGGED_IN_USER;
+    std::uint8_t adjusted = 0xff;
+    if (call(user, &adjusted) != SYSTEM_SERVICE_OK || adjusted != 0) return false;
+    for (const auto other : {0u, user + 1, static_cast<std::uint32_t>(USER_SERVICE_USER_ID_INVALID)}) {
+        adjusted = 0xff;
+        if (!Unimplemented([&] { return call(other, &adjusted); }, "other than the logged-in user") || adjusted != 0xff) return false;
+    }
+    return true;
 }
 
 void TestShell() {
@@ -95,6 +157,18 @@ void TestShell() {
         return !sceSystemServiceIsScreenSaverOn() && sceSystemServiceIsScreenSaverOn() == sceShellCoreUtilIsScreenSaverOn();
     });
     Case("sceSystemStateMgrIsShellUIShutdownInProgress", [] { return !sceSystemStateMgrIsShellUIShutdownInProgress(); });
+    Case("sceShellCoreUtilGetSocialScreenStatus", [] { return ReportsInactive(sceShellCoreUtilGetSocialScreenStatus); });
+    Case("sceShellCoreUtilGetSocialScreenStatus null output", [] {
+        return RefusesNullOutput([] { return sceShellCoreUtilGetSocialScreenStatus(nullptr); });
+    });
+    Case("sceShellCoreUtilIsEyeToEyeDistanceAdjusted", [] { return ReportsNotAdjusted(sceShellCoreUtilIsEyeToEyeDistanceAdjusted); });
+    Case("sceShellCoreUtilIsEyeToEyeDistanceAdjusted null output", [] {
+        return RefusesNullOutput([] { return sceShellCoreUtilIsEyeToEyeDistanceAdjusted(LOGGED_IN_USER, nullptr); });
+    });
+    Case("sceSystemServiceIsEyeToEyeDistanceAdjusted", [] {
+        return ReportsNotAdjusted(sceSystemServiceIsEyeToEyeDistanceAdjusted) &&
+            sceSystemServiceIsEyeToEyeDistanceAdjusted(LOGGED_IN_USER, nullptr) == SYSTEM_SERVICE_ERROR_PARAMETER;
+    });
 }
 
 void TestDevices() {
@@ -106,6 +180,8 @@ void TestDevices() {
         return true;
     });
     Case("sceShellCoreUtilIsExternalStorageAppMoveInProgress", [] { return !sceShellCoreUtilIsExternalStorageAppMoveInProgress(); });
+    Case("sceLncUtilIsPs2Emu", [] { return ReportsInactive(sceLncUtilIsPs2Emu); });
+    Case("sceLncUtilIsPs2Emu null output", [] { return RejectsNullOutput(sceLncUtilIsPs2Emu, LNC_UTIL_ERROR_NULL_OUTPUT); });
 }
 
 }

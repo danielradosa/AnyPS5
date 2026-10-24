@@ -16,9 +16,38 @@ constexpr std::size_t TOOL_MEMORY_RANGE_SIZE = 12;
 
 extern "C" {
 
+int APS5_VABI sceAgcDriverGetShaderDebuggingStatus() {
+    return 1;
+}
+
 int APS5_VABI sceAgcDriverRegisterDefaultOwner(uint32_t owner) {
     (void)owner;
     return 0;
+}
+
+int APS5_VABI sceAgcDriverSetValidationErrorOutputFrequency(uint32_t frequency) {
+    (void)frequency;
+    return DEBUG_UNAVAILABLE;
+}
+
+int APS5_VABI sceAgcDriverSetSubmitValidationMode(uint32_t mode) {
+    (void)mode;
+    return DEBUG_UNAVAILABLE;
+}
+
+int APS5_VABI sceAgcDriverGetSubmitValidationConfig(void* config) {
+    (void)config;
+    return DEBUG_UNAVAILABLE;
+}
+
+int APS5_VABI sceAgcDriverGetSubmitValidationMode(uint32_t* mode) {
+    (void)mode;
+    return DEBUG_UNAVAILABLE;
+}
+
+int APS5_VABI sceAgcDriverSetSubmitValidationConfig(const void* config) {
+    (void)config;
+    return DEBUG_UNAVAILABLE;
 }
 
 int APS5_VABI sceAgcDriverNopDataWritePacket(void* destination, uint32_t address, const void* data, uint32_t bytes) {
@@ -31,6 +60,7 @@ int APS5_VABI sceAgcDriverNopDataWritePacket(void* destination, uint32_t address
     if (data != nullptr && bytes != 0) std::memcpy(static_cast<std::byte*>(destination) + 8, data, bytes);
     return data == nullptr || bytes == 0 ? 2 : static_cast<int>(totalBytes / 4);
 }
+
 
 int APS5_VABI sceAgcDriverSetValidationDisabled() {
     return DEBUG_UNAVAILABLE;

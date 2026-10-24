@@ -26,6 +26,9 @@ constexpr auto NotInitialized = static_cast<std::int32_t>(0x804e0801u);
 constexpr auto InvalidPort = static_cast<std::int32_t>(0x804e0804u);
 constexpr auto InvalidArgument = static_cast<std::int32_t>(0x804e0805u);
 constexpr auto PortNotFound = static_cast<std::int32_t>(0x804e0807u);
+constexpr std::int32_t ThreadPriorityHighest = 256;
+constexpr std::int32_t ThreadPriorityLowest = 767;
+constexpr std::uint64_t ThreadAffinityAll = 0x1fff;
 
 struct Port {
     std::int32_t type;
@@ -57,6 +60,10 @@ Voice& State() {
     throw std::logic_error(std::string(function) + ": " + why);
 }
 
+bool IsThreadSetting(std::int32_t priority, std::uint64_t affinity) {
+    return priority >= ThreadPriorityHighest && priority <= ThreadPriorityLowest && affinity != 0 && (affinity & ~ThreadAffinityAll) == 0;
+}
+
 Port& RequirePort(Voice& voice, std::uint32_t id, const char* function) {
     if (!voice.initialized) Fail(function, "library not initialized");
     const auto found = voice.ports.find(id);
@@ -65,6 +72,21 @@ Port& RequirePort(Voice& voice, std::uint32_t id, const char* function) {
 }
 
 bool IsInput(std::int32_t type) { return type == PortInDevice || type == PortInPcm || type == PortInVoice; }
+
+bool VoiceFrame(std::int32_t bitrate, std::uint16_t& frameSize, std::uint16_t& frameDuration) {
+    switch (bitrate) {
+    case 3850: frameSize = 20; frameDuration = 40; return true;
+    case 4650: frameSize = 24; frameDuration = 40; return true;
+    case 5700: frameSize = 15; frameDuration = 20; return true;
+    case 7300: frameSize = 19; frameDuration = 20; return true;
+    case 11800: frameSize = 15; frameDuration = 10; return true;
+    case 12200: frameSize = 16; frameDuration = 10; return true;
+    case 14400: frameSize = 27; frameDuration = 15; return true;
+    case 16000: frameSize = 20; frameDuration = 10; return true;
+    case 22533: frameSize = 43; frameDuration = 15; return true;
+    default: return false;
+    }
+}
 
 }
 
@@ -91,7 +113,10 @@ int APS5_VABI sceVoiceSetThreadsParams(const VoiceThreadsParams* params) {
     if (voice.started) return static_cast<std::int32_t>(0x804e080bu);
     if (params->mode == 0) return 0;
     if (params->mode != 1) return InvalidArgument;
-    Fail(__func__, "worker priority and affinity are not implemented");
+    if (!IsThreadSetting(params->firstPriority, params->firstAffinity) || !IsThreadSetting(params->secondPriority, params->secondAffinity) || !IsThreadSetting(params->thirdPriority, params->thirdAffinity)) {
+        Fail(__func__, "the result for a priority outside 256-767 or an affinity mask outside 0x1fff is unknown");
+    }
+    return 0;
 }
 
 int APS5_VABI sceVoiceStart(const VoiceStartParam* param) {
@@ -140,18 +165,7 @@ int APS5_VABI sceVoiceCreatePort(std::uint32_t* portId, const VoicePortParam* pa
     if (type == PortInPcm || type == PortOutPcm) {
         if (param->pcmaudio.sample_rate != 16000 || param->pcmaudio.data_type != 0) return InvalidArgument;
     } else if (type == PortInVoice || type == PortOutVoice) {
-        switch (param->voice.bitrate) {
-        case 3850: frameSize = 20; frameDuration = 40; break;
-        case 4650: frameSize = 24; frameDuration = 40; break;
-        case 5700: frameSize = 15; frameDuration = 20; break;
-        case 7300: frameSize = 19; frameDuration = 20; break;
-        case 11800: frameSize = 15; frameDuration = 10; break;
-        case 12200: frameSize = 16; frameDuration = 10; break;
-        case 14400: frameSize = 27; frameDuration = 15; break;
-        case 16000: frameSize = 20; frameDuration = 10; break;
-        case 22533: frameSize = 43; frameDuration = 15; break;
-        default: return InvalidArgument;
-        }
+        if (!VoiceFrame(param->voice.bitrate, frameSize, frameDuration)) return InvalidArgument;
     }
     constexpr auto resourceFull = static_cast<std::int32_t>(0x804e0808u);
     if (voice.freePorts.empty()) return resourceFull;
@@ -415,7 +429,7 @@ int APS5_VABI sceVoiceDisableChat(void) {
     Fail(__func__, "audio chat backend is not implemented");
 }
 
-int APS5_VABI sceVoiceInitHQ(VoiceInitParam* param, int32_t version) {
+int APS5_VABI sceVoiceInitHQ(const VoiceInitParam* param, std::int32_t version) {
     return sceVoiceInit(param, version);
 }
 
@@ -444,36 +458,55 @@ int APS5_VABI sceVoiceVADPVTAdjustment(void) {
     return 0;
 }
 
-int APS5_VABI sceVoiceVADSetVersion(int32_t version) {
+int APS5_VABI sceVoiceVADSetVersion(std::int32_t version) {
     return version == 0 || version == 1 ? 0 : InvalidArgument;
 }
 
 int APS5_VABI sceVoiceSetMuteFlagAll(bool muted) {
     auto& voice = State();
     std::lock_guard lock(voice.mutex);
-    if (!voice.initialized) Fail(__func__, "library not initialized");
+    if (!voice.initialized) return NotInitialized;
     voice.mutedAll = muted;
     return 0;
 }
 
-int APS5_VABI sceVoiceSetBitRate(uint32_t port_id, uint32_t bitrate) {
+int APS5_VABI sceVoiceSetBitRate(std::uint32_t portId, std::uint32_t bitrate) {
     auto& voice = State();
     std::lock_guard lock(voice.mutex);
-    auto& port = RequirePort(voice, port_id, __func__);
+    if (!voice.initialized) return NotInitialized;
+    if (portId > 127) return InvalidPort;
+    const auto found = voice.ports.find(portId);
+    if (found == voice.ports.end()) return PortNotFound;
+    auto& port = found->second;
     if (port.type != PortInVoice && port.type != PortOutVoice) Fail(__func__, "port does not carry encoded voice");
+    std::uint16_t frameSize = 0;
+    std::uint16_t frameDuration = 0;
+    if (bitrate > INT32_MAX || !VoiceFrame(static_cast<std::int32_t>(bitrate), frameSize, frameDuration)) Fail(__func__, "unsupported bitrate " + std::to_string(bitrate));
     port.bitrate = bitrate;
+    port.frameSize = frameSize;
     return 0;
 }
 
-int APS5_VABI sceVoiceUpdatePort(uint32_t port_id, const VoicePortParam* param) {
-    if (param == nullptr) APS5_INVALID_ARG_EX;
+int APS5_VABI sceVoiceUpdatePort(std::uint32_t portId, const VoicePortParam* param) {
     auto& voice = State();
     std::lock_guard lock(voice.mutex);
-    auto& port = RequirePort(voice, port_id, __func__);
+    if (!voice.initialized) return NotInitialized;
+    if (portId > 127) return InvalidPort;
+    if (!param) Fail(__func__, "null port parameters");
+    const auto found = voice.ports.find(portId);
+    if (found == voice.ports.end()) return PortNotFound;
+    auto& port = found->second;
     if (param->port_type != port.type) Fail(__func__, "port type " + std::to_string(param->port_type) + " differs from the port's " + std::to_string(port.type));
+    std::uint16_t frameSize = port.frameSize;
+    std::uint16_t frameDuration = 0;
+    const bool voicePort = port.type == PortInVoice || port.type == PortOutVoice;
+    if (voicePort && !VoiceFrame(param->voice.bitrate, frameSize, frameDuration)) Fail(__func__, "unsupported bitrate " + std::to_string(param->voice.bitrate));
     port.muted = param->mute != 0;
-    port.volume = param->volume;
-    if (port.type == PortInVoice || port.type == PortOutVoice) port.bitrate = static_cast<std::uint32_t>(param->voice.bitrate);
+    port.volume = std::isfinite(param->volume) ? param->volume : 0.0f;
+    if (voicePort) {
+        port.bitrate = static_cast<std::uint32_t>(param->voice.bitrate);
+        port.frameSize = frameSize;
+    }
     return 0;
 }
 

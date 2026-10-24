@@ -85,6 +85,14 @@ int APS5_VABI fesetexceptflag_nid_postfix(const std::uint16_t* flags, int except
     return 0;
 }
 
+int APS5_VABI feraiseexcept_nid_postfix(int exceptions) {
+    const auto raised = static_cast<unsigned>(exceptions);
+    if ((raised & ~Exceptions) != 0) throw std::invalid_argument("feraiseexcept: unsupported exception bits");
+    ReplaceFlags(raised, raised);
+    asm volatile("fwait");
+    return 0;
+}
+
 int APS5_VABI feclearexcept_nid_postfix(int exceptions) {
     const auto mask = static_cast<unsigned>(exceptions) & Exceptions;
     if (mask == Exceptions) {
@@ -117,6 +125,10 @@ int APS5_VABI fegettrapenable_nid_postfix() {
     std::uint16_t control;
     asm volatile("fnstcw %0" : "=m"(control));
     return ~control & Exceptions;
+}
+
+int APS5_VABI fegetexcept_nid_postfix() {
+    return fegettrapenable_nid_postfix();
 }
 
 int APS5_VABI fesettrapenable_nid_postfix(int exceptions) {

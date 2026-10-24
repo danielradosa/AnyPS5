@@ -15,6 +15,7 @@ inline constexpr std::int32_t DeviceDisconnected = static_cast<std::int32_t>(0x8
 inline constexpr std::int32_t ParameterNull = static_cast<std::int32_t>(0x81110008);
 inline constexpr std::int32_t ParameterInvalid = static_cast<std::int32_t>(0x81110009);
 inline constexpr std::int32_t UnsupportedFeature = static_cast<std::int32_t>(0x81110016);
+inline constexpr std::uint32_t StartupStateSdkVersion = 0x04500000;
 
 enum class DeviceStatus : std::uint32_t {
     Ready = 0,

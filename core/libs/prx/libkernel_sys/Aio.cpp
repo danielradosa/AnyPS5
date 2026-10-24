@@ -1,33 +1,69 @@
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <optional>
-#include <stdexcept>
-#include <string>
+#include <thread>
+
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
-#include "prx/libkernel/File/include/File.hpp"
 
-extern "C" {
-int* APS5_VABI __error_nid_postfix();
-std::int64_t APS5_VABI _fstat_nid_postfix(int d, FileStat* sb);
-std::int64_t APS5_VABI pread_nid_postfix(int d, void* buf, std::size_t nbytes, std::int64_t offset);
-int APS5_VABI fsync_nid_postfix(int fd);
-int APS5_VABI fcntl_nid_postfix(int descriptor, int command, ...);
-}
+extern "C" int* APS5_VABI __error_nid_postfix();
+extern "C" int APS5_VABI fcntl_nid_postfix(int descriptor, int command, ...);
+extern "C" std::int64_t APS5_VABI _fstat_nid_postfix(int descriptor, FileStat* status);
+extern "C" std::int64_t APS5_VABI pread_nid_postfix(int descriptor, void* buffer, std::size_t bytes, std::int64_t offset);
+extern "C" std::int64_t APS5_VABI pwrite_nid_disambig1_nid_postfix(int descriptor, const void* buffer, std::size_t bytes, std::int64_t offset);
+extern "C" int APS5_VABI fsync_nid_postfix(int descriptor);
 
-struct PosixAioSigevent {
+namespace {
+
+constexpr int GuestEbadf = 9;
+constexpr int GuestEfault = 14;
+constexpr int GuestEinval = 22;
+constexpr int GuestEagain = 35;
+constexpr int GuestEinprogress = 36;
+constexpr int GuestEopnotsupp = 45;
+constexpr int GuestEcanceled = 85;
+constexpr int LioWrite = 1;
+constexpr int LioRead = 2;
+constexpr int LioSync = 3;
+constexpr int AioCanceled = 1;
+constexpr int AioNotCanceled = 2;
+constexpr int AioAllDone = 3;
+constexpr int SigevNone = 0;
+constexpr int SigevSignal = 1;
+constexpr int SigevKevent = 3;
+constexpr int SigevThreadId = 4;
+constexpr int SignalMax = 128;
+constexpr int GuestOSync = 0x80;
+constexpr int GetFlags = 3;
+constexpr int AccessMode = 3;
+constexpr int WriteOnly = 1;
+constexpr int ReadWrite = 2;
+constexpr std::uint16_t TypeMask = 0170000;
+constexpr std::uint16_t TypeFifo = 0010000;
+constexpr std::uint16_t TypeDirectory = 0040000;
+constexpr std::uint16_t TypeRegular = 0100000;
+constexpr std::uint16_t TypeSocket = 0140000;
+constexpr std::size_t QueuePerProcess = 256;
+constexpr std::uint64_t IoSizeMax = std::numeric_limits<int>::max();
+constexpr std::int64_t NanosecondsPerSecond = 1000000000;
+constexpr std::int64_t TickNanoseconds = 1000000;
+
+struct GuestSigevent {
     int notify;
     int signo;
-    std::uint64_t value;
-    std::uint64_t data[8];
+    std::int64_t value;
+    std::int64_t extra[8];
 };
 
-struct PosixAioControlBlock {
+struct GuestAiocb {
     int fildes;
     std::int64_t offset;
     void* buf;
@@ -39,63 +75,46 @@ struct PosixAioControlBlock {
     std::int64_t status;
     std::int64_t error;
     void* kernelinfo;
-    PosixAioSigevent sigevent;
+    GuestSigevent sigevent;
 };
-static_assert(offsetof(PosixAioControlBlock, offset) == 8);
-static_assert(offsetof(PosixAioControlBlock, lioOpcode) == 48);
-static_assert(offsetof(PosixAioControlBlock, status) == 56);
-static_assert(offsetof(PosixAioControlBlock, error) == 64);
-static_assert(offsetof(PosixAioControlBlock, kernelinfo) == 72);
-static_assert(offsetof(PosixAioControlBlock, sigevent) == 80);
-static_assert(sizeof(PosixAioControlBlock) == 160);
 
-namespace {
+static_assert(offsetof(GuestAiocb, lioOpcode) == 48 && offsetof(GuestAiocb, status) == 56 && offsetof(GuestAiocb, sigevent) == 80);
+static_assert(sizeof(GuestAiocb) == 160);
 
-constexpr int GuestEbadf = 9;
-constexpr int GuestEfault = 14;
-constexpr int GuestEinval = 22;
-constexpr int GuestEagain = 35;
-constexpr int GuestEinprogress = 36;
-constexpr int GuestEopnotsupp = 45;
-constexpr int GuestGetStatusFlags = 3;
-constexpr int GuestAccessMode = 3;
-constexpr int GuestWriteOnly = 1;
-constexpr int GuestReadOnly = 0;
-constexpr int GuestOSync = 0x0080;
-constexpr int SigevNone = 0;
-constexpr int SigevSignal = 1;
-constexpr int SigevKevent = 3;
-constexpr int SigevThreadId = 4;
-constexpr int MaximumSignal = 128;
-constexpr std::size_t MaximumJobs = 256;
-constexpr int AioNotCanceled = 2;
-constexpr int AioAllDone = 3;
-constexpr std::uint16_t GuestFileType = 0170000;
-constexpr std::uint16_t GuestFifo = 0010000;
-constexpr std::uint16_t GuestCharacterDevice = 0020000;
-constexpr std::uint16_t GuestSocket = 0140000;
+struct GuestTimespec {
+    std::int64_t tv_sec;
+    std::int64_t tv_nsec;
+};
 
-enum class Operation { Read, Write, Sync };
+enum class State { Queued, Running, Done };
 
 struct Job {
-    PosixAioControlBlock* user;
-    int fd;
+    GuestAiocb* user;
+    int descriptor;
+    int opcode;
+    std::int64_t offset;
+    void* buffer;
+    std::uint64_t bytes;
+    State state = State::Queued;
     std::int64_t status = -1;
-    std::int64_t error = 0;
+    int error = 0;
 };
 
-struct Jobs {
+struct Aio {
     std::mutex lock;
-    std::condition_variable finished;
-    bool initialized = false;
-    std::list<Job> pending;
-    std::list<Job> done;
-    std::intptr_t nextReference = 1;
+    std::condition_variable changed;
+    bool used = false;
+    bool held = false;
+    bool started = false;
+    std::intptr_t nextId = 0;
+    std::deque<std::shared_ptr<Job>> queued;
+    std::list<std::shared_ptr<Job>> all;
+    std::list<std::shared_ptr<Job>> done;
 };
 
-Jobs& State() {
-    static Jobs jobs;
-    return jobs;
+Aio& Instance() {
+    static auto* aio = new Aio;
+    return *aio;
 }
 
 int Fail(int error) {
@@ -103,229 +122,224 @@ int Fail(int error) {
     return -1;
 }
 
-std::optional<std::chrono::nanoseconds> Timeout(const KernelTimespec* timeout, int* error) {
-    *error = 0;
-    if (timeout == nullptr) return std::nullopt;
-    if (timeout->tv_nsec < 0 || timeout->tv_nsec >= 1000000000 || timeout->tv_sec < 0) {
-        *error = GuestEinval;
-        return std::nullopt;
-    }
-    constexpr auto limit = std::numeric_limits<std::int64_t>::max() / 1000000000 - 1;
-    const auto seconds = timeout->tv_sec > limit ? limit : timeout->tv_sec;
-    return std::chrono::seconds(seconds) + std::chrono::nanoseconds(timeout->tv_nsec);
+void Run(Job& job) {
+    std::int64_t result = 0;
+    if (job.opcode == LioRead) result = job.bytes == 0 ? 0 : pread_nid_postfix(job.descriptor, job.buffer, job.bytes, job.offset);
+    else if (job.opcode == LioWrite) result = pwrite_nid_disambig1_nid_postfix(job.descriptor, job.buffer, job.bytes, job.offset);
+    else result = fsync_nid_postfix(job.descriptor);
+    job.status = result < 0 ? -1 : result;
+    job.error = result < 0 ? *__error_nid_postfix() : 0;
 }
 
-int DescriptorError(int fd, Operation operation) {
-    const int saved = *__error_nid_postfix();
-    const int flags = fcntl_nid_postfix(fd, GuestGetStatusFlags);
-    FileStat status{};
-    const bool described = flags >= 0 && _fstat_nid_postfix(fd, &status) == 0;
-    *__error_nid_postfix() = saved;
-    if (!described) return GuestEbadf;
-    const int access = flags & GuestAccessMode;
-    if (operation == Operation::Read && access == GuestWriteOnly) return GuestEbadf;
-    if (operation == Operation::Write && access == GuestReadOnly) return GuestEbadf;
-    const auto type = status.st_mode & GuestFileType;
-    if (type == GuestCharacterDevice)
-        throw std::runtime_error("aio: descriptor " + std::to_string(fd) + " is a device, and the console's disk and device AIO backends are not modelled");
-    if (type == GuestSocket) {
-        if (operation == Operation::Sync) return GuestEinval;
-        throw std::runtime_error("aio: descriptor " + std::to_string(fd) + " is a socket, whose requests complete when data arrives, which is not modelled");
+void Worker() {
+    auto& aio = Instance();
+    std::unique_lock lock(aio.lock);
+    for (;;) {
+        aio.changed.wait(lock, [&] { return !aio.held && !aio.queued.empty(); });
+        auto job = aio.queued.front();
+        aio.queued.pop_front();
+        job->state = State::Running;
+        lock.unlock();
+        Run(*job);
+        lock.lock();
+        job->state = State::Done;
+        aio.done.push_back(job);
+        aio.changed.notify_all();
     }
-    if (type == GuestFifo) return operation == Operation::Sync ? GuestEinval : -GuestEopnotsupp;
-    return 0;
 }
 
-int Queue(PosixAioControlBlock* user, Operation operation) {
+void Complete(Aio& aio, const std::shared_ptr<Job>& job, std::int64_t status, int error) {
+    job->status = status;
+    job->error = error;
+    job->state = State::Done;
+    aio.done.push_back(job);
+    aio.changed.notify_all();
+}
+
+std::optional<int> ReadyError(const std::shared_ptr<Job>& job) {
+    if (job->state != State::Done) return std::nullopt;
+    return job->error;
+}
+
+std::int64_t Consume(Aio& aio, std::list<std::shared_ptr<Job>>::iterator found) {
+    const auto job = *found;
+    aio.done.erase(found);
+    aio.all.remove(job);
+    job->user->error = job->error;
+    job->user->status = job->status;
+    return job->error != 0 ? Fail(job->error) : job->status;
+}
+
+std::optional<std::chrono::nanoseconds> WaitTime(const GuestTimespec& time) {
+    if (time.tv_sec < 0 || time.tv_nsec < 0 || time.tv_nsec >= NanosecondsPerSecond) return std::nullopt;
+    const auto microseconds = time.tv_nsec / 1000;
+    const std::int64_t whole = microseconds * 1000;
+    const std::int64_t rounded = time.tv_sec == 0 && whole < TickNanoseconds ? TickNanoseconds : whole;
+    const auto seconds = std::min<std::int64_t>(time.tv_sec, std::chrono::duration_cast<std::chrono::seconds>(std::chrono::hours(24 * 365)).count());
+    return std::chrono::seconds(seconds) + std::chrono::nanoseconds(rounded);
+}
+
+int Queue(GuestAiocb* user, int opcode) {
     if (user == nullptr) return Fail(GuestEfault);
-    auto& jobs = State();
-    std::unique_lock lock(jobs.lock);
-    jobs.initialized = true;
+    auto& aio = Instance();
+    std::unique_lock lock(aio.lock);
+    aio.used = true;
     user->status = -1;
     user->error = 0;
-    user->kernelinfo = reinterpret_cast<void*>(static_cast<std::intptr_t>(-1));
-    if (jobs.pending.size() + jobs.done.size() >= MaximumJobs) {
-        user->error = GuestEagain;
-        return Fail(GuestEagain);
-    }
-    const PosixAioControlBlock request = *user;
-    if (request.nbytes > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) return Fail(GuestEinval);
+    user->kernelinfo = reinterpret_cast<void*>(std::intptr_t{-1});
+    const auto fail = [&](int error) {
+        user->error = error;
+        return Fail(error);
+    };
+    if (aio.all.size() >= QueuePerProcess) return fail(GuestEagain);
+    const GuestAiocb request = *user;
+    if (request.nbytes > IoSizeMax) return Fail(GuestEinval);
     const int notify = request.sigevent.notify;
-    if (notify != SigevKevent && notify != SigevSignal && notify != SigevThreadId && notify != SigevNone) {
-        user->error = GuestEinval;
+    if (notify != SigevKevent && notify != SigevSignal && notify != SigevThreadId && notify != SigevNone) return fail(GuestEinval);
+    if ((notify == SigevSignal || notify == SigevThreadId) && (request.sigevent.signo <= 0 || request.sigevent.signo > SignalMax))
         return Fail(GuestEinval);
-    }
-    if ((notify == SigevSignal || notify == SigevThreadId) && (request.sigevent.signo <= 0 || request.sigevent.signo > MaximumSignal))
-        return Fail(GuestEinval);
-    int queueError = 0;
-    if (const int error = DescriptorError(request.fildes, operation)) {
-        if (error > 0) {
-            user->error = error;
-            return Fail(error);
-        }
-        queueError = -error;
-    }
-    if (operation != Operation::Sync && request.offset < 0) {
-        user->error = GuestEinval;
-        return Fail(GuestEinval);
-    }
-    user->kernelinfo = reinterpret_cast<void*>(jobs.nextReference++);
-    if (notify != SigevNone)
-        throw std::runtime_error("aio: completion notification " + std::to_string(notify) + " (signal, thread or kevent) is not modelled");
+    const int flags = fcntl_nid_postfix(request.fildes, GetFlags);
+    if (flags < 0) return fail(GuestEbadf);
+    const int access = flags & AccessMode;
+    if (opcode == LioRead && access != 0 && access != ReadWrite) return fail(GuestEbadf);
+    if (opcode == LioWrite && access != WriteOnly && access != ReadWrite) return fail(GuestEbadf);
+    FileStat status{};
+    if (_fstat_nid_postfix(request.fildes, &status) != 0) return fail(GuestEbadf);
+    const auto type = static_cast<std::uint16_t>(status.st_mode & TypeMask);
+    if (type == TypeSocket) NotImplemented_nid_no_patch("aio on a socket");
+    const bool vnode = type != 0 && type != TypeFifo;
+    if (opcode == LioSync && !vnode) return fail(GuestEinval);
+    if (opcode != LioSync && request.offset < 0) return fail(GuestEinval);
+    user->kernelinfo = reinterpret_cast<void*>(aio.nextId++);
+    if (notify != SigevNone) NotImplemented_nid_no_patch("aio completion delivering a signal or a kevent");
     user->error = GuestEinprogress;
-    if (queueError != 0) {
-        user->error = queueError;
-        return Fail(queueError);
+    if (type != TypeRegular && type != TypeDirectory) return fail(GuestEopnotsupp);
+    auto job = std::make_shared<Job>(Job{user, request.fildes, opcode, request.offset, request.buf, request.nbytes});
+    aio.all.push_back(job);
+    aio.queued.push_back(job);
+    if (!aio.started) {
+        aio.started = true;
+        std::thread(Worker).detach();
     }
-    auto job = jobs.pending.insert(jobs.pending.end(), Job{user, request.fildes});
-    lock.unlock();
-    const int saved = *__error_nid_postfix();
-    std::int64_t result = 0;
-    if (operation == Operation::Read) {
-        if (request.nbytes != 0) result = pread_nid_postfix(request.fildes, request.buf, request.nbytes, request.offset);
-    } else if (operation == Operation::Write) {
-        result = PosixPwrite_nid_no_patch(request.fildes, request.buf, request.nbytes, request.offset);
-    } else {
-        result = fsync_nid_postfix(request.fildes);
-    }
-    const int error = result < 0 ? *__error_nid_postfix() : 0;
-    *__error_nid_postfix() = saved;
-    lock.lock();
-    job->status = result < 0 ? -1 : result;
-    job->error = error;
-    jobs.done.splice(jobs.done.end(), jobs.pending, job);
-    jobs.finished.notify_all();
+    aio.changed.notify_all();
     return 0;
-}
-
-std::int64_t Collect(Jobs& jobs, std::list<Job>::iterator job) {
-    PosixAioControlBlock* user = job->user;
-    const auto status = job->status;
-    const auto error = job->error;
-    jobs.done.erase(job);
-    user->error = error;
-    user->status = status;
-    if (error != 0) return Fail(static_cast<int>(error));
-    return status;
 }
 
 }
 
 extern "C" {
 
-int APS5_VABI aio_read_nid_postfix(PosixAioControlBlock* aiocb) {
-    return Queue(aiocb, Operation::Read);
+void AioHoldWorkerForTest_nid_no_patch(bool hold) {
+    auto& aio = Instance();
+    std::lock_guard lock(aio.lock);
+    aio.held = hold;
+    aio.changed.notify_all();
 }
 
-int APS5_VABI aio_write_nid_postfix(PosixAioControlBlock* aiocb) {
-    return Queue(aiocb, Operation::Write);
+int APS5_VABI aio_read_nid_postfix(GuestAiocb* aiocb) {
+    return Queue(aiocb, LioRead);
 }
 
-int APS5_VABI aio_fsync_nid_postfix(int op, PosixAioControlBlock* aiocb) {
-    if (op != GuestOSync) return Fail(GuestEinval);
-    return Queue(aiocb, Operation::Sync);
+int APS5_VABI aio_write_nid_postfix(GuestAiocb* aiocb) {
+    return Queue(aiocb, LioWrite);
 }
 
-int APS5_VABI aio_error_nid_postfix(const PosixAioControlBlock* aiocb) {
-    if (aiocb == nullptr) throw std::invalid_argument("aio_error: null control block");
-    auto& jobs = State();
-    const std::lock_guard lock(jobs.lock);
-    if (!jobs.initialized) return GuestEinval;
-    for (const auto& job : jobs.pending) {
-        if (job.user == aiocb) return GuestEinprogress;
-    }
-    for (const auto& job : jobs.done) {
-        if (job.user == aiocb) return static_cast<int>(job.error);
+int APS5_VABI aio_fsync_nid_postfix(int operation, GuestAiocb* aiocb) {
+    if (operation != GuestOSync) return Fail(GuestEinval);
+    return Queue(aiocb, LioSync);
+}
+
+int APS5_VABI aio_error_nid_postfix(const GuestAiocb* aiocb) {
+    auto& aio = Instance();
+    std::lock_guard lock(aio.lock);
+    if (!aio.used || aiocb == nullptr) return GuestEinval;
+    for (const auto& job : aio.all) {
+        if (job->user == aiocb) return ReadyError(job).value_or(GuestEinprogress);
     }
     if (aiocb->status == -1) return static_cast<int>(aiocb->error);
     return GuestEinval;
 }
 
-std::int64_t APS5_VABI aio_return_nid_postfix(PosixAioControlBlock* aiocb) {
-    auto& jobs = State();
-    const std::lock_guard lock(jobs.lock);
-    if (!jobs.initialized) return Fail(GuestEinval);
-    for (auto job = jobs.done.begin(); job != jobs.done.end(); ++job) {
-        if (job->user == aiocb) return Collect(jobs, job);
+std::int64_t APS5_VABI aio_return_nid_postfix(GuestAiocb* aiocb) {
+    auto& aio = Instance();
+    std::lock_guard lock(aio.lock);
+    if (!aio.used) return Fail(GuestEinval);
+    for (auto job = aio.done.begin(); job != aio.done.end(); ++job) {
+        if ((*job)->user == aiocb) return Consume(aio, job);
     }
     return Fail(GuestEinval);
 }
 
-int APS5_VABI aio_suspend_nid_postfix(const PosixAioControlBlock* const* list, int count, const KernelTimespec* timeout) {
-    if (count < 0 || count > static_cast<int>(MaximumJobs)) return Fail(GuestEinval);
-    if (count > 0 && list == nullptr) return Fail(GuestEfault);
-    int error = 0;
-    const auto wait = Timeout(timeout, &error);
-    if (error) return Fail(error);
-    auto& jobs = State();
-    std::unique_lock lock(jobs.lock);
-    if (!jobs.initialized) return Fail(GuestEagain);
-    if (count == 0) return 0;
-    const auto listed = [&](const Job& job) {
-        for (int index = 0; index < count; ++index) {
-            if (list[index] == job.user) return true;
-        }
-        return false;
-    };
-    const auto ready = [&] {
-        for (const auto& job : jobs.done) {
-            if (listed(job)) return true;
-        }
-        for (const auto& job : jobs.pending) {
-            if (listed(job)) return false;
-        }
-        return true;
-    };
-    if (!wait) {
-        jobs.finished.wait(lock, ready);
-        return 0;
-    }
-    if (!jobs.finished.wait_for(lock, *wait, ready)) return Fail(GuestEagain);
-    return 0;
-}
-
-int APS5_VABI aio_cancel_nid_postfix(int fd, PosixAioControlBlock* aiocb) {
-    FileStat status{};
-    const int saved = *__error_nid_postfix();
-    const bool open = _fstat_nid_postfix(fd, &status) == 0;
-    *__error_nid_postfix() = saved;
-    if (!open) return Fail(GuestEbadf);
-    auto& jobs = State();
-    const std::lock_guard lock(jobs.lock);
-    if (!jobs.initialized) return AioAllDone;
-    if ((status.st_mode & GuestFileType) == GuestCharacterDevice)
-        throw std::runtime_error("aio_cancel: descriptor " + std::to_string(fd) + " is a device, and whether the console takes it for a disk is not modelled");
-    for (const auto& job : jobs.pending) {
-        if (job.fd == fd && (aiocb == nullptr || job.user == aiocb)) return AioNotCanceled;
-    }
-    return AioAllDone;
-}
-
-std::int64_t APS5_VABI aio_waitcomplete_nid_postfix(PosixAioControlBlock** result, const KernelTimespec* timeout) {
-    if (result != nullptr) *result = nullptr;
-    bool poll = false;
+int APS5_VABI aio_suspend_nid_postfix(const GuestAiocb* const* list, int count, const GuestTimespec* timeout) {
+    if (count < 0 || count > static_cast<int>(QueuePerProcess)) return Fail(GuestEinval);
     std::optional<std::chrono::nanoseconds> wait;
-    if (timeout != nullptr && timeout->tv_sec == 0 && timeout->tv_nsec == 0) {
-        poll = true;
-    } else {
-        int error = 0;
-        wait = Timeout(timeout, &error);
-        if (error) return Fail(error);
+    if (timeout != nullptr) {
+        wait = WaitTime(*timeout);
+        if (!wait) return Fail(GuestEinval);
     }
-    auto& jobs = State();
-    std::unique_lock lock(jobs.lock);
-    jobs.initialized = true;
-    const auto ready = [&] { return !jobs.done.empty(); };
-    if (poll) {
-        if (!ready()) return Fail(GuestEagain);
-    } else if (!wait) {
-        jobs.finished.wait(lock, ready);
-    } else if (!jobs.finished.wait_for(lock, *wait, ready)) {
-        return Fail(GuestEagain);
+    auto& aio = Instance();
+    std::unique_lock lock(aio.lock);
+    if (!aio.used) return Fail(GuestEagain);
+    if (count == 0) return 0;
+    for (;;) {
+        bool listed = false;
+        for (const auto& job : aio.all) {
+            for (int index = 0; index < count; ++index) {
+                if (job->user != list[index]) continue;
+                listed = true;
+                if (job->state == State::Done) return 0;
+            }
+        }
+        if (!listed) return 0;
+        if (!wait) aio.changed.wait(lock);
+        else if (aio.changed.wait_for(lock, *wait) == std::cv_status::timeout) return Fail(GuestEagain);
     }
-    const auto job = jobs.done.begin();
-    if (result != nullptr) *result = job->user;
-    return Collect(jobs, job);
+}
+
+std::int64_t APS5_VABI aio_waitcomplete_nid_postfix(GuestAiocb** result, const GuestTimespec* timeout) {
+    if (result != nullptr) *result = nullptr;
+    std::optional<std::chrono::nanoseconds> wait;
+    bool poll = false;
+    if (timeout != nullptr) {
+        poll = timeout->tv_sec == 0 && timeout->tv_nsec == 0;
+        if (!poll) {
+            wait = WaitTime(*timeout);
+            if (!wait) return Fail(GuestEinval);
+        }
+    }
+    auto& aio = Instance();
+    std::unique_lock lock(aio.lock);
+    aio.used = true;
+    while (aio.done.empty()) {
+        if (poll) return Fail(GuestEagain);
+        if (!wait) aio.changed.wait(lock);
+        else if (aio.changed.wait_for(lock, *wait) == std::cv_status::timeout && aio.done.empty()) return Fail(GuestEagain);
+    }
+    if (result != nullptr) *result = aio.done.front()->user;
+    return Consume(aio, aio.done.begin());
+}
+
+int APS5_VABI aio_cancel_nid_postfix(int descriptor, GuestAiocb* aiocb) {
+    if (fcntl_nid_postfix(descriptor, GetFlags) < 0) return Fail(GuestEbadf);
+    auto& aio = Instance();
+    std::lock_guard lock(aio.lock);
+    int cancelled = 0;
+    int notCancelled = 0;
+    for (const auto& job : std::list<std::shared_ptr<Job>>(aio.all)) {
+        if (job->state == State::Done || job->descriptor != descriptor || (aiocb != nullptr && job->user != aiocb)) continue;
+        if (job->state == State::Queued) {
+            std::erase(aio.queued, job);
+            Complete(aio, job, -1, GuestEcanceled);
+            ++cancelled;
+        } else {
+            ++notCancelled;
+        }
+        if (aiocb != nullptr) break;
+    }
+    if (aiocb != nullptr && cancelled != 0) return AioCanceled;
+    if (notCancelled != 0) return AioNotCanceled;
+    if (cancelled != 0) return AioCanceled;
+    return AioAllDone;
 }
 
 }

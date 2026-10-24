@@ -2,11 +2,13 @@
 #include "../include/ThreadLifecycle.hpp"
 #include "../include/WindowsThreadLocal.hpp"
 #include "../include/Cancel.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/general/AsmMacros.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
 #include "prx/libc/include/CpuTopology.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
+#include "prx/libc/include/GuestStacks.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -31,6 +33,10 @@
 #include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
+
+#ifdef ANYPS5_ENABLE_ASAN
+#include <sanitizer/common_interface_defs.h>
 #endif
 
 static const auto initialThreadId = std::this_thread::get_id();
@@ -71,6 +77,9 @@ struct GuestThreadState {
     int cancelState = GUEST_CANCEL_ENABLE;
     int cancelType = GUEST_CANCEL_DEFERRED;
     CleanupHandler* cleanupHandlers = nullptr;
+#ifdef _WIN32
+    std::uint64_t* exitJump = nullptr;
+#endif
 };
 static GuestThreadState& CurrentGuestState() {
 #ifdef _WIN32
@@ -80,9 +89,9 @@ static GuestThreadState& CurrentGuestState() {
     return state;
 #endif
 }
-static std::mutex stackLock;
-static std::map<PthreadPrivate*, std::pair<std::uintptr_t, std::uintptr_t>> liveStacks;
-static std::map<std::uintptr_t, std::size_t> protectedStackPages;
+static std::mutex& stackLock = *new std::mutex();
+static auto& liveStacks = *new std::map<PthreadPrivate*, std::pair<std::uintptr_t, std::uintptr_t>>();
+static auto& protectedStackPages = *new std::map<std::uintptr_t, std::size_t>();
 #if defined(__linux__)
 struct GuestStackMapping {
     std::uintptr_t mappingEnd;
@@ -90,13 +99,15 @@ struct GuestStackMapping {
     std::uintptr_t stackEnd;
 };
 static std::mutex guestStackMappingsLock;
-static std::map<std::uintptr_t, GuestStackMapping> guestStackMappings;
+static auto& guestStackMappings = *new std::map<std::uintptr_t, GuestStackMapping>();
 
 static void RegisterGuestStackMapping(PthreadPrivate* thread) {
     const auto mappingStart = reinterpret_cast<std::uintptr_t>(thread->guestStack);
-    const auto stackStart = reinterpret_cast<std::uintptr_t>(thread->stackAddress);
+    const auto mappingEnd = mappingStart + thread->guestStackBytes;
+    const auto stackStart = thread->callerStack ? mappingEnd : reinterpret_cast<std::uintptr_t>(thread->stackAddress);
+    const auto stackEnd = thread->callerStack ? mappingEnd : stackStart + thread->stackSize;
     std::lock_guard lock(guestStackMappingsLock);
-    guestStackMappings[mappingStart] = {mappingStart + thread->guestStackBytes, stackStart, stackStart + thread->stackSize};
+    guestStackMappings[mappingStart] = {mappingEnd, stackStart, stackEnd};
 }
 
 static void UnregisterGuestStackMapping(void* mapping) {
@@ -324,7 +335,7 @@ static void UnregisterStack(PthreadPrivate* self) {
         const auto [low, high] = found->second;
         for (auto it = protectedStackPages.begin(); it != protectedStackPages.end();) {
             if (it->first < high && it->first + it->second > low) {
-                RestoreStackPages(it->first, it->second);
+                if (!self->callerStack) RestoreStackPages(it->first, it->second);
                 it = protectedStackPages.erase(it);
             } else {
                 ++it;
@@ -695,7 +706,7 @@ void ThreadCancel::EndWait() {
     BeginWait(nullptr);
 }
 
-extern "C" void* APS5_VABI Aps5CallGuestEntry_nid_no_patch(PthreadEntry entry, void* arg);
+extern "C" void* APS5_VABI Aps5CallGuestEntry_nid_no_patch(PthreadEntry entry, void* arg, std::uintptr_t stackTop);
 
 asm(".text\n"
     APS5_ASM_FUNCTION("Aps5CallGuestEntry_nid_no_patch") R"(
@@ -703,16 +714,24 @@ asm(".text\n"
     push %rbp
     .cfi_adjust_cfa_offset 8
     .cfi_rel_offset %rbp, 0
-    push $0
-    .cfi_adjust_cfa_offset 8
-    push $0
-    .cfi_adjust_cfa_offset 8
     mov %rsp, %rbp
+    .cfi_def_cfa_register %rbp
+    test %rdx, %rdx
+    jz 1f
+    mov %rdx, %rsp
+    and $-16, %rsp
+1:
+    push %rbp
+    push %rbp
+    push $0
+    push $0
+    mov %rsp, %rbp
+    .cfi_escape 0x0f, 0x05, 0x76, 0x10, 0x06, 0x23, 0x10
     mov %rdi, %rax
     mov %rsi, %rdi
     call *%rax
-    add $16, %rsp
-    .cfi_adjust_cfa_offset -16
+    mov 16(%rbp), %rsp
+    .cfi_def_cfa %rsp, 16
     pop %rbp
     .cfi_adjust_cfa_offset -8
     .cfi_restore %rbp
@@ -737,7 +756,7 @@ static void RunThread(std::unique_ptr<ThreadArgs> args) {
 #ifndef _WIN32
     pthread_sigmask(SIG_SETMASK, &signalMask, nullptr);
 #endif
-    finishThread(self, Aps5CallGuestEntry_nid_no_patch(entry, arg));
+    finishThread(self, Aps5CallGuestEntry_nid_no_patch(entry, arg, 0));
     CurrentGuestState().current = nullptr;
 }
 
@@ -814,18 +833,35 @@ struct NativeThreadArgs {
 };
 
 #ifdef _WIN32
+extern "C" {
+[[gnu::returns_twice]] int APS5_VABI setjmp_nid_postfix(std::uint64_t* buffer);
+[[noreturn]] void APS5_VABI longjmp_nid_postfix(std::uint64_t* buffer, int value);
+}
+
+static void* APS5_VABI RunGuestThreadOnCallerStack(void* opaque) {
+    std::uint64_t exitJump[12];
+    if (setjmp_nid_postfix(exitJump) == 0) {
+        CurrentGuestState().exitJump = exitJump;
+        RunThread(std::unique_ptr<ThreadArgs>(static_cast<ThreadArgs*>(opaque)));
+    }
+    CurrentGuestState().exitJump = nullptr;
+    return nullptr;
+}
+
 static unsigned __stdcall StartNativeThread(void* opaque) {
     std::unique_ptr<NativeThreadArgs> args(static_cast<NativeThreadArgs*>(opaque));
     auto* self = args->guest->self;
     try {
-        ULONG_PTR low = 0;
-        ULONG_PTR high = 0;
-        GetCurrentThreadStackLimits(&low, &high);
-        if (high <= low || high - low < self->stackSize)
-            throw std::runtime_error("Cannot query guest thread stack");
-        self->stackAddress = reinterpret_cast<void*>(high - self->stackSize);
-        if (!CommittedReadWrite(high - self->stackSize, high))
-            throw std::runtime_error("Guest thread stack is not fully committed");
+        if (!self->callerStack) {
+            ULONG_PTR low = 0;
+            ULONG_PTR high = 0;
+            GetCurrentThreadStackLimits(&low, &high);
+            if (high <= low || high - low < self->stackSize)
+                throw std::runtime_error("Cannot query guest thread stack");
+            self->stackAddress = reinterpret_cast<void*>(high - self->stackSize);
+            if (!CommittedReadWrite(high - self->stackSize, high))
+                throw std::runtime_error("Guest thread stack is not fully committed");
+        }
         self->threadId = std::this_thread::get_id();
         CurrentGuestState().current = self;
         if (!self->name.empty()) {
@@ -842,22 +878,51 @@ static unsigned __stdcall StartNativeThread(void* opaque) {
         return 0;
     auto guest = std::move(args->guest);
     args.reset();
-    RunThread(std::move(guest));
+    if (self->callerStack) {
+        GuestStacks::GuestStackEnter_nid_no_patch(self->stackAddress, self->stackSize);
+        Aps5CallGuestEntry_nid_no_patch(RunGuestThreadOnCallerStack, guest.release(), reinterpret_cast<std::uintptr_t>(self->stackAddress) + self->stackSize);
+        GuestStacks::GuestStackLeave_nid_no_patch();
+    } else {
+        RunThread(std::move(guest));
+    }
     CurrentGuestState().current = nullptr;
     ReleaseThread(self);
     return 0;
 }
 #else
+static void* APS5_VABI RunGuestThread(void* opaque) {
+    std::jmp_buf exitJump;
+    if (setjmp(exitJump) == 0) {
+        threadExitJump = &exitJump;
+        RunThread(std::unique_ptr<ThreadArgs>(static_cast<ThreadArgs*>(opaque)));
+    }
+    threadExitJump = nullptr;
+    return nullptr;
+}
+
+#ifdef ANYPS5_ENABLE_ASAN
+static void* APS5_VABI RunGuestThreadOnCallerStack(void* opaque) {
+    const void* nativeStack = nullptr;
+    std::size_t nativeStackSize = 0;
+    __sanitizer_finish_switch_fiber(nullptr, &nativeStack, &nativeStackSize);
+    RunGuestThread(opaque);
+    __sanitizer_start_switch_fiber(nullptr, nativeStack, nativeStackSize);
+    return nullptr;
+}
+#endif
+
 static void* StartNativeThread(void* opaque) {
     std::unique_ptr<NativeThreadArgs> args(static_cast<NativeThreadArgs*>(opaque));
     auto* self = args->guest->self;
     try {
-        std::uintptr_t low = 0;
-        std::uintptr_t high = 0;
-        const auto reserve = HostStackReserve();
-        if (!HostStackLimits(&low, &high) || high - low < reserve + self->stackSize)
-            throw std::runtime_error("Cannot query guest thread stack");
-        self->stackAddress = reinterpret_cast<void*>(high - reserve - self->stackSize);
+        if (!self->callerStack) {
+            std::uintptr_t low = 0;
+            std::uintptr_t high = 0;
+            const auto reserve = HostStackReserve();
+            if (!HostStackLimits(&low, &high) || high - low < reserve + self->stackSize)
+                throw std::runtime_error("Cannot query guest thread stack");
+            self->stackAddress = reinterpret_cast<void*>(high - reserve - self->stackSize);
+        }
         self->threadId = std::this_thread::get_id();
 #if defined(__linux__)
         self->hostTid = static_cast<int>(gettid());
@@ -879,12 +944,19 @@ static void* StartNativeThread(void* opaque) {
             ReleaseThread(self);
         }
     } guard{self};
-    std::jmp_buf exitJump;
-    if (setjmp(exitJump) == 0) {
-        threadExitJump = &exitJump;
-        RunThread(std::unique_ptr<ThreadArgs>(guest));
+    if (self->callerStack) {
+        const auto top = reinterpret_cast<std::uintptr_t>(self->stackAddress) + self->stackSize;
+#ifdef ANYPS5_ENABLE_ASAN
+        void* fakeStack = nullptr;
+        __sanitizer_start_switch_fiber(&fakeStack, self->stackAddress, self->stackSize);
+        Aps5CallGuestEntry_nid_no_patch(RunGuestThreadOnCallerStack, guest, top);
+        __sanitizer_finish_switch_fiber(fakeStack, nullptr, nullptr);
+#else
+        Aps5CallGuestEntry_nid_no_patch(RunGuestThread, guest, top);
+#endif
+    } else {
+        RunGuestThread(guest);
     }
-    threadExitJump = nullptr;
     return nullptr;
 }
 #endif
@@ -910,14 +982,20 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
     if (name) p->name = name;
     p->createdSuspended = attr && (*attr)->_createSuspended;
     p->suspended.store(p->createdSuspended, std::memory_order_relaxed);
+    if (attr && (*attr)->stackAddress) {
+        p->stackAddress = (*attr)->stackAddress;
+        p->callerStack = true;
+    }
+    if (p->callerStack && reinterpret_cast<std::uintptr_t>(p->stackAddress) > std::numeric_limits<std::uintptr_t>::max() - p->stackSize)
+        throw std::runtime_error("scePthreadCreate: caller stack range overflows the address space");
     std::promise<bool> start;
     auto args = std::make_unique<ThreadArgs>(ThreadArgs{entry, arg, p.get()});
 #ifdef _WIN32
     SYSTEM_INFO system{};
     GetSystemInfo(&system);
-    if (p->stackSize < 16384 || p->stackSize > std::numeric_limits<unsigned>::max() - HOST_STACK_MARGIN - system.dwPageSize)
+    if (p->stackSize < 16384 || (!p->callerStack && p->stackSize > std::numeric_limits<unsigned>::max() - HOST_STACK_MARGIN - system.dwPageSize))
         throw std::runtime_error("scePthreadCreate: invalid Windows stack size");
-    const std::size_t nativeStack = (p->stackSize + HOST_STACK_MARGIN + system.dwPageSize - 1) / system.dwPageSize * system.dwPageSize;
+    const std::size_t nativeStack = ((p->callerStack ? 0 : p->stackSize) + HOST_STACK_MARGIN + system.dwPageSize - 1) / system.dwPageSize * system.dwPageSize;
     auto native = std::make_unique<NativeThreadArgs>(NativeThreadArgs{std::move(args), start.get_future(), {}});
     auto initialized = native->initialized.get_future();
     const auto handle = _beginthreadex(nullptr, static_cast<unsigned>(nativeStack), StartNativeThread, native.get(), 0, nullptr);
@@ -945,7 +1023,7 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
     const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
     if (p->stackSize < 16384 || p->stackSize > std::numeric_limits<std::size_t>::max() - reserve - HOST_STACK_MARGIN - page)
         throw std::runtime_error("scePthreadCreate: invalid stack size");
-    const std::size_t nativeStack = (p->stackSize + reserve + HOST_STACK_MARGIN + page - 1) / page * page;
+    const std::size_t nativeStack = ((p->callerStack ? 0 : p->stackSize) + reserve + HOST_STACK_MARGIN + page - 1) / page * page;
     sigset_t creatorMask;
     pthread_sigmask(SIG_SETMASK, nullptr, &creatorMask);
     args->signalMask = creatorMask;
@@ -1002,7 +1080,7 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
     return SCE_OK;
 }
 
-static int JoinGuestThread(Pthread thread, void** retval, std::optional<std::uint64_t> deadline) {
+int APS5_VABI JoinThread_nid_no_patch(Pthread thread, void** retval, const KernelTimespec* abstime) {
     if (!thread) return SCE_KERNEL_ERROR_EINVAL;
     if (thread == CurrentGuestState().current) return SCE_KERNEL_ERROR_EDEADLK;
     if (thread->_detached) return SCE_KERNEL_ERROR_EINVAL;
@@ -1014,9 +1092,20 @@ static int JoinGuestThread(Pthread thread, void** retval, std::optional<std::uin
         if (thread->_joining) return SCE_KERNEL_ERROR_EOPNOTSUPP;
         thread->_joining = true;
         while (!thread->_finished.load()) {
-            if (deadline && TimedWait::NowNanos() >= *deadline) {
-                thread->_joining = false;
-                return SCE_KERNEL_ERROR_ETIMEDOUT;
+            std::optional<std::uint64_t> deadline;
+            if (abstime != nullptr) {
+                KernelTimespec now{};
+                if (clock_gettime_nid_postfix(0, &now) != 0) {
+                    thread->_joining = false;
+                    throw std::runtime_error("Joining guest thread: realtime clock unavailable");
+                }
+                if (abstime->tv_sec < now.tv_sec || (abstime->tv_sec == now.tv_sec && abstime->tv_nsec <= now.tv_nsec)) {
+                    thread->_joining = false;
+                    return SCE_KERNEL_ERROR_ETIMEDOUT;
+                }
+                const auto seconds = static_cast<std::uint64_t>(abstime->tv_sec) - static_cast<std::uint64_t>(now.tv_sec);
+                const auto nanos = seconds > 1 ? std::int64_t{1000000000} : static_cast<std::int64_t>(seconds) * 1000000000 + abstime->tv_nsec - now.tv_nsec;
+                deadline = TimedWait::DeadlineNanos(static_cast<std::uint64_t>((nanos + 999) / 1000));
             }
             ThreadCancel::Wait(thread->_join_cv, lock, deadline);
             if (ThreadCancel::Requested()) {
@@ -1045,20 +1134,7 @@ static int JoinGuestThread(Pthread thread, void** retval, std::optional<std::uin
 }
 
 int APS5_VABI scePthreadJoin(Pthread thread, void** retval) {
-    return JoinGuestThread(thread, retval, std::nullopt);
-}
-
-int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp);
-
-int PthreadTimedJoin_nid_no_patch(Pthread thread, void** retval, const KernelTimespec* abstime) {
-    KernelTimespec now{};
-    clock_gettime_nid_postfix(0, &now);
-    const std::uint64_t start = TimedWait::NowNanos();
-    const auto remaining = static_cast<__int128>(abstime->tv_sec - now.tv_sec) * 1000000000 + (abstime->tv_nsec - now.tv_nsec);
-    const auto limit = static_cast<__int128>(std::numeric_limits<std::uint64_t>::max() - start);
-    const std::uint64_t deadline = remaining <= 0 ? start : remaining >= limit ? std::numeric_limits<std::uint64_t>::max() : start + static_cast<std::uint64_t>(remaining);
-    const int result = JoinGuestThread(thread, retval, deadline);
-    return result == 0 ? 0 : static_cast<int>(static_cast<std::uint32_t>(result) & 0xffffu);
+    return JoinThread_nid_no_patch(thread, retval, nullptr);
 }
 
 int APS5_VABI scePthreadDetach(Pthread thread) {
@@ -1088,6 +1164,8 @@ void APS5_VABI scePthreadExit(void* retval) {
     finishThread(self, retval);
     CurrentGuestState().current = nullptr;
 #ifdef _WIN32
+    if (auto* jump = CurrentGuestState().exitJump)
+        longjmp_nid_postfix(jump, 1);
     ReleaseThread(self);
     _endthreadex(0);
 #else

@@ -1,4 +1,5 @@
 #include <mutex>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -699,6 +700,26 @@ double APS5_VABI _Sinh_nid_postfix(double x, double y) {
     return SonySinh(x, y);
 }
 
+double APS5_VABI _Cosh_nid_postfix(double x, double y) {
+    if (!std::isfinite(x) || !std::isfinite(y)) return y * std::cosh(x);
+    if (y == 0.0) return std::copysign(0.0, y);
+    constexpr double Ln2High = 0x1.62e42fefa0000p-1;
+    constexpr double Ln2Low = 0x1.cf79abc9e3b3ap-40;
+    constexpr double InverseLn2 = 0x1.71547652b82fep+0;
+    const double magnitude = std::abs(x);
+    if (magnitude <= (std::numeric_limits<double>::max_exponent - 1) * (Ln2High + Ln2Low))
+        return y * std::cosh(x);
+    int scaleExponent;
+    const double scale = std::frexp(y, &scaleExponent);
+    constexpr int MaximumExponentSpan = std::numeric_limits<double>::max_exponent -
+        std::numeric_limits<double>::min_exponent + std::numeric_limits<double>::digits + 4;
+    if (magnitude > MaximumExponentSpan * (Ln2High + Ln2Low))
+        return std::scalbn(scale, INT_MAX);
+    const int exponent = static_cast<int>(magnitude * InverseLn2);
+    const double reduced = std::fma(-exponent, Ln2Low, std::fma(-exponent, Ln2High, magnitude));
+    return std::scalbn(scale * (0.5 * std::exp(reduced)), scaleExponent + exponent);
+}
+
 int APS5_VABI _Fltrounds_nid_postfix(void) {
     return SonyFltrounds();
 }
@@ -710,12 +731,43 @@ struct GuestFloatingPointEnvironment {
     unsigned char other[16];
     std::uint32_t mxcsr;
 };
-static_assert(sizeof(GuestFloatingPointEnvironment) == 32 && offsetof(GuestFloatingPointEnvironment, mxcsr) == 28);
+static_assert(sizeof(GuestFloatingPointEnvironment) == 32 && alignof(GuestFloatingPointEnvironment) == 4 && offsetof(GuestFloatingPointEnvironment, mxcsr) == 28);
+
+int APS5_VABI feupdateenv_nid_postfix(const GuestFloatingPointEnvironment* environment) {
+    if (environment == nullptr) throw std::invalid_argument("feupdateenv: null environment");
+    const auto saved = *environment;
+    alignas(16) std::array<std::uint32_t, 128> state;
+    asm volatile("fxsave %0" : "=m"(state));
+    const auto supported = state[7] != 0 ? state[7] : 0xffbfu;
+    if ((saved.mxcsr & ~supported) != 0) throw std::invalid_argument("feupdateenv: unsupported MXCSR bits");
+    std::uint16_t status;
+    asm volatile("fnstsw %0" : "=am"(status));
+    const auto pending = (status | _mm_getcsr()) & 0x3f;
+    asm volatile("fldenv %0" : : "m"(saved) : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)");
+    _mm_setcsr(saved.mxcsr);
+    GuestFloatingPointEnvironment raised;
+    asm volatile("fnstenv %0" : "=m"(raised));
+    raised.status |= pending;
+    const auto mxcsr = _mm_getcsr() | pending;
+    asm volatile("fldenv %0" : : "m"(raised) : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)");
+    _mm_setcsr(mxcsr);
+    asm volatile("fwait");
+    return 0;
+}
 
 int APS5_VABI fegetenv_nid_postfix(GuestFloatingPointEnvironment* environment) {
     if (environment == nullptr) throw std::invalid_argument("fegetenv: null environment");
     asm volatile("fnstenv %0\n\tfldcw %0" : "+m"(*environment));
     environment->mxcsr = _mm_getcsr();
+    return 0;
+}
+
+int APS5_VABI feholdexcept_nid_postfix(GuestFloatingPointEnvironment* environment) {
+    if (environment == nullptr) throw std::invalid_argument("feholdexcept: null environment");
+    const auto csr = _mm_getcsr();
+    asm volatile("fnstenv %0\n\tfnclex" : "=m"(*environment));
+    environment->mxcsr = csr;
+    _mm_setcsr((csr & ~0x3fu) | 0x1f80u);
     return 0;
 }
 
@@ -738,4 +790,15 @@ SonyDconst _LDenorm_nid_postfix {{1, 0, 0, 0, 0, 0, 0, 0}};
 SonyDconst _LInf_nid_postfix {{0, 0, 0, 0x8000, 0x7fff, 0, 0, 0}};
 SonyDconst _LNan_nid_postfix {{0, 0, 0, 0xc000, 0x7fff, 0, 0, 0}};
 SonyDconst _LSnan_nid_postfix {{1, 0, 0, 0x8000, 0x7fff, 0, 0, 0}};
+
+int APS5_VABI fesetenv_nid_postfix(const GuestFloatingPointEnvironment* environment) {
+    if (environment == nullptr) throw std::invalid_argument("fesetenv: null environment");
+    alignas(16) std::array<std::uint32_t, 128> state;
+    asm volatile("fxsave %0" : "=m"(state));
+    const auto supported = state[7] != 0 ? state[7] : 0xffbfu;
+    if ((environment->mxcsr & ~supported) != 0) throw std::invalid_argument("fesetenv: unsupported MXCSR bits");
+    asm volatile("fldenv %0" : : "m"(*environment) : "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)");
+    _mm_setcsr(environment->mxcsr);
+    return 0;
+}
 }

@@ -32,6 +32,7 @@ alignas(16) std::array<std::byte, 64> process{};
 constexpr int statusNone = 0;
 constexpr int statusInitialized = 1;
 constexpr int statusFinished = 3;
+constexpr int errorAlreadyInitialized = static_cast<int>(0x80B80004u);
 constexpr std::int32_t resultUserCanceled = 1;
 
 void RequireCanceledResult(std::uint64_t userData, bool clearsReserved) {
@@ -73,6 +74,19 @@ int main() {
     Require(sceNpCommerceDialogGetResult(nullptr) == static_cast<int>(0x80B8000Du));
     NpCommerceDialogResult result{};
     Require(sceNpCommerceDialogGetResult(&result) == static_cast<int>(0x80B80003u));
+
+    Require(sceNpCommerceDialogInitializeInternal() == 0);
+    Require(sceNpCommerceDialogGetStatus() == statusInitialized);
+    Require(sceNpCommerceDialogInitializeInternal() == errorAlreadyInitialized);
+    Require(sceNpCommerceDialogInitialize() == errorAlreadyInitialized);
+    Require(sceNpCommerceDialogGetStatus() == statusInitialized);
+    Require(sceNpCommerceDialogTerminate() == 0);
+    Require(sceNpCommerceDialogGetStatus() == statusNone);
+    Require(sceNpCommerceDialogInitialize() == 0);
+    Require(sceNpCommerceDialogInitializeInternal() == errorAlreadyInitialized);
+    Require(sceNpCommerceDialogGetStatus() == statusInitialized);
+    Require(sceNpCommerceDialogTerminate() == 0);
+    Require(sceNpCommerceDialogGetStatus() == statusNone);
     Require(sceNpCommerceDialogInitialize() == 0);
     Require(sceNpCommerceDialogClose() == static_cast<int>(0x80B8000Bu));
     Require(sceNpCommerceDialogGetResult(&result) == static_cast<int>(0x80B80005u));

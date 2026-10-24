@@ -28,4 +28,13 @@ APS5_EXPORT("H2e8t5ScQGc", libc___cxa_finalize);
 void APS5_VABI libc___cxa_finalize(void* dsoHandle) {
     CxaFinalize_nid_no_patch(dsoHandle);
 }
+
+void APS5_VABI _ZNSt8__sce_v26_ThrowERKNS_12future_errorE_nid_postfix(void*) { throw std::runtime_error("future_error"); }
+void APS5_VABI _ZNSt8__sce_v228_Cnd_register_at_thread_exitEPP12pthread_condPP13pthread_mutexPi_nid_postfix(void*, void*, void*) {}
+
+void APS5_VABI _ZSt19_Throw_future_errorRKSt10error_code_nid_postfix(void*) { throw std::runtime_error("future_error"); }
+void APS5_VABI _ZSt22_Throw_bad_node_accessPKc_nid_postfix(const char* msg) { throw std::runtime_error(msg ? msg : "bad_node_access"); }
+void APS5_VABI _ZSt25_Rethrow_future_exceptionSt13exception_ptr_nid_postfix(void*) { throw std::runtime_error("future_exception"); }
+void APS5_VABI _ZSt6_ThrowRKSt20bad_array_new_length_nid_postfix(void*) { throw std::runtime_error("bad_array_new_length"); }
+void APS5_VABI _ZSt6_ThrowRKSt8bad_cast_nid_postfix(void*) { throw std::runtime_error("bad_cast"); }
 }

@@ -357,11 +357,6 @@ int APS5_VABI sceAudioOut2PortCreateEx(void) {
     return 0;
 }
 
-int APS5_VABI sceAudioOut2InitializeEx(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceAudioOut2Terminate(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;

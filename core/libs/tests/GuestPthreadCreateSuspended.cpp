@@ -20,6 +20,7 @@ int APS5_VABI pthread_attr_init_nid_postfix(PthreadAttr* attr);
 int APS5_VABI pthread_attr_destroy_nid_postfix(PthreadAttr* attr);
 int APS5_VABI pthread_attr_setdetachstate_nid_postfix(PthreadAttr* attr, int state);
 int APS5_VABI pthread_attr_get_np_nid_postfix(Pthread thread, PthreadAttr* attr);
+int APS5_VABI pthread_attr_setstack_nid_postfix(PthreadAttr* attr, void* stackAddress, std::size_t stackSize);
 int APS5_VABI scePthreadAttrGet(Pthread thread, PthreadAttr* attr);
 int APS5_VABI pthread_create_nid_postfix(Pthread* thread, const PthreadAttr* attr, PthreadEntry entry, void* arg);
 int APS5_VABI pthread_join_nid_postfix(Pthread thread, void** retval);
@@ -41,6 +42,8 @@ static constexpr int GUEST_SIGUSR1 = 30;
 static constexpr int GUEST_CREATE_DETACHED = 1;
 static constexpr int DETACHED_ROUNDS = 200;
 static constexpr auto SUSPENDED_WINDOW = std::chrono::milliseconds(50);
+static constexpr int OWN_STACKS = 4;
+static constexpr std::size_t OWN_STACK_BYTES = 256 * 1024;
 static void* const CANCELED = reinterpret_cast<void*>(std::uintptr_t{1});
 static void* const FINISHED = reinterpret_cast<void*>(std::uintptr_t{7});
 
@@ -189,6 +192,13 @@ static void CancelsInResumeAll() {
     Require(result == CANCELED && started.ran.load() && !started.returned.load(), "pthread_resume_all_np did not act on a pending cancel");
 }
 
+static void UseOwnStack(PthreadAttr* attr) {
+    alignas(16) static unsigned char stacks[OWN_STACKS][OWN_STACK_BYTES];
+    static int used = 0;
+    Require(used < OWN_STACKS, "no stack left for a thread created from the attributes of another thread");
+    Require(pthread_attr_setstack_nid_postfix(attr, stacks[used++], OWN_STACK_BYTES) == 0, "pthread_attr_setstack failed");
+}
+
 static void ReportsCreateSuspendedInAttrGet(int (APS5_VABI* get)(Pthread, PthreadAttr*)) {
     Started first;
     Started second;
@@ -197,6 +207,7 @@ static void ReportsCreateSuspendedInAttrGet(int (APS5_VABI* get)(Pthread, Pthrea
     PthreadAttr attr = nullptr;
     Require(pthread_attr_init_nid_postfix(&attr) == 0, "pthread_attr_init failed");
     Require(get(suspended, &attr) == 0, "getting the attributes of a suspended thread failed");
+    UseOwnStack(&attr);
     Pthread copy = nullptr;
     Require(pthread_create_nid_postfix(&copy, &attr, Record, &second) == 0, "pthread_create with the attributes of a suspended thread failed");
     std::this_thread::sleep_for(SUSPENDED_WINDOW);
@@ -210,6 +221,7 @@ static void ReportsCreateSuspendedInAttrGet(int (APS5_VABI* get)(Pthread, Pthrea
     Require(scePthreadCreate(&running, nullptr, WaitForRelease, nullptr, "running") == SCE_OK, "scePthreadCreate failed");
     Require(pthread_attr_setcreatesuspend_np_nid_postfix(&attr) == 0, "pthread_attr_setcreatesuspend_np failed");
     Require(get(running, &attr) == 0, "getting the attributes of a running thread failed");
+    UseOwnStack(&attr);
     Started third;
     Pthread plain = nullptr;
     Require(pthread_create_nid_postfix(&plain, &attr, Record, &third) == 0, "pthread_create with the attributes of a running thread failed");

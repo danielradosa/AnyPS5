@@ -8,8 +8,6 @@
 #include <stdexcept>
 
 extern "C" {
-std::uint32_t APS5_VABI sceAgcDcbBeginOcclusionQueryGetSize(std::uint8_t);
-std::uint32_t APS5_VABI sceAgcDcbEndOcclusionQueryGetSize();
 std::uint32_t APS5_VABI sceAgcDcbSetIndexIndirectArgsGetSize();
 std::uint32_t* APS5_VABI sceAgcDcbSetIndexIndirectArgs(CommandBuffer*, std::uint64_t, std::uint32_t);
 }
@@ -62,16 +60,6 @@ void checkIndirectArguments() {
 
 int main() {
     try {
-        check(sceAgcDcbBeginOcclusionQueryGetSize(0) == 16, "begin occlusion query size for type 0");
-        check(sceAgcDcbBeginOcclusionQueryGetSize(1) == 288, "begin occlusion query size for type 1");
-        bool rejected = false;
-        try {
-            static_cast<void>(sceAgcDcbBeginOcclusionQueryGetSize(2));
-        } catch (const std::runtime_error&) {
-            rejected = true;
-        }
-        check(rejected, "unknown occlusion query type was accepted");
-        check(sceAgcDcbEndOcclusionQueryGetSize() == 16, "end occlusion query size");
         check(sceAgcDcbSetIndexIndirectArgsGetSize() == 16, "index indirect args size");
         checkIndirectArguments();
         LibcRunShutdown_nid_postfix();

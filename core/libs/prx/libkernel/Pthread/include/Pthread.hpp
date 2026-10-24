@@ -48,6 +48,8 @@ struct PthreadMutexPrivate {
     int _count;
     int _spinloops = 0;
     int _yieldloops = 0;
+    int _protocol = 0;
+    std::atomic<int> _ceiling{0};
 
     PthreadMutexPrivate() : _type(MutexType::ErrorCheck), _owner(std::thread::id{}), _count(0) {}
 
@@ -77,6 +79,7 @@ struct PthreadCondattrPrivate {
 struct PthreadCondPrivate {
     std::shared_ptr<TimedWait::Condition> _cv = std::make_shared<TimedWait::Condition>();
     int _clockid = 0;
+    std::string _name;
 };
 
 struct PthreadSemPrivate {
@@ -141,6 +144,7 @@ struct PthreadPrivate {
     void* wakeEvent = nullptr;
     void* stackAddress = nullptr;
     std::size_t stackSize = 0;
+    bool callerStack = false;
     std::atomic<int> waitCount{0};
     std::atomic<KernelCpumask> affinity{DEFAULT_THREAD_AFFINITY};
     std::atomic<int> priority{DEFAULT_THREAD_PRIORITY};
@@ -195,7 +199,6 @@ bool SetGuestThreadAffinityIfLive(PthreadPrivate* thread, KernelCpumask mask);
 bool SetGuestThreadAffinityByTid(std::int64_t tid, KernelCpumask mask);
 bool GetLiveGuestThreadAffinity_nid_no_patch(std::int64_t tid, KernelCpumask& mask);
 bool SetLiveGuestThreadAffinity_nid_no_patch(std::int64_t tid, KernelCpumask mask);
-extern "C" int PthreadTimedJoin_nid_no_patch(Pthread thread, void** retval, const KernelTimespec* abstime);
 extern "C" bool GuestThreadIdIsLive_nid_no_patch(std::int64_t tid);
 extern "C" std::size_t GetDefaultStackSize_nid_no_patch();
 extern "C" bool SetDefaultStackSize_nid_no_patch(std::size_t size);

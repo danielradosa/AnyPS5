@@ -34,11 +34,11 @@ int APS5_VABI sceVoiceResumePortAll(void);
 int APS5_VABI sceVoiceGetResourceInfo(VoiceResourceInfo*);
 int APS5_VABI sceVoiceEnableChat(void);
 int APS5_VABI sceVoiceDisableChat(void);
+int APS5_VABI sceVoiceInitHQ(const VoiceInitParam*, std::int32_t);
+int APS5_VABI sceVoiceVADSetVersion(std::int32_t);
 int APS5_VABI sceVoiceSetMuteFlagAll(bool);
 int APS5_VABI sceVoiceSetBitRate(std::uint32_t, std::uint32_t);
 int APS5_VABI sceVoiceUpdatePort(std::uint32_t, const VoicePortParam*);
-int APS5_VABI sceVoiceInitHQ(VoiceInitParam*, std::int32_t);
-int APS5_VABI sceVoiceVADSetVersion(std::int32_t);
 }
 
 namespace {
@@ -75,6 +75,9 @@ void TestNotInitialized() {
     Require(std::memcmp(&info, &sentinel, sizeof(info)) == 0);
     Require(sceVoicePausePortAll() == NotInitialized);
     Require(sceVoiceResumePortAll() == NotInitialized);
+    Require(sceVoiceSetMuteFlagAll(true) == NotInitialized);
+    Require(sceVoiceSetBitRate(0, 16000) == NotInitialized);
+    Require(sceVoiceUpdatePort(0, nullptr) == NotInitialized);
 }
 
 std::uint32_t CreatePort(std::int32_t type, float volume) {
@@ -112,7 +115,6 @@ int main() {
     Require(sceVoiceGetResourceInfo(nullptr) == notInitialized);
     Require(sceVoiceEnableChat() == notInitialized);
     Require(sceVoiceDisableChat() == notInitialized);
-    RequireThrows([] { sceVoiceSetMuteFlagAll(true); });
     Require(sceVoiceSetThreadsParams(nullptr) == notInitialized);
     VoiceThreadsParams threads{};
     Require(sceVoiceSetThreadsParams(&threads) == notInitialized);
@@ -145,6 +147,24 @@ int main() {
     Require(sceVoiceSetThreadsParams(&threads) == invalidArgument);
     threads.mode = 1;
     RequireThrows([&] { sceVoiceSetThreadsParams(&threads); });
+    VoiceThreadsParams scheduled{1, 700, 0x7f, 700, 0, 0x7f, 700, 0, 0x7f};
+    Require(sceVoiceSetThreadsParams(&scheduled) == 0);
+    scheduled = {1, 256, 0x1fff, 767, 0, 1, 512, 0, 0x1000};
+    Require(sceVoiceSetThreadsParams(&scheduled) == 0);
+    for (const auto priority : {255, 768, 0, -1}) {
+        for (int slot = 0; slot < 3; ++slot) {
+            VoiceThreadsParams outside{1, 700, 0x7f, 700, 0, 0x7f, 700, 0, 0x7f};
+            (slot == 0 ? outside.firstPriority : slot == 1 ? outside.secondPriority : outside.thirdPriority) = priority;
+            RequireThrows([&] { sceVoiceSetThreadsParams(&outside); });
+        }
+    }
+    for (const std::uint64_t affinity : {std::uint64_t{0}, std::uint64_t{0x2000}, std::uint64_t{0x3fff}, UINT64_MAX}) {
+        for (int slot = 0; slot < 3; ++slot) {
+            VoiceThreadsParams outside{1, 700, 0x7f, 700, 0, 0x7f, 700, 0, 0x7f};
+            (slot == 0 ? outside.firstAffinity : slot == 1 ? outside.secondAffinity : outside.thirdAffinity) = affinity;
+            RequireThrows([&] { sceVoiceSetThreadsParams(&outside); });
+        }
+    }
     threads.mode = 0;
     Require(sceVoiceStart(nullptr) == invalidArgument);
     Require(sceVoiceStart(&start) == invalidArgument);
@@ -161,6 +181,8 @@ int main() {
     start.mem_size = 0x40000;
     Require(sceVoiceSetThreadsParams(nullptr) == invalidArgument);
     Require(sceVoiceSetThreadsParams(&threads) == static_cast<std::int32_t>(0x804e080bu));
+    scheduled = {1, 700, 0x7f, 700, 0, 0x7f, 700, 0, 0x7f};
+    Require(sceVoiceSetThreadsParams(&scheduled) == static_cast<std::int32_t>(0x804e080bu));
     Require(sceVoiceGetResourceInfo(nullptr) == invalidArgument);
     struct ResourceOutput {
         VoiceResourceInfo info;
@@ -236,8 +258,14 @@ int main() {
     std::uint32_t portBitrate = 0;
     Require(sceVoiceSetBitRate(input, 7300) == 0);
     Require(sceVoiceGetBitRate(input, &portBitrate) == 0 && portBitrate == 7300);
+    VoicePortInfo rateInfo{};
+    Require(sceVoiceGetPortInfo(input, &rateInfo) == 0 && rateInfo.frame_size == 19);
+    Require(sceVoiceSetBitRate(output + 1, 7300) == portNotFound);
+    Require(sceVoiceSetBitRate(128, 7300) == invalidPort);
     RequireThrows([&] { sceVoiceSetBitRate(output, 7300); });
-    RequireThrows([&] { sceVoiceSetBitRate(output + 1, 7300); });
+    RequireThrows([&] { sceVoiceSetBitRate(input, 7301); });
+    RequireThrows([&] { sceVoiceSetBitRate(input, 0x80000000u); });
+    Require(sceVoiceGetBitRate(input, &portBitrate) == 0 && portBitrate == 7300);
 
     VoicePortParam update{};
     update.port_type = 2;
@@ -248,15 +276,25 @@ int main() {
     Require(sceVoiceGetMuteFlag(input, &muted) == 0 && muted);
     Require(sceVoiceGetVolume(input, &volume) == 0 && volume == 0.75f);
     Require(sceVoiceGetBitRate(input, &portBitrate) == 0 && portBitrate == 14400);
+    Require(sceVoiceGetPortInfo(input, &rateInfo) == 0 && rateInfo.frame_size == 27);
+    update.voice.bitrate = 1;
+    RequireThrows([&] { sceVoiceUpdatePort(input, &update); });
+    Require(sceVoiceGetBitRate(input, &portBitrate) == 0 && portBitrate == 14400);
+    update.voice.bitrate = 14400;
     update.port_type = 3;
     RequireThrows([&] { sceVoiceUpdatePort(input, &update); });
     RequireThrows([&] { sceVoiceUpdatePort(input, nullptr); });
+    Require(sceVoiceUpdatePort(output + 1, &update) == portNotFound);
+    Require(sceVoiceUpdatePort(128, &update) == invalidPort);
     VoicePortParam pcm{};
     pcm.port_type = 3;
-    pcm.volume = 1.0f;
+    pcm.volume = std::numeric_limits<float>::quiet_NaN();
     Require(sceVoiceUpdatePort(output, &pcm) == 0);
     Require(sceVoiceGetMuteFlag(output, &muted) == 0 && !muted);
-    Require(sceVoiceGetVolume(output, &volume) == 0 && volume == 1.0f);
+    Require(sceVoiceGetVolume(output, &volume) == 0 && volume == 0.0f);
+    pcm.volume = 0.25f;
+    pcm.mute = 1;
+    Require(sceVoiceUpdatePort(output, &pcm) == 0);
 
     Require(sceVoiceSetMuteFlagAll(true) == 0);
 
@@ -271,7 +309,6 @@ int main() {
     Require(sceVoiceGetResourceInfo(nullptr) == notInitialized);
     Require(sceVoiceEnableChat() == notInitialized);
     Require(sceVoiceDisableChat() == notInitialized);
-    RequireThrows([] { sceVoiceSetMuteFlagAll(false); });
     for (const auto mode : {4, 0x08000000, 0x10000000, 0x20000000}) {
         init.app_type = mode;
         Require(sceVoiceInit(&init, 100) == 0);
@@ -453,12 +490,12 @@ int main() {
 
     Require(sceVoiceVADSetVersion(0) == 0 && sceVoiceVADSetVersion(1) == 0);
     Require(sceVoiceVADSetVersion(2) == invalidArgument && sceVoiceVADSetVersion(-1) == invalidArgument);
-    Require(sceVoiceInitHQ(nullptr, 100) == invalidArgument);
+    init.app_type = 0x10000000;
+    start.mem_size = 0x40000;
+    Require(sceVoiceInitHQ(nullptr, 100) == invalidArgument && sceVoiceInitHQ(&init, 0) == invalidArgument);
     Require(sceVoiceInitHQ(&init, 100) == 0);
     Require(sceVoiceInitHQ(&init, 100) == AlreadyInitialized);
     Require(sceVoiceInit(&init, 100) == AlreadyInitialized);
-    start.container = voiceMemory.data();
-    start.mem_size = 0xc0000;
     Require(sceVoiceStart(&start) == 0);
     Require(sceVoiceEnd_nid_postfix() == 0);
     Require(sceVoiceInit(&init, 100) == 0);

@@ -997,6 +997,11 @@ int APS5_VABI sceSslRead(int sslConnectionId, void* buf, size_t len, int flags) 
     return static_cast<int>(received);
 }
 
+// sceSslRead is shorter than a NID, so another library's import of it cannot be NID-patched: libSceHttp calls this.
+int APS5_VABI GuestSslRead_nid_no_patch(int sslConnectionId, void* buf, size_t len, int flags) {
+    return sceSslRead(sslConnectionId, buf, len, flags);
+}
+
 int APS5_VABI sceSslWrite(int sslConnectionId, void* buf, size_t len, int flags) {
     if (flags != 0) return ErrorInvalidValue;
     if (!buf && len) throw std::invalid_argument("sceSslWrite: null buffer");
