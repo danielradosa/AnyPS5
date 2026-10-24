@@ -65,6 +65,7 @@ static int GuestFstat(int fd) {
 
 constexpr int GuestEnoent = 2;
 constexpr int GuestEperm = 1;
+constexpr int GuestEsrch = 3;
 constexpr int GuestEio = 5;
 constexpr int GuestEacces = 13;
 constexpr int GuestEbadf = 9;
@@ -141,6 +142,14 @@ int GuestFileError(int error) {
     default: return GuestEio;
     }
 }
+
+struct KernelAuthInfo {
+    std::uint64_t programAuthorityId;
+    std::uint64_t capabilities[4];
+    std::uint64_t attributes[4];
+    std::uint64_t credentials[8];
+};
+static_assert(sizeof(KernelAuthInfo) == 0x88);
 
 std::int64_t Fail(int error) {
     *__error_nid_postfix() = error;
@@ -517,6 +526,28 @@ int APS5_VABI flock_nid_postfix(int d, int operation);
 
 int APS5_VABI sceKernelFlock(int d, int operation) {
     return flock_nid_postfix(d, operation) == 0 ? 0 : SceKernelError(*__error_nid_postfix());
+}
+
+int APS5_VABI sceKernelGetOpenPsId(void* id);
+
+int APS5_VABI sceKernelGetOpenPsIdForSystem(void* id) {
+    return sceKernelGetOpenPsId(id);
+}
+
+int APS5_VABI sceKernelIsCEX(void) {
+    return 1;
+}
+
+int APS5_VABI sceKernelIsDevKit(void) {
+    return 0;
+}
+
+int APS5_VABI get_authinfo_nid_postfix(int pid, KernelAuthInfo* info) {
+    if (info == nullptr) return static_cast<int>(Fail(GuestEperm));
+    if (pid != 0 && pid != getpid_nid_postfix()) return static_cast<int>(Fail(GuestEsrch));
+    *info = {};
+    info->capabilities[0] = 0x2000000000000000;
+    return 0;
 }
 
 int APS5_VABI _fstatfs_nid_postfix(int d, void* buf);
