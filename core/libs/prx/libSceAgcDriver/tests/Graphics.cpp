@@ -9981,7 +9981,7 @@ void unorm4_4_4_4TargetTests() {
         depthQueue.context[0x8e] = 1;
         depthQueue.context[0x000] = 0;
         depthQueue.context[0x002] = 0;
-        depthQueue.context[0x007] = (1u << 16u) | 3u;
+        depthQueue.context[0x007] = (3u << 16u) | 63u;
         depthQueue.context[0x00a] = 7;
         depthQueue.context[0x00b] = 0;
         depthQueue.context[0x010] = 0x22900983;

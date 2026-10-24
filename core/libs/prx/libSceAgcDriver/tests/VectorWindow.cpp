@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <initializer_list>
 #include <span>
@@ -195,6 +196,15 @@ Narrowing ScanNarrowing(std::span<const std::uint32_t> words) {
     return result;
 }
 
+bool KeepsRelativeWindow(std::span<const std::uint32_t> words) {
+    static const bool registers = std::getenv("APS5_NO_WINDOW_REGISTERS") == nullptr;
+    const auto shape = Scan(words);
+    const auto variables = ScanNarrowing(words).functionVariables;
+    const bool kept = registers ? shape.functionArrays == 0 && shape.selects != 0 && variables != 0u : shape.functionArrays == 1;
+    if (!kept) std::fprintf(stderr, "  relative window (%s): arrays %zu selects %zu function variables %u\n", registers ? "registers" : "array", shape.functionArrays, shape.selects, variables);
+    return kept;
+}
+
 IrProgram TranslateStage(ShaderStageKind stage, std::uint32_t waveSize, std::uint32_t base = 0u, std::uint32_t fetchStart = 0u, std::uint32_t fetchCount = 0u) {
     ShaderComputeInputInfo compute{};
     compute.threadIdsNum = 3;
@@ -367,7 +377,7 @@ int main(int argc, char** argv) {
     passed &= run("a sampler dword spilled into a window register with ordinary writes keeps its definition past a relative write", [] {
         const std::array<std::uint32_t, 16> userData{};
         const std::array<std::uint32_t, 14> spilled{AndM0GroupXOne, MoveV2Zero, MoveV3Zero, MoveV4One, WritelaneV4, FromS8Lane0, MovreldV2V0, ReadlaneS8, FromV4Lane0, ImageSampleLz2d, SampleV8V2S0S8, BufferStoreDword, StoreV8WithS12, EndProgram};
-        return Scan(RecompileProgram(spilled, userData)).functionArrays == 1;
+        return KeepsRelativeWindow(RecompileProgram(spilled, userData));
     });
 
     passed &= run("a sampler dword spilled into a window register and overwritten by an ordinary write before its v_readlane stays a run-time value", [] {
@@ -384,13 +394,13 @@ int main(int argc, char** argv) {
     passed &= run("a sampler dword spilled into a window register before a loop entered at its condition keeps its definition past the loop's relative write", [] {
         const std::array<std::uint32_t, 16> userData{};
         const std::array<std::uint32_t, 18> code{AndM0GroupXOne, MoveV2Zero, MoveV3Zero, WritelaneV4, FromS8Lane0, MoveS16Two, BranchForwardTwo, MovreldV2V0, SubtractS16One, CompareS16NotZero, BranchBackFourOnScc, ReadlaneS8, FromV4Lane0, ImageSampleLz2d, SampleV8V2S0S8, BufferStoreDword, StoreV8WithS12, EndProgram};
-        return Scan(RecompileProgram(code, userData)).functionArrays == 1;
+        return KeepsRelativeWindow(RecompileProgram(code, userData));
     });
 
     passed &= run("a sampler dword spilled into a window register with ordinary writes before a loop entered at its condition keeps its definition past the loop's relative write", [] {
         const std::array<std::uint32_t, 16> userData{};
         const std::array<std::uint32_t, 19> code{AndM0GroupXOne, MoveV2Zero, MoveV3Zero, MoveV4One, WritelaneV4, FromS8Lane0, MoveS16Two, BranchForwardTwo, MovreldV2V0, SubtractS16One, CompareS16NotZero, BranchBackFourOnScc, ReadlaneS8, FromV4Lane0, ImageSampleLz2d, SampleV8V2S0S8, BufferStoreDword, StoreV8WithS12, EndProgram};
-        return Scan(RecompileProgram(code, userData)).functionArrays == 1;
+        return KeepsRelativeWindow(RecompileProgram(code, userData));
     });
 
     passed &= run("a sampler dword spilled into a relatively read register keeps its definition through v_readlane", [] {

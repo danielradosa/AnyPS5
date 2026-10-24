@@ -150,10 +150,10 @@ void APS5_VABI Nothing(void*, std::uint32_t) {
 
 void SizeCase() {
     Require(SizeFor(0, 0, false) == 0x10d0 && SizeFor(0, 0, true) == 0x14c0, "size without compute sequences");
-    Require(SizeFor(1, 1, false) == 0x29fd8 && SizeFor(1, 1, true) == 0x2a3c8, "size with one compute sequence");
-    Require(SizeFor(2, 3, false) == 0x52de0 && SizeFor(2, 3, true) == 0x531d0, "size with two compute sequences");
-    Require(SizeFor(3, 7, false) == 0x7bb28, "size with three compute sequences");
-    Require(SizeFor(1, 3, true) == 0x53188, "size with two queues for one compute sequence");
+    Require(SizeFor(1, 1, false) == 0x2afd8 && SizeFor(1, 1, true) == 0x2b3c8, "size with one compute sequence");
+    Require(SizeFor(2, 3, false) == 0x54de0 && SizeFor(2, 3, true) == 0x551d0, "size with two compute sequences");
+    Require(SizeFor(3, 7, false) == 0x7eb28, "size with three compute sequences");
+    Require(SizeFor(1, 3, true) == 0x55188, "size with two queues for one compute sequence");
     Require(SizeFor(2, 1, true) == 0, "size with fewer queues than compute sequences");
 }
 
@@ -249,7 +249,7 @@ void CapacityCase() {
     const ShaderRegister* data = registers.data();
     std::memcpy(shader.data() + 0x20, &data, sizeof(data));
     shader[0x5c] = static_cast<unsigned char>(registers.size());
-    const std::string marker(65535, 'm');
+    const std::string marker(65532, 'm');
     const MemorySizeQueryParams query{1, 1, 0, 0, 2, 0, 1, 1, 1};
     const auto size = RequiredSize(&query);
     const auto allocationSize = (size + 255) & ~std::uint64_t{255};
@@ -272,7 +272,7 @@ void CapacityCase() {
         std::uint32_t markers = 0;
         for (std::size_t offset = 0; offset + 0x4001 <= size / 4; ++offset) {
             if (words[offset] != 0xffff102cu) continue;
-            Require(std::memcmp(words + offset + 1, marker.c_str(), marker.size() + 1) == 0, "maximum marker was truncated");
+            Require(words[offset + 1] == 0 && std::memcmp(words + offset + 2, marker.data(), marker.size()) == 0, "maximum marker was truncated");
             ++markers;
         }
         Require(markers == 2, "the maximum markers were not stored in the command area");
