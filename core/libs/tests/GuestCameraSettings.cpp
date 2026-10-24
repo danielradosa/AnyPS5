@@ -267,7 +267,7 @@ void CheckSetters() {
 
 void CheckConfig() {
     CameraConfig config = SizedConfig();
-    Require(sceCameraGetConfig(1, &config) == 0 && config.configType == 1, "the configuration must be type 1");
+    Require(sceCameraGetConfig(1, &config) == 0 && config.sizeThis == sizeof(CameraConfig) && config.configType == 1, "the configuration must be type 1 and keep its size");
     for (const CameraConfigExtension& extension : config.extension) {
         Require(extension.formatLevel[0] == 0 && extension.formatLevel[1] == 4 && extension.formatLevel[2] == 4 && extension.formatLevel[3] == 4, "the default formats are wrong");
         Require(extension.resolution == 0 && extension.framerate == 60 && extension.width == 0 && extension.height == 0 && extension.reserved == 0 && extension.baseOption == nullptr, "the default mode is wrong");

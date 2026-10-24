@@ -121,10 +121,13 @@ void CheckFrames() {
     Require(sceCameraIsValidFrameData(1, &frame) == 0, "frame data with only the first status at 1 must be invalid");
     frame.sizeThis = sizeof(CameraFrameData) + 1;
     Require(sceCameraGetFrameData(1, &frame) == ErrorParam, "an oversized frame must be rejected");
-    Require(frame.status[0] == UINT32_MAX, "an oversized frame must still have its statuses reset");
+    Require(frame.status[0] == UINT32_MAX && frame.status[1] == UINT32_MAX, "an oversized frame must still have its statuses reset");
     Require(sceCameraIsValidFrameData(1, &frame) == ErrorParam, "validating an oversized frame must be rejected");
     frame.sizeThis = sizeof(CameraFrameData);
+    frame.status[0] = 1;
+    frame.status[1] = 1;
     Require(sceCameraGetFrameData(0, &frame) == ErrorParam, "reading handle 0 must be rejected");
+    Require(frame.status[0] == UINT32_MAX && frame.status[1] == UINT32_MAX, "a read of handle 0 must still reset both statuses");
     Require(sceCameraIsValidFrameData(0, &frame) == ErrorParam, "validating handle 0 must be rejected");
     Require(sceCameraIsValidFrameData(1, nullptr) == ErrorParam, "validating a null frame must be rejected");
 }
