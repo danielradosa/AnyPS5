@@ -378,7 +378,8 @@ int APS5_VABI sceFontGenerateCharGlyph(FontHandle fontHandle, std::uint32_t code
     *pGlyph = nullptr;
     if (!fontHandle) return SCE_FONT_ERROR_INVALID_FONT_HANDLE;
     if (code == 0) return SCE_FONT_ERROR_NO_SUPPORT_CODE;
-    if (!TryGetState(fontHandle)) return SCE_FONT_ERROR_INVALID_FONT_HANDLE;
+    const FontState* state = TryGetState(fontHandle);
+    if (!state) return SCE_FONT_ERROR_INVALID_FONT_HANDLE;
     const std::uint8_t glyphForm = detail ? detail->glyph_form : 0;
     const std::uint8_t metricsForm = detail ? detail->metrics_form : 0;
     const std::uint16_t formOptions = detail ? detail->form_options : 0;

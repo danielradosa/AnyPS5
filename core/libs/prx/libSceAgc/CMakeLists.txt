@@ -484,7 +484,7 @@ add_test_executable(agc_atomic_gds_tests EXCLUDE_FROM_ALL
         DcbFlow/src/Memory.cpp
 )
 target_include_directories(agc_atomic_gds_tests PRIVATE ${LIBS_INCLUDE_DIR})
-target_link_libraries(agc_atomic_gds_tests PRIVATE libc)
+target_link_libraries(agc_atomic_gds_tests PRIVATE libSceAgcDriver libc)
 configure_windows_unwind(agc_atomic_gds_tests)
 if(BUILD_TESTING)
     set_target_properties(agc_atomic_gds_tests PROPERTIES EXCLUDE_FROM_ALL FALSE)
