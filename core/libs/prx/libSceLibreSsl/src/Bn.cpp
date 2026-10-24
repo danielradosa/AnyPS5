@@ -16,6 +16,7 @@ namespace LibreSsl {
 namespace {
 
 constexpr int FlagMalloced = 0x01;
+constexpr int FlagStaticData = 0x02;
 constexpr int BnFunctionModInverse = 110;
 constexpr int BnReasonNoInverse = 108;
 
@@ -169,12 +170,17 @@ Bignum* APS5_VABI BN_new_nid_postfix() {
 }
 
 void APS5_VABI BN_free_nid_postfix(Bignum* a) {
-    if (a && !(a->flags & FlagMalloced)) throw std::invalid_argument("BN_free: BIGNUM not created by BN_new");
-    FreeBignum(a);
+    if (!a) return;
+    if (a->flags & FlagMalloced) {
+        FreeBignum(a);
+        return;
+    }
+    if (!(a->flags & FlagStaticData)) std::free(a->d);
+    a->d = nullptr;
 }
 
 Bignum* APS5_VABI BN_bin2bn_nid_postfix(const unsigned char* s, int len, Bignum* ret) {
-    if (len < 0) throw std::invalid_argument("BN_bin2bn: negative length");
+    if (len < 0) return nullptr;
     if (!s && len) throw std::invalid_argument("BN_bin2bn: null buffer");
     Bignum* target = ret ? ret : NewBignum();
     if (!target) return nullptr;
@@ -190,23 +196,25 @@ int APS5_VABI BN_bn2bin_nid_postfix(const Bignum* a, unsigned char* to) {
 }
 
 int APS5_VABI BN_hex2bn_nid_postfix(Bignum** a, const char* str) {
-    if (!str) throw std::invalid_argument("BN_hex2bn: null string");
-    if (*str == '-') throw std::invalid_argument("BN_hex2bn: negative numbers are not supported");
+    if (!str || !*str) return 0;
+    const bool negative = *str == '-';
+    const char* hex = str + (negative ? 1 : 0);
     std::size_t digits = 0;
-    while (HexValue(str[digits]) >= 0) ++digits;
+    while (HexValue(hex[digits]) >= 0) ++digits;
     if (digits == 0) return 0;
     if (digits > static_cast<std::size_t>(std::numeric_limits<int>::max() / 4)) return 0;
-    if (!a) return static_cast<int>(digits);
+    const int consumed = static_cast<int>(digits) + (negative ? 1 : 0);
+    if (!a) return consumed;
     std::vector<unsigned char> bytes((digits + 1) / 2);
     for (std::size_t index = 0; index < digits; ++index) {
         const std::size_t fromEnd = digits - 1 - index;
-        bytes[bytes.size() - 1 - fromEnd / 2] |= static_cast<unsigned char>(HexValue(str[index]) << ((fromEnd % 2) * 4));
+        bytes[bytes.size() - 1 - fromEnd / 2] |= static_cast<unsigned char>(HexValue(hex[index]) << ((fromEnd % 2) * 4));
     }
     Bignum* target = *a ? *a : NewBignum();
     if (!target) return 0;
-    SetMagnitude(*target, bytes.data(), bytes.size(), false);
+    SetMagnitude(*target, bytes.data(), bytes.size(), negative);
     *a = target;
-    return static_cast<int>(digits);
+    return consumed;
 }
 
 int APS5_VABI BN_num_bits_nid_postfix(const Bignum* a) {
@@ -263,8 +271,17 @@ int APS5_VABI BN_mul_nid_postfix(Bignum* r, const Bignum* a, const Bignum* b, Bn
 Bignum* APS5_VABI BN_mod_inverse_nid_postfix(Bignum* ret, const Bignum* a, const Bignum* n, BnCtx*) {
     Mpi value, modulus, inverse;
     ToMpi(RequireBn(a, __func__), value, __func__);
-    ToMpi(RequireBn(n, __func__), modulus, __func__);
-    if (mbedtls_mpi_cmp_int(&modulus.value, 1) <= 0) throw std::invalid_argument("BN_mod_inverse: the modulus is not above 1");
+    Bignum magnitude = RequireBn(n, __func__);
+    magnitude.neg = 0;
+    ToMpi(magnitude, modulus, __func__);
+    if (mbedtls_mpi_cmp_int(&modulus.value, 0) == 0) return nullptr;
+    if (mbedtls_mpi_cmp_int(&modulus.value, 1) == 0) {
+        Bignum* target = ret ? ret : NewBignum();
+        if (!target) return nullptr;
+        target->top = 0;
+        target->neg = 0;
+        return target;
+    }
     const int result = mbedtls_mpi_inv_mod(&inverse.value, &value.value, &modulus.value);
     if (result == MBEDTLS_ERR_MPI_NOT_ACCEPTABLE) {
         PushError(ErrLibBn, BnFunctionModInverse, BnReasonNoInverse);

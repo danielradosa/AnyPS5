@@ -88,7 +88,7 @@ static void TestQueue() {
     for (int index = 0; index < 20; ++index) PushNoDigest();
     int count = 0;
     while (ERR_get_error_nid_postfix()) ++count;
-    Require(count == 16);
+    Require(count == 15);
 
     PushNoDigest();
     std::thread other([] {

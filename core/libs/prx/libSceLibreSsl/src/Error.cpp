@@ -11,7 +11,7 @@ namespace LibreSsl {
 
 namespace {
 
-constexpr std::size_t QueueCapacity = 16;
+constexpr std::size_t QueueCapacity = 15;
 
 struct QueueTag;
 
