@@ -1379,6 +1379,7 @@ public:
     const std::uint32_t layers;
     VkDeviceSize imageBytes = 0;
     std::uint64_t lastUse = 0;
+    std::uint64_t lastPresent = 0;
     VkDeviceSize HeldBytes() const { return imageBytes + (staging != nullptr ? staging->Size() : 0u); }
 
 private:
@@ -1479,7 +1480,8 @@ private:
         } else {
             recorder->EndGpuTiming(timing, sliceBytes() * regions.size());
             Recorder::CountBarriers(Recorder::CommandClass::DepthPlane, 3);
-            recorder->Keep(staging, staging->Size());
+            recorder->Keep(staging);
+            recorder->KeepBytes(staging.get(), staging->Size());
             if (owned != nullptr) recorder->Keep(owned);
         }
     }
@@ -1520,7 +1522,12 @@ void evictPlaneCopies(const std::tuple<VkDevice, std::uint64_t, std::uint32_t, s
         const char* text = std::getenv("APS5_DEPTH_PLANE_COPY_MIB");
         return static_cast<VkDeviceSize>(text != nullptr ? std::strtoull(text, nullptr, 10) : 256ull) << 20u;
     }();
+    static const std::uint64_t idlePresents = [] {
+        const char* text = std::getenv("APS5_DEPTH_PLANE_COPY_IDLE_PRESENTS");
+        return text != nullptr ? static_cast<std::uint64_t>(std::strtoull(text, nullptr, 10)) : std::uint64_t{2};
+    }();
     if (budget == 0) return;
+    const auto present = Recorder::Presents();
     auto& copies = planeCopies();
     VkDeviceSize total = 0;
     for (const auto& entry : copies) total += entry.second->HeldBytes();
@@ -1528,6 +1535,7 @@ void evictPlaneCopies(const std::tuple<VkDevice, std::uint64_t, std::uint32_t, s
         auto oldest = copies.end();
         for (auto it = copies.begin(); it != copies.end(); ++it) {
             if (it->first == keep) continue;
+            if (idlePresents != 0 && present != 0 && present - it->second->lastPresent < idlePresents) continue;
             if (oldest == copies.end() || it->second->lastUse < oldest->second->lastUse) oldest = it;
         }
         if (oldest == copies.end()) break;
@@ -2663,6 +2671,7 @@ std::shared_ptr<Texture> DepthSurfaceTexture(const Context& context, std::span<c
     auto& copy = copies[copyKey];
     if (copy == nullptr) copy = std::make_unique<DepthPlaneCopy>(context, base.extent, imageFormat, layers);
     copy->lastUse = ++planeCopyClock();
+    copy->lastPresent = Recorder::Presents();
     auto texture = copy->Refresh(slices, resource, components, cube || resource.dimension == TextureDimension::k2DArray ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D, layered && !cube ? resource.baseArray : 0u);
     evictPlaneCopies(copyKey);
     return texture;
