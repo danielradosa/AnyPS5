@@ -99,4 +99,4 @@ int APS5_VABI sceOpusSilkEncEncodeFloatWithPriorityAndTimeout(OpusSilkEncoder* s
     return 0;
 }
 
-} // extern "C"
+}

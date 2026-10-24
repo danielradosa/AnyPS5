@@ -23,10 +23,9 @@ struct HttpCookieStats {
     std::uint64_t maxInuseSize;
     std::uint32_t maxInuseNum;
     std::uint32_t removedNum;
-    std::int32_t reserved;
 };
 
-static_assert(sizeof(HttpCookieStats) == 40);
+static_assert(sizeof(HttpCookieStats) == 32);
 static_assert(offsetof(HttpCookieStats, maxInuseSize) == 16);
 static_assert(offsetof(HttpCookieStats, removedNum) == 28);
 
@@ -411,7 +410,7 @@ int APS5_VABI sceHttpGetCookieStats(int id, HttpCookieStats* stats) {
     if (!jar) return error;
     if (!stats) return ERROR_INVALID_VALUE;
     std::erase_if(jar->cookies, [now = Clock::now()](const Cookie& stored) { return expired(stored, now); });
-    *stats = {};
+    std::memset(stats, 0, sizeof(*stats));
     stats->currentInuseSize = jarSize(*jar);
     stats->currentInuseNum = static_cast<std::uint32_t>(jar->cookies.size());
     stats->maxInuseSize = jar->maxInuseSize;

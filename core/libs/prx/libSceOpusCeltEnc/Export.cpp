@@ -66,4 +66,4 @@ int APS5_VABI sceOpusCeltEncEncodeFloatWithPriority(OpusCeltEncoder* state, cons
     return 0;
 }
 
-} // extern "C"
+}

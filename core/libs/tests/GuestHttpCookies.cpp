@@ -12,7 +12,6 @@ struct HttpCookieStats {
     std::uint64_t maxInuseSize;
     std::uint32_t maxInuseNum;
     std::uint32_t removedNum;
-    std::int32_t reserved;
 };
 
 extern "C" {
@@ -60,8 +59,7 @@ std::string Get(int context, const char* url, int secure = 0) {
 
 HttpCookieStats Stats(int context) {
     HttpCookieStats stats{};
-    stats.reserved = -1;
-    Require(sceHttpGetCookieStats(context, &stats) == 0 && stats.reserved == 0, "stats are read");
+    Require(sceHttpGetCookieStats(context, &stats) == 0, "stats are read");
     return stats;
 }
 
