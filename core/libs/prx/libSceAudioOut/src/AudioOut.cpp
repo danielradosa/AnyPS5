@@ -787,6 +787,7 @@ int APS5_VABI sceAudioOutGetSystemState(AudioOutSystemState* state) {
     if (state == nullptr) {
         return -2144993276;
     }
+    *state = {};
     state->loudness = 0.0f;
     return 0;
 }

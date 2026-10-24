@@ -1,6 +1,4 @@
 #include <atomic>
-#include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstddef>
@@ -11,6 +9,7 @@
 #include <stdexcept>
 #include "SceTypes.hpp"
 #include "prx/libc/include/General.hpp"
+#include "prx/libkernel/Time/include/TimedWait.hpp"
 
 // Offline reliable-UDP: the library initialises and contexts can be created and bound, but no connection can
 // ever be established because there is no network.
@@ -110,7 +109,7 @@ struct RudpPoll {
 
 int g_next_poll = 1;
 std::map<int, RudpPoll> g_polls;
-std::condition_variable g_polls_changed;
+TimedWait::Condition g_polls_changed;
 
 bool valid_ctx(int ctx) {
     return g_ctx.count(ctx) != 0;
@@ -186,7 +185,7 @@ int APS5_VABI sceRudpEnd(void) {
     g_received_udp_bytes = 0;
     g_received_udp_packets = 0;
     g_polls.clear();
-    g_polls_changed.notify_all();
+    g_polls_changed.NotifyAll();
     return 0;
 }
 
@@ -510,8 +509,8 @@ int APS5_VABI sceRudpPollWait(int pollId, RudpPollEvent* events, std::size_t eve
         return poll == g_polls.end() || poll->second.cancels != cancels;
     };
     if (timeout > RUDP_POLL_WAIT_MAX_USEC) {
-        g_polls_changed.wait(lk, woken);
-    } else if (!g_polls_changed.wait_for(lk, std::chrono::microseconds(timeout), woken)) {
+        g_polls_changed.Wait(lk, woken);
+    } else if (!g_polls_changed.WaitUntil(lk, TimedWait::DeadlineNanos(timeout), woken)) {
         return 0;
     }
     if (!g_inited) return RUDP_ERROR_NOT_INITIALIZED;
@@ -529,7 +528,7 @@ int APS5_VABI sceRudpPollDestroy(int pollId) {
     if (g_polls.erase(pollId) == 0) {
         return RUDP_ERROR_INVALID_POLL_ID;
     }
-    g_polls_changed.notify_all();
+    g_polls_changed.NotifyAll();
     return 0;
 }
 
@@ -566,7 +565,7 @@ int APS5_VABI sceRudpPollCancel(int pollId) {
         return RUDP_ERROR_INVALID_POLL_ID;
     }
     ++poll->second.cancels;
-    g_polls_changed.notify_all();
+    g_polls_changed.NotifyAll();
     return 0;
 }
 

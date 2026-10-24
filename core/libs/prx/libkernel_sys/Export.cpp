@@ -107,6 +107,7 @@ constexpr int PcRecXferAlign = 17;
 constexpr int PcSymlinkMax = 18;
 constexpr int PcMinHoleSize = 21;
 constexpr int PcAsyncIo = 53;
+constexpr std::int64_t PosixAsynchronousIo = 200112;
 constexpr int PcPrioIo = 54;
 constexpr int PcSyncIo = 55;
 constexpr int PcAclExtended = 59;
@@ -121,7 +122,6 @@ constexpr std::uint16_t GuestFifo = 0010000;
 constexpr std::uint16_t GuestDirectory = 0040000;
 constexpr std::uint16_t GuestRegular = 0100000;
 constexpr std::uint16_t GuestSocket = 0140000;
-constexpr std::int64_t GuestPosixAsynchronousIo = 200112;
 constexpr std::int64_t GuestPipeBuf = 512;
 
 int GuestFileError(int error) {
@@ -383,7 +383,13 @@ int LinkPaths(const std::filesystem::path& source, const std::filesystem::path& 
     if (!follow && IsNativeLink(source))
         throw std::runtime_error("linkat: a hard link to the symbolic link " + source.string() + " itself is not supported");
     const auto status = std::filesystem::status(source, error);
-    if (!std::filesystem::exists(status)) return HasNonDirectoryPrefix(source) ? GuestEnotdir : GuestEnoent;
+    if (!std::filesystem::exists(status)) {
+#ifdef _WIN32
+        std::filesystem::path target;
+        if (const int followError = FollowLinkPath(source, target)) return followError;
+#endif
+        return HasNonDirectoryPrefix(source) ? GuestEnotdir : GuestEnoent;
+    }
     if (std::filesystem::is_directory(status)) return GuestEperm;
     if (std::filesystem::exists(std::filesystem::symlink_status(destination, error))) return GuestEexist;
     if (!std::filesystem::is_directory(destination.parent_path(), error)) return HasNonDirectoryPrefix(destination) ? GuestEnotdir : GuestEnoent;
@@ -585,7 +591,7 @@ std::int64_t APS5_VABI pathconf_nid_postfix(const char* path, int name) {
 std::int64_t APS5_VABI _fpathconf_nid_postfix(int fd, int name) {
     FileStat status{};
     if (_fstat_nid_postfix(fd, &status) != 0) return -1;
-    if (name == PcAsyncIo) return GuestPosixAsynchronousIo;
+    if (name == PcAsyncIo) return PosixAsynchronousIo;
     const auto type = status.st_mode & GuestFileType;
     if (type == GuestRegular || type == GuestDirectory) return PathConfigurationValue(name, "fpathconf");
     if (type == GuestFifo || type == GuestSocket) return name == PcPipeBuf ? GuestPipeBuf : Fail(GuestEinval);
@@ -844,6 +850,7 @@ int APS5_VABI mkdirat_nid_postfix(int fd, const char* path, std::uint16_t mode) 
         if (code == ERROR_ALREADY_EXISTS || code == ERROR_FILE_EXISTS) return static_cast<int>(Fail(GuestEexist));
         if (code == ERROR_ACCESS_DENIED) return static_cast<int>(Fail(GuestEperm));
         if (code == ERROR_FILENAME_EXCED_RANGE) return static_cast<int>(Fail(GuestEnametoolong));
+        if (code == ERROR_CANT_RESOLVE_FILENAME) return static_cast<int>(Fail(GuestEloop));
         if (code == ERROR_PATH_NOT_FOUND) {
             if (HasNonDirectoryPrefix(native)) return static_cast<int>(Fail(GuestEnotdir));
             return static_cast<int>(Fail(GuestEnoent));

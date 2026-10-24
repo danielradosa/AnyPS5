@@ -236,7 +236,7 @@ int main() {
     Write(OpenV2(created, Out | Trunc | V2Nocreate), "made");
     Require(Contents(created) == "made");
 
-#ifndef _WIN32
+#ifdef __linux__
     auto* full = std::fopen("/dev/full", "wb");
     Require(full != nullptr);
     auto* fullStream = new FileStream(full, true);

@@ -9,7 +9,21 @@
 #include <stdexcept>
 #include <string>
 
+struct SaveDataMountPs4 {
+    std::int32_t user_id;
+    std::int32_t pad;
+    const void* title_id;
+    const SceSaveDataDirName* dir_name;
+    const void* fingerprint;
+    std::uint64_t blocks;
+    std::uint32_t mount_mode;
+    std::uint8_t reserved[32];
+};
+
+extern "C" int APS5_VABI sceSaveDataTransferringMount(const SaveDataTransferringMount*, SaveDataMountResult*);
 extern "C" int APS5_VABI sceSaveDataTransferringMountPs4(const SaveDataTransferringMount*, SaveDataMountResult*);
+extern "C" int APS5_VABI sceSaveDataMount(const SaveDataMountPs4*, SaveDataMountResult*);
+extern "C" int APS5_VABI sceSaveDataUmount(const SaveDataMountPoint*);
 extern "C" int APS5_VABI sceSaveDataDirNameSearchPs4(const SaveDataDirNameSearchCond*, SaveDataDirNameSearchResult*);
 extern "C" int APS5_VABI sceSaveDataDirNameSearch(const SaveDataDirNameSearchCond*, SaveDataDirNameSearchResult*);
 extern "C" int APS5_VABI sceSaveDataInitialize3(const void*);
@@ -30,6 +44,8 @@ constexpr int SaveDataErrorBusy = -2137063421;
 constexpr std::uint32_t MountReadWrite = 2;
 constexpr std::uint32_t MountCreate2 = 32;
 constexpr int SaveDataErrorNotInitialized = -2137063423;
+constexpr int SaveDataErrorParameter = -2137063424;
+constexpr int SaveDataErrorNotMounted = -2137063420;
 
 int failures = 0;
 
@@ -62,6 +78,11 @@ void TestTransferringMountPs4() {
     std::memset(&result, 0xAA, sizeof(result));
     Check(sceSaveDataTransferringMountPs4(&mount, &result) == SaveDataErrorNotFound, "TransferringMountPs4 returns NOT_FOUND");
     Check(result.mount_point.data[0] == '\0', "TransferringMountPs4 reports no mount point");
+    std::memset(&result, 0xAA, sizeof(result));
+    Check(sceSaveDataTransferringMount(&mount, &result) == SaveDataErrorNotFound, "TransferringMount returns NOT_FOUND");
+    Check(result.mount_point.data[0] == '\0', "TransferringMount reports no mount point");
+    Check(sceSaveDataTransferringMount(nullptr, nullptr) == SaveDataErrorNotFound, "TransferringMount handles null arguments");
+    Check(sceSaveDataTransferringMountPs4(nullptr, nullptr) == SaveDataErrorNotFound, "TransferringMountPs4 handles null arguments");
 }
 
 void TestDirNameSearchPs4() {
@@ -138,6 +159,23 @@ void TestSaveDataMemoryV1() {
     Check(sceSaveDataTerminate() == 0, "Terminate after v1 Initialize");
 }
 
+void TestMountPs4() {
+    SaveDataMountResult result{};
+    Check(sceSaveDataMount(nullptr, &result) == SaveDataErrorParameter, "null mount is PARAMETER");
+    SaveDataMountPs4 mount{};
+    Check(sceSaveDataMount(&mount, &result) == SaveDataErrorParameter, "null dir_name is PARAMETER");
+    Check(sceSaveDataUmount(nullptr) == SaveDataErrorParameter, "umount null point is PARAMETER");
+    SceSaveDataDirName dir{};
+    std::strcpy(dir.data, "kept");
+    mount.dir_name = &dir;
+    mount.mount_mode = MountReadWrite;
+    Check(ThrowsRuntimeError([&] { sceSaveDataMount(&mount, nullptr); }), "null mount_result throws");
+    Check(sceSaveDataMount(&mount, &result) == 0, "mount existing save directory succeeds");
+    Check(result.mount_point.data[0] != '\0', "mount writes mount point");
+    Check(sceSaveDataUmount(&result.mount_point) == 0, "umount mounted point succeeds");
+    Check(sceSaveDataUmount(&result.mount_point) == SaveDataErrorNotMounted, "umount unmounted point is NOT_MOUNTED");
+}
+
 }
 
 int main() {
@@ -149,6 +187,7 @@ int main() {
     TestTransferringMountPs4();
     TestDirNameSearchPs4();
     TestSaveDataMemoryV1();
+    TestMountPs4();
     TestMount2();
 
     std::filesystem::current_path(previous);
