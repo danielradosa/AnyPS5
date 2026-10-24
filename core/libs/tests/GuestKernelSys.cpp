@@ -65,6 +65,7 @@ int APS5_VABI dup_nid_postfix(int);
 int APS5_VABI dup2_nid_postfix(int, int);
 int APS5_VABI setsid_nid_postfix(void);
 int APS5_VABI fork_nid_postfix(void);
+int APS5_VABI is_in_sandbox_nid_postfix(void);
 int APS5_VABI link_nid_postfix(const char*, const char*);
 int APS5_VABI symlink_nid_postfix(const char*, const char*);
 int APS5_VABI lchflags_nid_postfix(const char*, std::uint64_t);
@@ -860,6 +861,7 @@ int main() {
     Require(fork_nid_postfix() == -1 && Error() == 78);
     Require(fork_nid_postfix() == -1 && Error() == 78);
     SceKernelFlock();
+    Require(is_in_sandbox_nid_postfix() == 1);
     Require(umask_nid_postfix(0) == 022);
     Require(umask_nid_postfix(07777) == 0);
     Require(umask_nid_postfix(022) == 07777);

@@ -510,6 +510,14 @@ int APS5_VABI vfork_nid_postfix(void) {
     return static_cast<int>(Fail(GuestEnosys));
 }
 
+int APS5_VABI is_in_sandbox_nid_postfix(void) {
+    return 1;
+}
+
+int APS5_VABI sceKernelIsInSandbox(void) {
+    return is_in_sandbox_nid_postfix();
+}
+
 int APS5_VABI setsid_nid_postfix(void) {
     return static_cast<int>(Fail(GuestEperm));
 }
@@ -652,10 +660,6 @@ int APS5_VABI settimeofday_nid_postfix(const KernelTimeval* tv, const KernelTime
 int APS5_VABI sceKernelSettimeofday(const KernelTimeval* tv, const KernelTimezone* tz) {
     if (settimeofday_nid_postfix(tv, tz) == 0) return 0;
     return static_cast<int>(0x80020000u | static_cast<std::uint32_t>(*__error_nid_postfix()));
-}
-
-int APS5_VABI sceKernelIsInSandbox(void) {
-    return 1;
 }
 
 int APS5_VABI tcgetattr_nid_postfix(int descriptor, void* attributes);
