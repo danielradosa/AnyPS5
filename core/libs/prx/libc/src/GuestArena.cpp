@@ -203,6 +203,13 @@ private:
         _base = ArenaStart;
         _end = end;
 #endif
+        std::sort(_hostRegions.begin(), _hostRegions.end());
+        std::vector<std::pair<std::uintptr_t, std::uintptr_t>> merged;
+        for (const auto& region : _hostRegions) {
+            if (!merged.empty() && region.first <= merged.back().second) merged.back().second = std::max(merged.back().second, region.second);
+            else merged.push_back(region);
+        }
+        _hostRegions = std::move(merged);
     }
 
 #if defined(__linux__)
@@ -345,10 +352,8 @@ public:
     std::size_t Size() const { return _end - _base; }
     bool WriteWatched() const { return _writeWatched; }
     bool OverlapsHostRegion(std::uintptr_t start, std::size_t bytes) const {
-        for (const auto& [regionStart, regionEnd] : _hostRegions) {
-            if (regionStart < start + bytes && start < regionEnd) return true;
-        }
-        return false;
+        const auto region = std::upper_bound(_hostRegions.begin(), _hostRegions.end(), start, [](std::uintptr_t value, const auto& host) { return value < host.second; });
+        return region != _hostRegions.end() && region->first < start + bytes;
     }
 };
 
