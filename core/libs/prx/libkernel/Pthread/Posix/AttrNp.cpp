@@ -12,8 +12,6 @@ int APS5_VABI scePthreadAttrSetstackaddr(PthreadAttr* attr, void* address);
 int APS5_VABI scePthreadAttrGetsolosched(const PthreadAttr* attr, int* value);
 
 int APS5_VABI pthread_attr_setstackaddr_nid_postfix(PthreadAttr* attr, void* address) {
-    if (!attr || !*attr) return PosixThread::GUEST_EINVAL;
-    if (!address) NotImplemented_nid_no_patch("pthread_attr_setstackaddr with a null stack address");
     return PosixThread::ToErrno(scePthreadAttrSetstackaddr(attr, address));
 }
 

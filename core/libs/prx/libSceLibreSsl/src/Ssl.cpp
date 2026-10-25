@@ -479,6 +479,11 @@ struct SslCtxState {
     ServernameCallback servernameCallback = nullptr;
     void* servernameArgument = nullptr;
     NewSessionCallback newSessionCallback = nullptr;
+    void* infoCallback = nullptr;
+    void* nextProtoSelectCallback = nullptr;
+    void* nextProtoSelectArgument = nullptr;
+    void* alpnSelectCallback = nullptr;
+    void* alpnSelectArgument = nullptr;
     mbedtls_ssl_cache_context cache;
 
     SslCtxState() {
@@ -2555,6 +2560,26 @@ void APS5_VABI SSL_CTX_set_client_cert_cb_nid_postfix(SslCtxObject* ctx, ClientC
     auto& context = RequireCtx(ctx, __func__);
     std::lock_guard lock(context.internal->mutex);
     context.internal->clientCertCallback = client_cert_cb;
+}
+
+void APS5_VABI SSL_CTX_set_info_callback_nid_postfix(SslCtxObject* ctx, void* callback) {
+    auto& context = RequireCtx(ctx, __func__);
+    std::lock_guard lock(context.internal->mutex);
+    context.internal->infoCallback = callback;
+}
+
+void APS5_VABI SSL_CTX_set_next_proto_select_cb_nid_postfix(SslCtxObject* ctx, void* callback, void* arg) {
+    auto& context = RequireCtx(ctx, __func__);
+    std::lock_guard lock(context.internal->mutex);
+    context.internal->nextProtoSelectCallback = callback;
+    context.internal->nextProtoSelectArgument = arg;
+}
+
+void APS5_VABI SSL_CTX_set_alpn_select_cb_nid_postfix(SslCtxObject* ctx, void* callback, void* arg) {
+    auto& context = RequireCtx(ctx, __func__);
+    std::lock_guard lock(context.internal->mutex);
+    context.internal->alpnSelectCallback = callback;
+    context.internal->alpnSelectArgument = arg;
 }
 
 int APS5_VABI SSL_CTX_use_PrivateKey_nid_postfix(SslCtxObject* ctx, EvpPkey* pkey) {

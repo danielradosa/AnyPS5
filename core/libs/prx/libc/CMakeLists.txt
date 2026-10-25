@@ -104,6 +104,7 @@ target_sources(libc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/RuntimeSupport.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/IntegerBuiltins.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/LocaleSupport.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/SonyCrt.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Process.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Hostname.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/Environment.cpp
@@ -251,6 +252,17 @@ if(BUILD_TESTING)
     add_test(NAME guest_index COMMAND guest_index_tests $<TARGET_FILE:libc>)
     if(WIN32)
         set_tests_properties(guest_index PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+
+    add_test_executable(guest_fwide_tests ${LIBS_INCLUDE_DIR}/tests/GuestFwide.cpp)
+    target_include_directories(guest_fwide_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_fwide_tests PRIVATE libc ${CMAKE_DL_LIBS})
+    configure_windows_unwind(guest_fwide_tests)
+    add_test(NAME guest_fwide COMMAND guest_fwide_tests $<TARGET_FILE:libc> guest_fwide.tmp)
+    set_tests_properties(guest_fwide PROPERTIES TIMEOUT 10)
+    if(WIN32)
+        set_tests_properties(guest_fwide PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
 
@@ -864,6 +876,16 @@ if(BUILD_TESTING)
         set_tests_properties(file_streams PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    add_test_executable(guest_freopen_host_standard_tests ${LIBS_INCLUDE_DIR}/tests/GuestFreopenHostStandard.cpp)
+    target_include_directories(guest_freopen_host_standard_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(guest_freopen_host_standard_tests PRIVATE libc)
+    configure_windows_unwind(guest_freopen_host_standard_tests)
+    add_test(NAME guest_freopen_host_standard COMMAND guest_freopen_host_standard_tests)
+    set_tests_properties(guest_freopen_host_standard PROPERTIES TIMEOUT 20)
+    if(WIN32)
+        set_tests_properties(guest_freopen_host_standard PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test_executable(guest_error_tests ${LIBS_INCLUDE_DIR}/tests/GuestErrors.cpp)
     target_include_directories(guest_error_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_link_libraries(guest_error_tests PRIVATE libc)
@@ -1070,10 +1092,6 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
     if(UNIX)
-        add_test_executable(exception_runtime_tests ${LIBS_INCLUDE_DIR}/tests/ExceptionRuntime.cpp)
-        target_include_directories(exception_runtime_tests PRIVATE ${LIBS_INCLUDE_DIR})
-        target_link_libraries(exception_runtime_tests PRIVATE libc)
-        add_test(NAME exception_runtime COMMAND exception_runtime_tests)
         add_test_executable(exception_personality_tests ${LIBS_INCLUDE_DIR}/tests/ExceptionPersonality.cpp)
         target_include_directories(exception_personality_tests PRIVATE ${LIBS_INCLUDE_DIR})
         target_link_libraries(exception_personality_tests PRIVATE libc)
@@ -1088,6 +1106,10 @@ if(BUILD_TESTING)
         add_test(NAME guest_path_lifetime COMMAND guest_path_lifetime_tests)
         set_tests_properties(guest_path_lifetime PROPERTIES TIMEOUT 20)
         if(NOT APPLE)
+            add_test_executable(exception_runtime_tests ${LIBS_INCLUDE_DIR}/tests/ExceptionRuntime.cpp)
+            target_include_directories(exception_runtime_tests PRIVATE ${LIBS_INCLUDE_DIR})
+            target_link_libraries(exception_runtime_tests PRIVATE libc)
+            add_test(NAME exception_runtime COMMAND exception_runtime_tests)
             enable_language(C)
             add_test_executable(exception_c_cleanup_tests ${LIBS_INCLUDE_DIR}/tests/ExceptionCCleanup.cpp ${LIBS_INCLUDE_DIR}/tests/ExceptionCCleanup.c)
             set_source_files_properties(${LIBS_INCLUDE_DIR}/tests/ExceptionCCleanup.c PROPERTIES COMPILE_OPTIONS -fexceptions)

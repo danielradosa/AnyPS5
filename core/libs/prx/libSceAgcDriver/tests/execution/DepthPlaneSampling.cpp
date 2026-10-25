@@ -3,6 +3,7 @@
 #include "prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestTextureResource.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
@@ -414,6 +415,32 @@ void BaseSliceCase(AgcDriver::VulkanDevice& device, GuestBlock& block, std::span
     Expect(output, Bits(0.5f), "D32 2D array from base slice 1 through a 2D shader image");
 }
 
+void AlternatingCase(AgcDriver::VulkanDevice& device, GuestBlock& block) {
+    const auto kept = AgcDriver::Graphics::DepthPlaneCopyCount();
+    Require(kept == 8, std::to_string(kept) + " depth plane copies were kept with a 1 MiB budget, expected all 8 sampled since the last present");
+    const auto sample = [&](std::size_t offset, const Shape& shape) {
+        const auto words = TextureDescriptor(block.At(offset), shape);
+        return AgcDriver::Graphics::DepthSurfaceTexture(AgcDriver::VulkanDeviceTestAccess::ContextOf(device), words, AgcDriver::Graphics::DecodeTextureResource(words), {});
+    };
+    const Shape array{Format32Float, 128, 128, Type2DArray, 2, Swizzle64KbZX};
+    const Shape cube{Format32Float, 128, 128, TypeCube, 0, Swizzle64KbZX};
+    const auto uploads = AgcDriver::Graphics::DepthPlaneUploads();
+    const auto firstArray = sample(ArrayOffset, array);
+    const auto firstCube = sample(CubeOffset, cube);
+    Require(firstArray != nullptr && firstCube != nullptr, "the alternating depth plane array and cube were not sampled as plane copies");
+    for (int round = 0; round < 4; ++round) {
+        Require(sample(ArrayOffset, array) == firstArray, "sampling the cube between two samples of the depth plane array made the array's copy again within one present");
+        Require(sample(CubeOffset, cube) == firstCube, "sampling the array between two samples of the depth plane cube made the cube's copy again within one present");
+    }
+    Require(AgcDriver::Graphics::DepthPlaneUploads() == uploads, "alternating samples of unchanged depth plane copies read guest memory again");
+    AgcDriver::Graphics::Recorder::CountPresent();
+    AgcDriver::Graphics::Recorder::CountPresent();
+    Require(sample(ArrayOffset, array) == firstArray, "the depth plane array sampled again after two presents lost its copy");
+    const auto left = AgcDriver::Graphics::DepthPlaneCopyCount();
+    Require(left >= 1 && left < 8, std::to_string(left) + " depth plane copies were kept with a 1 MiB budget after two presents without sampling them, expected at least the newest and fewer than 8");
+    device.WaitIdle();
+}
+
 void ExpectRefusal(AgcDriver::VulkanDevice& device, GuestBlock& block, std::size_t offset, const Shape& shape, std::uint32_t baseArray, const std::string& expected, const std::string& what) {
     const auto words = TextureDescriptor(block.At(offset), shape);
     auto resource = AgcDriver::Graphics::DecodeTextureResource(words);
@@ -434,8 +461,11 @@ void RefusalCase(AgcDriver::VulkanDevice& device, GuestBlock& block) {
 }
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        const bool evicting = argc > 1 && std::string(argv[1]) == "--evicting";
+        const bool alternating = argc > 1 && std::string(argv[1]) == "--alternating";
+        if (alternating) AgcDriver::Graphics::Recorder::CountPresent();
         GuestBlock block;
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
@@ -452,6 +482,11 @@ int main() {
         PaddedD16CubeCase(*device, block, output);
         BaseSliceCase(*device, block, output);
         RefusalCase(*device, block);
+        if (alternating) AlternatingCase(*device, block);
+        if (evicting) {
+            const auto kept = AgcDriver::Graphics::DepthPlaneCopyCount();
+            Require(kept >= 1 && kept < 8, std::to_string(kept) + " depth plane copies were kept with a 1 MiB budget, expected at least the newest and fewer than the 8 an unbounded cache keeps");
+        }
         std::puts("depth plane sampling tests passed");
         return 0;
     } catch (const std::exception& error) {

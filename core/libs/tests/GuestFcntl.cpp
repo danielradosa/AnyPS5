@@ -53,13 +53,9 @@ int main() {
     Check(sceKernelFcntl(fd, GetFl, 0) == (SCE_KERNEL_O_RDWR | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_NONBLOCK));
     Check(sceKernelFcntl(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT) == 0);
     Check(sceKernelFcntl(fd, GetFl, 0) == (SCE_KERNEL_O_RDWR | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT));
-#ifdef _WIN32
-    Check(Throws(fd, SetFl, 0));
-#else
     Check(sceKernelFcntl(fd, SetFl, 0) == 0);
     Check(sceKernelFcntl(fd, GetFl, 0) == SCE_KERNEL_O_RDWR);
     Check(sceKernelFcntl(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT) == 0);
-#endif
     Check(Throws(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_FSYNC));
     Check(sceKernelFcntl(fd, GetFl, 0) == (SCE_KERNEL_O_RDWR | SCE_KERNEL_O_APPEND | SCE_KERNEL_O_DIRECT));
     Check(sceKernelFcntl(fd, SetFl, SCE_KERNEL_O_APPEND | SCE_KERNEL_O_ASYNC) == 0);
@@ -93,8 +89,8 @@ int main() {
 
     int pipes[2] = {-1, -1};
     Check(pipe_nid_postfix(pipes) == 0);
-    Check(sceKernelFcntl(pipes[0], GetFl, 0) == SCE_KERNEL_O_RDONLY);
-    Check(sceKernelFcntl(pipes[1], GetFl, 0) == SCE_KERNEL_O_WRONLY);
+    Check(sceKernelFcntl(pipes[0], GetFl, 0) == SCE_KERNEL_O_RDWR);
+    Check(sceKernelFcntl(pipes[1], GetFl, 0) == SCE_KERNEL_O_RDWR);
     Check(close_nid_postfix(pipes[0]) == 0);
     Check(close_nid_postfix(pipes[1]) == 0);
 

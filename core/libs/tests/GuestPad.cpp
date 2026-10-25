@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -55,10 +56,6 @@ int APS5_VABI scePadSetVibration(int, const PadVibrationParam*);
 int APS5_VABI scePadGetExtControllerInformation(int, void*);
 int APS5_VABI scePadSetLightBar(int, const PadLightBarParam*);
 int APS5_VABI scePadSetMotionSensorState(int, bool);
-int APS5_VABI scePadSetLotusEnableIrKey(std::int32_t);
-int APS5_VABI scePadSetLotusDisableIrKey(std::int32_t);
-int APS5_VABI scePadVirtualDeviceDisableButtonRemapping(bool);
-int APS5_VABI scePadVirtualDeviceGetRemoteSetting(std::int32_t, void*);
 }
 
 static void Require(bool value) { if (!value) std::abort(); }
@@ -683,6 +680,43 @@ static void CheckInjectedState(const std::filesystem::path& path) {
     PadPublishInput_nid_postfix(PadInputState{});
 }
 
+static void CheckInjectedQueueTimes(const std::filesystem::path& path) {
+    PadData drained[64]{};
+    Pad::Read(drained, 64);
+    PadInputState physical;
+    physical.buttons = 0x2000;
+    PadPublishInput_nid_postfix(physical);
+    const auto before = Pad::ReadState();
+    std::ofstream(path) << "5 16384 300\n";
+    PadData pressed{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    do {
+        pressed = Pad::ReadState();
+        if ((pressed.buttons & 0x4000) != 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    } while (std::chrono::steady_clock::now() < deadline);
+    Require(pressed.buttons == 0x6000 && pressed.timestamp > before.timestamp);
+    PadData queued{};
+    Require(Pad::Read(&queued, 1) == 1);
+    Require(queued.buttons == pressed.buttons);
+    if (queued.timestamp < pressed.timestamp) {
+        std::fputs("queued input predates its injected button press\n", stderr);
+        std::abort();
+    }
+    physical.sticks[0] = 130;
+    PadPublishInput_nid_postfix(physical);
+    std::this_thread::sleep_for(std::chrono::milliseconds(310));
+    const auto released = Pad::ReadState();
+    Require(released.buttons == 0x2000 && released.timestamp > pressed.timestamp);
+    Require(Pad::Read(&queued, 1) == 1);
+    Require(queued.buttons == released.buttons && queued.left_stick_x == 130);
+    if (queued.timestamp < released.timestamp) {
+        std::fputs("queued input predates its injected button release\n", stderr);
+        std::abort();
+    }
+    PadPublishInput_nid_postfix(PadInputState{});
+}
+
 int main() {
     CheckInputCommands();
     std::uint32_t accessibilityState = 7;
@@ -778,6 +812,7 @@ int main() {
     CheckAccessibilityControllerState(handle);
     CheckControllerType(handle);
     CheckInjectedState(commandPath);
+    CheckInjectedQueueTimes(commandPath);
     PadLightBarParam lightBar{255, 128, 64};
     Require(scePadSetLightBar(handle, &lightBar) == PAD_OK);
     Require(scePadSetLightBar(handle, nullptr) == PAD_ERROR_INVALID_ARG);
@@ -807,15 +842,4 @@ int main() {
     Require(scePadSetAngularVelocityDeadbandState(handle + 1, true) == PAD_ERROR_INVALID_HANDLE);
     Require(scePadSetAngularVelocityBiasCorrectionState(handle, false) == PAD_OK);
     Require(scePadSetAngularVelocityBiasCorrectionState(handle + 1, false) == PAD_ERROR_INVALID_HANDLE);
-    Require(scePadSetLotusEnableIrKey(handle) == PAD_OK);
-    Require(scePadSetLotusEnableIrKey(handle + 1) == PAD_ERROR_INVALID_HANDLE);
-    Require(scePadSetLotusDisableIrKey(handle) == PAD_OK);
-    Require(scePadSetLotusDisableIrKey(handle + 1) == PAD_ERROR_INVALID_HANDLE);
-    Require(scePadVirtualDeviceDisableButtonRemapping(true) == PAD_OK);
-    Require(scePadVirtualDeviceDisableButtonRemapping(false) == PAD_OK);
-    std::array<std::uint8_t, 64> remoteSetting{};
-    Require(scePadVirtualDeviceGetRemoteSetting(1, remoteSetting.data()) == static_cast<int>(0x80920007));
-    Require(scePadVirtualDeviceGetRemoteSetting(1, nullptr) == PAD_ERROR_INVALID_ARG);
-    Require(scePadVirtualDeviceGetRemoteSetting(0, remoteSetting.data()) == PAD_ERROR_INVALID_ARG);
-    Require(scePadVirtualDeviceGetRemoteSetting(-1, remoteSetting.data()) == PAD_ERROR_INVALID_ARG);
 }

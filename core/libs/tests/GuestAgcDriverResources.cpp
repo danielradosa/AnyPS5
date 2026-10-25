@@ -92,17 +92,26 @@ int main() {
     Require(sceAgcDriverFindResourcesPublic(nullptr, nullptr) == Unavailable);
     Require(sceAgcDriverUnregisterAllResourcesForOwner(owner) == Unavailable);
     Require(std::string_view(name) == "unchanged");
-    const std::array<std::uint8_t, 32> stream{};
+    constexpr int InvalidStream = static_cast<int>(0x8A6C0033);
+    constexpr int NullStream = static_cast<int>(0x8A6C0035);
+    constexpr int StreamNotRegistered = static_cast<int>(0x8A6C003A);
+    const std::array<std::uint8_t, 33> stream{};
+    for (const std::uint32_t id : {0u, 32u, 0x101u, 0xffffffffu}) {
+        Require(sceAgcDriverRegisterWorkloadStream(id, stream.data()) == InvalidStream);
+        Require(sceAgcDriverRegisterWorkloadStream(id, nullptr) == InvalidStream);
+        Require(sceAgcDriverUnregisterWorkloadStream(id) == InvalidStream);
+    }
+    Require(sceAgcDriverRegisterWorkloadStream(2u, nullptr) == NullStream);
+    Require(sceAgcDriverUnregisterWorkloadStream(2u) == StreamNotRegistered);
+    Require(sceAgcDriverRegisterWorkloadStream(1u, stream.data()) == 0);
+    Require(sceAgcDriverRegisterWorkloadStream(1u, stream.data()) == InvalidStream);
+    Require(sceAgcDriverRegisterWorkloadStream(1u, nullptr) == InvalidStream);
+    Require(sceAgcDriverRegisterWorkloadStream(31u, stream.data() + 1) == 0);
+    Require(sceAgcDriverUnregisterWorkloadStream(1u) == 0);
+    Require(sceAgcDriverUnregisterWorkloadStream(1u) == StreamNotRegistered);
     Require(sceAgcDriverRegisterWorkloadStream(1u, stream.data()) == 0);
     Require(sceAgcDriverUnregisterWorkloadStream(1u) == 0);
-    Require(sceAgcDriverRegisterWorkloadStream(0u, stream.data()) == static_cast<int>(0x8A6C0033));
-    Require(sceAgcDriverRegisterWorkloadStream(32u, stream.data()) == static_cast<int>(0x8A6C0033));
-    Require(sceAgcDriverRegisterWorkloadStream(2u, nullptr) == static_cast<int>(0x8A6C0035));
-    Require(sceAgcDriverRegisterWorkloadStream(2u, stream.data()) == 0);
-    Require(sceAgcDriverRegisterWorkloadStream(2u, stream.data()) == static_cast<int>(0x8A6C0033));
-    Require(sceAgcDriverUnregisterWorkloadStream(2u) == 0);
-    Require(sceAgcDriverUnregisterWorkloadStream(2u) == static_cast<int>(0x8A6C003A));
-    Require(sceAgcDriverUnregisterWorkloadStream(0u) == static_cast<int>(0x8A6C0033));
+    Require(sceAgcDriverUnregisterWorkloadStream(31u) == 0);
     Require(!sceAgcDriverIsCaptureInProgress());
     Require(!sceAgcDriverIsTraceInProgress());
     Require(!sceAgcDriverIsSubmitValidationEnabled());

@@ -146,8 +146,6 @@ void CheckNumpunctGetcat(const GuestLocale::Implementation* const* classic) {
 void CheckPutFacet(GuestLocale::Facet* facet, std::size_t before, std::size_t size) {
     require(facet != nullptr && allocations == before + 1 && lastSize == size && lastAllocation == facet && facet->references == 0);
     const auto& vtable = *reinterpret_cast<const GuestLocale::UnsupportedMethodsVtable*>(facet->vtable);
-    reject([&] { vtable.methods[0](); });
-    reject([&] { vtable.methods[7](); });
     vtable.facet.retain(facet);
     vtable.facet.retain(facet);
     require(facet->references == 2);

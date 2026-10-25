@@ -190,9 +190,9 @@ extern "C" {
 
 int APS5_VABI AES_set_encrypt_key_nid_postfix(const unsigned char* userKey, int bits, AesKey* key) {
     if (!userKey || !key) return -1;
-    std::memset(key->roundKeys, 0, sizeof(key->roundKeys));
-    key->rounds = RoundsForBits(bits);
-    if (!key->rounds) return -2;
+    const int rounds = RoundsForBits(bits);
+    if (!rounds) return -2;
+    key->rounds = rounds;
     ExpandKey(userKey, bits, *key);
     return 0;
 }

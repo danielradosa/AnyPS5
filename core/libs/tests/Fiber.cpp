@@ -15,9 +15,6 @@ using Entry = void (APS5_VABI*)(std::uint64_t, std::uint64_t);
 
 extern "C" {
 std::int32_t APS5_VABI _sceFiberInitializeImpl_nid_postfix(FiberObject*, const char*, Entry, std::uint64_t, void*, std::uint64_t, const void*, std::uint32_t);
-std::int32_t APS5_VABI _sceFiberInitializeWithInternalOptionImpl(FiberObject*, const char*, Entry, std::uint64_t, void*, std::uint64_t, const void*, std::uint32_t, std::uint32_t);
-std::int32_t APS5_VABI _sceFiberAttachContextAndRun(FiberObject*, void*, std::uint64_t, std::uint64_t, std::uint64_t*);
-std::int32_t APS5_VABI _sceFiberAttachContextAndSwitch(FiberObject*, void*, std::uint64_t, std::uint64_t, std::uint64_t*);
 std::int32_t APS5_VABI sceFiberFinalize(FiberObject*);
 std::int32_t APS5_VABI sceFiberRun_nid_postfix(FiberObject*, std::uint64_t, std::uint64_t*);
 std::int32_t APS5_VABI sceFiberSwitch(FiberObject*, std::uint64_t, std::uint64_t*);
@@ -28,6 +25,9 @@ std::int32_t APS5_VABI sceFiberGetThreadFramePointerAddress(std::uint64_t*);
 std::int32_t APS5_VABI _sceFiberGetThreadFramePointerAddress(std::uint64_t*);
 std::int32_t APS5_VABI sceFiberStartContextSizeCheck(std::uint32_t);
 std::int32_t APS5_VABI sceFiberStopContextSizeCheck(void);
+std::int32_t APS5_VABI _sceFiberAttachContextAndRun(FiberObject*, void*, std::uint64_t, std::uint64_t, std::uint64_t*);
+std::int32_t APS5_VABI _sceFiberAttachContextAndSwitch(FiberObject*, void*, std::uint64_t, std::uint64_t, std::uint64_t*);
+std::int32_t APS5_VABI _sceFiberInitializeWithInternalOptionImpl(FiberObject*, const char*, Entry, std::uint64_t, void*, std::uint64_t, const void*, std::uint32_t, std::uint32_t);
 }
 
 static void Require(bool value, const char* what) {
@@ -241,6 +241,89 @@ void RunOnLargeContext() {
     Require(sceFiberFinalize(fiber) == 0, "finalize large fiber");
 }
 
+alignas(16) std::array<unsigned char, 64 * 1024> g_attachedContext;
+alignas(16) std::array<unsigned char, 4 * 1024> g_attachedSmallContext;
+FiberStorage g_attachedStorage;
+FiberStorage g_attachedTargetStorage;
+auto* const g_attached = reinterpret_cast<FiberObject*>(&g_attachedStorage);
+auto* const g_attachedTarget = reinterpret_cast<FiberObject*>(&g_attachedTargetStorage);
+
+void APS5_VABI AttachedTargetEntry(std::uint64_t argOnInitialize, std::uint64_t argOnRun) {
+    Require(argOnInitialize == 44 && argOnRun == 500, "attached switch target arguments");
+    CheckActiveContext(g_attachedTarget, g_attachedSmallContext.size());
+    std::uint64_t received = 0;
+    Require(sceFiberSwitch(g_attached, 600, &received) == 0, "switch back from the attached target");
+    Require(false, "attached switch target resumed after its last switch");
+}
+
+void APS5_VABI AttachedEntry(std::uint64_t argOnInitialize, std::uint64_t argOnRun) {
+    Require(argOnInitialize == 33 && argOnRun == 400, "attached fiber arguments");
+    FiberObject* self = nullptr;
+    Require(sceFiberGetSelf(&self) == 0 && self == g_attached, "attached fiber self");
+    CheckActiveContext(g_attached, g_attachedContext.size());
+    Require(_sceFiberAttachContextAndRun(g_attachedTarget, g_attachedSmallContext.data(), g_attachedSmallContext.size(), 0, nullptr) == FiberErrorPermission, "attach and run inside a fiber");
+    std::uint64_t received = 0;
+    Require(_sceFiberAttachContextAndSwitch(g_attached, g_attachedContext.data(), g_attachedContext.size(), 0, nullptr) == FiberErrorState, "attach and switch to self");
+    Require(_sceFiberAttachContextAndSwitch(g_attachedTarget, g_attachedSmallContext.data() + 8, g_attachedSmallContext.size() - 16, 500, nullptr) == FiberErrorAlignment, "attach and switch with a misaligned context");
+    Require(_sceFiberAttachContextAndSwitch(g_attachedTarget, g_attachedSmallContext.data(), g_attachedSmallContext.size(), 500, &received) == 0 && received == 600, "attach and switch");
+    Require(sceFiberReturnToThread(700, &received) == 0 && received == 800, "attached fiber resumed");
+    for (;;) sceFiberReturnToThread(received + 1, &received);
+}
+
+void APS5_VABI DefaultFpuEntry(std::uint64_t, std::uint64_t) {
+    std::uint16_t control = 0;
+    asm volatile("fnstcw %0" : "=m"(control));
+    std::uint64_t received = 0;
+    for (;;) sceFiberReturnToThread((static_cast<std::uint64_t>(control) << 32) | _mm_getcsr(), &received);
+}
+
+void RunAttachedContext() {
+    Require(_sceFiberInitializeImpl_nid_postfix(g_attached, "attached", AttachedEntry, 33, nullptr, 0, nullptr, 0) == 0, "initialize without a context");
+    Require(_sceFiberInitializeImpl_nid_postfix(g_attachedTarget, "attached target", AttachedTargetEntry, 44, nullptr, 0, nullptr, 0) == 0, "initialize switch target without a context");
+    FiberInfo info{};
+    info.size = sizeof(info);
+    Require(sceFiberGetInfo(g_attached, &info) == 0 && info.addr_context == nullptr && info.size_context == 0, "fiber without a context reports none");
+    Require(_sceFiberAttachContextAndRun(nullptr, g_attachedContext.data(), g_attachedContext.size(), 0, nullptr) == FiberErrorNull, "attach and run a null fiber");
+    Require(_sceFiberAttachContextAndRun(g_attached, nullptr, g_attachedContext.size(), 0, nullptr) == FiberErrorInvalid, "attach a null context with a size");
+    Require(_sceFiberAttachContextAndRun(g_attached, g_attachedContext.data(), 256, 0, nullptr) == FiberErrorRange, "attach a context below the minimum size");
+    Require(_sceFiberAttachContextAndSwitch(g_attached, g_attachedContext.data(), g_attachedContext.size(), 0, nullptr) == FiberErrorPermission, "attach and switch outside a fiber");
+    std::uint64_t returned = 0;
+    Require(_sceFiberAttachContextAndRun(g_attached, g_attachedContext.data(), g_attachedContext.size(), 400, &returned) == 0 && returned == 700, "attach and run");
+    Require(_sceFiberAttachContextAndRun(g_attached, g_attachedContext.data(), g_attachedContext.size(), 800, &returned) == FiberErrorInvalid, "attach to a fiber that has a context");
+    Require(_sceFiberAttachContextAndRun(g_attached, nullptr, 0, 800, &returned) == 0 && returned == 801, "run an attached fiber without a new context");
+    Require(sceFiberRun_nid_postfix(g_attached, 802, &returned) == 0 && returned == 803, "run an attached fiber");
+    Require(sceFiberFinalize(g_attachedTarget) == 0, "finalize a suspended attached target");
+    Require(sceFiberFinalize(g_attached) == 0, "finalize attached fiber");
+    Require(_sceFiberInitializeImpl_nid_postfix(g_attachedTarget, "attached target", AttachedTargetEntry, 44, nullptr, 0, nullptr, 0) == 0, "reinitialize attached target");
+    Require(sceFiberFinalize(g_attachedTarget) == 0, "finalize fiber without a context");
+}
+
+void RunInternalOptions() {
+    auto* fiber = reinterpret_cast<FiberObject*>(&g_checkedStorage);
+    Require(_sceFiberInitializeWithInternalOptionImpl(nullptr, "options", CheckedEntry, 0, g_checkedContext.data(), g_checkedContext.size(), nullptr, 0, 0) == FiberErrorNull, "internal option null fiber");
+    Require(_sceFiberInitializeWithInternalOptionImpl(fiber, "options", CheckedEntry, 0, g_checkedContext.data(), 256, nullptr, 0, 0) == FiberErrorRange, "internal option small context");
+    Require(_sceFiberInitializeWithInternalOptionImpl(fiber, "options", CheckedEntry, 0, g_checkedContext.data(), g_checkedContext.size(), nullptr, 0x1, 0) == 0, "internal option without object registration");
+    FiberInfo info{};
+    info.size = sizeof(info);
+    Require(sceFiberGetInfo(fiber, &info) == 0 && info.size_context_margin == ~0ull, "no margin without the size check flag");
+    Require(sceFiberFinalize(fiber) == 0, "finalize internal option fiber");
+    Require(_sceFiberInitializeWithInternalOptionImpl(fiber, "options", CheckedEntry, 0, g_checkedContext.data(), g_checkedContext.size(), nullptr, 0x10, 0) == 0, "internal option size check");
+    Require(sceFiberGetInfo(fiber, &info) == 0 && info.size_context_margin == g_checkedContext.size(), "size check flag fills the context");
+    Require(sceFiberRun_nid_postfix(fiber, 0, nullptr) == 0, "run size checked fiber");
+    Require(sceFiberGetInfo(fiber, &info) == 0 && info.size_context_margin < g_checkedContext.size() - 4096, "size check flag measures the margin");
+    Require(sceFiberFinalize(fiber) == 0, "finalize size checked fiber");
+
+    Require(_sceFiberInitializeWithInternalOptionImpl(fiber, "fpu", DefaultFpuEntry, 0, nullptr, 0, nullptr, 0x100, 0) == 0, "internal option fpu defaults without a context");
+    const auto threadCsr = _mm_getcsr();
+    _mm_setcsr((threadCsr & ~0x8040u) | 0x6000u);
+    std::uint64_t returned = 0;
+    Require(_sceFiberAttachContextAndRun(fiber, g_checkedContext.data(), g_checkedContext.size(), 0, &returned) == 0, "run fpu defaults fiber");
+    _mm_setcsr(threadCsr);
+    Require((returned & 0xffffffffu) == 0x9fc0u, "fpu defaults flag starts with the default MXCSR");
+    Require((returned >> 32) == 0x037fu, "fpu defaults flag starts with the default x87 control word");
+    Require(sceFiberFinalize(fiber) == 0, "finalize fpu defaults fiber");
+}
+
 [[gnu::noinline]] std::int32_t RunFirst(std::uint64_t* returned) {
     g_threadFramePointer = reinterpret_cast<std::uint64_t>(__builtin_frame_address(0));
     const std::int32_t result = sceFiberRun_nid_postfix(g_first, 100, returned);
@@ -287,8 +370,6 @@ void RunFpuFiber(FiberObject* fiber, std::uint32_t flags, std::uint32_t* csrAfte
 
 void CheckInternalOptionFlags() {
     auto* flagged = reinterpret_cast<FiberObject*>(&g_flagStorage);
-    FiberInfo info{};
-    info.size = sizeof(info);
     bool rejected = false;
     try {
         _sceFiberInitializeWithInternalOptionImpl(flagged, "unknown", FpuEntry, 0, g_flagContext.data(), g_flagContext.size(), nullptr, 0x2, 0);
@@ -297,19 +378,11 @@ void CheckInternalOptionFlags() {
     }
     Require(rejected, "unknown internal option flag throws");
 
-    Require(_sceFiberInitializeWithInternalOptionImpl(flagged, "sized", CheckedEntry, 0, g_flagContext.data(), g_flagContext.size(), nullptr, 0x10, 0) == 0, "initialize with the size check flag");
-    Require(sceFiberGetInfo(flagged, &info) == 0 && info.size_context_margin == g_flagContext.size(), "size check flag fills the context");
-    Require(sceFiberRun_nid_postfix(flagged, 0, nullptr) == 0, "run fiber size checked by flag");
-    Require(sceFiberGetInfo(flagged, &info) == 0, "flag checked info");
-    Require(info.size_context_margin > 0 && info.size_context_margin < g_flagContext.size() - 4096, "size check flag margin below the used stack");
-    Require(sceFiberFinalize(flagged) == 0, "finalize fiber size checked by flag");
-
     std::uint32_t csrAfter = 0;
     std::uint16_t controlAfter = 0;
     RunFpuFiber(flagged, 0x1, &csrAfter, &controlAfter);
     Require(g_fiberCsr == 0x1f80 && g_fiberControl == 0x027f, "fiber without the fpu flag starts with the caller's MXCSR and x87 control word");
     RunFpuFiber(flagged, 0x101, &csrAfter, &controlAfter);
-    Require(g_fiberCsr == 0x9fc0 && g_fiberControl == 0x037f, "fpu flag starts the fiber with MXCSR 0x9fc0 and x87 control word 0x037f");
     Require(csrAfter == 0x1f80 && controlAfter == 0x027f, "caller keeps its MXCSR and x87 control word after an fpu flag fiber");
 }
 
@@ -320,10 +393,8 @@ auto* const g_late = reinterpret_cast<FiberObject*>(&g_lateStorage);
 
 void APS5_VABI LateEntry(std::uint64_t argOnInitialize, std::uint64_t argOnRun) {
     Require(argOnInitialize == 33 && argOnRun == 44, "attached fiber arguments");
-    Require(_sceFiberAttachContextAndRun(g_late, nullptr, 0, 0, nullptr) == FiberErrorPermission, "attach and run inside a fiber");
     std::uint64_t received = 0;
-    Require(sceFiberReturnToThread(45, &received) == 0 && received == 55, "attached fiber resumed by a plain run");
-    for (;;) sceFiberReturnToThread(56, &received);
+    for (;;) sceFiberReturnToThread(45, &received);
 }
 
 void CheckAttachContextAndRun() {
@@ -338,19 +409,14 @@ void CheckAttachContextAndRun() {
         threw = true;
     }
     Require(threw, "running a fiber without a context throws");
-    Require(_sceFiberAttachContextAndRun(nullptr, g_lateContext.data(), g_lateContext.size(), 44, nullptr) == FiberErrorNull, "attach and run a null fiber");
     Require(_sceFiberAttachContextAndRun(reinterpret_cast<FiberObject*>(reinterpret_cast<unsigned char*>(&g_lateStorage) + 4), nullptr, 0, 44, nullptr) == FiberErrorAlignment, "attach and run a misaligned fiber");
     Require(_sceFiberAttachContextAndRun(g_late, g_lateContext.data() + 8, 1024, 44, nullptr) == FiberErrorAlignment, "attach a misaligned context");
-    Require(_sceFiberAttachContextAndRun(g_late, g_lateContext.data(), 256, 44, nullptr) == FiberErrorRange, "attach a context below 512 bytes");
     Require(_sceFiberAttachContextAndRun(g_late, g_lateContext.data(), 1032, 44, nullptr) == FiberErrorInvalid, "attach a size that is not a multiple of 16");
-    Require(_sceFiberAttachContextAndRun(g_late, nullptr, 1024, 44, nullptr) == FiberErrorInvalid, "attach a size without a context");
     Require(_sceFiberAttachContextAndRun(g_late, g_lateContext.data(), 0, 44, nullptr) == FiberErrorInvalid, "attach a context without a size");
     Require(sceFiberGetInfo(g_late, &info) == 0 && info.addr_context == nullptr, "rejected attaches leave no context");
     std::uint64_t returned = 0;
     Require(_sceFiberAttachContextAndRun(g_late, g_lateContext.data(), g_lateContext.size(), 44, &returned) == 0 && returned == 45, "attach and run");
     Require(sceFiberGetInfo(g_late, &info) == 0 && info.addr_context != nullptr && info.size_context == g_lateContext.size(), "attached context reported");
-    Require(_sceFiberAttachContextAndRun(g_late, g_otherContext.data(), g_otherContext.size(), 0, nullptr) == FiberErrorInvalid, "second attach");
-    Require(_sceFiberAttachContextAndRun(g_late, nullptr, 0, 55, &returned) == 0 && returned == 56, "attach and run without a new context");
     Require(sceFiberFinalize(g_late) == 0, "finalize attached fiber");
     Require(_sceFiberAttachContextAndRun(g_late, g_otherContext.data(), g_otherContext.size(), 0, nullptr) == FiberErrorInvalid, "attach and run a finalized fiber");
 
@@ -376,7 +442,6 @@ void APS5_VABI SwitchedEntry(std::uint64_t argOnInitialize, std::uint64_t argOnR
 }
 
 void APS5_VABI SwitcherEntry(std::uint64_t, std::uint64_t) {
-    Require(_sceFiberAttachContextAndSwitch(g_switched, g_switchedContext.data() + 8, g_switchedContext.size(), 0, nullptr) == FiberErrorAlignment, "switch attach of a misaligned context");
     Require(_sceFiberAttachContextAndSwitch(g_switched, g_switchedContext.data(), 256, 0, nullptr) == FiberErrorRange, "switch attach below 512 bytes");
     Require(_sceFiberAttachContextAndSwitch(g_switched, nullptr, 1024, 0, nullptr) == FiberErrorInvalid, "switch attach of a size without a context");
     std::uint64_t received = 0;
@@ -392,8 +457,6 @@ void CheckAttachContextAndSwitch() {
     Require(_sceFiberInitializeImpl_nid_postfix(g_switched, "switched", SwitchedEntry, 77, nullptr, 0, nullptr, 0) == 0, "initialize switched without a context");
     Require(_sceFiberAttachContextAndSwitch(nullptr, g_switchedContext.data(), g_switchedContext.size(), 0, nullptr) == FiberErrorNull, "attach and switch a null fiber");
     Require(_sceFiberAttachContextAndSwitch(reinterpret_cast<FiberObject*>(reinterpret_cast<unsigned char*>(&g_switchedStorage) + 4), nullptr, 0, 0, nullptr) == FiberErrorAlignment, "attach and switch a misaligned fiber");
-    Require(_sceFiberAttachContextAndSwitch(g_switched, g_switchedContext.data(), g_switchedContext.size(), 0, nullptr) == FiberErrorPermission, "attach and switch outside a fiber");
-    Require(sceFiberGetInfo(g_switched, &info) == 0 && info.addr_context == nullptr, "nothing attached outside a fiber");
     std::uint64_t returned = 0;
     Require(sceFiberRun_nid_postfix(g_switcher, 0, &returned) == 0 && returned == 99, "run switcher");
     Require(sceFiberGetInfo(g_switched, &info) == 0 && info.addr_context != nullptr && info.size_context == g_switchedContext.size(), "switch attached the context");
@@ -448,4 +511,6 @@ int main() {
     RunHostCallOnSmallContext();
     RunFrameChain();
     RunOnLargeContext();
+    RunAttachedContext();
+    RunInternalOptions();
 }

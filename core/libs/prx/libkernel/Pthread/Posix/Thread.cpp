@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <stdexcept>
 #include "SceTypes.hpp"
 #include "../include/ThreadLifecycle.hpp"
 #include "../include/Cancel.hpp"

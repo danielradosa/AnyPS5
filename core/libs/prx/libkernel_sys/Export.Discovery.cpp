@@ -3,6 +3,7 @@
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
+#include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 #include <cstddef>
 
 extern "C" {
@@ -82,11 +83,6 @@ int APS5_VABI futimesat_nid_postfix(int directory, const char* path, const Kerne
     return PosixUtimesAt_nid_no_patch(directory, path, times);
 }
 
-int APS5_VABI get_authinfo_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI get_module_info_list_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -118,11 +114,6 @@ int APS5_VABI getfsstat_nid_postfix(void) {
 }
 
 int APS5_VABI ipmimgr_call_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI is_in_sandbox_nid_postfix(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }
@@ -201,11 +192,6 @@ int APS5_VABI pthread_attr_setcreatesuspend_np_nid_postfix(PthreadAttr* attr) {
     constexpr int GuestEinval = 22;
     if (!attr || !*attr) return GuestEinval;
     (*attr)->_createSuspended = true;
-    return 0;
-}
-
-int APS5_VABI pthread_barrier_setname_np_nid_postfix(void) {
-    NotImplemented_nid_no_patch(__func__);
     return 0;
 }
 
@@ -838,11 +824,6 @@ int APS5_VABI sceKernelGetMemoryPstate(void) {
     return 0;
 }
 
-int APS5_VABI sceKernelGetOpenPsIdForSystem(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceKernelGetPagingStatsOfAllObjects(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
@@ -859,8 +840,7 @@ int APS5_VABI sceKernelGetParentApp(void) {
 }
 
 int APS5_VABI sceKernelGetPhysPageSize(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
+    return static_cast<int>(PS5_PAGE_SIZE);
 }
 
 int APS5_VABI sceKernelGetProcessName(void) {
@@ -1264,17 +1244,7 @@ int APS5_VABI sceKernelIsAuthenticNeo(void) {
     return 1;
 }
 
-int APS5_VABI sceKernelIsCEX(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
 int APS5_VABI sceKernelIsDebuggerAttached(void) {
-    NotImplemented_nid_no_patch(__func__);
-    return 0;
-}
-
-int APS5_VABI sceKernelIsDevKit(void) {
     NotImplemented_nid_no_patch(__func__);
     return 0;
 }

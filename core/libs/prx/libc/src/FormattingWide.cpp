@@ -309,6 +309,7 @@ int ScanWide(const char16_t* buffer, const char16_t* format, TNextPointer nextPo
         const char16_t conversion = *format;
         if (conversion == 0) throw std::invalid_argument("Incomplete scan conversion");
         ++format;
+        if (conversion == u'S' || conversion == u'C') return assigned;
         if (!ValidScanLength(length, conversion)) throw std::invalid_argument("Unsupported scan conversion");
         const ScanSet set = conversion == u'[' ? ParseScanSet(format) : ScanSet{};
         if (conversion == u'n') {
@@ -515,6 +516,7 @@ int APS5_VABI swscanf_nid_postfix(const char16_t* buffer, const char16_t* format
 }
 
 int APS5_VABI wprintf_nid_postfix(const char16_t* format, ...) {
+    _Stdout_nid_postfix.Orientation(1);
     APS5_VA_BEGIN(format);
     int result = -1;
     try {
@@ -531,6 +533,7 @@ int APS5_VABI wprintf_nid_postfix(const char16_t* format, ...) {
 int APS5_VABI vfwprintf_nid_postfix(FileStream* stream, const char16_t* format, VaList* args) {
     if (stream == nullptr || format == nullptr) { errno = 22; return -1; }
     if (!stream->IsOpen()) { errno = 9; return -1; }
+    stream->Orientation(1);
     int result = -1;
     try {
         const std::u16string text = FormatWide(format, args);
@@ -589,6 +592,7 @@ int APS5_VABI wprintf_s_nid_postfix(const char16_t* format, ...) {
 
 int APS5_VABI fputwc_nid_postfix(char16_t value, FileStream* stream) {
     if (stream == nullptr) { errno = 22; return -1; }
+    stream->Orientation(1);
     try {
         const std::string bytes = ToUtf8(std::u16string(1, value));
         auto* native = GetNativeStream(stream);
@@ -603,6 +607,7 @@ int APS5_VABI fputwc_nid_postfix(char16_t value, FileStream* stream) {
 
 int APS5_VABI fputws_nid_postfix(const char16_t* str, FileStream* stream) {
     if (str == nullptr || stream == nullptr) { errno = 22; return -1; }
+    stream->Orientation(1);
     try {
         const std::u16string text(str);
         const std::string bytes = ToUtf8(text);
@@ -625,7 +630,9 @@ int APS5_VABI putwchar_nid_postfix(char16_t value) {
 }
 
 char16_t* APS5_VABI fgetws_nid_postfix(char16_t* buffer, int size, FileStream* stream) {
-    if (buffer == nullptr || stream == nullptr || size <= 0) {
+    if (stream != nullptr) stream->Orientation(1);
+    if (size < 2) return nullptr;
+    if (buffer == nullptr || stream == nullptr) {
         if (stream != nullptr) stream->SetError();
         errno = 22;
         return nullptr;
@@ -633,14 +640,11 @@ char16_t* APS5_VABI fgetws_nid_postfix(char16_t* buffer, int size, FileStream* s
     int count = 0;
     while (count < size - 1) {
         const std::int32_t character = fgetwc_nid_postfix(stream);
-        if (character == -1) {
-            if (count == 0) return nullptr;
-            break;
-        }
+        if (character == -1) break;
         buffer[count++] = static_cast<char16_t>(character);
         if (character == static_cast<std::int32_t>(u'\n')) break;
     }
-    if (ferror_nid_postfix(stream) != 0) return nullptr;
+    if (count == 0) return nullptr;
     buffer[count] = 0;
     return buffer;
 }

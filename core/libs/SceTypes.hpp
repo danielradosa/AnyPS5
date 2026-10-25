@@ -680,9 +680,10 @@ struct AudioOutPortState {
 
 struct AudioOutSystemState {
     float loudness;
-    std::uint32_t pad;
-    std::uint64_t reserved[7];
+    std::uint8_t reserved8[4];
+    std::uint64_t reserved[3];
 };
+static_assert(sizeof(AudioOutSystemState) == 32);
 
 struct Audio3dOpenParameters {
     std::uint64_t size_this;

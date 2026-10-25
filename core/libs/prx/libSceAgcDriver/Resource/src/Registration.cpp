@@ -11,9 +11,9 @@
 // Resource registration feeds GPU debugging tools, none of which are attached; the game treats this code as benign.
 static constexpr int SCE_AGC_ERROR_RESOURCE_REGISTRATION_UNAVAILABLE = static_cast<int>(0x8A6C9018);
 static constexpr uint32_t RESOURCE_REGISTRATION_MAX_NAME_LENGTH = 0xfc;
-static constexpr int SCE_AGC_DRIVER_ERROR_INVALID_VALUE = static_cast<int>(0x8A6C0033);
-static constexpr int SCE_AGC_DRIVER_ERROR_INVALID_ARGUMENT = static_cast<int>(0x8A6C0035);
-static constexpr int SCE_AGC_DRIVER_ERROR_NOT_REGISTERED = static_cast<int>(0x8A6C003A);
+static constexpr int SCE_AGC_ERROR_WORKLOAD_STREAM_INVALID_ID = static_cast<int>(0x8A6C0033);
+static constexpr int SCE_AGC_ERROR_WORKLOAD_STREAM_NULL = static_cast<int>(0x8A6C0035);
+static constexpr int SCE_AGC_ERROR_WORKLOAD_STREAM_NOT_REGISTERED = static_cast<int>(0x8A6C003A);
 
 namespace {
 
@@ -101,12 +101,12 @@ int APS5_VABI sceAgcDriverRegisterMultipleResources(uint32_t* resourceHandle, ui
 }
 
 int APS5_VABI sceAgcDriverRegisterWorkloadStream(uint32_t stream_id, const void* stream) {
-    if (!validWorkloadStream(stream_id)) return SCE_AGC_DRIVER_ERROR_INVALID_VALUE;
+    if (!validWorkloadStream(stream_id)) return SCE_AGC_ERROR_WORKLOAD_STREAM_INVALID_ID;
     auto& streams = workloadStreams();
     std::lock_guard lock(streams.mutex);
     const auto bit = 1u << stream_id;
-    if ((streams.registered & bit) != 0) return SCE_AGC_DRIVER_ERROR_INVALID_VALUE;
-    if (stream == nullptr) return SCE_AGC_DRIVER_ERROR_INVALID_ARGUMENT;
+    if ((streams.registered & bit) != 0) return SCE_AGC_ERROR_WORKLOAD_STREAM_INVALID_ID;
+    if (stream == nullptr) return SCE_AGC_ERROR_WORKLOAD_STREAM_NULL;
     std::memcpy(streams.records[stream_id].data(), stream, WorkloadStreamRecordBytes);
     streams.registered |= bit;
     return 0;
@@ -139,11 +139,11 @@ int APS5_VABI sceAgcDriverUnregisterAllResourcesForOwner(uint32_t owner_handle) 
 }
 
 int APS5_VABI sceAgcDriverUnregisterWorkloadStream(uint32_t stream_id) {
-    if (!validWorkloadStream(stream_id)) return SCE_AGC_DRIVER_ERROR_INVALID_VALUE;
+    if (!validWorkloadStream(stream_id)) return SCE_AGC_ERROR_WORKLOAD_STREAM_INVALID_ID;
     auto& streams = workloadStreams();
     std::lock_guard lock(streams.mutex);
     const auto bit = 1u << stream_id;
-    if ((streams.registered & bit) == 0) return SCE_AGC_DRIVER_ERROR_NOT_REGISTERED;
+    if ((streams.registered & bit) == 0) return SCE_AGC_ERROR_WORKLOAD_STREAM_NOT_REGISTERED;
     streams.records[stream_id].fill(0);
     streams.registered &= ~bit;
     return 0;

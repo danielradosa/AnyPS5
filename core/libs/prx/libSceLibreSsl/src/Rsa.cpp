@@ -7,6 +7,8 @@
 #include <mbedtls/platform_util.h>
 
 #include <atomic>
+#include <bit>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -19,11 +21,26 @@ namespace LibreSsl {
 namespace {
 
 constexpr int BnFlagMalloced = 0x01;
+constexpr int BnFlagStaticData = 0x02;
 constexpr int RsaFlagCachePublic = 0x0002;
 constexpr int RsaFlagCachePrivate = 0x0004;
 constexpr int RsaSslv23Padding = 2;
 constexpr int RsaX931Padding = 5;
 constexpr int MaxModulusBits = 8192;
+
+struct RsaMethod {
+    const char* name;
+    void* operations[8];
+    int flags;
+    char* appData;
+    void* sign;
+    void* verify;
+    void* keygen;
+};
+
+static_assert(sizeof(RsaMethod) == 112 && offsetof(RsaMethod, flags) == 72);
+
+constexpr RsaMethod DefaultRsaMethod{"Eric Young's PKCS#1 RSA", {}, 0, nullptr, nullptr, nullptr, nullptr};
 
 constexpr int RsaFunctionCheckKey = 123;
 constexpr int RsaFunctionEayPrivateDecrypt = 101;
@@ -217,7 +234,7 @@ Bignum* MpiBignum(const mbedtls_mpi& in, const char* function) {
 void ClearFreeBignum(Bignum* bn) {
     if (!bn) return;
     if (!(bn->flags & BnFlagMalloced)) throw std::invalid_argument("RSA/EC_KEY free: a key BIGNUM was not created by BN_new");
-    if (bn->d && bn->dmax > 0) mbedtls_platform_zeroize(bn->d, static_cast<std::size_t>(bn->dmax) * sizeof(std::uint64_t));
+    if (bn->d && bn->dmax > 0 && !(bn->flags & BnFlagStaticData)) mbedtls_platform_zeroize(bn->d, static_cast<std::size_t>(bn->dmax) * sizeof(std::uint64_t));
     FreeBignum(bn);
 }
 
@@ -243,6 +260,7 @@ const EvpMd* DigestByNid(int nid) {
 Rsa* NewRsa() {
     auto* rsa = new (std::nothrow) Rsa{};
     if (!rsa) return nullptr;
+    rsa->meth = &DefaultRsaMethod;
     rsa->references = 1;
     rsa->flags = RsaFlagCachePublic | RsaFlagCachePrivate;
     return rsa;
@@ -580,9 +598,22 @@ void APS5_VABI RSA_free_nid_postfix(Rsa* r) {
     FreeRsa(r);
 }
 
+int APS5_VABI RSA_flags_nid_postfix(const Rsa* rsa) {
+    if (!rsa) return 0;
+    if (!rsa->meth) throw std::invalid_argument("RSA_flags: null method");
+    return static_cast<const RsaMethod*>(rsa->meth)->flags;
+}
+
 int APS5_VABI RSA_size_nid_postfix(const Rsa* rsa) {
     if (!rsa) throw std::invalid_argument("RSA_size: null RSA");
-    return RsaSize(*rsa, __func__);
+    const Bignum* modulus = rsa->n;
+    if (!modulus) throw std::invalid_argument("RSA_size: null modulus");
+    if (modulus->top == 0) return 0;
+    if (modulus->top < 0) throw std::invalid_argument("RSA_size: negative modulus word count");
+    if (!modulus->d) throw std::invalid_argument("RSA_size: null modulus words");
+    const std::int64_t bits = static_cast<std::int64_t>(modulus->top - 1) * 64 + std::bit_width(modulus->d[modulus->top - 1]);
+    if (bits > std::numeric_limits<int>::max() - 7) throw std::invalid_argument("RSA_size: modulus bit count overflows int");
+    return static_cast<int>((bits + 7) / 8);
 }
 
 int APS5_VABI RSA_public_encrypt_nid_postfix(int flen, const unsigned char* from, unsigned char* to, Rsa* rsa, int padding) {

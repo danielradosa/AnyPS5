@@ -88,6 +88,7 @@ std::uint64_t DepthPlaneSkips();
 // A draw that bound the surface as its depth target was recorded (it may have written it).
 void NoteDepthTargetDrawn(const Context& context, const DepthTarget& target);
 void SeedStorageFromDepth(const Context& context, const std::shared_ptr<StorageTexture>& storage);
+std::size_t DepthPlaneCopyCount();
 VkFormat HostDepthFormat(const Context& context, VkFormat format);
 float HostDepthBiasConstant(const Context& context, VkFormat format, float constant);
 std::shared_ptr<StorageTexture> DepthSurfaceStorage(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, std::uint32_t mip);

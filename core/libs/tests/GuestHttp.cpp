@@ -53,12 +53,11 @@ struct HttpMemoryPoolStats {
     std::uint64_t usedSize;
 };
 struct HttpCookieStats {
-    std::uint64_t usedBytes;
-    std::uint32_t cookieCount;
-    std::uint32_t reserved;
-    std::uint64_t peakUsedBytes;
-    std::uint32_t peakCookieCount;
-    std::uint32_t evictedCookieCount;
+    std::uint64_t currentInuseSize;
+    std::uint32_t currentInuseNum;
+    std::uint64_t maxInuseSize;
+    std::uint32_t maxInuseNum;
+    std::uint32_t removedNum;
 };
 int APS5_VABI sceHttpCreateTemplate(int, const char*, int, int);
 int APS5_VABI sceHttpCreateConnectionWithURL(int, const char*, int);
@@ -491,9 +490,7 @@ static void CheckSettings() {
     Require(sceHttpGetAcceptEncodingGZIPEnabled(1, &value) == beforeInit);
     Require(sceHttpGetEpoll(1, &eh, &argument) == beforeInit);
     Require(sceHttpGetMemoryPoolStats(1, &pool) == beforeInit);
-    Require(sceHttpGetCookieStats(1, &cookies) == beforeInit);
     Require(sceHttpSetDefaultAcceptEncodingGZIPEnabled(1, 1) == beforeInit);
-    Require(sceHttpSetCookieMaxNum(1, 300) == beforeInit);
     Require(sceHttpSetCookieMaxNumPerDomain(1, 50) == beforeInit);
     Require(sceHttpSetCookieMaxSize(1, 4096) == beforeInit);
     Require(sceHttpSetCookieTotalMaxSize(1, 0x10000) == beforeInit);
@@ -509,11 +506,10 @@ static void CheckSettings() {
     Require(sceHttpGetMemoryPoolStats(context, &pool) == 0);
     Require(pool.poolSize == 0x24000 && pool.peakUsedSize == 0 && pool.usedSize == 0);
     Require(sceHttpGetCookieStats(-1, &cookies) == invalidId);
-    Require(sceHttpGetCookieStats(context, nullptr) == invalidValue);
-    std::memset(&cookies, 0x5a, sizeof(cookies));
-    Require(sceHttpGetCookieStats(context, &cookies) == 0);
-    const auto* cookieBytes = reinterpret_cast<const unsigned char*>(&cookies);
-    for (std::size_t index = 0; index < sizeof(cookies); ++index) Require(cookieBytes[index] == 0);
+    alignas(HttpCookieStats) unsigned char cookieBytes[sizeof(HttpCookieStats) + 8];
+    std::memset(cookieBytes, 0x5a, sizeof(cookieBytes));
+    Require(sceHttpGetCookieStats(context, reinterpret_cast<HttpCookieStats*>(cookieBytes)) == 0);
+    for (std::size_t index = 0; index < sizeof(cookieBytes); ++index) Require(cookieBytes[index] == (index < sizeof(HttpCookieStats) ? 0 : 0x5a));
     for (const int id : {context, -1}) {
         const int expected = id == context ? 0 : invalidId;
         Require(sceHttpSetCookieMaxNum(id, 300) == expected);

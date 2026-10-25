@@ -96,6 +96,11 @@ int APS5_VABI SSL_CTX_get_ex_new_index_nid_postfix(std::int64_t, void*, void*, v
 int APS5_VABI SSL_CTX_set_ex_data_nid_postfix(GuestCtx*, int, void*);
 void* APS5_VABI SSL_CTX_get_ex_data_nid_postfix(const GuestCtx*, int);
 void APS5_VABI SSL_CTX_sess_set_new_cb_nid_postfix(GuestCtx*, int (APS5_VABI*)(GuestSsl*, GuestSession*));
+void APS5_VABI SSL_CTX_set_info_callback_nid_postfix(GuestCtx*, void (APS5_VABI*)(const GuestSsl*, int, int));
+void APS5_VABI SSL_CTX_set_next_proto_select_cb_nid_postfix(GuestCtx*,
+    int (APS5_VABI*)(GuestSsl*, unsigned char**, unsigned char*, const unsigned char*, unsigned int, void*), void*);
+void APS5_VABI SSL_CTX_set_alpn_select_cb_nid_postfix(GuestCtx*,
+    int (APS5_VABI*)(GuestSsl*, const unsigned char**, unsigned char*, const unsigned char*, unsigned int, void*), void*);
 std::int64_t APS5_VABI SSL_CTX_callback_ctrl_nid_postfix(GuestCtx*, int, void (*)());
 void APS5_VABI SSL_CTX_set_default_passwd_cb_userdata_nid_postfix(GuestCtx*, void*);
 GuestSsl* APS5_VABI SSL_new_nid_postfix(GuestCtx*);
@@ -325,6 +330,17 @@ int APS5_VABI CountSession(GuestSsl*, GuestSession* session) {
     return 0;
 }
 
+void APS5_VABI Info(const GuestSsl*, int, int) {
+}
+
+int APS5_VABI SelectNextProto(GuestSsl*, unsigned char**, unsigned char*, const unsigned char*, unsigned int, void*) {
+    return 0;
+}
+
+int APS5_VABI SelectAlpn(GuestSsl*, const unsigned char**, unsigned char*, const unsigned char*, unsigned int, void*) {
+    return 3;
+}
+
 int APS5_VABI Servername(GuestSsl* ssl, int* alert, void* argument) {
     Require(alert != nullptr && argument == &servernameCalls);
     const char* name = SSL_get_servername_nid_postfix(ssl, 0);
@@ -417,6 +433,12 @@ int main(int argc, char** argv) {
     Require(SSL_CTX_get_ex_data_nid_postfix(client, ctxIndex) == &newSessions && SSL_CTX_get_ex_data_nid_postfix(client, ctxIndex + 1) == nullptr);
     SSL_CTX_set_default_passwd_cb_userdata_nid_postfix(client, &newSessions);
     SSL_CTX_sess_set_new_cb_nid_postfix(client, CountSession);
+    SSL_CTX_set_info_callback_nid_postfix(client, Info);
+    SSL_CTX_set_next_proto_select_cb_nid_postfix(client, SelectNextProto, &newSessions);
+    SSL_CTX_set_alpn_select_cb_nid_postfix(server, SelectAlpn, &servernameCalls);
+    Require(Throws([] { SSL_CTX_set_info_callback_nid_postfix(nullptr, Info); }));
+    Require(Throws([] { SSL_CTX_set_next_proto_select_cb_nid_postfix(nullptr, SelectNextProto, nullptr); }));
+    Require(Throws([] { SSL_CTX_set_alpn_select_cb_nid_postfix(nullptr, SelectAlpn, nullptr); }));
     Require(SSL_CTX_ctrl_nid_postfix(server, CtrlSetTlsextServernameArg, 0, &servernameCalls) == 1);
     Require(SSL_CTX_callback_ctrl_nid_postfix(server, CtrlSetTlsextServernameCb, reinterpret_cast<void (*)()>(Servername)) == 1);
     Require(SSL_CTX_get_verify_mode_nid_postfix(client) == 0);
